@@ -1,5 +1,5 @@
 [package]
-name = "capy"
+name = "hir"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,5 +7,9 @@ edition = "2021"
 
 [dependencies]
 ast = {path = "../ast"}
-hir = {path = "../hir"}
+la-arena = "0.2.0"
+smol_str = "0.1.17"
+syntax = {path = "../syntax"}
+
+[dev-dependencies]
 parser = {path = "../parser"}
