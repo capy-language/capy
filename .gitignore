@@ -1,3 +1,4 @@
 .vscode
 target
-target/.rustc_info.json
+
+Cargo.lock
