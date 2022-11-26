@@ -67,7 +67,7 @@ impl<'t, 'input> Parser<'t, 'input> {
         if !self.at_end() {
             if self.at_set(&RECOVERY_SET) && move_past_recovery {
                 self.bump();
-            } else {
+            } else if !self.at_set(&RECOVERY_SET) && !self.at_end() {
                 let m = self.start();
                 while !self.at_set(&RECOVERY_SET) && !self.at_end() {
                     self.bump();

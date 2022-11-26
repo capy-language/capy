@@ -1,8 +1,8 @@
-# Capy
+# The Capy Programming Language
 
 A cool programming language
 
-```
+```capy
 sum = (x, y) { return x + y; };
 mul = (x, y) { return x * y; };
 
