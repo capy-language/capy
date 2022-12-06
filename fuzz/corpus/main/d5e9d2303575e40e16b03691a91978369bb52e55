@@ -1,0 +1,5 @@
+foo = 10;
+bar = 20;
+a ;
+bar$= 20;
+a = foo + (bar * bar - e * (a - 10);

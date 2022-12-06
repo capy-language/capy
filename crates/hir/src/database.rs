@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn lower_unary_expr() {
         let mut exprs = Arena::new();
-        let ten = exprs.alloc(Expr::Literal { n: 10 });
+        let ten = exprs.alloc(Expr::Literal { n: Some(10) });
 
         check_expr(
             "-10",
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn lower_binary_expr_without_rhs() {
         let mut exprs = Arena::new();
-        let lhs = exprs.alloc(Expr::Literal { n: 10 });
+        let lhs = exprs.alloc(Expr::Literal { n: Some(10) });
         let rhs = exprs.alloc(Expr::Missing);
 
         check_expr(
