@@ -20,16 +20,22 @@ pub enum TokenKind {
     Plus,
 
     #[token("-")]
-    Minus,
+    Hyphen,
 
     #[token("*")]
-    Star,
+    Asterisk,
 
     #[token("/")]
     Slash,
 
     #[token("=")]
     Equals,
+
+    #[token("->")]
+    Arrow,
+
+    #[token(".")]
+    Dot,
 
     #[token("{")]
     LBrace,
@@ -48,6 +54,9 @@ pub enum TokenKind {
 
     #[token(";")]
     Semicolon,
+
+    #[regex(r#""([^"\\\n]|\\.)*"?"#)]
+    String,
 }
 
 impl TokenKind {
@@ -63,10 +72,12 @@ impl fmt::Display for TokenKind {
             Self::Ident => "identifier",
             Self::Number => "number",
             Self::Plus => "'+'",
-            Self::Minus => "'-'",
-            Self::Star => "'*'",
+            Self::Hyphen => "'-'",
+            Self::Asterisk => "'*'",
             Self::Slash => "'/'",
             Self::Equals => "'='",
+            Self::Dot => ".",
+            Self::Arrow => "->",
             Self::LParen => "'('",
             Self::RParen => "')'",
             Self::LBrace => "'{'",
@@ -74,6 +85,7 @@ impl fmt::Display for TokenKind {
             Self::Semicolon => "';'",
             Self::Comment => "comment",
             Self::Error => "an unrecognized token",
+            Self::String => "string",
         })
     }
 }
@@ -133,12 +145,12 @@ mod tests {
 
     #[test]
     fn lex_minus() {
-        check("-", TokenKind::Minus);
+        check("-", TokenKind::Hyphen);
     }
 
     #[test]
     fn lex_star() {
-        check("*", TokenKind::Star);
+        check("*", TokenKind::Asterisk);
     }
 
     #[test]
@@ -150,6 +162,16 @@ mod tests {
     fn lex_equals() {
         check("=", TokenKind::Equals);
     }
+
+    #[test]
+    fn lex_dot() {
+        check(".", TokenKind::Dot);
+    }
+
+    #[test]
+    fn lex_arrow() {
+        check("->", TokenKind::Arrow);
+    } 
 
     #[test]
     fn lex_left_brace() {
@@ -179,5 +201,10 @@ mod tests {
     #[test]
     fn lex_semicolon() {
         check(";", TokenKind::Semicolon);
+    }
+
+    #[test]
+    fn lex_string() {
+        check(r#""Hello, World!""#, TokenKind::String);
     }
 }

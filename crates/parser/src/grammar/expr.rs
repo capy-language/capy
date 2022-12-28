@@ -47,9 +47,9 @@ fn expr_binding_power(p: &mut Parser, minimum_binding_power: u8) -> Option<Compl
 
         let op = if p.at(TokenKind::Plus) {
             BinaryOp::Add
-        } else if p.at(TokenKind::Minus) {
+        } else if p.at(TokenKind::Hyphen) {
             BinaryOp::Sub
-        } else if p.at(TokenKind::Star) {
+        } else if p.at(TokenKind::Asterisk) {
             BinaryOp::Mul
         } else if p.at(TokenKind::Slash) {
             BinaryOp::Div
@@ -82,10 +82,12 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
         literal(p)
     } else if p.at(TokenKind::Ident) {
         variable_ref(p)
-    } else if p.at(TokenKind::Minus) || p.at(TokenKind::Plus) {
+    } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) {
         prefix_expr(p)
     } else if p.at(TokenKind::LParen) {
         paren_expr(p)
+    } else if p.at(TokenKind::String) {
+        string_expr(p)
     } else {
         p.error(false);
         return None;
@@ -111,7 +113,7 @@ fn variable_ref(p: &mut Parser) -> CompletedMarker {
 }
 
 fn prefix_expr(p: &mut Parser) -> CompletedMarker {
-    let minus = p.at(TokenKind::Minus);
+    let minus = p.at(TokenKind::Hyphen);
     let plus = p.at(TokenKind::Plus);
     assert!(minus || plus);
 
@@ -139,6 +141,14 @@ fn paren_expr(p: &mut Parser) -> CompletedMarker {
     p.expect(TokenKind::RParen, false);
 
     m.complete(p, SyntaxKind::ParenExpr)
+}
+
+fn string_expr(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::String));
+
+    let m = p.start();
+    p.bump();
+    m.complete(p, SyntaxKind::StringLiteral)
 }
 
 #[cfg(test)]
@@ -425,9 +435,21 @@ mod tests {
                       Literal@1..2
                         Number@1..2 "1"
                       Plus@2..3 "+"
-                error at 2..3: expected number, identifier, '-', '+' or '('
+                error at 2..3: expected number, identifier, '-', '+', '(' or string
                 error at 2..3: expected ')'
                 error at 2..3: expected ';'"#]],
         );
+    }
+
+    #[test]
+    fn parse_string() {
+        check(
+            r#""Hello, World!";"#,
+            expect![[r#"
+                Root@0..16
+                  StringLiteral@0..15
+                    StringContents@0..15 "\"Hello, World!\""
+                  Semicolon@15..16 ";""#]],
+        )
     }
 }

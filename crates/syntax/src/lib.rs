@@ -28,6 +28,8 @@ pub enum SyntaxKind {
     VariableDef,
     VariableRef,
     Semicolon,
+    StringLiteral,
+    StringContents,
 }
 
 impl From<TokenKind> for SyntaxKind {
@@ -37,10 +39,12 @@ impl From<TokenKind> for SyntaxKind {
             TokenKind::Ident => Self::Ident,
             TokenKind::Number => Self::Number,
             TokenKind::Plus => Self::Plus,
-            TokenKind::Minus => Self::Minus,
-            TokenKind::Star => Self::Star,
+            TokenKind::Hyphen => Self::Minus,
+            TokenKind::Asterisk => Self::Star,
             TokenKind::Slash => Self::Slash,
             TokenKind::Equals => Self::Equals,
+            TokenKind::Dot => unimplemented!(),
+            TokenKind::Arrow => unimplemented!(),
             TokenKind::LParen => Self::LParen,
             TokenKind::RParen => Self::RParen,
             TokenKind::LBrace => Self::LBrace,
@@ -48,6 +52,7 @@ impl From<TokenKind> for SyntaxKind {
             TokenKind::Comment => Self::Comment,
             TokenKind::Error => Self::Error,
             TokenKind::Semicolon => Self::Semicolon,
+            TokenKind::String => Self::StringContents,
         }
     }
 }

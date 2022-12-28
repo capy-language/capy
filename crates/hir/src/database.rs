@@ -25,6 +25,7 @@ impl Database {
             match ast {
                 ast::Expr::BinaryExpr(ast) => self.lower_binary(ast),
                 ast::Expr::Literal(ast) => Expr::Literal { n: ast.parse() },
+                ast::Expr::StringLiteral(ast) => self.lower_string_literal(ast),
                 ast::Expr::ParenExpr(ast) => self.lower_expr(ast.expr()),
                 ast::Expr::UnaryExpr(ast) => self.lower_unary(ast),
                 ast::Expr::VariableRef(ast) => self.lower_variable_ref(ast),
@@ -37,6 +38,12 @@ impl Database {
     fn lower_variable_ref(&mut self, ast: ast::VariableRef) -> Expr {
         Expr::VariableRef {
             var: ast.name().unwrap().text().into(),
+        }
+    }
+
+    fn lower_string_literal(&mut self, ast: ast::StringLiteral) -> Expr {
+        Expr::StringLiteral {
+            s: ast.parse().text().into(),
         }
     }
 
@@ -146,6 +153,26 @@ mod tests {
             "foo",
             Expr::VariableRef { var: "foo".into() },
             Database::default(),
+        );
+    }
+
+    #[test]
+    fn lower_string() {
+        check_expr(
+            r#""foo""#,
+            Expr::StringLiteral { s: r#""foo""#.into() },
+            Database::default(),
+        );
+    }
+
+    #[test]
+    fn lower_variable_def_with_string() {
+        check_stmt(
+            r#"a = "foo""#,
+            Stmt::VariableDef {
+                name: "a".into(),
+                value: Expr::StringLiteral { s: r#""foo""#.into() },
+            },
         );
     }
 

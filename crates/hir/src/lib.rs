@@ -29,6 +29,9 @@ pub enum Expr {
     Literal {
         n: Option<u64>,
     },
+    StringLiteral {
+        s: SmolStr,
+    },
     Unary {
         op: UnaryOp,
         expr: ExprIdx,

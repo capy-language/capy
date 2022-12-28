@@ -96,7 +96,7 @@ mod tests {
             vec![
                 TokenKind::Number,
                 TokenKind::Ident,
-                TokenKind::Minus,
+                TokenKind::Hyphen,
                 TokenKind::LParen,
             ],
             Some(TokenKind::Semicolon),
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn two_expected_did_find() {
         check(
-            vec![TokenKind::Plus, TokenKind::Minus],
+            vec![TokenKind::Plus, TokenKind::Hyphen],
             Some(TokenKind::Equals),
             0..1,
             "error at 0..1: expected '+' or '-', but found '='",
