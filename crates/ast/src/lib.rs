@@ -140,7 +140,8 @@ impl UnaryExpr {
         self.0
             .children_with_tokens()
             .filter_map(SyntaxElement::into_token)
-            .find(|token| token.kind() == SyntaxKind::Minus)
+            .find(|token| token.kind() == SyntaxKind::Minus ||
+                token.kind() == SyntaxKind::Plus)
     }
 }
 

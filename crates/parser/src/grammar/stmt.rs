@@ -97,7 +97,7 @@ Root@0..10
                     VariableRef@9..10
                       Ident@9..10 "a"
                   Semicolon@10..11 ";"
-                error at 3..4: expected number, identifier, '-' or '(', but found ';'"#]]
+                error at 3..4: expected number, identifier, '-', '+' or '(', but found ';'"#]]
         )
     }
 }

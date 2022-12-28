@@ -50,4 +50,5 @@ pub enum BinaryOp {
 #[derive(Debug, PartialEq)]
 pub enum UnaryOp {
     Neg,
+    Pos,
 }

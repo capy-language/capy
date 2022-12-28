@@ -62,6 +62,7 @@ impl Database {
     fn lower_unary(&mut self, ast: ast::UnaryExpr) -> Expr {
         let op = match ast.op().unwrap().kind() {
             SyntaxKind::Minus => UnaryOp::Neg,
+            SyntaxKind::Plus => UnaryOp::Pos,
             _ => unreachable!(),
         };
 

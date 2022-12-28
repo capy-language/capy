@@ -82,7 +82,7 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
         literal(p)
     } else if p.at(TokenKind::Ident) {
         variable_ref(p)
-    } else if p.at(TokenKind::Minus) {
+    } else if p.at(TokenKind::Minus) || p.at(TokenKind::Plus) {
         prefix_expr(p)
     } else if p.at(TokenKind::LParen) {
         paren_expr(p)
@@ -289,6 +289,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_positive() {
+        check(
+            "+10;",
+            expect![[r#"
+                Root@0..4
+                  PrefixExpr@0..3
+                    Plus@0..1 "+"
+                    Literal@1..3
+                      Number@1..3 "10"
+                  Semicolon@3..4 ";""#]],
+        )
+    }
+
+    #[test]
     fn parse_prefix_infix_precedence() {
         check(
             "-20+20;",
@@ -411,7 +425,7 @@ mod tests {
                       Literal@1..2
                         Number@1..2 "1"
                       Plus@2..3 "+"
-                error at 2..3: expected number, identifier, '-' or '('
+                error at 2..3: expected number, identifier, '-', '+' or '('
                 error at 2..3: expected ')'
                 error at 2..3: expected ';'"#]],
         );
