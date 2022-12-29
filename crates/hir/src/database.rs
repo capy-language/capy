@@ -5,6 +5,7 @@ use syntax::SyntaxKind;
 #[derive(Debug, Default, PartialEq)]
 pub struct Database {
     exprs: Arena<Expr>,
+    blocks: Arena<Vec<Stmt>>,
 }
 
 impl Database {
@@ -24,11 +25,12 @@ impl Database {
         if let Some(ast) = ast {
             match ast {
                 ast::Expr::BinaryExpr(ast) => self.lower_binary(ast),
-                ast::Expr::Literal(ast) => Expr::Literal { n: ast.parse() },
+                ast::Expr::IntLiteral(ast) => Expr::IntLiteral { n: ast.parse() },
                 ast::Expr::StringLiteral(ast) => self.lower_string_literal(ast),
                 ast::Expr::ParenExpr(ast) => self.lower_expr(ast.expr()),
                 ast::Expr::UnaryExpr(ast) => self.lower_unary(ast),
                 ast::Expr::VariableRef(ast) => self.lower_variable_ref(ast),
+                ast::Expr::BlockExpr(ast) => self.lower_block(ast),
             }
         } else {
             Expr::Missing
@@ -78,6 +80,13 @@ impl Database {
         Expr::Unary {
             op,
             expr: self.exprs.alloc(expr),
+        }
+    }
+
+    fn lower_block(&mut self, ast: ast::BlockExpr) -> Expr {
+        let vec: Vec<Stmt> = ast.stmts().filter_map(|stmt| self.lower_stmt(stmt)).collect();
+        Expr::Block {
+            stmts: if vec.is_empty() { None } else { Some(self.blocks.alloc(vec)) },
         }
     }
 }
@@ -135,7 +144,8 @@ mod tests {
     #[test]
     fn lower_unary_expr() {
         let mut exprs = Arena::new();
-        let ten = exprs.alloc(Expr::Literal { n: Some(10) });
+        let blocks = Arena::new();
+        let ten = exprs.alloc(Expr::IntLiteral { n: Some(10) });
 
         check_expr(
             "-10",
@@ -143,7 +153,7 @@ mod tests {
                 expr: ten,
                 op: UnaryOp::Neg,
             },
-            Database { exprs },
+            Database { exprs, blocks },
         );
     }
 
@@ -190,7 +200,8 @@ mod tests {
     #[test]
     fn lower_binary_expr_without_rhs() {
         let mut exprs = Arena::new();
-        let lhs = exprs.alloc(Expr::Literal { n: Some(10) });
+        let blocks = Arena::new();
+        let lhs = exprs.alloc(Expr::IntLiteral { n: Some(10) });
         let rhs = exprs.alloc(Expr::Missing);
 
         check_expr(
@@ -200,14 +211,14 @@ mod tests {
                 rhs,
                 op: BinaryOp::Sub,
             },
-            Database { exprs },
+            Database { exprs, blocks },
         );
     }
-
     
     #[test]
     fn lower_unary_expr_without_expr() {
         let mut exprs = Arena::new();
+        let blocks = Arena::new();
         let expr = exprs.alloc(Expr::Missing);
 
         check_expr(
@@ -216,7 +227,34 @@ mod tests {
                 expr,
                 op: UnaryOp::Neg,
             },
-            Database { exprs },
+            Database { exprs, blocks },
+        );
+    }
+
+    #[test]
+    fn lower_empty_block() {
+        let exprs = Arena::new();
+        let blocks = Arena::new();
+
+        check_expr(
+            "{}",
+            Expr::Block { stmts: None },
+            Database { exprs, blocks },
+        );
+    }
+
+    #[test]
+    fn lower_stmt_block() {
+        let exprs = Arena::new();
+        let mut blocks = Arena::new();
+        let block = blocks.alloc(vec![
+            Stmt::Expr(Expr::IntLiteral { n: Some(42) }),
+        ]);
+
+        check_expr(
+            "{42;}",
+            Expr::Block { stmts: Some(block) },
+            Database { exprs, blocks },
         );
     }
 }

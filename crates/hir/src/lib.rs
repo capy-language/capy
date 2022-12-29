@@ -5,6 +5,8 @@ pub use database::Database;
 use la_arena::Idx;
 use smol_str::SmolStr;
 
+type StmtsIdx = Idx<Vec<Stmt>>;
+
 type ExprIdx = Idx<Expr>;
 
 pub fn lower(ast: ast::Root) -> (Database, Vec<Stmt>) {
@@ -26,7 +28,7 @@ pub enum Expr {
         lhs: ExprIdx,
         rhs: ExprIdx,
     },
-    Literal {
+    IntLiteral {
         n: Option<u64>,
     },
     StringLiteral {
@@ -38,6 +40,9 @@ pub enum Expr {
     },
     VariableRef {
         var: SmolStr,
+    },
+    Block {
+        stmts: Option<StmtsIdx>,
     },
     Missing,
 }

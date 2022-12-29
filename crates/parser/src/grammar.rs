@@ -11,12 +11,10 @@ pub(crate) fn root(p: &mut Parser) -> CompletedMarker {
 
     while !p.at_end() {
         if stmt::stmt(p).is_none() {
-            p.debug_kinds();
             if p.at_end() {
                 break;
             }
             p.error(true);
-            // todo: fix semicolon error handling.
         }
     }
 
@@ -39,7 +37,7 @@ mod tests {
                     Whitespace@1..2 " "
                     Equals@2..3 "="
                     Whitespace@3..4 " "
-                    Literal@4..5
+                    IntLiteral@4..5
                       Number@4..5 "1"
                   Semicolon@5..6 ";"
                   Whitespace@6..7 "\n"

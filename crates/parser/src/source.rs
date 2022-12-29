@@ -60,10 +60,10 @@ impl<'t, 'input> Source<'t, 'input> {
     }
 
     pub(crate) fn debug_print(&self) {
-        println!("---");
         for (idx, Token { kind, text, ..}) in self.tokens.iter().enumerate() {
-            println!("{:#?} \"{}\" {}", kind, text.replace('\n', "\\n"), if self.cursor == idx { "<-" } else { "" });
+            println!("   {:#?} {:#?} {}", kind, text, if self.cursor == idx { "<-" } else { "" });
         }
+        println!();
     }
 }
 

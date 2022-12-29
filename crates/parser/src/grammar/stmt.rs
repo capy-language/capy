@@ -1,5 +1,9 @@
 
+use std::backtrace::Backtrace;
+
 use lexer::TokenKind;
+
+use crate::parser;
 
 use super::*;
 
@@ -7,15 +11,19 @@ pub(crate) fn stmt(p: &mut Parser) -> Option<CompletedMarker> {
     while p.at(TokenKind::Semicolon) {
         p.bump();
     }
+    p.clear(); // clear the semicolon checks above
 
     let res = if p.at(TokenKind::Ident) {
-        variable_def(p)
+        variable_def(p) // function itself handles variable refs
     } else {
+        p.clear(); // clear the ident check above
         expr::expr(p)
     };
 
     if res.is_some() {
-        p.expect(TokenKind::Semicolon, true);
+        // clear so the user will know that we're only looking for a semicolon at this point.
+        p.clear();
+        p.expect(TokenKind::Semicolon);
     }
     res
 }
@@ -97,7 +105,7 @@ Root@0..10
                     VariableRef@9..10
                       Ident@9..10 "a"
                   Semicolon@10..11 ";"
-                error at 3..4: expected number, identifier, '-', '+', '(' or string, but found ';'"#]]
+                error at 3..4: expected number, string, identifier, '-', '+', '(' or '{', but found ';'"#]]
         )
     }
 }

@@ -56,22 +56,25 @@ impl VariableDef {
 #[derive(Debug)]
 pub enum Expr {
     BinaryExpr(BinaryExpr),
-    Literal(Literal),
+    IntLiteral(IntLiteral),
     StringLiteral(StringLiteral),
     ParenExpr(ParenExpr),
     UnaryExpr(UnaryExpr),
     VariableRef(VariableRef),
+    BlockExpr(BlockExpr),
 }
 
+// * Remember to add new expressions to this function for ast.
 impl Expr {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         let result = match node.kind() {
             SyntaxKind::InfixExpr => Self::BinaryExpr(BinaryExpr(node)),
-            SyntaxKind::Literal => Self::Literal(Literal(node)),
+            SyntaxKind::IntLiteral => Self::IntLiteral(IntLiteral(node)),
             SyntaxKind::StringLiteral => Self::StringLiteral(StringLiteral(node)),
             SyntaxKind::ParenExpr => Self::ParenExpr(ParenExpr(node)),
             SyntaxKind::PrefixExpr => Self::UnaryExpr(UnaryExpr(node)),
             SyntaxKind::VariableRef => Self::VariableRef(VariableRef(node)),
+            SyntaxKind::BlockExpr => Self::BlockExpr(BlockExpr(node)),
             _ => return None,
         };
 
@@ -105,11 +108,11 @@ impl BinaryExpr {
 }
 
 #[derive(Debug)]
-pub struct Literal(SyntaxNode);
+pub struct IntLiteral(SyntaxNode);
 
-impl Literal {
+impl IntLiteral {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
-        if node.kind() == SyntaxKind::Literal {
+        if node.kind() == SyntaxKind::IntLiteral {
             Some(Self(node))
         } else {
             None
@@ -173,20 +176,36 @@ impl VariableRef {
     }
 }
 
+#[derive(Debug)]
+pub struct BlockExpr(SyntaxNode);
+
+impl BlockExpr {
+    pub fn stmts(&self) -> impl Iterator<Item = Stmt> {
+        self.0.children().filter_map(Stmt::cast)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn variable_def_without_name() {
+    fn ast_variable_def_without_name() {
         let root = Root::cast(parser::parse(" = 10;").syntax()).unwrap();
         let ast = root.stmts().next();
         assert!(ast.is_none());
     }
 
     #[test]
-    fn string_literal() {
+    fn ast_string_literal() {
         let root = Root::cast(parser::parse(r#""";"#).syntax()).unwrap();
+        let ast = root.stmts().next();
+        assert!(ast.is_some());
+    }
+
+    #[test]
+    fn ast_block() {
+        let root = Root::cast(parser::parse(r#"{42;};"#).syntax()).unwrap();
         let ast = root.stmts().next();
         assert!(ast.is_some());
     }

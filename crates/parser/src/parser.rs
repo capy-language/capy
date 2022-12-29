@@ -15,7 +15,7 @@ use marker::Marker;
 use lexer::{Token, TokenKind};
 use syntax::SyntaxKind;
 
-const RECOVERY_SET: [TokenKind; 1] = [TokenKind::Semicolon];
+const RECOVERY_SET: [TokenKind; 3] = [TokenKind::Semicolon, TokenKind::LBrace, TokenKind::RBrace];
 
 pub(crate) struct Parser<'t, 'input> {
     source: Source<'t, 'input>,
@@ -38,10 +38,7 @@ impl<'t, 'input> Parser<'t, 'input> {
         self.events
     }
 
-    pub(crate) fn expect(&mut self, kind: TokenKind, clear: bool) {
-        if clear {
-            self.expected_kinds.clear();
-        }
+    pub(crate) fn expect(&mut self, kind: TokenKind) {
         if self.at(kind) {
             self.bump();
         } else {
@@ -117,6 +114,10 @@ impl<'t, 'input> Parser<'t, 'input> {
 
     pub(crate) fn at_end(&mut self) -> bool {
         self.peek().is_none()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.expected_kinds.clear();
     }
 
     pub(crate) fn debug_kinds(&mut self) {
