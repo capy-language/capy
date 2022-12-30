@@ -47,7 +47,7 @@ impl<'t, 'input> Parser<'t, 'input> {
     }
 
     pub(crate) fn error(&mut self, move_past_recovery: bool) {
-        let current_token = self.peek_token();
+        let current_token = self.peek_token(0);
 
         let (found, range) = if let Some(Token { kind, range, .. }) = current_token {
             (Some(*kind), *range)
@@ -82,8 +82,8 @@ impl<'t, 'input> Parser<'t, 'input> {
         self.source.peek_kind(1)
     }
 
-    pub(crate) fn peek_token(&mut self) -> Option<&Token> {
-        self.source.peek_token(0)
+    pub(crate) fn peek_token(&mut self, offset: usize) -> Option<&Token> {
+        self.source.peek_token(offset)
     }
 
     pub(crate) fn bump(&mut self) {

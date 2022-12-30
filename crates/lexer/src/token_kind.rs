@@ -37,6 +37,9 @@ pub enum TokenKind {
     #[token(".")]
     Dot,
 
+    #[token(",")]
+    Comma,
+
     #[token("{")]
     LBrace,
 
@@ -76,8 +79,9 @@ impl fmt::Display for TokenKind {
             Self::Asterisk => "'*'",
             Self::Slash => "'/'",
             Self::Equals => "'='",
-            Self::Dot => ".",
-            Self::Arrow => "->",
+            Self::Dot => "'.'",
+            Self::Comma => "','",
+            Self::Arrow => "'->'",
             Self::LParen => "'('",
             Self::RParen => "')'",
             Self::LBrace => "'{'",
@@ -201,6 +205,11 @@ mod tests {
     #[test]
     fn lex_semicolon() {
         check(";", TokenKind::Semicolon);
+    }
+
+    #[test]
+    fn lex_comma() {
+        check(",", TokenKind::Comma);
     }
 
     #[test]

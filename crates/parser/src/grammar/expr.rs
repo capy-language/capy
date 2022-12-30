@@ -87,7 +87,7 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
     } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) {
         prefix_expr(p)
     } else if p.at(TokenKind::LParen) {
-        paren_expr(p)
+        lambda_expr(p)
     } else if p.at(TokenKind::LBrace) {
         block_expr(p)
     } else {
@@ -119,7 +119,29 @@ fn variable_ref(p: &mut Parser) -> CompletedMarker {
 
     let m = p.start();
     p.bump();
-    m.complete(p, SyntaxKind::VariableRef)
+
+    if p.at(TokenKind::LParen) {
+        let params_m = p.start();
+    
+        p.bump();
+
+        loop {
+            // check for RParen before we try parsing and after we successfully parse
+            if !p.at(TokenKind::RParen) && expr::expr(p).is_some() && !p.at(TokenKind::RParen) {
+                p.clear(); // we only need the comma here
+                p.expect(TokenKind::Comma);
+            } else {
+                break;
+            }
+        }
+
+        p.expect(TokenKind::RParen);
+
+        params_m.complete(p, SyntaxKind::Params);
+        m.complete(p, SyntaxKind::VariableCall)
+    } else {
+        m.complete(p, SyntaxKind::VariableRef)
+    }
 }
 
 fn prefix_expr(p: &mut Parser) -> CompletedMarker {
@@ -151,6 +173,69 @@ fn paren_expr(p: &mut Parser) -> CompletedMarker {
     p.expect(TokenKind::RParen);
 
     m.complete(p, SyntaxKind::ParenExpr)
+}
+
+fn lambda_expr(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::LParen));
+
+    let mut closed_paren = false;
+    let mut i = 1;
+    loop {
+        let tok = p.peek_token(i);
+        if tok.is_none() { return paren_expr(p); }
+
+        let kind = tok.unwrap().kind;
+        if kind == TokenKind::Comma || kind == TokenKind::Arrow {
+            break;
+        } else if kind == TokenKind::RParen {
+            if closed_paren {
+                return paren_expr(p);
+            } else {
+                closed_paren = true;
+            }
+        } else if kind == TokenKind::RBrace {
+            if closed_paren {
+                break;
+            } else {
+                return paren_expr(p);
+            }
+        } else if kind != TokenKind::Ident {
+            println!("Found unexpected token {}", kind);
+        }
+
+        i += 1;
+    }
+
+    let m = p.start();
+
+    let params_m = p.start();
+
+    p.bump();
+
+    while p.at(TokenKind::Ident) {
+        p.bump();
+
+        if p.at_ahead(TokenKind::Ident) {
+            p.expect(TokenKind::Comma);
+        } else {
+            break;
+        }
+    }
+    p.expect(TokenKind::RParen);
+
+    params_m.complete(p, SyntaxKind::Params);
+
+    if p.at(TokenKind::Arrow) {
+        p.bump();
+    }
+
+    if p.at(TokenKind::LBrace) {
+        block_expr(p);
+    } else {
+        p.error(false);
+    }
+
+    m.complete(p, SyntaxKind::LambdaExpr)
 }
 
 fn block_expr(p: &mut Parser) -> CompletedMarker {
@@ -291,10 +376,10 @@ mod tests {
                       InfixExpr@2..5
                         IntLiteral@2..3
                           Number@2..3 "2"
-                        Star@3..4 "*"
+                        Asterisk@3..4 "*"
                         IntLiteral@4..5
                           Number@4..5 "3"
-                    Minus@5..6 "-"
+                    Hyphen@5..6 "-"
                     IntLiteral@6..7
                       Number@6..7 "4"
                   Semicolon@7..8 ";""#]],
@@ -308,7 +393,7 @@ mod tests {
             expect![[r#"
                 Root@0..4
                   PrefixExpr@0..3
-                    Minus@0..1 "-"
+                    Hyphen@0..1 "-"
                     IntLiteral@1..3
                       Number@1..3 "10"
                   Semicolon@3..4 ";""#]],
@@ -337,7 +422,7 @@ mod tests {
                 Root@0..7
                   InfixExpr@0..6
                     PrefixExpr@0..3
-                      Minus@0..1 "-"
+                      Hyphen@0..1 "-"
                       IntLiteral@1..3
                         Number@1..3 "20"
                     Plus@3..4 "+"
@@ -386,7 +471,7 @@ mod tests {
                   InfixExpr@0..7
                     IntLiteral@0..1
                       Number@0..1 "5"
-                    Star@1..2 "*"
+                    Asterisk@1..2 "*"
                     ParenExpr@2..7
                       LParen@2..3 "("
                       InfixExpr@3..6
@@ -416,7 +501,7 @@ mod tests {
                     InfixExpr@7..12
                       IntLiteral@7..8
                         Number@7..8 "2"
-                      Star@8..9 "*"
+                      Asterisk@8..9 "*"
                       Whitespace@9..10 " "
                       IntLiteral@10..12
                         Number@10..11 "3"
@@ -436,7 +521,7 @@ mod tests {
                     VariableRef@1..4
                       Ident@1..4 "foo"
                   Semicolon@4..5 ";"
-                error at 4..5: expected '+', '-', '*', '/' or ')', but found ';'"#]],
+                error at 4..5: expected '(', '+', '-', '*', '/' or ')', but found ';'"#]],
         );
     }
 
@@ -527,7 +612,7 @@ mod tests {
     #[test]
     fn parse_block_with_number_error() {
         check(
-            r#"{42}"#,
+            "{42}",
             expect![[r#"
             Root@0..4
               BlockExpr@0..4
@@ -543,7 +628,7 @@ mod tests {
     #[test]
     fn parse_block_with_inner_error() {
         check(
-            r#"{{}}"#,
+            "{{}}",
             expect![[r#"
             Root@0..4
               BlockExpr@0..4
@@ -554,6 +639,152 @@ mod tests {
                 RBrace@3..4 "}"
             error at 3..4: expected ';', but found '}'
             error at 3..4: expected ';'"#]],
+        );
+    }
+
+    #[test]
+    fn parse_empty_lambda() {
+        check(
+            "() {};",
+            expect![[r#"
+            Root@0..6
+              LambdaExpr@0..5
+                Params@0..3
+                  LParen@0..1 "("
+                  RParen@1..2 ")"
+                  Whitespace@2..3 " "
+                BlockExpr@3..5
+                  LBrace@3..4 "{"
+                  RBrace@4..5 "}"
+              Semicolon@5..6 ";""#]],
+        );
+    }
+
+    #[test]
+    fn parse_lambda_one_param() {
+        check(
+            "(x) {};",
+            expect![[r#"
+            Root@0..7
+              LambdaExpr@0..6
+                Params@0..4
+                  LParen@0..1 "("
+                  Ident@1..2 "x"
+                  RParen@2..3 ")"
+                  Whitespace@3..4 " "
+                BlockExpr@4..6
+                  LBrace@4..5 "{"
+                  RBrace@5..6 "}"
+              Semicolon@6..7 ";""#]],
+        );
+    }
+
+    #[test]
+    fn parse_lambda_multiple_param() {
+        check(
+            "(x, y, z, w) {};",
+            expect![[r#"
+            Root@0..16
+              LambdaExpr@0..15
+                Params@0..13
+                  LParen@0..1 "("
+                  Ident@1..2 "x"
+                  Comma@2..3 ","
+                  Whitespace@3..4 " "
+                  Ident@4..5 "y"
+                  Comma@5..6 ","
+                  Whitespace@6..7 " "
+                  Ident@7..8 "z"
+                  Comma@8..9 ","
+                  Whitespace@9..10 " "
+                  Ident@10..11 "w"
+                  RParen@11..12 ")"
+                  Whitespace@12..13 " "
+                BlockExpr@13..15
+                  LBrace@13..14 "{"
+                  RBrace@14..15 "}"
+              Semicolon@15..16 ";""#]],
+        );
+    }
+
+    #[test]
+    fn parse_lambda_end_at_comma() {
+        check(
+            "(x,",
+            expect![[r#"
+            Root@0..3
+              LambdaExpr@0..3
+                Params@0..3
+                  LParen@0..1 "("
+                  Ident@1..2 "x"
+                  Error@2..3
+                    Comma@2..3 ","
+            error at 2..3: expected ')', but found ','
+            error at 2..3: expected '->' or '{'
+            error at 2..3: expected ';'"#]],
+        );
+    }
+
+    #[test]
+    fn parse_lambda_end_at_arrow() {
+        check(
+            "() ->",
+            expect![[r#"
+            Root@0..5
+              LambdaExpr@0..5
+                Params@0..3
+                  LParen@0..1 "("
+                  RParen@1..2 ")"
+                  Whitespace@2..3 " "
+                Arrow@3..5 "->"
+            error at 3..5: expected '{'
+            error at 3..5: expected ';'"#]],
+        );
+    }
+
+    #[test]
+    fn parse_call() {
+        check(
+            "foo();",
+            expect![[r#"
+            Root@0..6
+              VariableCall@0..5
+                Ident@0..3 "foo"
+                Params@3..5
+                  LParen@3..4 "("
+                  RParen@4..5 ")"
+              Semicolon@5..6 ";""#]],
+        );
+    }
+
+    #[test]
+    fn parse_call_with_args() {
+        check(
+            r#"bar(42, "hello", 7 * 6);"#,
+            expect![[r#"
+            Root@0..24
+              VariableCall@0..23
+                Ident@0..3 "bar"
+                Params@3..23
+                  LParen@3..4 "("
+                  IntLiteral@4..6
+                    Number@4..6 "42"
+                  Comma@6..7 ","
+                  Whitespace@7..8 " "
+                  StringLiteral@8..15
+                    StringContents@8..15 "\"hello\""
+                  Comma@15..16 ","
+                  Whitespace@16..17 " "
+                  InfixExpr@17..22
+                    IntLiteral@17..19
+                      Number@17..18 "7"
+                      Whitespace@18..19 " "
+                    Asterisk@19..20 "*"
+                    Whitespace@20..21 " "
+                    IntLiteral@21..22
+                      Number@21..22 "6"
+                  RParen@22..23 ")"
+              Semicolon@23..24 ";""#]],
         );
     }
 }

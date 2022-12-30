@@ -41,7 +41,15 @@ pub enum Expr {
     VariableRef {
         var: SmolStr,
     },
+    VariableCall {
+        var: SmolStr,
+        args: Option<Vec<ExprIdx>>,
+    },
     Block {
+        stmts: Option<StmtsIdx>,
+    },
+    Lambda {
+        params: Option<Vec<SmolStr>>,
         stmts: Option<StmtsIdx>,
     },
     Missing,

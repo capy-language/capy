@@ -61,7 +61,9 @@ pub enum Expr {
     ParenExpr(ParenExpr),
     UnaryExpr(UnaryExpr),
     VariableRef(VariableRef),
+    VariableCall(VariableCall),
     BlockExpr(BlockExpr),
+    LambdaExpr(LambdaExpr),
 }
 
 // * Remember to add new expressions to this function for ast.
@@ -74,7 +76,9 @@ impl Expr {
             SyntaxKind::ParenExpr => Self::ParenExpr(ParenExpr(node)),
             SyntaxKind::PrefixExpr => Self::UnaryExpr(UnaryExpr(node)),
             SyntaxKind::VariableRef => Self::VariableRef(VariableRef(node)),
+            SyntaxKind::VariableCall => Self::VariableCall(VariableCall(node)),
             SyntaxKind::BlockExpr => Self::BlockExpr(BlockExpr(node)),
+            SyntaxKind::LambdaExpr => Self::LambdaExpr(LambdaExpr(node)),
             _ => return None,
         };
 
@@ -101,7 +105,7 @@ impl BinaryExpr {
             .find(|token| {
                 matches!(
                     token.kind(),
-                    SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash,
+                    SyntaxKind::Plus | SyntaxKind::Hyphen | SyntaxKind::Asterisk | SyntaxKind::Slash,
                 )
             })
     }
@@ -162,7 +166,7 @@ impl UnaryExpr {
         self.0
             .children_with_tokens()
             .filter_map(SyntaxElement::into_token)
-            .find(|token| token.kind() == SyntaxKind::Minus ||
+            .find(|token| token.kind() == SyntaxKind::Hyphen ||
                 token.kind() == SyntaxKind::Plus)
     }
 }
@@ -177,11 +181,56 @@ impl VariableRef {
 }
 
 #[derive(Debug)]
+pub struct VariableCall(SyntaxNode);
+
+impl VariableCall {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0.first_token()
+    }
+
+    pub fn args(&self) -> Option<impl Iterator<Item = Expr>> {
+        self.0
+            .children()
+            .find(|node| node.kind() == SyntaxKind::Params)
+            .map_or(None, |node| 
+                Some(node
+                    .children()
+                    .filter_map(Expr::cast)))
+    }
+}
+
+#[derive(Debug)]
 pub struct BlockExpr(SyntaxNode);
 
 impl BlockExpr {
     pub fn stmts(&self) -> impl Iterator<Item = Stmt> {
         self.0.children().filter_map(Stmt::cast)
+    }
+}
+
+#[derive(Debug)]
+pub struct LambdaExpr(SyntaxNode);
+
+impl LambdaExpr {
+    pub fn params(&self) -> Option<impl Iterator<Item = SyntaxToken>> {
+        self.0
+            .children()
+            .find(|node| node.kind() == SyntaxKind::Params)
+            .map_or(None, |node| 
+                Some(node
+                    .children_with_tokens()
+                    .filter_map(SyntaxElement::into_token)
+                    .filter(|token| token.kind() == SyntaxKind::Ident)))
+    }
+
+    pub fn stmts(&self) -> Option<impl Iterator<Item = Stmt>> {
+        self.0
+            .children()
+            .find(|node| node.kind() == SyntaxKind::BlockExpr)
+            .map_or(None, |node| 
+                Some(node
+                    .children()
+                    .filter_map(Stmt::cast)))
     }
 }
 
@@ -206,6 +255,20 @@ mod tests {
     #[test]
     fn ast_block() {
         let root = Root::cast(parser::parse(r#"{42;};"#).syntax()).unwrap();
+        let ast = root.stmts().next();
+        assert!(ast.is_some());
+    }
+
+    #[test]
+    fn ast_lambda() {
+        let root = Root::cast(parser::parse(r#"(x, y, z) { name = "foo"; };"#).syntax()).unwrap();
+        let ast = root.stmts().next();
+        assert!(ast.is_some());
+    }
+
+    #[test]
+    fn ast_call() {
+        let root = Root::cast(parser::parse("foo();").syntax()).unwrap();
         let ast = root.stmts().next();
         assert!(ast.is_some());
     }
