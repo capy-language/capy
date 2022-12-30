@@ -1,4 +1,3 @@
-use std::os::windows::fs::FileTypeExt;
 
 use crate::{BinaryOp, Expr, Stmt, UnaryOp, ExprIdx};
 use la_arena::Arena;

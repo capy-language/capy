@@ -120,6 +120,7 @@ impl<'t, 'input> Parser<'t, 'input> {
         self.expected_kinds.clear();
     }
 
+    #[allow(dead_code)]
     pub(crate) fn debug_kinds(&mut self) {
         self.source.debug_print();
     }
