@@ -11,6 +11,8 @@ pub(crate) fn stmt(p: &mut Parser) -> Option<CompletedMarker> {
 
     let res = if p.at(TokenKind::Ident) {
         variable_def(p) // function itself handles variable refs
+    } else if p.at(TokenKind::Return) {
+        return_val(p)
     } else {
         p.clear(); // clear the ident check above
         expr::expr(p)
@@ -22,6 +24,19 @@ pub(crate) fn stmt(p: &mut Parser) -> Option<CompletedMarker> {
         p.expect(TokenKind::Semicolon);
     }
     res
+}
+
+fn return_val(p: &mut Parser) -> Option<CompletedMarker> {
+    assert!(p.at(TokenKind::Return));
+
+    let m = p.start();
+    p.bump();
+
+    if !p.at(TokenKind::Semicolon) {
+        expr::expr(p);
+    }
+
+    Some(m.complete(p, SyntaxKind::Return))
 }
 
 fn variable_def(p: &mut Parser) -> Option<CompletedMarker> {

@@ -10,6 +10,9 @@ pub enum TokenKind {
     #[regex("[ \r\n]+")]
     Whitespace,
 
+    #[token("return")]
+    Return,
+
     #[regex("[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
@@ -72,6 +75,7 @@ impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Whitespace => "whitespace",
+            Self::Return => "return",
             Self::Ident => "identifier",
             Self::Number => "number",
             Self::Plus => "'+'",

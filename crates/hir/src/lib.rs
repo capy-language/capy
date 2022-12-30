@@ -18,6 +18,7 @@ pub fn lower(ast: ast::Root) -> (Database, Vec<Stmt>) {
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     VariableDef { name: SmolStr, value: Expr },
+    Return { value: Option<Expr> },
     Expr(Expr),
 }
 

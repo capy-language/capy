@@ -16,6 +16,9 @@ impl Database {
                 name: ast.name()?.text().into(),
                 value: self.lower_expr(ast.value()),
             },
+            ast::Stmt::Return(ast) => Stmt::Return { 
+                value: ast.value().and_then(|val| Some(self.lower_expr(Some(val)))),
+            },
             ast::Stmt::Expr(ast) => Stmt::Expr(self.lower_expr(Some(ast))),
         };
 
@@ -421,6 +424,26 @@ mod tests {
                 args: Some(vec![bar, mul])
             },
             Database { exprs, blocks },
+        );
+    }
+
+    #[test]
+    fn lower_return() {
+        check_stmt(
+            "return;",
+            Stmt::Return { 
+                value: None 
+            }
+        );
+    }
+
+    #[test]
+    fn lower_return_value() {
+        check_stmt(
+            "return 5;",
+            Stmt::Return { 
+                value: Some(Expr::IntLiteral { n: Some(5) })
+            }
         );
     }
 }

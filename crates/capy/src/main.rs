@@ -26,14 +26,17 @@ fn main() -> io::Result<()> {
 
         let root = ast::Root::cast(syntax).unwrap();
 
-        dbg!(root
+        let ast_vals = root
             .stmts()
             .filter_map(|stmt| if let ast::Stmt::VariableDef(var_def) = stmt {
                 Some(var_def.value())
+            } else if let ast::Stmt::Return(ret) = stmt {
+                Some(ret.value())
             } else {
                 None
             })
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>();
+        dbg!(ast_vals);
 
         dbg!(hir::lower(root));
 

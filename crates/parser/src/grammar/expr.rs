@@ -193,7 +193,7 @@ fn lambda_expr(p: &mut Parser) -> CompletedMarker {
             } else {
                 closed_paren = true;
             }
-        } else if kind == TokenKind::RBrace {
+        } else if kind == TokenKind::LBrace || kind == TokenKind::RBrace {
             if closed_paren {
                 break;
             } else {

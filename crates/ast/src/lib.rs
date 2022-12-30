@@ -23,6 +23,7 @@ impl Root {
 #[derive(Debug)]
 pub enum Stmt {
     VariableDef(VariableDef),
+    Return(Return),
     Expr(Expr),
 }
 
@@ -30,6 +31,7 @@ impl Stmt {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         let result = match node.kind() {
             SyntaxKind::VariableDef => Self::VariableDef(VariableDef(node)),
+            SyntaxKind::Return => Self::Return(Return(node)),
             _ => Self::Expr(Expr::cast(node)?),
         };
 
@@ -48,6 +50,15 @@ impl VariableDef {
             .find(|token| token.kind() == SyntaxKind::Ident)
     }
 
+    pub fn value(&self) -> Option<Expr> {
+        self.0.children().find_map(Expr::cast)
+    }
+}
+
+#[derive(Debug)]
+pub struct Return(SyntaxNode);
+
+impl Return {
     pub fn value(&self) -> Option<Expr> {
         self.0.children().find_map(Expr::cast)
     }

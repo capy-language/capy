@@ -8,6 +8,7 @@ pub enum SyntaxKind {
     Whitespace,
     Ident,
     Number,
+    StringContents,
     Plus,
     Hyphen,
     Asterisk,
@@ -24,17 +25,17 @@ pub enum SyntaxKind {
     Root,
     InfixExpr,
     IntLiteral,
+    StringLiteral,
     ParenExpr,
     BlockExpr,
     Params,
     LambdaExpr,
     PrefixExpr,
+    Return,
     VariableDef,
     VariableRef,
     VariableCall,
     Semicolon,
-    StringLiteral,
-    StringContents,
 }
 
 impl From<TokenKind> for SyntaxKind {
@@ -59,6 +60,7 @@ impl From<TokenKind> for SyntaxKind {
             TokenKind::Error => Self::Error,
             TokenKind::Semicolon => Self::Semicolon,
             TokenKind::String => Self::StringContents,
+            TokenKind::Return => Self::Return,
         }
     }
 }
