@@ -1,0 +1,12 @@
+{42};
+===
+Root@0..5
+  ExprStmt@0..4
+    Block@0..4
+      LBrace@0..1 "{"
+      ExprStmt@1..3
+        IntLiteral@1..3
+          Int@1..3 "42"
+      RBrace@3..4 "}"
+  Semicolon@4..5 ";"
+error at 3: missing Semicolon

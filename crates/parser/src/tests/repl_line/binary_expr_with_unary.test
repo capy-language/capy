@@ -1,0 +1,13 @@
+-20+20;
+===
+Root@0..7
+  ExprStmt@0..6
+    BinaryExpr@0..6
+      UnaryExpr@0..3
+        Hyphen@0..1 "-"
+        IntLiteral@1..3
+          Int@1..3 "20"
+      Plus@3..4 "+"
+      IntLiteral@4..6
+        Int@4..6 "20"
+  Semicolon@6..7 ";"

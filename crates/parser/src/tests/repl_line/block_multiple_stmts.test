@@ -1,0 +1,24 @@
+{42;a=5;"foo";};
+===
+Root@0..16
+  ExprStmt@0..15
+    Block@0..15
+      LBrace@0..1 "{"
+      ExprStmt@1..3
+        IntLiteral@1..3
+          Int@1..3 "42"
+      Semicolon@3..4 ";"
+      VarDef@4..7
+        Ident@4..5 "a"
+        Equals@5..6 "="
+        IntLiteral@6..7
+          Int@6..7 "5"
+      Semicolon@7..8 ";"
+      ExprStmt@8..13
+        StringLiteral@8..13
+          Quote@8..9 "\""
+          StringContents@9..12 "foo"
+          Quote@12..13 "\""
+      Semicolon@13..14 ";"
+      RBrace@14..15 "}"
+  Semicolon@15..16 ";"

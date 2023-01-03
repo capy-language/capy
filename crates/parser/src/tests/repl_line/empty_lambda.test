@@ -1,0 +1,13 @@
+() {};
+===
+Root@0..6
+  ExprStmt@0..5
+    Lambda@0..5
+      ParamList@0..2
+        LParen@0..1 "("
+        RParen@1..2 ")"
+      Whitespace@2..3 " "
+      Block@3..5
+        LBrace@3..4 "{"
+        RBrace@4..5 "}"
+  Semicolon@5..6 ";"

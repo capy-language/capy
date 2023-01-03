@@ -1,0 +1,8 @@
+"";
+===
+Root@0..3
+  ExprStmt@0..2
+    StringLiteral@0..2
+      Quote@0..1 "\""
+      Quote@1..2 "\""
+  Semicolon@2..3 ";"

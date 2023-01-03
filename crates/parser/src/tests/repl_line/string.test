@@ -1,0 +1,9 @@
+"Hello, World!";
+===
+Root@0..16
+  ExprStmt@0..15
+    StringLiteral@0..15
+      Quote@0..1 "\""
+      StringContents@1..14 "Hello, World!"
+      Quote@14..15 "\""
+  Semicolon@15..16 ";"

@@ -1,0 +1,8 @@
+foo;
+===
+Root@0..4
+  ExprStmt@0..3
+    Ref@0..3
+      Path@0..3
+        Ident@0..3 "foo"
+  Semicolon@3..4 ";"

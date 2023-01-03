@@ -1,71 +1,45 @@
+mod body;
+mod index;
+mod nameres;
+mod world_index;
 
-mod database;
-pub use database::Database;
+pub use index::*;
+pub use body::*;
+pub use world_index::*;
 
+use interner::{Key, Interner};
 use la_arena::Idx;
 use smol_str::SmolStr;
+use syntax::SyntaxTree;
 
-type StmtsIdx = Idx<Vec<Stmt>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Name(pub Key);
 
-type ExprIdx = Idx<Expr>;
-
-pub fn lower(ast: ast::Root) -> (Database, Vec<Stmt>) {
-    let mut db = Database::default();
-    let stmts = ast.stmts().filter_map(|stmt| db.lower_stmt(stmt)).collect();
-    (db, stmts) 
+// short for Fully Qualified Name
+// not only the name of whatever we're referring to, but also the module it's contained in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fqn {
+    pub module: Name,
+    pub name: Name,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Stmt {
-    VariableDef { name: SmolStr, value: Expr },
-    Return { value: Option<Expr> },
-    Expr(Expr),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Type {
+    Unknown,
+    S32,
+    String,
+    Named(Name),
+    Void,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Expr {
-    Binary {
-        op: BinaryOp,
-        lhs: ExprIdx,
-        rhs: ExprIdx,
-    },
-    IntLiteral {
-        n: Option<u64>,
-    },
-    StringLiteral {
-        s: SmolStr,
-    },
-    Unary {
-        op: UnaryOp,
-        expr: ExprIdx,
-    },
-    VariableRef {
-        var: SmolStr,
-    },
-    VariableCall {
-        var: SmolStr,
-        args: Option<Vec<ExprIdx>>,
-    },
-    Block {
-        stmts: Option<StmtsIdx>,
-    },
-    Lambda {
-        params: Option<Vec<SmolStr>>,
-        stmts: Option<StmtsIdx>,
-    },
-    Missing,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum BinaryOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum UnaryOp {
-    Neg,
-    Pos,
+impl Type {
+    pub fn display(self, interner: &Interner) -> &str {
+        match self {
+            Self::Unknown => "?",
+            Self::S32 => "s32",
+            Self::String => "string",
+            Self::Named(n) => interner.lookup(n.0),
+            Self::Void => "void",
+        }
+    }
 }

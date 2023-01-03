@@ -8,8 +8,11 @@ edition = "2021"
 [dependencies]
 ast = {path = "../ast"}
 la-arena = "0.2.0"
+interner = {path = "../interner"}
+rustc-hash = "1.1"
 smol_str = "0.1.17"
 syntax = {path = "../syntax"}
+text-size = "1.1"
 
 [dev-dependencies]
 parser = {path = "../parser"}

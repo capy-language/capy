@@ -1,0 +1,10 @@
+(123);
+===
+Root@0..6
+  ExprStmt@0..5
+    ParenExpr@0..5
+      LParen@0..1 "("
+      IntLiteral@1..4
+        Int@1..4 "123"
+      RParen@4..5 ")"
+  Semicolon@5..6 ";"

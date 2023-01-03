@@ -1,13 +1,29 @@
+use std::mem;
 
-use lexer::TokenKind;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+pub type SyntaxBuilder = eventree::SyntaxBuilder<TreeConfig>;
+pub type SyntaxElement = eventree::SyntaxElement<TreeConfig>;
+pub type SyntaxNode = eventree::SyntaxNode<TreeConfig>;
+pub type SyntaxToken = eventree::SyntaxToken<TreeConfig>;
+pub type SyntaxTree = eventree::SyntaxTree<TreeConfig>;
+pub type Event = eventree::Event<TreeConfig>;
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-pub enum SyntaxKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TreeConfig {}
+
+impl eventree::TreeConfig for TreeConfig {
+    type NodeKind = NodeKind;
+    type TokenKind = TokenKind;
+}
+
+// ! This enum must match up exactly with the contents of lexer::LexerTokenKind
+// ! The source of a really horrible bug
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TokenKind {
     Whitespace,
     Ident,
-    Number,
+    Int,
+    Quote,
+    Escape,
     StringContents,
     Plus,
     Hyphen,
@@ -15,71 +31,62 @@ pub enum SyntaxKind {
     Slash,
     Equals,
     Comma,
+    Dot,
     Arrow,
     LParen,
     RParen,
     LBrace,
     RBrace,
-    Comment,
-    Error,
+    Return,
+    CommentLeader,
+    CommentContents,
+    Colon,
+    Semicolon,
+    Error
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NodeKind {
     Root,
-    InfixExpr,
+    Ref,
+    Call,
+    ArgList,
+    Arg,
+    Block,
     IntLiteral,
     StringLiteral,
+    BinaryExpr,
+    UnaryExpr,
     ParenExpr,
-    BlockExpr,
-    Params,
-    LambdaExpr,
-    PrefixExpr,
-    Return,
-    VariableDef,
-    VariableRef,
-    VariableCall,
-    Semicolon,
+    VarDef,
+    ReturnFlow,
+    ExprStmt,
+    Lambda,
+    ParamList,
+    Param,
+    ReturnType,
+    Type,
+    Path,
+    Comment,
+    Error,
 }
 
-impl From<TokenKind> for SyntaxKind {
-    fn from(token_kind: TokenKind) -> Self {
-        match token_kind {
-            TokenKind::Whitespace => Self::Whitespace,
-            TokenKind::Ident => Self::Ident,
-            TokenKind::Number => Self::Number,
-            TokenKind::Plus => Self::Plus,
-            TokenKind::Hyphen => Self::Hyphen,
-            TokenKind::Asterisk => Self::Asterisk,
-            TokenKind::Slash => Self::Slash,
-            TokenKind::Equals => Self::Equals,
-            TokenKind::Dot => unimplemented!(),
-            TokenKind::Comma => Self::Comma,
-            TokenKind::Arrow => Self::Arrow,
-            TokenKind::LParen => Self::LParen,
-            TokenKind::RParen => Self::RParen,
-            TokenKind::LBrace => Self::LBrace,
-            TokenKind::RBrace => Self::RBrace,
-            TokenKind::Comment => Self::Comment,
-            TokenKind::Error => Self::Error,
-            TokenKind::Semicolon => Self::Semicolon,
-            TokenKind::String => Self::StringContents,
-            TokenKind::Return => Self::Return,
-        }
+unsafe impl eventree::SyntaxKind for TokenKind {
+    fn to_raw(self) -> u16 {
+        self as u16
+    }
+
+    unsafe fn from_raw(raw: u16) -> Self {
+        mem::transmute(raw as u8)
     }
 }
 
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, PartialEq, Eq, Hash)]
-pub enum CapyLanguage {}
-
-impl rowan::Language for CapyLanguage {
-    type Kind = SyntaxKind;
-
-    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        Self::Kind::from_u16(raw.0).unwrap()
+unsafe impl eventree::SyntaxKind for NodeKind {
+    fn to_raw(self) -> u16 {
+        self as u16
     }
 
-    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
-        rowan::SyntaxKind(kind.to_u16().unwrap())
+    unsafe fn from_raw(raw: u16) -> Self {
+        mem::transmute(raw as u8)
     }
 }
-
-pub type SyntaxNode = rowan::SyntaxNode<CapyLanguage>;
-pub type SyntaxToken = rowan::SyntaxToken<CapyLanguage>;
-pub type SyntaxElement = rowan::SyntaxElement<CapyLanguage>;

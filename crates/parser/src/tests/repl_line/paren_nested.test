@@ -1,0 +1,25 @@
+((((((10))))));
+===
+Root@0..15
+  ExprStmt@0..14
+    ParenExpr@0..14
+      LParen@0..1 "("
+      ParenExpr@1..13
+        LParen@1..2 "("
+        ParenExpr@2..12
+          LParen@2..3 "("
+          ParenExpr@3..11
+            LParen@3..4 "("
+            ParenExpr@4..10
+              LParen@4..5 "("
+              ParenExpr@5..9
+                LParen@5..6 "("
+                IntLiteral@6..8
+                  Int@6..8 "10"
+                RParen@8..9 ")"
+              RParen@9..10 ")"
+            RParen@10..11 ")"
+          RParen@11..12 ")"
+        RParen@12..13 ")"
+      RParen@13..14 ")"
+  Semicolon@14..15 ";"

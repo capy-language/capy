@@ -1,49 +1,45 @@
 
+mod path;
 mod expr;
 mod stmt;
+mod types;
+
+use syntax::{NodeKind, TokenKind};
 
 use crate::parser::marker::CompletedMarker;
 use crate::parser::Parser;
-use syntax::SyntaxKind;
 
-pub(crate) fn root(p: &mut Parser) -> CompletedMarker {
+pub(crate) fn source_file(p: &mut Parser<'_>) {
     let m = p.start();
 
-    while !p.at_end() {
-        if stmt::stmt(p).is_none() {
-            if p.at_end() {
+    while !p.at_eof() {
+        if stmt::stmt_def_only(p).is_none() {
+            if p.at_eof() {
                 break;
             }
-            p.error(true);
+            let _guard = p.expected_syntax_name("definition");
+            p.error_with_skip();
         }
     }
 
-    m.complete(p, SyntaxKind::Root)
+    m.complete(p, NodeKind::Root);
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::check;
-    use expect_test::expect;
+pub(crate) fn repl_line(p: &mut Parser<'_>) {
+    let m = p.start();
 
-    #[test]
-    fn parse_multiple_statements() {
-        check(
-            "a = 1;\na;",
-            expect![[r#"
-                Root@0..9
-                  VariableDef@0..5
-                    Ident@0..1 "a"
-                    Whitespace@1..2 " "
-                    Equals@2..3 "="
-                    Whitespace@3..4 " "
-                    IntLiteral@4..5
-                      Number@4..5 "1"
-                  Semicolon@5..6 ";"
-                  Whitespace@6..7 "\n"
-                  VariableRef@7..8
-                    Ident@7..8 "a"
-                  Semicolon@8..9 ";""#]],
-        );
+    while !p.at_eof() {
+        if p.at(TokenKind::RBrace) || p.at(TokenKind::Semicolon) {
+            let _guard = p.expected_syntax_name("definition or statement");
+            p.error_without_skip();
+        } else if stmt::stmt(p).is_none() {
+            if p.at_eof() {
+                break;
+            }
+            let _guard = p.expected_syntax_name("definition or statement");
+            p.error_with_skip();
+        }
     }
+
+    m.complete(p, NodeKind::Root);
 }

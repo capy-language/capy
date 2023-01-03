@@ -1,15 +1,10 @@
+use syntax::NodeKind;
 
-use syntax::SyntaxKind;
-use crate::parser::ParseError;
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Event {
-    StartNode {
-        kind: SyntaxKind,
-        forward_parent: Option<usize>,
-    },
-    AddToken,
+    StartNode { kind: NodeKind },
     FinishNode,
-    Error(ParseError),
-    Placeholder,
+    AddToken,
 }
+
+static_assertions::assert_eq_size!(Event, Option<Event>, u8);

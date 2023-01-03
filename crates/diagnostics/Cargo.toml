@@ -1,0 +1,19 @@
+[package]
+name = "diagnostics"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ast = {path = "../ast"}
+hir = {path = "../hir"}
+interner = {path = "../interner"}
+line_index = {path = "../line_index"}
+parser = {path = "../parser"}
+syntax = {path = "../syntax"}
+text-size = "1.1"
+
+
+[dev-dependencies]
+expect-test = "1.1"

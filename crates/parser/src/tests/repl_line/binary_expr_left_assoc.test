@@ -1,0 +1,19 @@
+1+2+3+4;
+===
+Root@0..8
+  ExprStmt@0..7
+    BinaryExpr@0..7
+      BinaryExpr@0..5
+        BinaryExpr@0..3
+          IntLiteral@0..1
+            Int@0..1 "1"
+          Plus@1..2 "+"
+          IntLiteral@2..3
+            Int@2..3 "2"
+        Plus@3..4 "+"
+        IntLiteral@4..5
+          Int@4..5 "3"
+      Plus@5..6 "+"
+      IntLiteral@6..7
+        Int@6..7 "4"
+  Semicolon@7..8 ";"

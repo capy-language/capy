@@ -1,76 +1,51 @@
 
-use crate::IntLiteral;
-use std::fmt;
-use syntax::SyntaxNode;
+use crate::{AstNode, ParenExpr};
+use syntax::SyntaxTree;
 use text_size::TextRange;
 
-#[derive(Debug, PartialEq)]
-pub struct ValidationError {
-    kind: ValidationErrorKind,
-    range: TextRange,
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "error at {}..{}: {}",
-            u32::from(self.range.start()),
-            u32::from(self.range.end()),
-            self.kind,
-        )
-    }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValidationDiagnostic {
+    pub kind: ValidationDiagnosticKind,
+    pub range: TextRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum ValidationErrorKind {
+pub enum ValidationDiagnosticKind {
+    UnneededParens,
     NumberLiteralTooLarge,
 }
 
-impl fmt::Display for ValidationErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NumberLiteralTooLarge => write!(
-                f,
-                "number literal is larger than an integer's maximum value, {}",
-                u64::MAX,
-            ),
-        }
-    }
-}
-
-pub fn validate(node: &SyntaxNode) -> Vec<ValidationError> {
+pub fn validate(ast: impl AstNode, tree: &SyntaxTree) -> Vec<ValidationDiagnostic> {
     let mut errors = Vec::new();
 
-    for node in node.descendants() {
-        if let Some(literal) = IntLiteral::cast(node) {
-            validate_literal(literal, &mut errors);
+    for node in ast.syntax().descendant_nodes(tree) {
+        if let Some(paren) = ParenExpr::cast(node, tree) {
+            if paren.expr(tree).is_none() {
+                errors.push(ValidationDiagnostic { 
+                    kind: ValidationDiagnosticKind::UnneededParens, 
+                    range: paren.0.range(tree),
+                });
+            }
         }
     }
 
     errors
 }
 
-fn validate_literal(literal: IntLiteral, errors: &mut Vec<ValidationError>) {
-    if literal.parse().is_none() {
-        errors.push(ValidationError { 
-            kind: ValidationErrorKind::NumberLiteralTooLarge, 
-            range: literal.0.first_token().unwrap().text_range() ,
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::Root;
+
     use super::*;
     use std::ops::Range as StdRange;
 
-    fn check(input: &str, expected_errors: &[(ValidationErrorKind, StdRange<u32>)]) {
-        let parse = parser::parse(input);
-
-        let expected_errors: Vec<_> = expected_errors
+    fn check_source_file<const LEN: usize>(
+        input: &str, 
+        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
+    ) {
+        let diagnostics: Vec<_> = diagnostics
             .iter()
-            .map(|(kind, range)| ValidationError {
+            .map(|(kind, range)| ValidationDiagnostic {
                 kind: *kind,
                 range: {
                     let start = range.start.into();
@@ -80,20 +55,57 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(validate(&parse.syntax()), expected_errors);
+        let tree = parser::parse_source_file(&lexer::lex(input), input).into_syntax_tree();
+        let root = Root::cast(tree.root(), &tree).unwrap();
+
+        assert_eq!(validate(root, &tree), diagnostics);
+    }
+
+    fn check_repl_line<const LEN: usize>(
+        input: &str, 
+        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
+    ) {
+        let diagnostics: Vec<_> = diagnostics
+            .iter()
+            .map(|(kind, range)| ValidationDiagnostic {
+                kind: *kind,
+                range: {
+                    let start = range.start.into();
+                    let end = range.end.into();
+                    TextRange::new(start, end)
+                }
+            })
+            .collect();
+
+        let tree = parser::parse_repl_line(&lexer::lex(input), input).into_syntax_tree();
+        let root = Root::cast(tree.root(), &tree).unwrap();
+
+        assert_eq!(validate(root, &tree), diagnostics);
     }
 
     #[test]
-    fn validate_ok_literal() {
-        check("123", &[]);
+    fn validate_correct_repl() {
+        check_repl_line("a = 42; a - 5 * 10;", []);
     }
 
     #[test]
-    fn validate_too_large_literal() {
-        check(
-            "99999999999999999999",
-            &[(ValidationErrorKind::NumberLiteralTooLarge, (0..20),
-            )],
+    fn validate_correct_source() {
+        check_repl_line("a = 42; main = () {};", []);
+    }
+
+    #[test]
+    fn validate_u32_max() {
+        check_repl_line(
+            "4294967295",
+            [],
+        );
+    }
+
+    #[test]
+    fn validate_unneeded_parens() {
+        check_repl_line(
+            "( )",
+            [(ValidationDiagnosticKind::UnneededParens, (0..3))],
         );
     }
 }

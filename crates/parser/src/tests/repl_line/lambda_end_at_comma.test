@@ -1,0 +1,19 @@
+(x: s32,
+===
+Root@0..8
+  ExprStmt@0..8
+    Lambda@0..8
+      ParamList@0..8
+        LParen@0..1 "("
+        Param@1..7
+          Ident@1..2 "x"
+          Colon@2..3 ":"
+          Whitespace@3..4 " "
+          Type@4..7
+            Path@4..7
+              Ident@4..7 "s32"
+        Error@7..8
+          Comma@7..8 ","
+error at 7..8: expected RParen but found Comma
+error at 8: missing lambda body
+error at 8: missing Semicolon

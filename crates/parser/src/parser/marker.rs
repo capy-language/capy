@@ -1,5 +1,7 @@
+use std::{mem, backtrace::{self, Backtrace}};
+
 use drop_bomb::DropBomb;
-use syntax::SyntaxKind;
+use syntax::NodeKind;
 
 use crate::event::Event;
 
@@ -18,18 +20,13 @@ impl Marker {
         }
     }
 
-    pub(crate) fn complete(mut self, p: &mut Parser, kind: SyntaxKind) -> CompletedMarker {
+    pub(crate) fn complete(mut self, p: &mut Parser<'_>, kind: NodeKind) -> CompletedMarker {
         self.bomb.defuse();
-
-        let event_at_pos = &mut p.events[self.pos];
-        assert_eq!(*event_at_pos, Event::Placeholder);
-
-        *event_at_pos = Event::StartNode {
-            kind,
-            forward_parent: None,
-        };
-
-        p.events.push(Event::FinishNode);
+        let old_event = mem::replace(&mut p.events[self.pos], Some(Event::StartNode { 
+            kind 
+        }));
+        debug_assert!(old_event.is_none());
+        p.events.push(Some(Event::FinishNode));
 
         CompletedMarker { pos: self.pos }
     }
@@ -41,18 +38,7 @@ pub(crate) struct CompletedMarker {
 
 impl CompletedMarker {
     pub(crate) fn precede(self, p: &mut Parser) -> Marker {
-        let new_m = p.start();
-
-        if let Event::StartNode {
-            ref mut forward_parent,
-            ..
-        } = p.events[self.pos]
-        {
-            *forward_parent = Some(new_m.pos - self.pos);
-        } else {
-            unreachable!();
-        }
-
-        new_m
+        p.events.insert(self.pos, None);
+        Marker::new(self.pos)
     }
 }

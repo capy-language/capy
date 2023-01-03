@@ -1,26 +1,54 @@
 
-use lexer::TokenKind;
+use syntax::TokenKind;
+
+use crate::{token_set::TokenSet, grammar::types::parse_type_annotation};
 
 use super::*;
+
+const DEF_TOKENS: TokenSet = TokenSet::new([
+    TokenKind::Equals, 
+    TokenKind::Colon,
+]);
 
 pub(crate) fn stmt(p: &mut Parser) -> Option<CompletedMarker> {
     while p.at(TokenKind::Semicolon) {
         p.bump();
     }
-    p.clear(); // clear the semicolon checks above
+
+    let _guard = p.expected_syntax_name("statement");
 
     let res = if p.at(TokenKind::Ident) {
-        variable_def(p) // function itself handles variable refs
+        parse_var_def(p) // function itself handles variable refs
     } else if p.at(TokenKind::Return) {
         return_val(p)
     } else {
-        p.clear(); // clear the ident check above
-        expr::expr(p)
+        expr::parse_expr(p, "statement")
+            .map(|expr| 
+                expr
+                    .precede(p)
+                    .complete(p, NodeKind::ExprStmt))
     };
 
     if res.is_some() {
-        // clear so the user will know that we're only looking for a semicolon at this point.
-        p.clear();
+        p.expect(TokenKind::Semicolon);
+    }
+    res
+}
+
+pub(crate) fn stmt_def_only(p: &mut Parser) -> Option<CompletedMarker> {
+    while p.at(TokenKind::Semicolon) {
+        p.bump();
+    }
+
+    let _guard = p.expected_syntax_name("definition");
+
+    let res = if p.at(TokenKind::Ident) {
+        parse_var_def(p) // function itself handles variable refs
+    } else {
+        None
+    };
+
+    if res.is_some() {
         p.expect(TokenKind::Semicolon);
     }
     res
@@ -33,90 +61,32 @@ fn return_val(p: &mut Parser) -> Option<CompletedMarker> {
     p.bump();
 
     if !p.at(TokenKind::Semicolon) {
-        expr::expr(p);
+        expr::parse_expr(p, "value");
     }
 
-    Some(m.complete(p, SyntaxKind::Return))
+    Some(m.complete(p, NodeKind::ReturnFlow))
 }
 
-fn variable_def(p: &mut Parser) -> Option<CompletedMarker> {
+fn parse_var_def(p: &mut Parser) -> Option<CompletedMarker> {
     assert!(p.at(TokenKind::Ident));
-    if !p.at_ahead(TokenKind::Equals) {
-        return expr::expr(p);
+    if !p.at_set_ahead(1, DEF_TOKENS) {
+        return expr::parse_expr(p, "statement")
+            .map(|expr| 
+                expr
+                    .precede(p)
+                    .complete(p, NodeKind::ExprStmt));
     }
 
     let m = p.start();
     p.bump();
 
-    assert!(p.at(TokenKind::Equals));
-    p.bump();
-
-    expr::expr(p);
-
-    Some(m.complete(p, SyntaxKind::VariableDef))
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::check;
-    use expect_test::expect;
-
-    #[test]
-    fn parse_variable_definition() {
-        check(
-            "foo = bar",
-            expect![[r#"
-                Root@0..9
-                  VariableDef@0..9
-                    Ident@0..3 "foo"
-                    Whitespace@3..4 " "
-                    Equals@4..5 "="
-                    Whitespace@5..6 " "
-                    VariableRef@6..9
-                      Ident@6..9 "bar"
-                error at 6..9: expected ';'"#]],
-        );
+    if p.at(TokenKind::Colon) {
+        parse_type_annotation(p, TokenSet::new([TokenKind::Equals]), "variable type");
     }
 
+    p.expect(TokenKind::Equals);
 
-    #[test]
-    fn parse_variable_definition_with_semicolon() {
-        check(
-            "foo = bar;",
-            expect![[r#"
-Root@0..10
-  VariableDef@0..9
-    Ident@0..3 "foo"
-    Whitespace@3..4 " "
-    Equals@4..5 "="
-    Whitespace@5..6 " "
-    VariableRef@6..9
-      Ident@6..9 "bar"
-  Semicolon@9..10 ";""#]],
-        );
-    }
+    expr::parse_expr(p, "value");
 
-    #[test]
-    fn recover_on_equal_sign() {
-        check(
-            "a =;\nb = a;",
-            expect![[r#"
-                Root@0..11
-                  VariableDef@0..3
-                    Ident@0..1 "a"
-                    Whitespace@1..2 " "
-                    Equals@2..3 "="
-                  Semicolon@3..4 ";"
-                  Whitespace@4..5 "\n"
-                  VariableDef@5..10
-                    Ident@5..6 "b"
-                    Whitespace@6..7 " "
-                    Equals@7..8 "="
-                    Whitespace@8..9 " "
-                    VariableRef@9..10
-                      Ident@9..10 "a"
-                  Semicolon@10..11 ";"
-                error at 3..4: expected number, string, identifier, '-', '+', '(' or '{', but found ';'"#]]
-        )
-    }
+    Some(m.complete(p, NodeKind::VarDef))
 }

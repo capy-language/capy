@@ -1,0 +1,17 @@
+foo: bar = baz;
+===
+Root@0..15
+  VarDef@0..14
+    Ident@0..3 "foo"
+    Colon@3..4 ":"
+    Whitespace@4..5 " "
+    Type@5..8
+      Path@5..8
+        Ident@5..8 "bar"
+    Whitespace@8..9 " "
+    Equals@9..10 "="
+    Whitespace@10..11 " "
+    Ref@11..14
+      Path@11..14
+        Ident@11..14 "baz"
+  Semicolon@14..15 ";"

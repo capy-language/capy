@@ -1,0 +1,7 @@
+42;
+===
+Root@0..3
+  ExprStmt@0..2
+    IntLiteral@0..2
+      Int@0..2 "42"
+  Semicolon@2..3 ";"

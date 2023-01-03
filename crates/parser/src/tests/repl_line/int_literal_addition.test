@@ -1,0 +1,13 @@
+1 + 2;
+===
+Root@0..6
+  ExprStmt@0..5
+    BinaryExpr@0..5
+      IntLiteral@0..1
+        Int@0..1 "1"
+      Whitespace@1..2 " "
+      Plus@2..3 "+"
+      Whitespace@3..4 " "
+      IntLiteral@4..5
+        Int@4..5 "2"
+  Semicolon@5..6 ";"

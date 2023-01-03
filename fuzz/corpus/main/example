@@ -3,3 +3,17 @@ bar = 20;
 a = foo + (bar * bar - (100 / 33));
 
 a * (a - 10);
+
+calc = {
+    sum = (x, y) { return x + y; };
+    mul = (x, y) { return x * y; };
+
+    do_math = (op, x, y) { return op(x, y); };
+
+    do_math(sum, 2, 3);
+    do_math(mul, 2, 3);
+
+    return {
+        return do_math(mul, 6, 7);
+    };
+};
