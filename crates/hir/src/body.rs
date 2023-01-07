@@ -8,7 +8,6 @@ use syntax::SyntaxTree;
 use text_size::TextRange;
 
 use crate::{
-    index,
     nameres::{Path, PathWithRange},
     world_index::{WorldIndex, GetDefinitionError},
     Fqn, Index, Name, Definition, Function,
@@ -485,7 +484,7 @@ impl<'a> Ctx<'a> {
             let fqn = Fqn { module: Name(module_name), name: Name(var_name) };
 
             match self.world_index.get_definition(fqn) {
-                Ok(definition) => {
+                Ok(_) => {
                     let path = PathWithRange::OtherModule {
                         fqn,
                         module_range: module_name_token.range(self.tree),
@@ -545,7 +544,7 @@ impl<'a> Ctx<'a> {
         }
 
         let name = Name(name);
-        if let Some(definition) = self.index.get_definition(name) {
+        if let Some(_) = self.index.get_definition(name) {
             let path = PathWithRange::ThisModule { name, range: ident.range(self.tree) };
 
             self.bodies.symbol_map.insert(ident, Symbol::Global(path.path()));

@@ -1,4 +1,4 @@
-use std::{mem, backtrace::{self, Backtrace}};
+use std::mem;
 
 use drop_bomb::DropBomb;
 use syntax::NodeKind;

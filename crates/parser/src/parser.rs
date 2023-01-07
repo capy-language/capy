@@ -1,7 +1,6 @@
 
 pub(crate) mod marker;
 
-use std::backtrace::Backtrace;
 use std::cell::Cell;
 use std::mem;
 use std::rc::Rc;

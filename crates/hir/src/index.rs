@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 
-use ast::{Lambda, Ident, AstToken, AstNode};
+use ast::{Ident, AstToken, AstNode};
 use interner::{Interner, Key};
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;

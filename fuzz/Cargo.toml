@@ -5,14 +5,16 @@ version = "0.1.0"
 [package.metadata]
 cargo-fuzz = true
 
+[dependencies]
+ast = {path = "../crates/ast"}
+hir = {path = "../crates/hir"}
+interner = {path = "../crates/interner"}
+lexer = {path = "../crates/lexer"}
+libfuzzer-sys = "0.4.2"
+parser = {path = "../crates/parser"}
+
 [workspace]
 
 [[bin]]
 name = "main"
 path = "fuzz_targets/main.rs"
-
-[dependencies]
-ast = {path = "../crates/ast"}
-hir = {path = "../crates/hir"}
-libfuzzer-sys = "0.3"
-parser = {path = "../crates/parser"}

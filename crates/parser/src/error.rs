@@ -39,11 +39,11 @@ impl fmt::Debug for SyntaxError {
         match self.kind {
             SyntaxErrorKind::Missing { .. } => {
                 write!(f, "missing ")?;
-                format_expected_syntax(f);
+                format_expected_syntax(f)?;
             },
             SyntaxErrorKind::Unexpected { found, .. } => {
                 write!(f, "expected ")?;
-                format_expected_syntax(f);
+                format_expected_syntax(f)?;
                 write!(f, " but found {:?}", found)?;
             },
         }

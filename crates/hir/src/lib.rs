@@ -8,9 +8,6 @@ pub use body::*;
 pub use world_index::*;
 
 use interner::{Key, Interner};
-use la_arena::Idx;
-use smol_str::SmolStr;
-use syntax::SyntaxTree;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(pub Key);

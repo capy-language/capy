@@ -1,4 +1,4 @@
-use std::{io::{self, Write, Stdout}, collections::LinkedList, fmt::write};
+use std::io::{self, Write, Stdout};
 
 use ast::AstNode;
 use line_index::LineIndex;

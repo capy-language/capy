@@ -39,28 +39,6 @@ mod tests {
     use super::*;
     use std::ops::Range as StdRange;
 
-    fn check_source_file<const LEN: usize>(
-        input: &str, 
-        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
-    ) {
-        let diagnostics: Vec<_> = diagnostics
-            .iter()
-            .map(|(kind, range)| ValidationDiagnostic {
-                kind: *kind,
-                range: {
-                    let start = range.start.into();
-                    let end = range.end.into();
-                    TextRange::new(start, end)
-                }
-            })
-            .collect();
-
-        let tree = parser::parse_source_file(&lexer::lex(input), input).into_syntax_tree();
-        let root = Root::cast(tree.root(), &tree).unwrap();
-
-        assert_eq!(validate(root, &tree), diagnostics);
-    }
-
     fn check_repl_line<const LEN: usize>(
         input: &str, 
         diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
