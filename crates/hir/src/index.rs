@@ -243,7 +243,6 @@ impl Ctx<'_> {
         }
     }
 
-
     fn lower_type(&mut self, type_: Option<ast::Type>) -> Type {
         let ident = match type_.and_then(|type_| type_.path(self.tree)?.top_level_name(self.tree)) {
             Some(ident) => ident,

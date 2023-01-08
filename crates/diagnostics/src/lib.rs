@@ -3,6 +3,7 @@ use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
 use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
+use hir_types::TypeDiagnostic;
 use interner::Interner;
 use line_index::{LineIndex, LineNr, ColNr};
 use parser::{SyntaxError, SyntaxErrorKind, ExpectedSyntax};
@@ -17,6 +18,7 @@ enum Repr {
     Validation(ValidationDiagnostic),
     Indexing(IndexingDiagnostic),
     Lowering(LoweringDiagnostic),
+    Type(TypeDiagnostic),
 }
 
 pub enum Severity {
@@ -39,6 +41,10 @@ impl Diagnostic {
 
     pub fn from_lowering(diagnostic: LoweringDiagnostic) -> Self {
         Self(Repr::Lowering(diagnostic))
+    }
+
+    pub fn from_type(diagnostic: TypeDiagnostic) -> Self {
+        Self(Repr::Type(diagnostic))
     }
 
     pub fn display(&self, input: &str, interner: &Interner, line_index: &LineIndex) -> Vec<String> {
@@ -82,6 +88,7 @@ impl Diagnostic {
             Repr::Validation(ValidationDiagnostic { range, .. }) => range,
             Repr::Indexing(IndexingDiagnostic { range, .. }) => range,
             Repr::Lowering(LoweringDiagnostic { range, .. }) => range,
+            Repr::Type(TypeDiagnostic { range, .. }) => range,
         }
     }
 
@@ -91,6 +98,7 @@ impl Diagnostic {
             Repr::Validation(_) => Severity::Warning,
             Repr::Indexing(_) => Severity::Error,
             Repr::Lowering(_) => Severity::Error,
+            Repr::Type(_) => Severity::Error,
         }
     }
 
@@ -100,6 +108,7 @@ impl Diagnostic {
             Repr::Validation(d) => validation_diagnostic_message(d),
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
+            Repr::Type(d) => type_diagnostic_message(d, interner),
         }
     }
 }
@@ -270,8 +279,7 @@ fn syntax_error_message(e: &SyntaxError) -> String {
 
 fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
     match d.kind {
-        ValidationDiagnosticKind::UnneededParens => "unneeded parentheses".to_string(),
-        ValidationDiagnosticKind::NumberLiteralTooLarge => "integer literal out of range".to_string(),
+        ValidationDiagnosticKind::UnneededVoid => "unneeded `void`".to_string(),
     }
 }
 
@@ -305,6 +313,21 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
     }
 }
 
+fn type_diagnostic_message(d: &TypeDiagnostic, interner: &Interner) -> String {
+    match &d.kind {
+        hir_types::TypeDiagnosticKind::Mismatch { expected, found } => {
+            format!(
+                "expected `{}` but found `{}`",
+                expected.display(interner),
+                found.display(interner),
+            )
+        },
+        hir_types::TypeDiagnosticKind::Undefined { name } => {
+            format!("undefined type `{}`", interner.lookup(*name))
+        },
+    }
+}
+
 fn format_kind(kind: TokenKind) -> &'static str {
     match kind {
         TokenKind::Ident => "identifier",
@@ -329,6 +352,5 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Whitespace => "whitespace",
         TokenKind::CommentContents | TokenKind::CommentLeader => "comment",
         TokenKind::Error => "an unrecognized token",
-        TokenKind::Return => "return",
     }
 }

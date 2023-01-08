@@ -61,9 +61,9 @@ fn parse_lhs(
     } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) {
         parse_prefix_expr(p, recovery_set)
     } else if p.at(TokenKind::LParen) {
-        parse_lambda_expr(p, recovery_set)
+        parse_lambda(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
-        parse_block_expr(p)
+        parse_block(p)
     } else {
         return p.error_with_recovery_set(recovery_set);
     };
@@ -147,22 +147,6 @@ fn parse_prefix_expr(
     m.complete(p, NodeKind::UnaryExpr)
 }
 
-fn paren_expr(
-    p: &mut Parser,
-    recovery_set: TokenSet
-) -> CompletedMarker {
-    assert!(p.at(TokenKind::LParen));
-
-    let m = p.start();
-
-    p.bump();
-    parse_expr_bp(p, 0, recovery_set, "expression");
-
-    p.expect(TokenKind::RParen);
-
-    m.complete(p, NodeKind::ParenExpr)
-}
-
 const LAMBDA_EXPECTED: TokenSet = TokenSet::new([
     TokenKind::Ident,
     TokenKind::Dot,
@@ -170,41 +154,41 @@ const LAMBDA_EXPECTED: TokenSet = TokenSet::new([
     TokenKind::Whitespace,
 ]);
 
-fn parse_lambda_expr(
+fn parse_lambda(
     p: &mut Parser,
     recovery_set: TokenSet,
 ) -> CompletedMarker {
     assert!(p.at(TokenKind::LParen));
 
-    let mut closed_paren = false;
-    let saved_idx = p.token_idx;
-    loop {
-        p.token_idx += 1;
-        let kind = p.peek();
-        if kind.is_none() { 
-            p.token_idx = saved_idx;
-            return paren_expr(p, recovery_set); 
-        }
-        let kind = kind.unwrap();
+    // let mut closed_paren = false;
+    // let saved_idx = p.token_idx;
+    // loop {
+    //     p.token_idx += 1;
+    //     let kind = p.peek();
+    //     if kind.is_none() { 
+    //         p.token_idx = saved_idx;
+    //         return parse_paren(p, recovery_set); 
+    //     }
+    //     let kind = kind.unwrap();
 
-        if TokenSet::new([TokenKind::Colon, TokenKind::Comma, TokenKind::Arrow]).contains(kind) {
-            p.token_idx = saved_idx;
-            break;
-        } else if kind == TokenKind::RParen {
-            closed_paren = true;
-        } else if kind == TokenKind::LBrace || kind == TokenKind::RBrace {
-            p.token_idx = saved_idx;
-            if closed_paren {
-                break;
-            } else {
-                return paren_expr(p, recovery_set);
-            }
-        } else if !LAMBDA_EXPECTED.contains(kind) {
-            println!("Found unexpected token {:?}", kind);
-            p.token_idx = saved_idx;
-            return paren_expr(p, recovery_set);
-        }
-    }
+    //     if TokenSet::new([TokenKind::Colon, TokenKind::Comma, TokenKind::Arrow]).contains(kind) {
+    //         p.token_idx = saved_idx;
+    //         break;
+    //     } else if kind == TokenKind::RParen {
+    //         closed_paren = true;
+    //     } else if kind == TokenKind::LBrace || kind == TokenKind::RBrace {
+    //         p.token_idx = saved_idx;
+    //         if closed_paren {
+    //             break;
+    //         } else {
+    //             return parse_paren(p, recovery_set);
+    //         }
+    //     } else if !LAMBDA_EXPECTED.contains(kind) {
+    //         println!("Found unexpected token {:?}", kind);
+    //         p.token_idx = saved_idx;
+    //         return parse_paren(p, recovery_set);
+    //     }
+    // }
 
     let m = p.start();
 
@@ -235,7 +219,7 @@ fn parse_lambda_expr(
     }
 
     if p.at(TokenKind::LBrace) {
-        parse_block_expr(p);
+        parse_block(p);
     } else {
         let _guard = p.expected_syntax_name("lambda body");
         p.error();
@@ -244,14 +228,14 @@ fn parse_lambda_expr(
     m.complete(p, NodeKind::Lambda)
 }
 
-fn parse_block_expr(p: &mut Parser) -> CompletedMarker {
+fn parse_block(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::LBrace));
 
     let m = p.start();
     p.bump();
 
-    while !p.at(TokenKind::RBrace) {
-        stmt::stmt(p);
+    while !p.at(TokenKind::RBrace) && !p.at_eof() {
+        stmt::parse_stmt(p);
     }
 
     p.expect(TokenKind::RBrace);

@@ -10,7 +10,7 @@ use text_size::TextRange;
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::{WorldIndex, GetDefinitionError},
-    Fqn, Index, Name, Definition, Function,
+    Fqn, Index, Name, Definition, Function, Type,
 };
 
 #[derive(Clone)]
@@ -40,9 +40,7 @@ pub enum Expr {
     },
     Block {
         stmts: Vec<Idx<Stmt>>,
-    },
-    Paren {
-        expr: Idx<Expr>,
+        tail_expr: Option<Idx<Expr>>,
     },
     Local(Idx<LocalDef>),
     Global(PathWithRange),
@@ -57,13 +55,13 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Return(Idx<Expr>),
     Expr(Idx<Expr>),
     LocalDef(Idx<LocalDef>),
 }
 
 #[derive(Clone)]
 pub struct LocalDef {
+    pub type_annotation: Option<(Type, TextRange)>,
     pub value: Idx<Expr>,
     pub ast: ast::VarDef,
 }
@@ -211,16 +209,34 @@ impl<'a> Ctx<'a> {
                 let expr = self.lower_expr(expr_stmt.expr(self.tree));
                 Stmt::Expr(expr)
             }
-            ast::Stmt::Return(return_stmt) => {
-                let expr = self.lower_expr(return_stmt.value(self.tree));
-                Stmt::Return(expr)
-            },
         }
     }
 
     fn lower_local_def(&mut self, local_def: ast::VarDef) -> Stmt {
+        let type_annotation = {
+            let ident = match local_def.type_annotation(self.tree).and_then(|type_| type_.path(self.tree)?.top_level_name(self.tree)) {
+                Some(ident) => Some((ident, ident.range(self.tree))),
+                None => None,
+            };
+
+            if let Some((ident, range)) = ident {
+                let name = Name(self.interner.intern(ident.text(self.tree)));
+    
+                if name.0 == Key::void() {
+                    Some((Type::Void, range))
+                } else if name.0 == Key::s32() {
+                    Some((Type::S32, range))
+                } else if name.0 == Key::string() {
+                    Some((Type::String, range))
+                } else {
+                    Some((Type::Named(name), range))
+                }
+            } else {
+                None
+            }
+        };
         let value = self.lower_expr(local_def.value(self.tree));
-        let id = self.bodies.local_defs.alloc(LocalDef { value, ast: local_def });
+        let id = self.bodies.local_defs.alloc(LocalDef { type_annotation, value, ast: local_def });
 
         if let Some(ident) = local_def.name(self.tree) {
             let name = self.interner.intern(ident.text(self.tree));
@@ -242,7 +258,6 @@ impl<'a> Ctx<'a> {
             ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
             ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
             ast::Expr::Block(block) => self.lower_block(block),
-            ast::Expr::Paren(paren) => self.lower_paren_expr(paren),
             ast::Expr::Call(call) => self.lower_call(call),
             ast::Expr::Ref(var_ref) => self.lower_ref(var_ref),
             ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
@@ -293,16 +308,12 @@ impl<'a> Ctx<'a> {
             stmts.push(self.bodies.stmts.alloc(statement));
         }
 
-        // let tail_expr =
-        //     block.tail_expr(self.tree).map(|tail_expr| self.lower_expr(Some(tail_expr)));
+        let tail_expr =
+            block.tail_expr(self.tree).map(|tail_expr| self.lower_expr(Some(tail_expr)));
 
         self.destroy_current_scope();
 
-        Expr::Block { stmts }
-    }
-
-    fn lower_paren_expr(&mut self, paren: ast::ParenExpr) -> Expr {
-        Expr::Paren { expr: self.lower_expr(paren.expr(self.tree)) }
+        Expr::Block { stmts, tail_expr }
     }
 
     fn lower_call(&mut self, call: ast::Call) -> Expr {
@@ -712,7 +723,7 @@ impl Bodies {
         function_bodies.sort_unstable_by_key(|(name, _)| *name);
 
         for (name, expr_id) in function_bodies {
-            s.push_str(&format!("{} = () -> _ ", interner.lookup(name.0)));
+            s.push_str(&format!("{} = () ", interner.lookup(name.0)));
             write_expr(*expr_id, self, &mut s, interner, 0);
             s.push_str(";\n");
         }
@@ -776,11 +787,17 @@ impl Bodies {
                     write_expr(*expr, bodies, s, interner, indentation);
                 }
 
-                Expr::Block { stmts } if stmts.is_empty() => {
+                Expr::Block { stmts, tail_expr: None } if stmts.is_empty() => {
                     s.push_str("{}");
                 }
 
-                Expr::Block { stmts } => {
+                Expr::Block { stmts, tail_expr: Some(tail_expr) } if stmts.is_empty() => {
+                    s.push_str("{ ");
+                    write_expr(*tail_expr, bodies, s, interner, indentation + 4);
+                    s.push_str(" }");
+                }
+
+                Expr::Block { stmts, tail_expr } => {
                     indentation += 4;
 
                     s.push_str("{\n");
@@ -791,16 +808,16 @@ impl Bodies {
                         s.push('\n');
                     }
 
+                    if let Some(tail_expr) = tail_expr {
+                        s.push_str(&" ".repeat(indentation));
+                        write_expr(*tail_expr, bodies, s, interner, indentation);
+                        s.push('\n');
+                    }
+
                     indentation -= 4;
                     s.push_str(&" ".repeat(indentation));
 
                     s.push('}');
-                }
-
-                Expr::Paren { expr } => {
-                    s.push_str("(");
-                    write_expr(*expr, bodies, s, interner, indentation);
-                    s.push(')');
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
@@ -864,11 +881,6 @@ impl Bodies {
                     write_expr(bodies[*local_def_id].value, bodies, s, interner, indentation);
                     s.push(';');
                 }
-                Stmt::Return(return_expr) => {
-                    s.push_str("return ");
-                    write_expr(*return_expr, bodies, s, interner, indentation);
-                    s.push(';');
-                },
             }
         }
     }

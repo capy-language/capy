@@ -3,8 +3,9 @@ mod index;
 mod nameres;
 mod world_index;
 
-pub use index::*;
 pub use body::*;
+pub use index::*;
+pub use nameres::*;
 pub use world_index::*;
 
 use interner::{Key, Interner};

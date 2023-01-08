@@ -1,4 +1,4 @@
-5*(2+1);
+5*{2+1};
 ===
 Root@0..8
   ExprStmt@0..7
@@ -6,13 +6,13 @@ Root@0..8
       IntLiteral@0..1
         Int@0..1 "5"
       Asterisk@1..2 "*"
-      ParenExpr@2..7
-        LParen@2..3 "("
+      Block@2..7
+        LBrace@2..3 "{"
         BinaryExpr@3..6
           IntLiteral@3..4
             Int@3..4 "2"
           Plus@4..5 "+"
           IntLiteral@5..6
             Int@5..6 "1"
-        RParen@6..7 ")"
+        RBrace@6..7 "}"
   Semicolon@7..8 ";"

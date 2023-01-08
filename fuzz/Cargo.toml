@@ -8,6 +8,7 @@ cargo-fuzz = true
 [dependencies]
 ast = {path = "../crates/ast"}
 hir = {path = "../crates/hir"}
+hir_types = {path = "../crates/hir_types"}
 interner = {path = "../crates/interner"}
 lexer = {path = "../crates/lexer"}
 libfuzzer-sys = "0.4.2"

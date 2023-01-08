@@ -110,7 +110,6 @@ impl Lambda {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stmt {
     VarDef(VarDef),
-    Return(ReturnFlow),
     Expr(ExprStmt),
 }
 
@@ -118,7 +117,6 @@ impl AstNode for Stmt {
     fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
         match node.kind(tree) {
             NodeKind::VarDef => Some(Self::VarDef(VarDef(node))),
-            NodeKind::ReturnFlow => Some(Self::Return(ReturnFlow(node))),
             NodeKind::ExprStmt => Some(Self::Expr(ExprStmt(node))),
             _ => None,
         }
@@ -127,7 +125,6 @@ impl AstNode for Stmt {
     fn syntax(self) -> SyntaxNode {
         match self {
             Self::VarDef(var_def) => var_def.syntax(),
-            Self::Return(return_flow) => return_flow.syntax(),
             Self::Expr(expr) => expr.syntax(),
         }
     }
@@ -177,14 +174,6 @@ impl Type {
     }
 }
 
-def_ast_node!(ReturnFlow);
-
-impl ReturnFlow {
-    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
-        node(self, tree)
-    }
-}
-
 def_ast_node!(ExprStmt);
 
 impl ExprStmt {
@@ -199,7 +188,6 @@ pub enum Expr {
     Unary(UnaryExpr),
     IntLiteral(IntLiteral),
     StringLiteral(StringLiteral),
-    Paren(ParenExpr),
     Ref(Ref),
     Call(Call),
     Block(Block),
@@ -213,7 +201,6 @@ impl AstNode for Expr {
             NodeKind::UnaryExpr => Self::Unary(UnaryExpr(node)),
             NodeKind::IntLiteral => Self::IntLiteral(IntLiteral(node)),
             NodeKind::StringLiteral => Self::StringLiteral(StringLiteral(node)),
-            NodeKind::ParenExpr => Self::Paren(ParenExpr(node)),
             NodeKind::Ref => Self::Ref(Ref(node)),
             NodeKind::Call => Self::Call(Call(node)),
             NodeKind::Block => Self::Block(Block(node)),
@@ -230,7 +217,6 @@ impl AstNode for Expr {
             Self::Unary(unnary_expr) => unnary_expr.syntax(),
             Self::IntLiteral(int_literal) => int_literal.syntax(),
             Self::StringLiteral(string_literal) => string_literal.syntax(),
-            Self::Paren(paren) => paren.syntax(),
             Self::Ref(var_ref) => var_ref.syntax(),
             Self::Call(call) => call.syntax(),
             Self::Block(block) => block.syntax(),
@@ -252,14 +238,6 @@ impl BinaryExpr {
 
     pub fn op(self, tree: &SyntaxTree) -> Option<BinaryOp> {
         token(self, tree)
-    }
-}
-
-def_ast_node!(ParenExpr);
-
-impl ParenExpr {
-    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
-        node(self, tree)
     }
 }
 
@@ -693,7 +671,7 @@ mod tests {
 
     #[test]
     fn get_block_stmts() {
-        let (tree, root) = parse("{ a = 10; b = a * (a - 1); b + 5; };");
+        let (tree, root) = parse("{ a = 10; b = a * (a - 1); b + 5 };");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -709,8 +687,26 @@ mod tests {
 
         assert!(matches!(statements.next(), Some(Stmt::VarDef(_))));
         assert!(matches!(statements.next(), Some(Stmt::VarDef(_))));
-        assert!(matches!(statements.next(), Some(Stmt::Expr(_))));
         assert!(statements.next().is_none());
+    }
+
+    #[test]
+    fn get_block_tail() {
+        let (tree, root) = parse("{ a = 10; b = a * (a - 1); b + 5 };");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let block = match expr {
+            Some(Expr::Block(block)) => block,
+            _ => unreachable!(),
+        };
+
+        let tail_expr = block.tail_expr(&tree);
+
+        assert!(matches!(tail_expr, Some(Expr::Binary(_))));
     }
 
     #[test]

@@ -66,13 +66,17 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
 
     let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner);
 
-    let (bodies, lowering_diagnostics) = hir::lower(root, tree, &index, &world_index, &mut interner);
-
     for name in index.definition_names() {
         println!("{} = {:?}", interner.lookup(name.0), index.get_definition(name))
     }
 
+    let (bodies, lowering_diagnostics) = hir::lower(root, tree, &index, &world_index, &mut interner);
+
     println!("{}", bodies.debug(&interner));
+
+    let (inference, type_diagnostics) = hir_types::infer_all(&bodies, &index, &world_index);
+
+    println!("{}", inference.debug(&interner));
 
     // dbg!(hir::lower(root, tree));
 
@@ -90,6 +94,9 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
         .chain(lowering_diagnostics.iter()
             .cloned()
             .map(diagnostics::Diagnostic::from_lowering))
+        .chain(type_diagnostics.iter()
+            .cloned()
+            .map(diagnostics::Diagnostic::from_type))
         .collect();
 
     for diagnostic in diagnostics {

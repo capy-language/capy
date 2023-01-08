@@ -130,9 +130,6 @@ pub enum LexerTokenKind {
 
     #[token("}")]
     RBrace,
-    
-    #[token("return")]
-    Return,
 
     _CommentLeader,
 

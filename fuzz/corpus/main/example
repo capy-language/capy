@@ -1,19 +1,19 @@
 foo = 10;
 bar = 20;
-a = foo + (bar * bar - (100 / 33));
+a = foo + {bar * bar - {100 / 33}};
 
-a * (a - 10);
+a * {a - 10};
 
 calc = {
-    sum = (x, y) { return x + y; };
-    mul = (x, y) { return x * y; };
+    sum = (x, y) { x + y };
+    mul = (x, y) { x * y };
 
-    do_math = (op, x, y) { return op(x, y); };
+    do_math = (op, x, y) { op(x, y) };
 
     do_math(sum, 2, 3);
     do_math(mul, 2, 3);
 
-    return {
-        return do_math(mul, 6, 7);
-    };
+    {
+        do_math(mul, 6, 7)
+    }
 };

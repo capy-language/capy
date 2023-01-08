@@ -13,13 +13,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
     let m = p.start();
 
     while !p.at_eof() {
-        if stmt::stmt_def_only(p).is_none() {
-            if p.at_eof() {
-                break;
-            }
-            let _guard = p.expected_syntax_name("definition");
-            p.error_with_skip();
-        }
+        stmt::parse_def(p);
     }
 
     m.complete(p, NodeKind::Root);
@@ -32,7 +26,7 @@ pub(crate) fn repl_line(p: &mut Parser<'_>) {
         if p.at(TokenKind::RBrace) || p.at(TokenKind::Semicolon) {
             let _guard = p.expected_syntax_name("definition or statement");
             p.error_without_skip();
-        } else if stmt::stmt(p).is_none() {
+        } else if stmt::parse_stmt(p).is_none() {
             if p.at_eof() {
                 break;
             }

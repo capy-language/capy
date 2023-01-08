@@ -1,20 +1,21 @@
 [package]
-name = "diagnostics"
+name = "hir_types"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ast = {path = "../ast"}
+la-arena = "0.2.0"
 hir = {path = "../hir"}
-hir_types = {path = "../hir_types"}
 interner = {path = "../interner"}
-line_index = {path = "../line_index"}
-parser = {path = "../parser"}
-syntax = {path = "../syntax"}
+rustc-hash = "1.1"
 text-size = "1.1"
 
-
 [dev-dependencies]
+ast = {path = "../ast"}
 expect-test = "1.1"
+interner = {path = "../interner"}
+lexer = {path = "../lexer"}
+parser = {path = "../parser"}
+test-utils = {path = "../test-utils"}
