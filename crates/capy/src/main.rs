@@ -1,8 +1,9 @@
-use std::io::{self, Write, Stdout};
+use std::io::{self, Stdout, Write};
 
 use ast::AstNode;
 use line_index::LineIndex;
 use parser::parse_repl_line;
+use rustc_hash::FxHashMap;
 
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
@@ -49,7 +50,7 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
     let root = ast::Root::cast(tree.root(), tree).unwrap();
 
     let validation_diagnostics = ast::validation::validate(root, tree);
-        
+
     // let ast_vals = root
     //     .stmts(tree)
     //     .filter_map(|stmt| if let ast::Stmt::VarDef(var_def) = stmt {
@@ -62,15 +63,20 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
     //     .collect::<Vec<_>>();
     // dbg!(ast_vals);
 
-    let world_index = hir::WorldIndex::default();
+    let mut world_index = hir::WorldIndex::default();
 
     let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner);
 
     for name in index.definition_names() {
-        println!("{} = {:?}", interner.lookup(name.0), index.get_definition(name))
+        println!(
+            "{} = {:?}",
+            interner.lookup(name.0),
+            index.get_definition(name)
+        )
     }
 
-    let (bodies, lowering_diagnostics) = hir::lower(root, tree, &index, &world_index, &mut interner);
+    let (bodies, lowering_diagnostics) =
+        hir::lower(root, tree, &index, &world_index, &mut interner);
 
     println!("{}", bodies.debug(&interner));
 
@@ -85,24 +91,60 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
     let line_index = LineIndex::new(&input);
 
     let diagnostics: Vec<diagnostics::Diagnostic> = syntax_errors
-        .chain(validation_diagnostics.iter()
-            .cloned()
-            .map(diagnostics::Diagnostic::from_validation))
-        .chain(indexing_diagnostics.iter()
-            .cloned()
-            .map(diagnostics::Diagnostic::from_indexing))
-        .chain(lowering_diagnostics.iter()
-            .cloned()
-            .map(diagnostics::Diagnostic::from_lowering))
-        .chain(type_diagnostics.iter()
-            .cloned()
-            .map(diagnostics::Diagnostic::from_type))
+        .chain(
+            validation_diagnostics
+                .iter()
+                .cloned()
+                .map(diagnostics::Diagnostic::from_validation),
+        )
+        .chain(
+            indexing_diagnostics
+                .iter()
+                .cloned()
+                .map(diagnostics::Diagnostic::from_indexing),
+        )
+        .chain(
+            lowering_diagnostics
+                .iter()
+                .cloned()
+                .map(diagnostics::Diagnostic::from_lowering),
+        )
+        .chain(
+            type_diagnostics
+                .iter()
+                .cloned()
+                .map(diagnostics::Diagnostic::from_type),
+        )
         .collect();
 
-    for diagnostic in diagnostics {
+    for diagnostic in &diagnostics {
         for line in diagnostic.display(&input, &interner, &line_index) {
             write!(stdout, "{}\n", line)?;
         }
+    }
+
+    if diagnostics.is_empty() {
+        // compile to LLVM
+        let main = hir::Name(interner.intern("main"));
+        world_index.add_module(main, index);
+
+        let mut bodies_map = FxHashMap::default();
+        let mut types_map = FxHashMap::default();
+        bodies_map.insert(main, bodies);
+        types_map.insert(main, inference);
+
+        let bytes = eval::compile(
+            hir::Fqn {
+                module: main,
+                name: main,
+            },
+            &interner,
+            bodies_map,
+            types_map,
+            &world_index,
+        );
+
+        dbg!(bytes);
     }
 
     Ok(())
