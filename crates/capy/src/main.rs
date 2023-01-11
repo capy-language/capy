@@ -1,14 +1,24 @@
-use std::io::{self, Stdout, Write};
+use std::{io::{self, Stdout, Write}, env};
 
 use ast::AstNode;
+use diagnostics::Severity;
 use line_index::LineIndex;
 use parser::parse_repl_line;
 use rustc_hash::FxHashMap;
+use std::fs;
 
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     writeln!(stdout, "Capy Programming Language 0.1.0")?;
+
+    let mut args = env::args();
+    args.next(); // skip first arg as it's just the executable name
+    if let Some(file_name) = args.next() {
+        let file = fs::read_to_string(file_name).expect("Unable to read file.");
+        eval(&file, &mut stdout)?;
+        return Ok(());
+    }
 
     let mut input = String::new();
 
@@ -122,8 +132,13 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
             write!(stdout, "{}\n", line)?;
         }
     }
+    if !diagnostics.is_empty() {
+        write!(stdout, "\n")?;
+    }
 
-    if diagnostics.is_empty() {
+    if !diagnostics
+        .iter()
+        .any(|diag| diag.severity() == Severity::Error) {
         // compile to LLVM
         let main = hir::Name(interner.intern("main"));
         world_index.add_module(main, index);
@@ -145,6 +160,8 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
         );
 
         dbg!(bytes);
+    } else {
+        write!(stdout, "not compiling due to previous errors\n")?;
     }
 
     Ok(())

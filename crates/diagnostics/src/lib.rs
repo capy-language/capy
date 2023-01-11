@@ -21,6 +21,7 @@ enum Repr {
     Type(TypeDiagnostic),
 }
 
+#[derive(PartialEq)]
 pub enum Severity {
     Warning,
     Error,
@@ -184,13 +185,6 @@ fn input_snippet(
         start_col.0 + 1,
     ));
 
-    lines.push(format!(
-        "{}{}{}",
-        ANSI_GRAY,
-        line_number_padding,
-        PADDING
-    ));
-
     let first_line = file_lines[start_line.0 as usize];
     lines.push(format!(
         "{}{}{}{}{}{}",
@@ -204,35 +198,35 @@ fn input_snippet(
     lines.push(format!(
         "{}{}{}{}{}{}", 
         ANSI_GRAY,
-        PADDING,
         start_line.0 + 1,
+        PADDING,
         " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
         ANSI_RESET,
         first_line));
 
-    for line in &file_lines[start_line.0 as usize + 1..end_line.0 as usize] {
+    for num in start_line.0 as usize + 1..end_line.0 as usize {
         lines.push(format!(
             "{}{}{}{}{}", 
             ANSI_GRAY,
+            num + 1,
             PADDING,
-            line_number_padding,
             ANSI_RESET,
-            line));
+            &file_lines[num]));
     }
 
     let last_line = file_lines[end_line.0 as usize];
     lines.push(format!(
         "{}{}{}{}{}", 
         ANSI_GRAY,
-        PADDING,
         end_line.0 + 1,
+        PADDING,
         ANSI_RESET,
         last_line));
     lines.push(format!(
         "{}{}{}{}{}{}", 
         ANSI_GRAY,
-        PADDING,
         line_number_padding,
+        PADDING,
         ANSI_YELLOW,
         POINTER_UP.repeat(end_col.0 as usize + 1),
         ANSI_RESET));

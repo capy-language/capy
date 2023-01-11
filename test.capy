@@ -1,0 +1,13 @@
+
+foo = () -> s32 {
+    0
+};
+
+puts = (text: string) -> string {
+    text
+};
+
+main = () -> s32 {
+    x = puts("Hello");
+    foo()
+};

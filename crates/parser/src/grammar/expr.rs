@@ -63,7 +63,7 @@ fn parse_lhs(
     } else if p.at(TokenKind::LParen) {
         parse_lambda(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
-        parse_block(p)
+        parse_block(p, recovery_set)
     } else {
         return p.error_with_recovery_set(recovery_set);
     };
@@ -147,18 +147,20 @@ fn parse_prefix_expr(
     m.complete(p, NodeKind::UnaryExpr)
 }
 
-const LAMBDA_EXPECTED: TokenSet = TokenSet::new([
-    TokenKind::Ident,
-    TokenKind::Dot,
-    TokenKind::Colon,
-    TokenKind::Whitespace,
-]);
+// const LAMBDA_EXPECTED: TokenSet = TokenSet::new([
+//     TokenKind::Ident,
+//     TokenKind::Dot,
+//     TokenKind::Colon,
+//     TokenKind::Whitespace,
+// ]);
 
 fn parse_lambda(
     p: &mut Parser,
     recovery_set: TokenSet,
 ) -> CompletedMarker {
     assert!(p.at(TokenKind::LParen));
+
+    // his code was for when there were parenthesized expressions
 
     // let mut closed_paren = false;
     // let saved_idx = p.token_idx;
@@ -208,18 +210,18 @@ fn parse_lambda(
             break;
         }
     }
-    p.expect(TokenKind::RParen);
+    p.expect_with_no_skip(TokenKind::RParen);
 
     param_list_m.complete(p, NodeKind::ParamList);
 
     if p.at(TokenKind::Arrow) {
         p.bump();
         let _guard = p.expected_syntax_name("return type");
-        parse_type(p, TokenSet::new([TokenKind::LBrace]));
+        parse_type(p, recovery_set.union(TokenSet::new([TokenKind::LBrace])));
     }
 
     if p.at(TokenKind::LBrace) {
-        parse_block(p);
+        parse_block(p, recovery_set);
     } else {
         let _guard = p.expected_syntax_name("lambda body");
         p.error();
@@ -228,7 +230,7 @@ fn parse_lambda(
     m.complete(p, NodeKind::Lambda)
 }
 
-fn parse_block(p: &mut Parser) -> CompletedMarker {
+fn parse_block(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     assert!(p.at(TokenKind::LBrace));
 
     let m = p.start();
@@ -238,7 +240,7 @@ fn parse_block(p: &mut Parser) -> CompletedMarker {
         stmt::parse_stmt(p);
     }
 
-    p.expect(TokenKind::RBrace);
+    p.expect_with_recovery_set(TokenKind::RBrace, recovery_set);
 
     m.complete(p, NodeKind::Block)
 }

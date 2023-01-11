@@ -18,13 +18,14 @@ pub fn compile(
     let x = CodeGen {
         context: context_b,
         module: &context.create_module(interner.lookup(entry_point.module.0)),
-        builder: &context.create_builder(),
+        builders: Vec::new(),
         functions_to_compile: vec![entry_point],
         interner,
         bodies_map,
         types_map,
         world_index,
+        functions: FxHashMap::default(),
         variables: FxHashMap::default(),
-        current_function: None,
+        current_function: Vec::new(),
     }.finish(); x
 }
