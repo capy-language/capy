@@ -675,10 +675,10 @@ impl Bodies {
             local_defs,
             stmts,
             exprs,
-            expr_ranges,
             function_bodies,
             other_module_references,
             symbol_map,
+            ..
         } = self;
 
         local_defs.shrink_to_fit();

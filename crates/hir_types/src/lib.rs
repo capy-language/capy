@@ -347,7 +347,7 @@ fn resolve_type(
 
 impl InferenceResult {
     fn shrink_to_fit(&mut self) {
-        let Self { signatures, expr_types, local_types } = self;
+        let Self { signatures, .. } = self;
         signatures.shrink_to_fit();
         // expr_types.shrink_to_fit();
         // local_types.shrink_to_fit();
@@ -408,7 +408,6 @@ mod tests {
     use super::*;
     use ast::AstNode;
     use expect_test::{expect, Expect};
-    use hir::WorldIndex;
     use interner::Interner;
 
     #[track_caller]

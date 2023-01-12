@@ -1,5 +1,6 @@
 .vscode
 target
+out
 
 Cargo.lock
 

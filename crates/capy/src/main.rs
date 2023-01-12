@@ -1,4 +1,4 @@
-use std::{io::{self, Stdout, Write}, env};
+use std::{io::{self, Stdout, Write}, env, path::{self, PathBuf}};
 
 use ast::AstNode;
 use diagnostics::Severity;
@@ -15,8 +15,8 @@ fn main() -> io::Result<()> {
     let mut args = env::args();
     args.next(); // skip first arg as it's just the executable name
     if let Some(file_name) = args.next() {
-        let file = fs::read_to_string(file_name).expect("Unable to read file.");
-        eval(&file, &mut stdout)?;
+        let file = fs::read_to_string(&file_name).expect("Unable to read file.");
+        eval(&file_name.split(".").next().unwrap(), &file, &mut stdout)?;
         return Ok(());
     }
 
@@ -37,13 +37,13 @@ fn main() -> io::Result<()> {
             continue;
         }
 
-        eval(&input, &mut stdout)?;
+        eval("repl", &input, &mut stdout)?;
 
         input.clear();
     }
 }
 
-fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
+fn eval(module: &str, input: &str, stdout: &mut Stdout) -> io::Result<()> {
     let mut interner = interner::Interner::default();
 
     let parse = parse_repl_line(&lexer::lex(&input), &input);
@@ -140,26 +140,44 @@ fn eval(input: &str, stdout: &mut Stdout) -> io::Result<()> {
         .iter()
         .any(|diag| diag.severity() == Severity::Error) {
         // compile to LLVM
+        let module = hir::Name(interner.intern(module));
+        world_index.add_module(module, index);
+
         let main = hir::Name(interner.intern("main"));
-        world_index.add_module(main, index);
 
         let mut bodies_map = FxHashMap::default();
         let mut types_map = FxHashMap::default();
-        bodies_map.insert(main, bodies);
-        types_map.insert(main, inference);
+        bodies_map.insert(module, bodies);
+        types_map.insert(module, inference);
 
-        let bytes = eval::compile(
+        match codegen::compile(
             hir::Fqn {
-                module: main,
+                module,
                 name: main,
             },
             &interner,
             bodies_map,
             types_map,
             &world_index,
-        );
-
-        dbg!(bytes);
+        ) {
+            Ok(output) => {
+                let output_folder = env::current_dir().unwrap().join("out");
+                let file = output_folder.join(&format!("{}.o", interner.lookup(module.0)));
+                fs::write(&file, output.as_slice());
+                println!(
+                    "{}{}{}",
+                    file.parent().and_then(|x| x.file_name()).and_then(|x| x.to_str()).unwrap(),
+                    path::MAIN_SEPARATOR,
+                    file.file_name().and_then(|x| x.to_str()).unwrap()
+                );
+                println!("Running\n");
+                let exit_code = codegen::link_and_exec(&file);
+                println!("\n\nProcess exited with code {}", exit_code);
+            }
+            Err(message) => {
+                println!("error while finalizing: {}", message)
+            }
+        }
     } else {
         write!(stdout, "not compiling due to previous errors\n")?;
     }

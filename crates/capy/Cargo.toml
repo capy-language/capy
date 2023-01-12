@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 ast = {path = "../ast"}
-eval = {path = "../eval"}
+codegen = {path = "../codegen"}
 hir = {path = "../hir"}
 hir_types = {path = "../hir_types"}
 lexer = {path = "../lexer"}
