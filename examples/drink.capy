@@ -1,0 +1,20 @@
+
+main := (argc: i32) -> i32 {
+    age := 45;
+
+    message := if age >= 21 {
+        "you can drink"
+    } else if age >= 18 {
+        "you are an adult but can't drink"
+    } else {
+        "you can't drink"
+    };
+
+    printf(message);
+
+    0
+};
+
+printf := (n: string) -> {
+    // libc defined
+};

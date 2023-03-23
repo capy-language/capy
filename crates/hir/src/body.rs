@@ -1,6 +1,6 @@
 use std::vec;
 
-use ast::{AstToken, AstNode};
+use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -9,17 +9,19 @@ use text_size::TextRange;
 
 use crate::{
     nameres::{Path, PathWithRange},
-    world_index::{WorldIndex, GetDefinitionError},
-    Fqn, Index, Name, Definition, Function, Type,
+    world_index::{GetDefinitionError, WorldIndex},
+    Definition, Fqn, Function, Name, TyWithRange,
 };
 
 #[derive(Clone)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
+    local_sets: Arena<LocalSet>,
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
     function_bodies: FxHashMap<Name, Idx<Expr>>,
+    globals: FxHashMap<Name, Idx<Expr>>,
     other_module_references: FxHashSet<Fqn>,
     symbol_map: FxHashMap<ast::Ident, Symbol>,
 }
@@ -27,8 +29,13 @@ pub struct Bodies {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Missing,
-    IntLiteral(u32),
+    IntLiteral(u64),
+    BoolLiteral(bool),
     StringLiteral(String),
+    Cast {
+        expr: Idx<Expr>,
+        ty: TyWithRange,
+    },
     Binary {
         lhs: Idx<Expr>,
         rhs: Idx<Expr>,
@@ -38,9 +45,22 @@ pub enum Expr {
         expr: Idx<Expr>,
         op: UnaryOp,
     },
+    Array {
+        items: Vec<Idx<Expr>>,
+        ty: TyWithRange,
+    },
     Block {
         stmts: Vec<Idx<Stmt>>,
         tail_expr: Option<Idx<Expr>>,
+    },
+    If {
+        condition: Idx<Expr>,
+        body: Idx<Expr>,
+        else_branch: Option<Idx<Expr>>,
+    },
+    While {
+        condition: Option<Idx<Expr>>,
+        body: Idx<Expr>,
     },
     Local(Idx<LocalDef>),
     Global(PathWithRange),
@@ -57,13 +77,22 @@ pub enum Expr {
 pub enum Stmt {
     Expr(Idx<Expr>),
     LocalDef(Idx<LocalDef>),
+    LocalSet(Idx<LocalSet>),
 }
 
 #[derive(Clone)]
 pub struct LocalDef {
-    pub type_annotation: Option<(Type, TextRange)>,
+    pub mutable: bool,
+    pub ty: TyWithRange,
     pub value: Idx<Expr>,
     pub ast: ast::VarDef,
+}
+
+#[derive(Clone)]
+pub struct LocalSet {
+    pub local_def: Option<Idx<LocalDef>>,
+    pub value: Idx<Expr>,
+    pub ast: ast::VarSet,
 }
 
 impl std::fmt::Debug for LocalDef {
@@ -74,18 +103,35 @@ impl std::fmt::Debug for LocalDef {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOp {
+    // math operations
     Add,
     Sub,
     Mul,
     Div,
+
+    // cmp operations
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Ne,
+
+    // boolean operations
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
+    // math operations
     Pos,
     Neg,
+
+    // boolean operations
+    Not,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +145,8 @@ pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
     UndefinedLocal { name: Key },
     UndefinedModule { name: Key },
+    MutableGlobal,
+    SetImmutable { name: Key },
     MismatchedArgCount { name: Key, expected: u32, got: u32 },
     CalledNonLambda { name: Key },
     InvalidEscape,
@@ -117,16 +165,22 @@ pub enum Symbol {
 pub fn lower(
     root: ast::Root,
     tree: &SyntaxTree,
-    index: &Index,
+    module: Name,
     world_index: &WorldIndex,
     interner: &mut Interner,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(index, world_index, interner, tree);
+    let mut ctx = Ctx::new(module, world_index, interner, tree);
 
     for def in root.defs(tree) {
+        if let Some(mutable) = def.mutable(tree) {
+            ctx.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::MutableGlobal,
+                range: mutable.range(tree),
+            })
+        }
         match def.value(tree) {
             Some(ast::Expr::Lambda(lambda)) => ctx.lower_lambda(def.name(tree), lambda),
-            _ => {}
+            val => ctx.lower_global(def.name(tree), val),
         }
     }
 
@@ -137,7 +191,7 @@ pub fn lower(
 
 struct Ctx<'a> {
     bodies: Bodies,
-    index: &'a Index,
+    module: Name,
     world_index: &'a WorldIndex,
     interner: &'a mut Interner,
     tree: &'a SyntaxTree,
@@ -148,7 +202,7 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     fn new(
-        index: &'a Index,
+        module: Name,
         world_index: &'a WorldIndex,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
@@ -156,14 +210,16 @@ impl<'a> Ctx<'a> {
         Self {
             bodies: Bodies {
                 local_defs: Arena::new(),
+                local_sets: Arena::new(),
                 stmts: Arena::new(),
                 exprs: Arena::new(),
                 expr_ranges: ArenaMap::default(),
                 function_bodies: FxHashMap::default(),
+                globals: FxHashMap::default(),
                 other_module_references: FxHashSet::default(),
                 symbol_map: FxHashMap::default(),
             },
-            index,
+            module,
             world_index,
             interner,
             tree,
@@ -171,6 +227,25 @@ impl<'a> Ctx<'a> {
             scopes: vec![FxHashMap::default()],
             params: FxHashMap::default(),
         }
+    }
+
+    fn lower_global(&mut self, name_token: Option<ast::Ident>, expr: Option<ast::Expr>) {
+        let name = match name_token {
+            Some(ident) => Name(self.interner.intern(ident.text(self.tree))),
+            None => return,
+        };
+
+        // if we’ve already seen a global with this name,
+        // we ignore all other globals with that name
+        //
+        // we don’t have to worry about emitting a diagnostic here
+        // because indexing already handles this
+        if self.bodies.globals.contains_key(&name) {
+            return;
+        }
+
+        let body = self.lower_expr(expr);
+        self.bodies.globals.insert(name, body);
     }
 
     fn lower_lambda(&mut self, name_token: Option<ast::Ident>, lambda: ast::Lambda) {
@@ -191,8 +266,10 @@ impl<'a> Ctx<'a> {
         if let Some(param_list) = lambda.param_list(self.tree) {
             for (idx, param) in param_list.params(self.tree).enumerate() {
                 if let Some(ident) = param.name(self.tree) {
-                    self.params
-                        .insert(self.interner.intern(ident.text(self.tree)), (idx as u32, param));
+                    self.params.insert(
+                        self.interner.intern(ident.text(self.tree)),
+                        (idx as u32, param),
+                    );
                 }
             }
         }
@@ -205,6 +282,7 @@ impl<'a> Ctx<'a> {
     fn lower_stmt(&mut self, stmt: ast::Stmt) -> Stmt {
         match stmt {
             ast::Stmt::VarDef(local_def) => self.lower_local_def(local_def),
+            ast::Stmt::VarSet(local_set) => self.lower_local_set(local_set),
             ast::Stmt::Expr(expr_stmt) => {
                 let expr = self.lower_expr(expr_stmt.expr(self.tree));
                 Stmt::Expr(expr)
@@ -213,30 +291,14 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_local_def(&mut self, local_def: ast::VarDef) -> Stmt {
-        let type_annotation = {
-            let ident = match local_def.type_annotation(self.tree).and_then(|type_| type_.path(self.tree)?.top_level_name(self.tree)) {
-                Some(ident) => Some((ident, ident.range(self.tree))),
-                None => None,
-            };
-
-            if let Some((ident, range)) = ident {
-                let name = Name(self.interner.intern(ident.text(self.tree)));
-    
-                if name.0 == Key::void() {
-                    Some((Type::Void, range))
-                } else if name.0 == Key::s32() {
-                    Some((Type::S32, range))
-                } else if name.0 == Key::string() {
-                    Some((Type::String, range))
-                } else {
-                    Some((Type::Named(name), range))
-                }
-            } else {
-                None
-            }
-        };
+        let ty = TyWithRange::parse(local_def.ty(self.tree), self.interner, self.tree);
         let value = self.lower_expr(local_def.value(self.tree));
-        let id = self.bodies.local_defs.alloc(LocalDef { type_annotation, value, ast: local_def });
+        let id = self.bodies.local_defs.alloc(LocalDef {
+            mutable: local_def.mutable(self.tree).is_some(),
+            ty,
+            value,
+            ast: local_def,
+        });
 
         if let Some(ident) = local_def.name(self.tree) {
             let name = self.interner.intern(ident.text(self.tree));
@@ -244,6 +306,50 @@ impl<'a> Ctx<'a> {
         }
 
         Stmt::LocalDef(id)
+    }
+
+    fn lower_local_set(&mut self, local_set: ast::VarSet) -> Stmt {
+        let name = self
+            .interner
+            .intern(local_set.name(self.tree).unwrap().text(self.tree));
+
+        let local_def = self.look_up_in_current_scope(name);
+        if local_def.is_none() {
+            if self
+                .world_index
+                .get_definition(Fqn {
+                    module: self.module,
+                    name: Name(name),
+                })
+                .is_ok()
+                || self.params.contains_key(&name)
+            {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::SetImmutable { name },
+                    range: local_set.range(self.tree),
+                })
+            } else {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::UndefinedLocal { name },
+                    range: local_set.name(self.tree).unwrap().range(self.tree),
+                })
+            }
+        } else if !self.bodies.local_defs[local_def.unwrap()].mutable {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::SetImmutable { name },
+                range: local_set.range(self.tree),
+            })
+        }
+
+        let value = self.lower_expr(local_set.value(self.tree));
+
+        let id = self.bodies.local_sets.alloc(LocalSet {
+            local_def,
+            value,
+            ast: local_set,
+        });
+
+        Stmt::LocalSet(id)
     }
 
     fn lower_expr(&mut self, expr: Option<ast::Expr>) -> Idx<Expr> {
@@ -255,12 +361,17 @@ impl<'a> Ctx<'a> {
         let range = expr_ast.range(self.tree);
 
         let expr = match expr_ast {
+            ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
             ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
             ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
+            ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
             ast::Expr::Block(block) => self.lower_block(block),
+            ast::Expr::If(if_expr) => self.lower_if(if_expr),
+            ast::Expr::While(while_expr) => self.lower_while(while_expr),
             ast::Expr::Call(call) => self.lower_call(call),
             ast::Expr::Ref(var_ref) => self.lower_ref(var_ref),
             ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
+            ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
             ast::Expr::Lambda(_) => unreachable!(),
         };
@@ -269,6 +380,14 @@ impl<'a> Ctx<'a> {
         self.bodies.expr_ranges.insert(id, range);
 
         id
+    }
+
+    fn lower_cast_expr(&mut self, cast_expr: ast::CastExpr) -> Expr {
+        let ty = TyWithRange::parse(cast_expr.ty(self.tree), self.interner, self.tree);
+
+        let expr = self.lower_expr(cast_expr.expr(self.tree));
+
+        Expr::Cast { expr, ty }
     }
 
     fn lower_binary_expr(&mut self, binary_expr: ast::BinaryExpr) -> Expr {
@@ -280,6 +399,14 @@ impl<'a> Ctx<'a> {
             Some(ast::BinaryOp::Sub(_)) => BinaryOp::Sub,
             Some(ast::BinaryOp::Mul(_)) => BinaryOp::Mul,
             Some(ast::BinaryOp::Div(_)) => BinaryOp::Div,
+            Some(ast::BinaryOp::Lt(_)) => BinaryOp::Lt,
+            Some(ast::BinaryOp::Gt(_)) => BinaryOp::Gt,
+            Some(ast::BinaryOp::Le(_)) => BinaryOp::Le,
+            Some(ast::BinaryOp::Ge(_)) => BinaryOp::Ge,
+            Some(ast::BinaryOp::Eq(_)) => BinaryOp::Eq,
+            Some(ast::BinaryOp::Ne(_)) => BinaryOp::Ne,
+            Some(ast::BinaryOp::And(_)) => BinaryOp::And,
+            Some(ast::BinaryOp::Or(_)) => BinaryOp::Or,
             None => return Expr::Missing,
         };
 
@@ -292,10 +419,22 @@ impl<'a> Ctx<'a> {
         let op = match unary_expr.op(self.tree) {
             Some(ast::UnaryOp::Pos(_)) => UnaryOp::Pos,
             Some(ast::UnaryOp::Neg(_)) => UnaryOp::Neg,
+            Some(ast::UnaryOp::Not(_)) => UnaryOp::Not,
             None => return Expr::Missing,
         };
 
         Expr::Unary { expr, op }
+    }
+
+    fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
+        let ty = TyWithRange::parse(array_expr.ty(self.tree), self.interner, self.tree);
+
+        let items = array_expr
+            .items(self.tree)
+            .map(|item| self.lower_expr(item.value(self.tree)))
+            .collect();
+
+        Expr::Array { items, ty }
     }
 
     fn lower_block(&mut self, block: ast::Block) -> Expr {
@@ -308,12 +447,40 @@ impl<'a> Ctx<'a> {
             stmts.push(self.bodies.stmts.alloc(statement));
         }
 
-        let tail_expr =
-            block.tail_expr(self.tree).map(|tail_expr| self.lower_expr(Some(tail_expr)));
+        let tail_expr = block
+            .tail_expr(self.tree)
+            .map(|tail_expr| self.lower_expr(Some(tail_expr)));
 
         self.destroy_current_scope();
 
         Expr::Block { stmts, tail_expr }
+    }
+
+    fn lower_if(&mut self, if_expr: ast::IfExpr) -> Expr {
+        let condition = self.lower_expr(if_expr.condition(self.tree));
+
+        let body = self.lower_expr(if_expr.body(self.tree));
+
+        let else_branch = if let Some(else_branch) = if_expr.else_branch(self.tree) {
+            Some(self.lower_expr(else_branch.body(self.tree)))
+        } else {
+            None
+        };
+
+        Expr::If {
+            condition,
+            body,
+            else_branch,
+        }
+    }
+
+    fn lower_while(&mut self, while_expr: ast::WhileExpr) -> Expr {
+        let condition = while_expr.condition(self.tree);
+        let condition = condition.map(|_| self.lower_expr(condition));
+
+        let body = self.lower_expr(while_expr.body(self.tree));
+
+        Expr::While { condition, body }
     }
 
     fn lower_call(&mut self, call: ast::Call) -> Expr {
@@ -333,7 +500,10 @@ impl<'a> Ctx<'a> {
             let module_name = self.interner.intern(module_name_token.text(self.tree));
             let function_name = self.interner.intern(function_name_token.text(self.tree));
 
-            let fqn = Fqn { module: Name(module_name), name: Name(function_name) };
+            let fqn = Fqn {
+                module: Name(module_name),
+                name: Name(function_name),
+            };
 
             match self.world_index.get_definition(fqn) {
                 Ok(definition) => {
@@ -358,28 +528,36 @@ impl<'a> Ctx<'a> {
                         }
                         Definition::Global(_) => todo!(),
                     }
-                },
+                }
                 Err(GetDefinitionError::UnknownModule) => {
                     self.diagnostics.push(LoweringDiagnostic {
                         kind: LoweringDiagnosticKind::UndefinedModule { name: module_name },
                         range: module_name_token.range(self.tree),
                     });
 
-                    self.bodies.symbol_map.insert(module_name_token, Symbol::Unknown);
-                    self.bodies.symbol_map.insert(function_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(module_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(function_name_token, Symbol::Unknown);
 
                     return Expr::Missing;
-                },
+                }
                 Err(GetDefinitionError::UnknownDefinition) => {
                     self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::UndefinedLocal { name: function_name },
+                        kind: LoweringDiagnosticKind::UndefinedLocal {
+                            name: function_name,
+                        },
                         range: function_name_token.range(self.tree),
                     });
 
                     self.bodies
                         .symbol_map
                         .insert(module_name_token, Symbol::Module(Name(module_name)));
-                    self.bodies.symbol_map.insert(function_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(function_name_token, Symbol::Unknown);
 
                     return Expr::Missing;
                 }
@@ -411,15 +589,33 @@ impl<'a> Ctx<'a> {
         }
 
         let name = Name(name);
-        if let Some(definition) = self.index.get_definition(name) {
-            let path = PathWithRange::ThisModule { name, range: ident.range(self.tree) };
+        if let Ok(definition) = self.world_index.get_definition(Fqn {
+            module: self.module,
+            name,
+        }) {
+            let path = PathWithRange::ThisModule {
+                name,
+                range: ident.range(self.tree),
+            };
 
             match definition {
                 Definition::Function(function) => {
-                    self.bodies.symbol_map.insert(ident, Symbol::Function(path.path()));
+                    self.bodies
+                        .symbol_map
+                        .insert(ident, Symbol::Function(path.path()));
                     return lower(self, call, function, path, ident);
                 }
-                _ => todo!(),
+                Definition::Global(_) => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::CalledNonLambda { name: name.0 },
+                        range: ident.range(self.tree),
+                    });
+
+                    self.bodies
+                        .symbol_map
+                        .insert(ident, Symbol::Global(path.path()));
+                    return Expr::Global(path);
+                }
             }
         }
 
@@ -438,42 +634,45 @@ impl<'a> Ctx<'a> {
             ident: ast::Ident,
         ) -> Expr {
             let arg_list = call.arg_list(ctx.tree);
-    
+
             let expected = function.params.len() as u32;
             let got = match &arg_list {
                 Some(al) => al.args(ctx.tree).count() as u32,
                 None => 0,
             };
-    
+
             if expected != got {
                 let name = match path {
                     PathWithRange::ThisModule { name, .. } => name.0,
                     PathWithRange::OtherModule { fqn, .. } => fqn.name.0,
                 };
-    
+
                 ctx.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::MismatchedArgCount { name, expected, got },
+                    kind: LoweringDiagnosticKind::MismatchedArgCount {
+                        name,
+                        expected,
+                        got,
+                    },
                     range: ident.range(ctx.tree),
                 });
-    
+
                 return Expr::Missing;
             }
-    
+
             let mut args = Vec::new();
-    
+
             if let Some(arg_list) = arg_list {
                 for arg in arg_list.args(ctx.tree) {
                     let expr = ctx.lower_expr(arg.value(ctx.tree));
                     args.push(expr);
                 }
             }
-    
+
             Expr::Call { path, args }
         }
 
         return Expr::Missing;
     }
-
 
     fn lower_ref(&mut self, var_ref: ast::Ref) -> Expr {
         let path = match var_ref.name(self.tree) {
@@ -492,7 +691,10 @@ impl<'a> Ctx<'a> {
             let module_name = self.interner.intern(module_name_token.text(self.tree));
             let var_name = self.interner.intern(var_name_token.text(self.tree));
 
-            let fqn = Fqn { module: Name(module_name), name: Name(var_name) };
+            let fqn = Fqn {
+                module: Name(module_name),
+                name: Name(var_name),
+            };
 
             match self.world_index.get_definition(fqn) {
                 Ok(_) => {
@@ -513,18 +715,22 @@ impl<'a> Ctx<'a> {
                         .insert(var_name_token, Symbol::Global(path.path()));
 
                     return Expr::Global(path);
-                },
+                }
                 Err(GetDefinitionError::UnknownModule) => {
                     self.diagnostics.push(LoweringDiagnostic {
                         kind: LoweringDiagnosticKind::UndefinedModule { name: module_name },
                         range: module_name_token.range(self.tree),
                     });
 
-                    self.bodies.symbol_map.insert(module_name_token, Symbol::Unknown);
-                    self.bodies.symbol_map.insert(var_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(module_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(var_name_token, Symbol::Unknown);
 
                     return Expr::Missing;
-                },
+                }
                 Err(GetDefinitionError::UnknownDefinition) => {
                     self.diagnostics.push(LoweringDiagnostic {
                         kind: LoweringDiagnosticKind::UndefinedLocal { name: var_name },
@@ -534,7 +740,9 @@ impl<'a> Ctx<'a> {
                     self.bodies
                         .symbol_map
                         .insert(module_name_token, Symbol::Module(Name(module_name)));
-                    self.bodies.symbol_map.insert(var_name_token, Symbol::Unknown);
+                    self.bodies
+                        .symbol_map
+                        .insert(var_name_token, Symbol::Unknown);
 
                     return Expr::Missing;
                 }
@@ -555,11 +763,19 @@ impl<'a> Ctx<'a> {
         }
 
         let name = Name(name);
-        if let Some(_) = self.index.get_definition(name) {
-            let path = PathWithRange::ThisModule { name, range: ident.range(self.tree) };
+        if let Ok(_) = self.world_index.get_definition(Fqn {
+            module: self.module,
+            name,
+        }) {
+            let path = PathWithRange::ThisModule {
+                name,
+                range: ident.range(self.tree),
+            };
 
-            self.bodies.symbol_map.insert(ident, Symbol::Global(path.path()));
-            
+            self.bodies
+                .symbol_map
+                .insert(ident, Symbol::Global(path.path()));
+
             return Expr::Global(path);
         }
 
@@ -574,7 +790,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_int_literal(&mut self, int_literal: ast::IntLiteral) -> Expr {
-        let value = int_literal.value(self.tree).and_then(|int| int.text(self.tree).parse().ok());
+        let value = int_literal
+            .value(self.tree)
+            .and_then(|int| int.text(self.tree).parse().ok());
 
         if let Some(value) = value {
             return Expr::IntLiteral(value);
@@ -586,6 +804,18 @@ impl<'a> Ctx<'a> {
         });
 
         Expr::Missing
+    }
+
+    fn lower_bool_literal(&mut self, bool_literal: ast::BoolLiteral) -> Expr {
+        let value = bool_literal
+            .value(self.tree)
+            .and_then(|b| b.text(self.tree).parse().ok());
+
+        if let Some(value) = value {
+            return Expr::BoolLiteral(value);
+        }
+
+        unreachable!()
     }
 
     fn lower_string_literal(&mut self, string_literal: ast::StringLiteral) -> Expr {
@@ -626,10 +856,11 @@ impl<'a> Ctx<'a> {
         Expr::StringLiteral(text)
     }
 
-    fn insert_into_current_scope(&mut self, name: Key, id: Idx<LocalDef>) {
-        self.scopes.last_mut().unwrap().insert(name, id);
+    fn insert_into_current_scope(&mut self, name: Key, value: Idx<LocalDef>) {
+        let last_scope = self.scopes.last_mut().unwrap();
+        last_scope.insert(name, value);
     }
-    
+
     fn look_up_in_current_scope(&mut self, name: Key) -> Option<Idx<LocalDef>> {
         for scope in self.scopes.iter().rev() {
             if let Some(def) = scope.get(&name) {
@@ -647,7 +878,7 @@ impl<'a> Ctx<'a> {
     fn create_new_child_scope(&mut self) {
         self.scopes.push(FxHashMap::default());
     }
-    
+
     fn destroy_current_scope(&mut self) {
         self.scopes.pop();
     }
@@ -656,6 +887,10 @@ impl<'a> Ctx<'a> {
 impl Bodies {
     pub fn function_body(&self, name: Name) -> Idx<Expr> {
         self.function_bodies[&name]
+    }
+
+    pub fn global(&self, name: Name) -> Idx<Expr> {
+        self.globals[&name]
     }
 
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
@@ -699,6 +934,14 @@ impl std::ops::Index<Idx<LocalDef>> for Bodies {
     }
 }
 
+impl std::ops::Index<Idx<LocalSet>> for Bodies {
+    type Output = LocalSet;
+
+    fn index(&self, id: Idx<LocalSet>) -> &Self::Output {
+        &self.local_sets[id]
+    }
+}
+
 impl std::ops::Index<Idx<Stmt>> for Bodies {
     type Output = Stmt;
 
@@ -716,33 +959,53 @@ impl std::ops::Index<Idx<Expr>> for Bodies {
 }
 
 impl Bodies {
-    pub fn debug(&self, interner: &Interner) -> String {
+    pub fn debug(&self, module_name: &str, interner: &Interner) -> String {
         let mut s = String::new();
+
+        let mut globals: Vec<_> = self.globals.iter().collect();
+        globals.sort_unstable_by_key(|(name, _)| *name);
+
+        for (name, expr_id) in globals {
+            s.push_str(&format!(
+                "\n{}.{} := ",
+                module_name,
+                interner.lookup(name.0)
+            ));
+            write_expr(*expr_id, self, &mut s, interner, 0);
+            s.push(';');
+        }
 
         let mut function_bodies: Vec<_> = self.function_bodies.iter().collect();
         function_bodies.sort_unstable_by_key(|(name, _)| *name);
 
         for (name, expr_id) in function_bodies {
-            s.push_str(&format!("{} = () ", interner.lookup(name.0)));
+            s.push_str(&format!(
+                "\n{}.{} := () -> ",
+                module_name,
+                interner.lookup(name.0)
+            ));
             write_expr(*expr_id, self, &mut s, interner, 0);
-            s.push_str(";\n");
+            s.push(';');
         }
 
         if !self.other_module_references.is_empty() {
             let mut other_module_references: Vec<_> = self.other_module_references.iter().collect();
             other_module_references.sort_unstable();
 
-            s.push_str("\nReferences to other modules:\n");
+            s.push_str(&format!(
+                "\nReferences to other modules in {}:",
+                module_name
+            ));
             for fqn in &other_module_references {
                 s.push_str(&format!(
-                    "- {}.{}\n",
+                    "\n- {}.{}",
                     interner.lookup(fqn.module.0),
                     interner.lookup(fqn.name.0)
                 ));
             }
         }
 
-        return s;
+        return s.trim().to_string();
 
         fn write_expr(
             id: Idx<Expr>,
@@ -756,7 +1019,33 @@ impl Bodies {
 
                 Expr::IntLiteral(n) => s.push_str(&format!("{}", n)),
 
+                Expr::BoolLiteral(b) => s.push_str(&format!("{}", b)),
+
                 Expr::StringLiteral(content) => s.push_str(&format!("{content:?}")),
+
+                Expr::Array { items, ty } => {
+                    s.push_str("[]");
+                    s.push_str(ty.display(interner).as_str());
+                    s.push('{');
+
+                    for (idx, item) in items.iter().enumerate() {
+                        s.push(' ');
+                        write_expr(*item, bodies, s, interner, indentation);
+                        if idx != items.len() - 1 {
+                            s.push(',');
+                        }
+                    }
+
+                    s.push_str(" }");
+                }
+
+                Expr::Cast { expr, ty } => {
+                    write_expr(*expr, bodies, s, interner, indentation);
+
+                    s.push_str(" as ");
+
+                    s.push_str(ty.display(interner).as_str());
+                }
 
                 Expr::Binary { lhs, rhs, op } => {
                     write_expr(*lhs, bodies, s, interner, indentation);
@@ -768,6 +1057,14 @@ impl Bodies {
                         BinaryOp::Sub => s.push('-'),
                         BinaryOp::Mul => s.push('*'),
                         BinaryOp::Div => s.push('/'),
+                        BinaryOp::Lt => s.push('<'),
+                        BinaryOp::Gt => s.push('>'),
+                        BinaryOp::Le => s.push_str("<="),
+                        BinaryOp::Ge => s.push_str(">="),
+                        BinaryOp::Eq => s.push_str("=="),
+                        BinaryOp::Ne => s.push_str("!="),
+                        BinaryOp::And => s.push_str("&&"),
+                        BinaryOp::Or => s.push_str("||"),
                     }
 
                     s.push(' ');
@@ -776,22 +1073,26 @@ impl Bodies {
                 }
 
                 Expr::Unary { expr, op } => {
-
-                    s.push(' ');
-
                     match op {
                         UnaryOp::Pos => s.push('+'),
                         UnaryOp::Neg => s.push('-'),
+                        UnaryOp::Not => s.push('!'),
                     }
 
                     write_expr(*expr, bodies, s, interner, indentation);
                 }
 
-                Expr::Block { stmts, tail_expr: None } if stmts.is_empty() => {
+                Expr::Block {
+                    stmts,
+                    tail_expr: None,
+                } if stmts.is_empty() => {
                     s.push_str("{}");
                 }
 
-                Expr::Block { stmts, tail_expr: Some(tail_expr) } if stmts.is_empty() => {
+                Expr::Block {
+                    stmts,
+                    tail_expr: Some(tail_expr),
+                } if stmts.is_empty() => {
                     s.push_str("{ ");
                     write_expr(*tail_expr, bodies, s, interner, indentation + 4);
                     s.push_str(" }");
@@ -820,6 +1121,32 @@ impl Bodies {
                     s.push('}');
                 }
 
+                Expr::If {
+                    condition,
+                    body,
+                    else_branch,
+                } => {
+                    s.push_str("if ");
+                    write_expr(*condition, bodies, s, interner, indentation);
+                    s.push(' ');
+                    write_expr(*body, bodies, s, interner, indentation);
+                    if let Some(else_branch) = else_branch {
+                        s.push_str(" else ");
+                        write_expr(*else_branch, bodies, s, interner, indentation);
+                    }
+                }
+
+                Expr::While { condition, body } => {
+                    if let Some(condition) = condition {
+                        s.push_str("while ");
+                        write_expr(*condition, bodies, s, interner, indentation);
+                        s.push(' ');
+                    } else {
+                        s.push_str("loop ");
+                    }
+                    write_expr(*body, bodies, s, interner, indentation);
+                }
+
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
 
                 Expr::Param { idx } => s.push_str(&format!("p{}", idx)),
@@ -838,9 +1165,7 @@ impl Bodies {
 
                     s.push_str("(");
                     for (idx, arg) in args.iter().enumerate() {
-                        if idx == 0 {
-                            s.push(' ');
-                        } else {
+                        if idx != 0 {
                             s.push_str(", ");
                         }
 
@@ -849,18 +1174,14 @@ impl Bodies {
                     s.push_str(")");
                 }
 
-                Expr::Global(path) => {
-                    match path {
-                        PathWithRange::ThisModule { name, .. } => {
-                            s.push_str(interner.lookup(name.0))
-                        }
-                        PathWithRange::OtherModule { fqn, .. } => s.push_str(&format!(
-                            "{}.{}",
-                            interner.lookup(fqn.module.0),
-                            interner.lookup(fqn.name.0)
-                        )),
-                    }
-                }
+                Expr::Global(path) => match path {
+                    PathWithRange::ThisModule { name, .. } => s.push_str(interner.lookup(name.0)),
+                    PathWithRange::OtherModule { fqn, .. } => s.push_str(&format!(
+                        "{}.{}",
+                        interner.lookup(fqn.module.0),
+                        interner.lookup(fqn.name.0)
+                    )),
+                },
             }
         }
 
@@ -877,8 +1198,30 @@ impl Bodies {
                     s.push(';');
                 }
                 Stmt::LocalDef(local_def_id) => {
-                    s.push_str(&format!("let l{} = ", local_def_id.into_raw()));
-                    write_expr(bodies[*local_def_id].value, bodies, s, interner, indentation);
+                    s.push_str(&format!("l{} := ", local_def_id.into_raw()));
+                    write_expr(
+                        bodies[*local_def_id].value,
+                        bodies,
+                        s,
+                        interner,
+                        indentation,
+                    );
+                    s.push(';');
+                }
+                Stmt::LocalSet(local_set_id) => {
+                    s.push_str(&format!(
+                        "l{} = ",
+                        bodies[*local_set_id]
+                            .local_def
+                            .map_or("<unknown>".to_string(), |id| id.into_raw().to_string())
+                    ));
+                    write_expr(
+                        bodies[*local_set_id].value,
+                        bodies,
+                        s,
+                        interner,
+                        indentation,
+                    );
                     s.push(';');
                 }
             }

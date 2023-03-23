@@ -1,5 +1,4 @@
-
-use crate::{AstNode, Lambda};
+use crate::{AstNode, Lambda, Ty};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
@@ -19,13 +18,16 @@ pub fn validate(ast: impl AstNode, tree: &SyntaxTree) -> Vec<ValidationDiagnosti
 
     for node in ast.syntax().descendant_nodes(tree) {
         if let Some(lamda) = Lambda::cast(node, tree) {
-            if let Some(type_ast) = lamda.return_type(tree) {
-                if type_ast.0.text(tree) == "void" {
-                    errors.push(ValidationDiagnostic { 
-                        kind: ValidationDiagnosticKind::UnneededVoid, 
-                        range: type_ast.range(tree),
-                    });
+            match lamda.return_ty(tree) {
+                Some(Ty::Named(path_ty)) => {
+                    if path_ty.text(tree) == "void" {
+                        errors.push(ValidationDiagnostic {
+                            kind: ValidationDiagnosticKind::UnneededVoid,
+                            range: path_ty.range(tree),
+                        });
+                    }
                 }
+                _ => {}
             }
         }
     }
@@ -41,8 +43,8 @@ mod tests {
     use std::ops::Range as StdRange;
 
     fn check_source_file<const LEN: usize>(
-        input: &str, 
-        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
+        input: &str,
+        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN],
     ) {
         let diagnostics: Vec<_> = diagnostics
             .iter()
@@ -52,7 +54,7 @@ mod tests {
                     let start = range.start.into();
                     let end = range.end.into();
                     TextRange::new(start, end)
-                }
+                },
             })
             .collect();
 
@@ -63,8 +65,8 @@ mod tests {
     }
 
     fn check_repl_line<const LEN: usize>(
-        input: &str, 
-        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN]
+        input: &str,
+        diagnostics: [(ValidationDiagnosticKind, StdRange<u32>); LEN],
     ) {
         let diagnostics: Vec<_> = diagnostics
             .iter()
@@ -74,7 +76,7 @@ mod tests {
                     let start = range.start.into();
                     let end = range.end.into();
                     TextRange::new(start, end)
-                }
+                },
             })
             .collect();
 
@@ -96,10 +98,7 @@ mod tests {
 
     #[test]
     fn validate_u32_max() {
-        check_repl_line(
-            "4294967295",
-            [],
-        );
+        check_repl_line("4294967295", []);
     }
 
     #[test]

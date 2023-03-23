@@ -5,7 +5,7 @@ Root@0..15
     Ident@0..3 "foo"
     Colon@3..4 ":"
     Whitespace@4..5 " "
-    Type@5..8
+    NamedTy@5..8
       Path@5..8
         Ident@5..8 "bar"
     Whitespace@8..9 " "

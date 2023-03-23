@@ -1,0 +1,26 @@
+foo := () -> {
+    bar
+===
+Root@0..22
+  VarDef@0..22
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Equals@5..6 "="
+    Whitespace@6..7 " "
+    Lambda@7..22
+      ParamList@7..9
+        LParen@7..8 "("
+        RParen@8..9 ")"
+      Whitespace@9..10 " "
+      Arrow@10..12 "->"
+      Whitespace@12..13 " "
+      Block@13..22
+        LBrace@13..14 "{"
+        Whitespace@14..19 "\n    "
+        ExprStmt@19..22
+          Ref@19..22
+            Path@19..22
+              Ident@19..22 "bar"
+error at 22: missing RBrace
+error at 22: missing Semicolon

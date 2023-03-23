@@ -1,185 +1,177 @@
-use std::{io::{self, Stdout, Write}, env, path::{self, PathBuf}};
+mod source;
 
-use ast::AstNode;
-use diagnostics::Severity;
-use line_index::LineIndex;
-use parser::parse_repl_line;
+use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
+
+use clap::{Parser, Subcommand};
+use hir::WorldIndex;
 use rustc_hash::FxHashMap;
 use std::fs;
 
-fn main() -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    writeln!(stdout, "Capy Programming Language 0.1.0")?;
+use crate::source::SourceFile;
 
-    let mut args = env::args();
-    args.next(); // skip first arg as it's just the executable name
-    if let Some(file_name) = args.next() {
-        let file = fs::read_to_string(&file_name).expect("Unable to read file.");
-        eval(&file_name.split(".").next().unwrap(), &file, &mut stdout)?;
-        return Ok(());
-    }
-
-    let mut input = String::new();
-
-    let mut continued = false;
-    loop {
-        write!(stdout, "{} ", if continued { " " } else { ">" })?;
-        continued = false;
-        stdout.flush()?;
-
-        stdin.read_line(&mut input)?;
-        if input.trim_end().ends_with("\\") {
-            input = input.trim_end().to_string();
-            input.pop();
-            input.push('\n');
-            continued = true;
-            continue;
-        }
-
-        eval("repl", &input, &mut stdout)?;
-
-        input.clear();
-    }
+#[derive(Debug, Parser)]
+#[command(name = "Capy Programming Language")]
+#[command(author = "NotAFlyingGoose <notaflyinggoose@gmail.com>")]
+#[command(version)]
+#[command(about = "A Cool Programming Language", long_about = None)]
+struct CompilerConfig {
+    #[command(subcommand)]
+    action: BuildAction,
 }
 
-fn eval(module: &str, input: &str, stdout: &mut Stdout) -> io::Result<()> {
-    let mut interner = interner::Interner::default();
+#[derive(Debug, Subcommand)]
+enum BuildAction {
+    Build {
+        #[arg(required = true)]
+        files: Vec<String>,
 
-    let parse = parse_repl_line(&lexer::lex(&input), &input);
-    writeln!(stdout, "{:?}", parse)?;
+        #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+    Run {
+        #[arg(required = true)]
+        files: Vec<String>,
 
-    let tree = parse.syntax_tree();
+        #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
+        verbose: u8,
+    },
+}
 
-    let syntax_errors = parse
-        .errors()
+const ANSI_RED: &str = "\x1B[1;91m";
+const ANSI_GREEN: &str = "\x1B[1;92m";
+const ANSI_WHITE: &str = "\x1B[1;97m";
+const ANSI_RESET: &str = "\x1B[0m";
+
+fn main() -> io::Result<()> {
+    let config = CompilerConfig::parse();
+
+    let (files, verbose, should_run) = match config.action {
+        BuildAction::Build { files, verbose } => (files, verbose, false),
+        BuildAction::Run { files, verbose } => (files, verbose, true),
+    };
+
+    let files = files
         .iter()
-        .cloned()
-        .map(diagnostics::Diagnostic::from_syntax);
-
-    let root = ast::Root::cast(tree.root(), tree).unwrap();
-
-    let validation_diagnostics = ast::validation::validate(root, tree);
-
-    // let ast_vals = root
-    //     .stmts(tree)
-    //     .filter_map(|stmt| if let ast::Stmt::VarDef(var_def) = stmt {
-    //         Some(var_def.value(tree))
-    //     } else if let ast::Stmt::Return(ret) = stmt {
-    //         Some(ret.value(tree))
-    //     } else {
-    //         None
-    //     })
-    //     .collect::<Vec<_>>();
-    // dbg!(ast_vals);
-
-    let mut world_index = hir::WorldIndex::default();
-
-    let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner);
-
-    for name in index.definition_names() {
-        println!(
-            "{} = {:?}",
-            interner.lookup(name.0),
-            index.get_definition(name)
-        )
-    }
-
-    let (bodies, lowering_diagnostics) =
-        hir::lower(root, tree, &index, &world_index, &mut interner);
-
-    println!("{}", bodies.debug(&interner));
-
-    let (inference, type_diagnostics) = hir_types::infer_all(&bodies, &index, &world_index);
-
-    println!("{}", inference.debug(&interner));
-
-    // dbg!(hir::lower(root, tree));
-
-    // hir_typed::infer_all
-
-    let line_index = LineIndex::new(&input);
-
-    let diagnostics: Vec<diagnostics::Diagnostic> = syntax_errors
-        .chain(
-            validation_diagnostics
-                .iter()
-                .cloned()
-                .map(diagnostics::Diagnostic::from_validation),
-        )
-        .chain(
-            indexing_diagnostics
-                .iter()
-                .cloned()
-                .map(diagnostics::Diagnostic::from_indexing),
-        )
-        .chain(
-            lowering_diagnostics
-                .iter()
-                .cloned()
-                .map(diagnostics::Diagnostic::from_lowering),
-        )
-        .chain(
-            type_diagnostics
-                .iter()
-                .cloned()
-                .map(diagnostics::Diagnostic::from_type),
-        )
+        .map(|filename| match fs::read_to_string(filename) {
+            Ok(contents) => (filename.clone(), contents),
+            Err(why) => {
+                println!("{}: {}", filename, why);
+                exit(1)
+            }
+        })
         .collect();
 
-    for diagnostic in &diagnostics {
-        for line in diagnostic.display(&input, &interner, &line_index) {
-            write!(stdout, "{}\n", line)?;
-        }
+    compile_files(files, should_run, verbose)
+}
+
+fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) -> io::Result<()> {
+    println!("{ANSI_GREEN}Compiling{ANSI_RESET}  ...");
+    let compilation_start = Instant::now();
+
+    let interner = Rc::new(RefCell::new(interner::Interner::default()));
+    let world_index = Rc::new(RefCell::new(WorldIndex::default()));
+    let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
+    let tys_map = Rc::new(RefCell::new(FxHashMap::default()));
+
+    let mut source_files = Vec::new();
+    for (file_name, contents) in files {
+        source_files.push(SourceFile::parse(
+            file_name.clone(),
+            contents.clone(),
+            interner.clone(),
+            bodies_map.clone(),
+            tys_map.clone(),
+            world_index.clone(),
+            verbose,
+        ));
     }
-    if !diagnostics.is_empty() {
-        write!(stdout, "\n")?;
+    if verbose >= 1 {
+        println!();
     }
 
-    if !diagnostics
+    let main_modules = source_files
         .iter()
-        .any(|diag| diag.severity() == Severity::Error) {
-        // compile to LLVM
-        let module = hir::Name(interner.intern(module));
-        world_index.add_module(module, index);
+        .filter(|source| source.has_main())
+        .map(|source| (source.file_name.clone(), source.module))
+        .collect::<Vec<_>>();
+    if main_modules.is_empty() {
+        println!("{ANSI_RED}error{ANSI_WHITE}: there is no main function{ANSI_RESET}");
+    } else if main_modules.len() > 1 {
+        println!("{ANSI_RED}error{ANSI_WHITE}: there are multiple main functions{ANSI_RESET}");
+    }
 
-        let main = hir::Name(interner.intern("main"));
+    source_files
+        .iter_mut()
+        .for_each(|source| source.build_bodies());
+    if verbose >= 1 {
+        println!();
+    }
 
-        let mut bodies_map = FxHashMap::default();
-        let mut types_map = FxHashMap::default();
-        bodies_map.insert(module, bodies);
-        types_map.insert(module, inference);
+    source_files
+        .iter_mut()
+        .for_each(|source| source.build_tys());
 
-        match codegen::compile(
-            hir::Fqn {
-                module,
-                name: main,
-            },
-            &interner,
-            bodies_map,
-            types_map,
-            &world_index,
-        ) {
-            Ok(output) => {
-                let output_folder = env::current_dir().unwrap().join("out");
-                let file = output_folder.join(&format!("{}.o", interner.lookup(module.0)));
-                fs::write(&file, output.as_slice());
-                println!(
-                    "{}{}{}",
-                    file.parent().and_then(|x| x.file_name()).and_then(|x| x.to_str()).unwrap(),
-                    path::MAIN_SEPARATOR,
-                    file.file_name().and_then(|x| x.to_str()).unwrap()
-                );
-                println!("Running\n");
-                let exit_code = codegen::link_and_exec(&file);
-                println!("\n\nProcess exited with code {}", exit_code);
+    source_files
+        .iter()
+        .for_each(|source| source.print_diagnostics());
+    if source_files.iter().any(|source| source.has_errors()) {
+        println!("\nnot compiling due to previous errors");
+        exit(1);
+    }
+
+    let main_fn = hir::Name(interner.borrow_mut().intern("main"));
+    let (main_file_name, main_module) = main_modules.first().unwrap();
+
+    let parse_finish = compilation_start.elapsed();
+
+    println!(
+        "{ANSI_GREEN}Finalizing{ANSI_RESET} (parsed in {:.2}s)",
+        parse_finish.as_secs_f32()
+    );
+    let interner = interner.borrow_mut();
+    match codegen::compile(
+        &main_file_name,
+        verbose >= 1,
+        hir::Fqn {
+            module: *main_module,
+            name: main_fn,
+        },
+        &interner,
+        &bodies_map.borrow_mut(),
+        &tys_map.borrow_mut(),
+        &world_index.borrow_mut(),
+    ) {
+        Ok(output) => {
+            let output_folder = env::current_dir().unwrap().join("out");
+            let file = output_folder.join(&format!("{}.o", interner.lookup(main_module.0)));
+            fs::write(&file, output.as_slice()).unwrap_or_else(|why| {
+                println!("{}: {why}", file.display());
+                exit(1);
+            });
+
+            let exec = codegen::link_to_exec(&file);
+            let full_finish = compilation_start.elapsed();
+            println!(
+                "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
+                interner.lookup(main_module.0),
+                exec.display(),
+                full_finish.as_secs_f32(),
+            );
+
+            if !should_run {
+                return Ok(());
             }
-            Err(message) => {
-                println!("error while finalizing: {}", message)
+            println!("{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n", exec.display());
+            match std::process::Command::new(exec).status() {
+                Ok(status) => {
+                    println!("\nProcess exited with {}", status.to_string());
+                }
+                Err(why) => {
+                    println!("\nProcess exited early: {}", why.to_string());
+                }
             }
         }
-    } else {
-        write!(stdout, "not compiling due to previous errors\n")?;
+        Err(why) => println!("Error Compiling with LLVM: {why}"),
     }
 
     Ok(())

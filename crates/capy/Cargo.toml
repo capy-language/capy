@@ -9,10 +9,15 @@ edition = "2021"
 ast = {path = "../ast"}
 codegen = {path = "../codegen"}
 hir = {path = "../hir"}
-hir_types = {path = "../hir_types"}
+hir_ty = {path = "../hir_ty"}
 lexer = {path = "../lexer"}
 parser = {path = "../parser"}
+token = {path = "../token"}
 line_index = {path = "../line_index"}
 diagnostics = {path = "../diagnostics"}
 interner = {path = "../interner"}
 rustc-hash = "1.1"
+
+[dependencies.clap]
+version = "4.1.8"
+features = ["derive"]

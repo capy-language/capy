@@ -83,11 +83,32 @@ pub enum LexerTokenKind {
     #[regex("[ \r\n]+")]
     Whitespace,
 
+    #[token("mut")]
+    Mut,
+
+    #[token("as")]
+    As,
+
+    #[token("if")]
+    If,
+
+    #[token("else")]
+    Else,
+
+    #[token("while")]
+    While,
+
+    #[token("loop")]
+    Loop,
+
     #[regex("[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
     #[regex("[0-9]+")]
     Int,
+
+    #[regex("true|false")]
+    Bool,
 
     _Quote,
 
@@ -107,9 +128,36 @@ pub enum LexerTokenKind {
     #[token("/")]
     Slash,
 
+    #[token("<")]
+    Less,
+
+    #[token("<=")]
+    LessEquals,
+
+    #[token(">")]
+    Greater,
+
+    #[token(">=")]
+    GreaterEquals,
+
+    #[token("!")]
+    Bang,
+
+    #[token("!=")]
+    BangEquals,
+
+    #[token("&&")]
+    DoubleAnd,
+
+    #[token("||")]
+    DoublePipe,
+
+    #[token("==")]
+    DoubleEquals,
+
     #[token("=")]
     Equals,
-    
+
     #[token(",")]
     Comma,
 
@@ -124,6 +172,12 @@ pub enum LexerTokenKind {
 
     #[token(")")]
     RParen,
+
+    #[token("[")]
+    LBrack,
+
+    #[token("]")]
+    RBrack,
 
     #[token("{")]
     LBrace,
@@ -140,13 +194,12 @@ pub enum LexerTokenKind {
 
     #[token(";")]
     Semicolon,
-    
+
     #[error]
     Error,
 
     // These are internal and so don't have to have
     // representation in syntax::TokenKind
-
     #[regex(r#""([^"\\\n]|\\.)*"?"#)]
     __InternalString,
 

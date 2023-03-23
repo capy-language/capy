@@ -1,0 +1,13 @@
+to_print : string = "Hello, World!\n";
+
+main := () -> i32 {
+    // prints "Hello, World!" to the screen
+    printf(to_print);
+
+    // exit with code 0
+    0
+};
+
+printf := (some_text: string) -> {
+    // libc defined
+};

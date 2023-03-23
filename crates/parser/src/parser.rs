@@ -1,4 +1,3 @@
-
 pub(crate) mod marker;
 
 use std::cell::Cell;
@@ -20,11 +19,8 @@ use marker::Marker;
 
 use self::marker::CompletedMarker;
 
-const DEFAULT_RECOVERY_SET: TokenSet = TokenSet::new([
-    TokenKind::Semicolon, 
-    TokenKind::LBrace, 
-    TokenKind::RBrace
-]);
+const DEFAULT_RECOVERY_SET: TokenSet =
+    TokenSet::new([TokenKind::Semicolon, TokenKind::LBrace, TokenKind::RBrace]);
 
 pub(crate) struct Parser<'tokens> {
     tokens: &'tokens Tokens,
@@ -45,7 +41,7 @@ impl<'tokens> Parser<'tokens> {
             expected_syntax: None,
             expected_syntax_tracking_state: Rc::new(Cell::new(
                 ExpectedSyntaxTrackingState::Unnamed,
-            ))
+            )),
         }
     }
 
@@ -61,12 +57,12 @@ impl<'tokens> Parser<'tokens> {
         (
             unsafe {
                 Vec::from_raw_parts(
-                    events.as_mut_ptr() as *mut Event, 
-                    events.len(), 
+                    events.as_mut_ptr() as *mut Event,
+                    events.len(),
                     events.capacity(),
                 )
             },
-            self.errors
+            self.errors,
         )
     }
 
@@ -115,13 +111,16 @@ impl<'tokens> Parser<'tokens> {
     ) -> Option<CompletedMarker> {
         // we must have been expecting something if there was an error
         let expected_syntax = self.expected_syntax.take().unwrap();
-        self.expected_syntax_tracking_state.set(ExpectedSyntaxTrackingState::Unnamed);
+        self.expected_syntax_tracking_state
+            .set(ExpectedSyntaxTrackingState::Unnamed);
 
         if self.at_eof() || self.at_set(recovery_set) {
             let range = self.previous_token_range();
             self.errors.push(SyntaxError {
                 expected_syntax,
-                kind: SyntaxErrorKind::Missing { offset: range.end() },
+                kind: SyntaxErrorKind::Missing {
+                    offset: range.end(),
+                },
             });
 
             return None;
@@ -142,7 +141,8 @@ impl<'tokens> Parser<'tokens> {
 
     #[must_use]
     pub(crate) fn expected_syntax_name(&mut self, name: &'static str) -> ExpectedSyntaxGuard {
-        self.expected_syntax_tracking_state.set(ExpectedSyntaxTrackingState::Named);
+        self.expected_syntax_tracking_state
+            .set(ExpectedSyntaxTrackingState::Named);
         self.expected_syntax = Some(ExpectedSyntax::Named(name));
 
         ExpectedSyntaxGuard::new(Rc::clone(&self.expected_syntax_tracking_state))
@@ -164,26 +164,7 @@ impl<'tokens> Parser<'tokens> {
         self.at_raw(kind)
     }
 
-    pub(crate) fn at_ahead(&mut self, offset: usize, kind: TokenKind) -> bool {
-        let original_token_idx = self.token_idx;
-
-        for _ in 0..offset {
-            self.skip_trivia();
-            self.token_idx += 1;
-            if self.at_eof() {
-                self.token_idx = original_token_idx;
-                return false;
-            }
-        }
-        self.skip_trivia();
-        let res = self.at_raw(kind);
-
-        self.token_idx = original_token_idx;
-
-        res
-    }
-
-    pub(crate) fn at_set_ahead(&mut self, offset: usize, set: TokenSet) -> bool {
+    pub(crate) fn at_ahead(&mut self, offset: usize, set: TokenSet) -> bool {
         let original_token_idx = self.token_idx;
 
         for _ in 0..offset {
@@ -224,15 +205,25 @@ impl<'tokens> Parser<'tokens> {
 
     fn clear_expected_syntaxes(&mut self) {
         self.expected_syntax = None;
-        self.expected_syntax_tracking_state.set(ExpectedSyntaxTrackingState::Unnamed);
+        self.expected_syntax_tracking_state
+            .set(ExpectedSyntaxTrackingState::Unnamed);
     }
 
     fn previous_token_range(&mut self) -> TextRange {
-        let mut previous_token_idx = self.token_idx - 1;
+        let mut previous_token_idx = if let Some(idx) = self.token_idx.checked_sub(1) {
+            idx
+        } else {
+            return self.tokens.range(self.token_idx);
+        };
+
         while let TokenKind::Whitespace | TokenKind::CommentLeader | TokenKind::CommentContents =
             self.tokens.kind(previous_token_idx)
         {
-            previous_token_idx -= 1;
+            previous_token_idx = if let Some(idx) = previous_token_idx.checked_sub(1) {
+                idx
+            } else {
+                return self.tokens.range(self.token_idx);
+            }
         }
 
         self.tokens.range(previous_token_idx)
@@ -262,13 +253,16 @@ pub(crate) struct ExpectedSyntaxGuard {
 
 impl ExpectedSyntaxGuard {
     fn new(expected_syntax_tracking_state: Rc<Cell<ExpectedSyntaxTrackingState>>) -> Self {
-        Self { expected_syntax_tracking_state }
+        Self {
+            expected_syntax_tracking_state,
+        }
     }
 }
 
 impl Drop for ExpectedSyntaxGuard {
     fn drop(&mut self) {
-        self.expected_syntax_tracking_state.set(ExpectedSyntaxTrackingState::Unnamed);
+        self.expected_syntax_tracking_state
+            .set(ExpectedSyntaxTrackingState::Unnamed);
     }
 }
 

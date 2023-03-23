@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 ast = {path = "../ast"}
 hir = {path = "../hir"}
-hir_types = {path = "../hir_types"}
+hir_ty = {path = "../hir_ty"}
 interner = {path = "../interner"}
 line_index = {path = "../line_index"}
 parser = {path = "../parser"}

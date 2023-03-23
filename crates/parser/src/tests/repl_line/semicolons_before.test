@@ -1,0 +1,16 @@
+;;;foo := bar;
+===
+Root@0..14
+  Semicolon@0..1 ";"
+  Semicolon@1..2 ";"
+  Semicolon@2..3 ";"
+  VarDef@3..13
+    Ident@3..6 "foo"
+    Whitespace@6..7 " "
+    Colon@7..8 ":"
+    Equals@8..9 "="
+    Whitespace@9..10 " "
+    Ref@10..13
+      Path@10..13
+        Ident@10..13 "bar"
+  Semicolon@13..14 ";"

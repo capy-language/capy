@@ -1,20 +1,22 @@
-(x: s32) {};
+(x: i32) -> {};
 ===
-Root@0..12
-  ExprStmt@0..11
-    Lambda@0..11
+Root@0..15
+  ExprStmt@0..14
+    Lambda@0..14
       ParamList@0..8
         LParen@0..1 "("
         Param@1..7
           Ident@1..2 "x"
           Colon@2..3 ":"
           Whitespace@3..4 " "
-          Type@4..7
+          NamedTy@4..7
             Path@4..7
-              Ident@4..7 "s32"
+              Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
-      Block@9..11
-        LBrace@9..10 "{"
-        RBrace@10..11 "}"
-  Semicolon@11..12 ";"
+      Arrow@9..11 "->"
+      Whitespace@11..12 " "
+      Block@12..14
+        LBrace@12..13 "{"
+        RBrace@13..14 "}"
+  Semicolon@14..15 ";"

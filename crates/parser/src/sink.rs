@@ -76,7 +76,6 @@ impl<'tokens> Sink<'tokens> {
     fn skip_trivia(&mut self) {
         loop {
             let token = self.tokens.get_kind(self.token_idx);
-            //println!("token {:?}", token);
             match token {
                 Some(TokenKind::Whitespace) => self.add_token(),
 

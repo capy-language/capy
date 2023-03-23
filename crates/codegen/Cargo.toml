@@ -6,12 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm10-0"] }
 interner = {path = "../interner"}
 la-arena = "0.2.0"
 hir = {path = "../hir"}
-hir_types = {path = "../hir_types"}
+hir_ty = {path = "../hir_ty"}
 rustc-hash = "1.1"
+
+[dependencies.inkwell]
+git = "https://github.com/TheDan64/inkwell"
+branch = "master"
+features = ["llvm14-0"]
 
 [dev-dependencies]
 ast = {path = "../ast"}

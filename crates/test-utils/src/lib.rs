@@ -31,8 +31,14 @@ pub fn split_multi_module_test_data(input: &str) -> FxHashMap<&str, &str> {
             current_module_name = Some(module_name);
         }
 
-        module_idxs.get_mut(&current_module_name.unwrap()).unwrap().end = line_end;
+        module_idxs
+            .get_mut(&current_module_name.unwrap())
+            .unwrap()
+            .end = line_end;
     }
 
-    module_idxs.into_iter().map(|(module_name, range)| (module_name, &input[range])).collect()
+    module_idxs
+        .into_iter()
+        .map(|(module_name, range)| (module_name, &input[range]))
+        .collect()
 }

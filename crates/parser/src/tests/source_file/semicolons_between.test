@@ -1,0 +1,38 @@
+;;;main := () -> {};;;foo := "bar";;;
+===
+Root@0..37
+  Semicolon@0..1 ";"
+  Semicolon@1..2 ";"
+  Semicolon@2..3 ";"
+  VarDef@3..19
+    Ident@3..7 "main"
+    Whitespace@7..8 " "
+    Colon@8..9 ":"
+    Equals@9..10 "="
+    Whitespace@10..11 " "
+    Lambda@11..19
+      ParamList@11..13
+        LParen@11..12 "("
+        RParen@12..13 ")"
+      Whitespace@13..14 " "
+      Arrow@14..16 "->"
+      Whitespace@16..17 " "
+      Block@17..19
+        LBrace@17..18 "{"
+        RBrace@18..19 "}"
+  Semicolon@19..20 ";"
+  Semicolon@20..21 ";"
+  Semicolon@21..22 ";"
+  VarDef@22..34
+    Ident@22..25 "foo"
+    Whitespace@25..26 " "
+    Colon@26..27 ":"
+    Equals@27..28 "="
+    Whitespace@28..29 " "
+    StringLiteral@29..34
+      Quote@29..30 "\""
+      StringContents@30..33 "bar"
+      Quote@33..34 "\""
+  Semicolon@34..35 ";"
+  Semicolon@35..36 ";"
+  Semicolon@36..37 ";"

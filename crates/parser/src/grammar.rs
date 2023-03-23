@@ -1,8 +1,7 @@
-
-mod path;
 mod expr;
+mod path;
 mod stmt;
-mod types;
+mod ty;
 
 use syntax::{NodeKind, TokenKind};
 
@@ -13,7 +12,12 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
     let m = p.start();
 
     while !p.at_eof() {
-        stmt::parse_def(p);
+        if p.at(TokenKind::Semicolon) {
+            p.bump();
+            continue;
+        }
+        stmt::parse_def(p, false);
+        p.expect_with_no_skip(TokenKind::Semicolon);
     }
 
     m.complete(p, NodeKind::Root);
@@ -23,9 +27,8 @@ pub(crate) fn repl_line(p: &mut Parser<'_>) {
     let m = p.start();
 
     while !p.at_eof() {
-        if p.at(TokenKind::RBrace) || p.at(TokenKind::Semicolon) {
-            let _guard = p.expected_syntax_name("definition or statement");
-            p.error_without_skip();
+        if p.at(TokenKind::Semicolon) {
+            p.bump();
         } else if stmt::parse_stmt(p).is_none() {
             if p.at_eof() {
                 break;

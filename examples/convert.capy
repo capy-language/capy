@@ -1,0 +1,29 @@
+
+// !!! This is a theoretical function !!!
+// !!!     This does not work yet     !!!
+
+main := () -> {
+    
+};
+
+int_to_string := (n: i32) -> string {
+    s := [_]u8{};
+    sign := if n < 0 {
+        n = -n;
+        true
+    } else {
+        false
+    }
+    loop {
+        remainder = n % 10;
+        n = n / 10;
+        s.insert(0, '0' + remainder);
+        if n == 0 {
+            break;
+        }
+    }
+    if sign {
+        s.insert(0, '-');
+    }
+    s
+}

@@ -1,0 +1,22 @@
+main := () -> {};;;
+===
+Root@0..19
+  VarDef@0..16
+    Ident@0..4 "main"
+    Whitespace@4..5 " "
+    Colon@5..6 ":"
+    Equals@6..7 "="
+    Whitespace@7..8 " "
+    Lambda@8..16
+      ParamList@8..10
+        LParen@8..9 "("
+        RParen@9..10 ")"
+      Whitespace@10..11 " "
+      Arrow@11..13 "->"
+      Whitespace@13..14 " "
+      Block@14..16
+        LBrace@14..15 "{"
+        RBrace@15..16 "}"
+  Semicolon@16..17 ";"
+  Semicolon@17..18 ";"
+  Semicolon@18..19 ";"

@@ -1,0 +1,31 @@
+
+target : i32 = 28;
+repeat : i32 = 5;
+answer : i32 = 317811;
+
+fib := (n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+};
+
+main := () -> i32 {
+    io.printf("Running Fibonacci(%d) x %d times...\nReady... Go!\n", target, repeat);
+
+    mut result := 0;
+    mut n := 0;
+    while n < repeat {
+        result = fib(target);
+        n = n + 1;
+    };
+
+    io.printf("Fibonacci number #%d = %d\n", target, result);
+
+    if result != answer {
+        io.printf("The answer is WRONG! Should be %d\n", answer, 0);
+    };
+
+    0
+};

@@ -6,7 +6,7 @@ mod sink;
 mod token_set;
 
 #[cfg(test)]
-mod tests; 
+mod tests;
 
 use std::fmt;
 

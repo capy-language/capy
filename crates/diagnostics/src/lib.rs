@@ -1,15 +1,13 @@
-
 use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
 use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
-use hir_types::TypeDiagnostic;
+use hir_ty::TyDiagnostic;
 use interner::Interner;
-use line_index::{LineIndex, LineNr, ColNr};
-use parser::{SyntaxError, SyntaxErrorKind, ExpectedSyntax};
+use line_index::{ColNr, LineIndex, LineNr};
+use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
 use syntax::TokenKind;
 use text_size::{TextRange, TextSize};
-
 
 pub struct Diagnostic(Repr);
 
@@ -18,7 +16,7 @@ enum Repr {
     Validation(ValidationDiagnostic),
     Indexing(IndexingDiagnostic),
     Lowering(LoweringDiagnostic),
-    Type(TypeDiagnostic),
+    Ty(TyDiagnostic),
 }
 
 #[derive(PartialEq)]
@@ -44,11 +42,17 @@ impl Diagnostic {
         Self(Repr::Lowering(diagnostic))
     }
 
-    pub fn from_type(diagnostic: TypeDiagnostic) -> Self {
-        Self(Repr::Type(diagnostic))
+    pub fn from_ty(diagnostic: TyDiagnostic) -> Self {
+        Self(Repr::Ty(diagnostic))
     }
 
-    pub fn display(&self, input: &str, interner: &Interner, line_index: &LineIndex) -> Vec<String> {
+    pub fn display(
+        &self,
+        filename: &str,
+        input: &str,
+        interner: &Interner,
+        line_index: &LineIndex,
+    ) -> Vec<String> {
         let range = self.range();
 
         let (start_line, start_col) = line_index.line_col(range.start());
@@ -73,23 +77,27 @@ impl Diagnostic {
             self.message(interner)
         )];
 
-        input_snippet(input, start_line, start_col, end_line, end_col, range, &mut lines);
+        input_snippet(
+            filename, input, start_line, start_col, end_line, end_col, range, &mut lines,
+        );
 
         lines
     }
 
     pub fn range(&self) -> TextRange {
         match self.0 {
-            Repr::Syntax(SyntaxError { kind: SyntaxErrorKind::Missing { offset }, .. }) => {
-                TextRange::new(offset, offset + TextSize::from(1))
-            },
-            Repr::Syntax(SyntaxError { 
-                kind: SyntaxErrorKind::Unexpected { range, .. }, .. 
+            Repr::Syntax(SyntaxError {
+                kind: SyntaxErrorKind::Missing { offset },
+                ..
+            }) => TextRange::new(offset, offset + TextSize::from(1)),
+            Repr::Syntax(SyntaxError {
+                kind: SyntaxErrorKind::Unexpected { range, .. },
+                ..
             }) => range,
             Repr::Validation(ValidationDiagnostic { range, .. }) => range,
             Repr::Indexing(IndexingDiagnostic { range, .. }) => range,
             Repr::Lowering(LoweringDiagnostic { range, .. }) => range,
-            Repr::Type(TypeDiagnostic { range, .. }) => range,
+            Repr::Ty(TyDiagnostic { range, .. }) => range,
         }
     }
 
@@ -99,7 +107,7 @@ impl Diagnostic {
             Repr::Validation(_) => Severity::Warning,
             Repr::Indexing(_) => Severity::Error,
             Repr::Lowering(_) => Severity::Error,
-            Repr::Type(_) => Severity::Error,
+            Repr::Ty(_) => Severity::Error,
         }
     }
 
@@ -109,12 +117,13 @@ impl Diagnostic {
             Repr::Validation(d) => validation_diagnostic_message(d),
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
-            Repr::Type(d) => type_diagnostic_message(d, interner),
+            Repr::Ty(d) => ty_diagnostic_message(d, interner),
         }
     }
 }
 
 fn input_snippet(
+    filename: &str,
     input: &str,
     start_line: LineNr,
     start_col: ColNr,
@@ -129,34 +138,30 @@ fn input_snippet(
 
     const PADDING: &str = " | ";
     const POINTER_UP: &str = "^";
-    const POINTER_DOWN: &str = "v";
+    // const POINTER_DOWN: &str = "v";
 
     let file_lines: Vec<_> = input.lines().collect();
 
     let is_single_line = start_line == end_line;
     if is_single_line {
         let line_number_padding = " ".repeat(count_digits(start_line.0 + 1, 10));
-        
+
         lines.push(format!(
-            "{}{}--> at {}:{}",
+            "{}{}--> at {}:{}:{}",
             ANSI_GRAY,
             line_number_padding,
+            filename,
             start_line.0 + 1,
             start_col.0 + 1,
         ));
 
-        lines.push(format!(
-            "{}{}{}",
-            ANSI_GRAY,
-            line_number_padding,
-            PADDING
-        ));
+        lines.push(format!("{}{}{}", ANSI_GRAY, line_number_padding, PADDING));
 
         lines.push(format!(
             "{}{}{}{}{}",
             ANSI_GRAY,
             start_line.0 + 1,
-            PADDING, 
+            PADDING,
             ANSI_RESET,
             file_lines[start_line.0 as usize]
         ));
@@ -175,6 +180,8 @@ fn input_snippet(
         return;
     }
 
+    // multi-line errors:
+
     let line_number_padding = " ".repeat(count_digits(end_line.0 + 1, 10));
 
     lines.push(format!(
@@ -185,51 +192,72 @@ fn input_snippet(
         start_col.0 + 1,
     ));
 
+    // blank line
+    lines.push(format!("{}{}{}", ANSI_GRAY, line_number_padding, PADDING));
+
+    // now start printing the actual lines of code
     let first_line = file_lines[start_line.0 as usize];
     lines.push(format!(
-        "{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}{}",
+        ANSI_GRAY,
+        start_line.0 + 1,
+        " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
+        PADDING,
+        ANSI_YELLOW,
+        "  ",
+        ANSI_RESET,
+        first_line
+    ));
+
+    // arrow below first line
+    lines.push(format!(
+        "{}{}{}{}{}{}{}",
         ANSI_GRAY,
         line_number_padding,
         PADDING,
-        " ".repeat(start_col.0 as usize),
         ANSI_YELLOW,
-        POINTER_DOWN.repeat(first_line.len() - start_col.0 as usize)
+        " ",
+        "_".repeat(start_col.0 as usize + 1),
+        POINTER_UP,
+        //"-".repeat(first_line.len() - start_col.0 as usize + 2)
     ));
-    lines.push(format!(
-        "{}{}{}{}{}{}", 
-        ANSI_GRAY,
-        start_line.0 + 1,
-        PADDING,
-        " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
-        ANSI_RESET,
-        first_line));
 
     for num in start_line.0 as usize + 1..end_line.0 as usize {
         lines.push(format!(
-            "{}{}{}{}{}", 
+            "{}{}{}{}{}{}{}{}",
             ANSI_GRAY,
             num + 1,
+            " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(num as u32 + 1, 10)),
             PADDING,
+            ANSI_YELLOW,
+            "| ",
             ANSI_RESET,
-            &file_lines[num]));
+            &file_lines[num]
+        ));
     }
 
     let last_line = file_lines[end_line.0 as usize];
     lines.push(format!(
-        "{}{}{}{}{}", 
+        "{}{}{}{}{}{}{}",
         ANSI_GRAY,
         end_line.0 + 1,
         PADDING,
+        ANSI_YELLOW,
+        "| ",
         ANSI_RESET,
-        last_line));
+        last_line
+    ));
     lines.push(format!(
-        "{}{}{}{}{}{}", 
+        "{}{}{}{}{}{}{}{}",
         ANSI_GRAY,
         line_number_padding,
         PADDING,
         ANSI_YELLOW,
-        POINTER_UP.repeat(end_col.0 as usize + 1),
-        ANSI_RESET));
+        "|",
+        "_".repeat(end_col.0 as usize + 1),
+        POINTER_UP,
+        ANSI_RESET
+    ));
 }
 
 // count the digits in a number e.g.
@@ -282,6 +310,10 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
         }
+        IndexingDiagnosticKind::MissingTy { name } => {
+            format!("global `{}` must have a type", interner.lookup(*name))
+        }
+        IndexingDiagnosticKind::FunctionTy => "lambdas can not be typed".to_string(),
     }
 }
 
@@ -294,8 +326,21 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::UndefinedModule { name } => {
             format!("undefined module `{}`", interner.lookup(*name))
         }
-        LoweringDiagnosticKind::MismatchedArgCount { name, expected, got } => {
-            format!("`{}` expected {} arguments, but got {}", interner.lookup(*name), expected, got)
+        LoweringDiagnosticKind::MutableGlobal => "globals cannot be mutable".to_string(),
+        LoweringDiagnosticKind::SetImmutable { name } => {
+            format!("`{}` is an immutable variable", interner.lookup(*name))
+        }
+        LoweringDiagnosticKind::MismatchedArgCount {
+            name,
+            expected,
+            got,
+        } => {
+            format!(
+                "`{}` expected {} arguments, but got {}",
+                interner.lookup(*name),
+                expected,
+                got
+            )
         }
         LoweringDiagnosticKind::CalledNonLambda { name } => {
             format!(
@@ -307,32 +352,89 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
     }
 }
 
-fn type_diagnostic_message(d: &TypeDiagnostic, interner: &Interner) -> String {
+fn ty_diagnostic_message(d: &TyDiagnostic, interner: &Interner) -> String {
     match &d.kind {
-        hir_types::TypeDiagnosticKind::Mismatch { expected, found } => {
+        hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
             format!(
                 "expected `{}` but found `{}`",
                 expected.display(interner),
-                found.display(interner),
+                found.display(interner)
             )
-        },
-        hir_types::TypeDiagnosticKind::Undefined { name } => {
+        }
+        hir_ty::TyDiagnosticKind::Uncastable { from, to } => {
+            format!(
+                "cannot cast `{}` to `{}`",
+                from.display(interner),
+                to.display(interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::OpMismatch { op, first, second } => {
+            format!(
+                "`{}` cannot be {} `{}`",
+                first.display(interner),
+                match op {
+                    hir::BinaryOp::Add => "added to",
+                    hir::BinaryOp::Sub => "subtracted by",
+                    hir::BinaryOp::Mul => "multiplied by",
+                    hir::BinaryOp::Div => "divided by",
+                    hir::BinaryOp::Lt
+                    | hir::BinaryOp::Gt
+                    | hir::BinaryOp::Le
+                    | hir::BinaryOp::Ge
+                    | hir::BinaryOp::Eq
+                    | hir::BinaryOp::Ne
+                    | hir::BinaryOp::And
+                    | hir::BinaryOp::Or => "compared to",
+                },
+                second.display(interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
+            format!(
+                "`if` and `else` have different types, expected `{}` but found `{}`",
+                found.display(interner),
+                expected.display(interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::MissingElse { expected } => {
+            format!(
+                "this `if` is missing an `else` with type `{}`",
+                expected.display(interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::Undefined { name } => {
             format!("undefined type `{}`", interner.lookup(*name))
-        },
+        }
     }
 }
 
 fn format_kind(kind: TokenKind) -> &'static str {
     match kind {
         TokenKind::Ident => "identifier",
-        TokenKind::Int => "integer literal",
+        TokenKind::Mut => "`mut`",
+        TokenKind::As => "`as`",
+        TokenKind::If => "`if`",
+        TokenKind::Else => "`else`",
+        TokenKind::While => "`while`",
+        TokenKind::Loop => "`loop`",
+        TokenKind::Bool => "boolean",
+        TokenKind::Int => "integer",
         TokenKind::Quote => "`\"`",
         TokenKind::Escape => "escape sequence",
-        TokenKind::StringContents => "string literal",
+        TokenKind::StringContents => "string",
         TokenKind::Plus => "`+`",
         TokenKind::Hyphen => "`-`",
         TokenKind::Asterisk => "`*`",
         TokenKind::Slash => "`/`",
+        TokenKind::Less => "`<`",
+        TokenKind::LessEquals => "`<=`",
+        TokenKind::Greater => "`>`",
+        TokenKind::GreaterEquals => "`>=`",
+        TokenKind::Bang => "`!`",
+        TokenKind::BangEquals => "`!=`",
+        TokenKind::DoubleAnd => "`&&`",
+        TokenKind::DoublePipe => "`||`",
+        TokenKind::DoubleEquals => "`==`",
         TokenKind::Equals => "`=`",
         TokenKind::Dot => "`.`",
         TokenKind::Colon => "`:`",
@@ -341,6 +443,8 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Arrow => "`->`",
         TokenKind::LParen => "`(`",
         TokenKind::RParen => "`)`",
+        TokenKind::LBrack => "`[`",
+        TokenKind::RBrack => "`]`",
         TokenKind::LBrace => "`{`",
         TokenKind::RBrace => "`}`",
         TokenKind::Whitespace => "whitespace",

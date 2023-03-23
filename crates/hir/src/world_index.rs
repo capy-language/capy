@@ -1,7 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use crate::{Fqn, Index, Definition, Name, RangeInfo};
-
+use crate::{Definition, Fqn, Index, Name, RangeInfo};
 
 #[derive(Default)]
 pub struct WorldIndex(FxHashMap<Name, Index>);
@@ -21,6 +20,10 @@ impl WorldIndex {
         &self.0[&fqn.module].range_info[&fqn.name]
     }
 
+    pub fn get_module(&self, module: Name) -> Option<&Index> {
+        self.0.get(&module)
+    }
+
     pub fn add_module(&mut self, module: Name, index: Index) {
         assert!(self.0.insert(module, index).is_none());
     }
@@ -31,7 +34,15 @@ impl WorldIndex {
 
     pub fn ranges(&self) -> impl Iterator<Item = (Fqn, &RangeInfo)> {
         self.0.iter().flat_map(|(module, index)| {
-            index.ranges().map(|(name, range)| (Fqn { module: *module, name }, range))
+            index.ranges().map(|(name, range)| {
+                (
+                    Fqn {
+                        module: *module,
+                        name,
+                    },
+                    range,
+                )
+            })
         })
     }
 }

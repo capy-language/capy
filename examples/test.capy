@@ -1,0 +1,13 @@
+
+main := () -> i32 {
+    //num : i16 = 257;
+    //num := num as i8;
+
+    mut num : u64 = 0;
+    num = num - 1;
+    printf("%lld %llu %llx %llo\n", num, num, num, num);
+
+    0
+};
+
+printf := (s: string, n1: usize, n2: usize, n3: usize, n4: usize) -> {};

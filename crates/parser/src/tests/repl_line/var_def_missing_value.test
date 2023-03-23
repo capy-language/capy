@@ -1,20 +1,22 @@
-a =;
-b = a;
+a :=;
+b := a;
 ===
-Root@0..11
-  VarDef@0..3
+Root@0..13
+  VarDef@0..4
     Ident@0..1 "a"
     Whitespace@1..2 " "
-    Equals@2..3 "="
-  Semicolon@3..4 ";"
-  Whitespace@4..5 "\n"
-  VarDef@5..10
-    Ident@5..6 "b"
-    Whitespace@6..7 " "
-    Equals@7..8 "="
-    Whitespace@8..9 " "
-    Ref@9..10
-      Path@9..10
-        Ident@9..10 "a"
-  Semicolon@10..11 ";"
-error at 3: missing value
+    Colon@2..3 ":"
+    Equals@3..4 "="
+  Semicolon@4..5 ";"
+  Whitespace@5..6 "\n"
+  VarDef@6..12
+    Ident@6..7 "b"
+    Whitespace@7..8 " "
+    Colon@8..9 ":"
+    Equals@9..10 "="
+    Whitespace@10..11 " "
+    Ref@11..12
+      Path@11..12
+        Ident@11..12 "a"
+  Semicolon@12..13 ";"
+error at 4: missing value

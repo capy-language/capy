@@ -1,23 +1,25 @@
-foo = bar;
-baz = qux;
+foo := bar;
+baz := qux;
 ===
-Root@0..21
-  VarDef@0..9
+Root@0..23
+  VarDef@0..10
     Ident@0..3 "foo"
     Whitespace@3..4 " "
-    Equals@4..5 "="
-    Whitespace@5..6 " "
-    Ref@6..9
-      Path@6..9
-        Ident@6..9 "bar"
-  Semicolon@9..10 ";"
-  Whitespace@10..11 "\n"
-  VarDef@11..20
-    Ident@11..14 "baz"
-    Whitespace@14..15 " "
-    Equals@15..16 "="
-    Whitespace@16..17 " "
-    Ref@17..20
-      Path@17..20
-        Ident@17..20 "qux"
-  Semicolon@20..21 ";"
+    Colon@4..5 ":"
+    Equals@5..6 "="
+    Whitespace@6..7 " "
+    Ref@7..10
+      Path@7..10
+        Ident@7..10 "bar"
+  Semicolon@10..11 ";"
+  Whitespace@11..12 "\n"
+  VarDef@12..22
+    Ident@12..15 "baz"
+    Whitespace@15..16 " "
+    Colon@16..17 ":"
+    Equals@17..18 "="
+    Whitespace@18..19 " "
+    Ref@19..22
+      Path@19..22
+        Ident@19..22 "qux"
+  Semicolon@22..23 ";"

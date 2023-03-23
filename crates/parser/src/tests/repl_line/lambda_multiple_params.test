@@ -1,15 +1,15 @@
-(x: foo, y: bar, z: baz, w: qux) {};
+(x: foo, y: bar, z: baz, w: qux) -> {};
 ===
-Root@0..36
-  ExprStmt@0..35
-    Lambda@0..35
+Root@0..39
+  ExprStmt@0..38
+    Lambda@0..38
       ParamList@0..32
         LParen@0..1 "("
         Param@1..7
           Ident@1..2 "x"
           Colon@2..3 ":"
           Whitespace@3..4 " "
-          Type@4..7
+          NamedTy@4..7
             Path@4..7
               Ident@4..7 "foo"
         Comma@7..8 ","
@@ -18,7 +18,7 @@ Root@0..36
           Ident@9..10 "y"
           Colon@10..11 ":"
           Whitespace@11..12 " "
-          Type@12..15
+          NamedTy@12..15
             Path@12..15
               Ident@12..15 "bar"
         Comma@15..16 ","
@@ -27,7 +27,7 @@ Root@0..36
           Ident@17..18 "z"
           Colon@18..19 ":"
           Whitespace@19..20 " "
-          Type@20..23
+          NamedTy@20..23
             Path@20..23
               Ident@20..23 "baz"
         Comma@23..24 ","
@@ -36,12 +36,14 @@ Root@0..36
           Ident@25..26 "w"
           Colon@26..27 ":"
           Whitespace@27..28 " "
-          Type@28..31
+          NamedTy@28..31
             Path@28..31
               Ident@28..31 "qux"
         RParen@31..32 ")"
       Whitespace@32..33 " "
-      Block@33..35
-        LBrace@33..34 "{"
-        RBrace@34..35 "}"
-  Semicolon@35..36 ";"
+      Arrow@33..35 "->"
+      Whitespace@35..36 " "
+      Block@36..38
+        LBrace@36..37 "{"
+        RBrace@37..38 "}"
+  Semicolon@38..39 ";"
