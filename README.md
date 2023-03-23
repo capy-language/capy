@@ -39,5 +39,5 @@ You can replace `run` with `build` to output only the executable.
 You have to manually include all the files your code references, although this might change in the future.
 Frankly, a lot of this might change in the future.
 
-Currently, `llvm-10` and `gcc` must be installed for the compiler to work.
+Currently, `llvm` and `gcc` must be installed for the compiler to work.
 The compiler has not been tested on windows.
