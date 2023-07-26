@@ -1,0 +1,11 @@
+loop { }
+===
+Root@0..8
+  ExprStmt@0..8
+    WhileExpr@0..8
+      Loop@0..4 "loop"
+      Whitespace@4..5 " "
+      Block@5..8
+        LBrace@5..6 "{"
+        Whitespace@6..7 " "
+        RBrace@7..8 "}"

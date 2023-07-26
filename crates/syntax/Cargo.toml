@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 eventree = "0.6.0"
+capy_macros = {path = "../capy_macros"}

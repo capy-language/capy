@@ -1,0 +1,19 @@
+main :: () -> {
+    y := gen_ptr();
+
+    take(y);
+};
+
+gen_ptr :: () -> ^i32 {
+    x := 42;
+
+    ^x
+};
+
+take :: (ptr: ^i32) -> {
+    printf("%x -> %i\n", ptr, ptr^);
+};
+
+printf :: (some_text: string, x: ^i32, y: i32) -> {
+    // libc defined
+};

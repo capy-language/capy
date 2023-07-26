@@ -8,17 +8,19 @@ use inkwell::types::{BasicMetadataTypeEnum, BasicType};
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, PointerValue,
 };
-use inkwell::IntPredicate;
+use inkwell::{AddressSpace, IntPredicate};
 use interner::Interner;
-use la_arena::Idx;
+use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::process::exit;
 use std::{fs, str};
 
+use crate::mangle::Mangle;
 use crate::ty::ToCompType;
 
 pub(crate) struct CodeGen<'a, 'ctx> {
+    pub(crate) resolved_arena: &'a Arena<ResolvedTy>,
     pub(crate) interner: &'a Interner,
     pub(crate) bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
     pub(crate) types_map: &'a FxHashMap<hir::Name, hir_ty::InferenceResult>,
@@ -27,6 +29,7 @@ pub(crate) struct CodeGen<'a, 'ctx> {
     pub(crate) context: &'ctx Context,
     pub(crate) module: &'a Module<'ctx>,
     pub(crate) builder_stack: Vec<Builder<'ctx>>,
+    pub(crate) entry_point: hir::Fqn,
     pub(crate) functions_to_compile: Vec<hir::Fqn>,
     pub(crate) functions: FxHashMap<hir::Fqn, FunctionValue<'ctx>>,
     pub(crate) globals: FxHashMap<hir::Fqn, GlobalValue<'ctx>>,
@@ -43,7 +46,10 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
         source_file_name: &str,
         verbose: bool,
     ) -> Result<Vec<u8>, String> {
+        assert!(self.functions_to_compile.contains(&self.entry_point));
         self.compile_queued_functions();
+        assert!(self.functions.contains_key(&self.entry_point));
+        self.generate_main_function();
 
         if verbose {
             println!("\n{}", self.module.print_to_string().to_string());
@@ -79,6 +85,52 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
         }
     }
 
+    fn generate_main_function(&mut self) {
+        let fn_type = self.context.i32_type().fn_type(
+            &[
+                self.context.i32_type().into(),
+                self.context
+                    .i8_type() // char
+                    .ptr_type(AddressSpace::default()) // char   []
+                    .ptr_type(AddressSpace::default()) // char [][]
+                    .into(),
+            ],
+            false,
+        );
+
+        let function = self.module.add_function("main", fn_type, None);
+
+        let builder = self.context.create_builder();
+
+        let entry_block = self.context.append_basic_block(function, "entry");
+
+        builder.position_at_end(entry_block);
+
+        let value = builder.build_call(
+            *self.functions.get(&self.entry_point).unwrap(),
+            &[],
+            "call_entry_point",
+        );
+
+        let hir_def = self.world_index.get_definition(self.entry_point).unwrap();
+        let hir_function = match hir_def {
+            hir::Definition::Function(f) => f,
+            _ => {
+                println!("tried to use non-function as entry point");
+                exit(1)
+            }
+        };
+
+        if matches!(
+            hir_function.return_ty,
+            hir::TyWithRange::IInt { .. } | hir::TyWithRange::UInt { .. }
+        ) {
+            builder.build_return(Some(&value.try_as_basic_value().unwrap_left()));
+        } else {
+            builder.build_return(Some(&self.context.i32_type().const_int(0, false)));
+        }
+    }
+
     #[inline]
     fn current_function(&self) -> &FunctionValue<'ctx> {
         self.function_stack.last().unwrap()
@@ -103,21 +155,18 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
     }
 
     fn compile_global(&mut self, fqn: hir::Fqn) {
-        let hir_def = self.world_index.get_definition(fqn).unwrap();
-
-        let hir_global = match hir_def {
-            hir::Definition::Global(g) => g,
-            _ => {
+        let signature = &self.types_map[&fqn.module][fqn]
+            .as_global()
+            .unwrap_or_else(|| {
                 println!("tried to compile non-global as global");
                 exit(1)
-            }
-        };
+            });
 
-        let ty = hir_global.ty.to_comp_type(&self).into_basic_type();
-
-        let global = self
-            .module
-            .add_global(ty, None, self.interner.lookup(fqn.name.0));
+        let global = self.module.add_global(
+            signature.ty.to_comp_type(&self).into_basic_type(),
+            None,
+            &fqn.to_mangled_name(self.interner),
+        );
 
         let hir_value = self.bodies_map[&fqn.module].global(fqn.name);
 
@@ -132,25 +181,22 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
     }
 
     fn compile_function(&mut self, fqn: hir::Fqn) {
-        let hir_def = self.world_index.get_definition(fqn).unwrap();
-
-        let hir_function = match hir_def {
-            hir::Definition::Function(f) => f,
-            _ => {
+        let signature = &self.types_map[&fqn.module][fqn]
+            .as_function()
+            .unwrap_or_else(|| {
                 println!("tried to compile non-function as function");
                 exit(1)
-            }
-        };
+            });
 
         let mut param_map = Vec::new();
 
-        let param_types: Vec<BasicMetadataTypeEnum> = hir_function
-            .params
+        let param_types: Vec<BasicMetadataTypeEnum> = signature
+            .param_tys
             .iter()
-            .filter_map(|param| {
-                let param_type = match param.ty.clone() {
-                    hir::TyWithRange::Void { .. } => None,
-                    ty => Some(ty.to_comp_type(&self).into_basic_type().into()),
+            .filter_map(|param_ty| {
+                let param_type = match param_ty {
+                    hir_ty::ResolvedTy::Void { .. } => None,
+                    other_ty => Some(other_ty.to_comp_type(&self).into_basic_type().into()),
                 };
                 param_map.push(param_type.map(|_| 0)); // 0 is a temporary value
                 param_type
@@ -167,14 +213,11 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             });
         self.param_stack_map.push(param_map);
 
-        let fn_type = hir_function
-            .return_ty
-            .to_comp_type(&self)
-            .fn_type(param_types);
+        let fn_type = signature.return_ty.to_comp_type(&self).fn_type(param_types);
 
         let function = self
             .module
-            .add_function(self.interner.lookup(fqn.name.0), fn_type, None);
+            .add_function(&fqn.to_mangled_name(self.interner), fn_type, None);
         self.functions.insert(fqn, function);
         self.function_stack.push(function);
 
@@ -246,6 +289,15 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
         module: hir::Name,
         expr: Idx<hir::Expr>,
     ) -> Option<BasicValueEnum<'ctx>> {
+        self.compile_expr_with_args(module, expr, true)
+    }
+
+    fn compile_expr_with_args(
+        &mut self,
+        module: hir::Name,
+        expr: Idx<hir::Expr>,
+        deref_any_ptrs: bool,
+    ) -> Option<BasicValueEnum<'ctx>> {
         match self.bodies_map[&module][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => Some(
@@ -276,13 +328,13 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                     .into_basic_type()
                     .into_array_type();
 
-                let array = self.create_alloca(array_ty, ".array");
+                let array = self.create_alloca(array_ty, "array");
 
                 for (idx, item) in items.iter().enumerate() {
                     let first = unsafe {
                         array.const_in_bounds_gep(&[
-                            self.context.i64_type().const_int(0, true),
-                            self.context.i64_type().const_int(idx as u64, true),
+                            self.context.i64_type().const_int(0, true), // the first index points to the array pointer itself (`array` is a pointer to an array value, not an array value itself)
+                            self.context.i64_type().const_int(idx as u64, true), // the second index points to the actual index of that array value
                         ])
                     };
 
@@ -291,7 +343,35 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                     self.builder().build_store(first, value);
                 }
 
-                Some(array.as_basic_value_enum())
+                if deref_any_ptrs {
+                    Some(self.builder().build_load(array, ".arr_l"))
+                } else {
+                    Some(array.as_basic_value_enum())
+                }
+            }
+            hir::Expr::Index { array, index } => {
+                // hir_ty has already checked that this is a uint
+                let index = self.compile_expr(module, index).unwrap().into_int_value();
+
+                let array = self.compile_expr_with_args(module, array, false).unwrap();
+                let array = if array.is_pointer_value() {
+                    array.into_pointer_value()
+                } else if array.is_array_value() {
+                    let alloc = self.create_alloca(array.get_type(), "temp");
+                    self.builder().build_store(alloc, array);
+                    alloc
+                } else {
+                    unreachable!()
+                };
+
+                let value_ptr = unsafe {
+                    array.const_in_bounds_gep(&[
+                        self.context.i64_type().const_int(0, true), // the first index points to the array pointer itself (`array` is a pointer to an array value, not an array value itself)
+                        index,
+                    ])
+                };
+
+                Some(self.builder().build_load(value_ptr, "i_"))
             }
             hir::Expr::Cast {
                 expr: inner_expr, ..
@@ -319,6 +399,21 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 } else {
                     None
                 }
+            }
+            hir::Expr::Ref { expr } => {
+                let inner = self.compile_expr(module, expr).unwrap();
+
+                let alloc = self.create_alloca(inner.get_type(), "temp_alloc");
+                self.builder().build_store(alloc, inner);
+                Some(alloc.as_basic_value_enum())
+            }
+            hir::Expr::Deref { pointer } => {
+                let inner = self
+                    .compile_expr(module, pointer) // todo: possibly have to do this w/ no deref args
+                    .unwrap()
+                    .into_pointer_value();
+
+                Some(self.builder().build_load(inner, "deref"))
             }
             hir::Expr::Binary {
                 lhs: lhs_expr,
@@ -454,6 +549,18 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                                 self.functions.insert(fqn, printf);
                             }
                             self.functions.get(&fqn).unwrap().clone()
+                        } else if self.interner.lookup(fqn.name.0) == "exit" {
+                            if let Some(exit) = self.module.get_function("exit") {
+                                self.functions.insert(fqn, exit);
+                            } else {
+                                let fn_type = self
+                                    .context
+                                    .void_type()
+                                    .fn_type(&[self.context.i32_type().into()], false);
+                                let exit = self.module.add_function("exit", fn_type, None);
+                                self.functions.insert(fqn, exit);
+                            }
+                            self.functions.get(&fqn).unwrap().clone()
                         } else {
                             self.compile_function(fqn);
                             self.functions.get(&fqn).unwrap().clone()
@@ -492,10 +599,14 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                     }
                 };
 
-                Some(self.builder_stack.last().unwrap().build_load(
-                    global.as_pointer_value(),
-                    &format!("{}_", self.interner.lookup(fqn.name.0)),
-                ))
+                if deref_any_ptrs {
+                    Some(self.builder_stack.last().unwrap().build_load(
+                        global.as_pointer_value(),
+                        &format!("{}_", self.interner.lookup(fqn.name.0)),
+                    ))
+                } else {
+                    Some(global.as_pointer_value().as_basic_value_enum())
+                }
             }
             hir::Expr::Block { stmts, tail_expr } => {
                 for stmt in stmts {
@@ -503,7 +614,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 }
 
                 if let Some(val) = tail_expr {
-                    self.compile_expr(module, val)
+                    self.compile_expr_with_args(module, val, deref_any_ptrs)
                 } else {
                     None
                 }
@@ -606,12 +717,16 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             }
             hir::Expr::Local(local_def) => {
                 if let Some(var) = self.locals.get(&local_def) {
-                    Some(
-                        self.builder_stack
-                            .last()
-                            .unwrap()
-                            .build_load(*var, &format!("l{}_", local_def.into_raw())),
-                    )
+                    if deref_any_ptrs {
+                        Some(
+                            self.builder_stack
+                                .last()
+                                .unwrap()
+                                .build_load(*var, &format!("l{}_", local_def.into_raw())),
+                        )
+                    } else {
+                        Some((*var).as_basic_value_enum())
+                    }
                 } else {
                     None
                 }
@@ -624,6 +739,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 .unwrap() // parameters have been checked earlier
                 .map(|real_idx| self.function_stack.last().unwrap().get_nth_param(real_idx))
                 .flatten(),
+            hir::Expr::Ty { .. } => None,
         }
     }
 }

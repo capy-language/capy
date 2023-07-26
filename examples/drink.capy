@@ -1,5 +1,5 @@
 
-main := (argc: i32) -> i32 {
+main :: (argc: i32) -> i32 {
     age := 45;
 
     message := if age >= 21 {
@@ -15,6 +15,6 @@ main := (argc: i32) -> i32 {
     0
 };
 
-printf := (n: string) -> {
+printf :: (n: string) -> {
     // libc defined
 };

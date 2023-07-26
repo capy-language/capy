@@ -5,10 +5,11 @@ Root@0..7
     Array@0..7
       LBrack@0..1 "["
       RBrack@1..2 "]"
-      NamedTy@2..5
-        Path@2..5
-          Ident@2..5 "i32"
-      LBrace@5..6 "{"
-      ArrayItem@6..6
-      RBrace@6..7 "}"
+      Ty@2..5
+        VarRef@2..5
+          Path@2..5
+            Ident@2..5 "i32"
+      ArrayBody@5..7
+        LBrace@5..6 "{"
+        RBrace@6..7 "}"
 error at 6: missing item

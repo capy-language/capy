@@ -1,9 +1,9 @@
 
-target : i32 = 28;
-repeat : i32 = 5;
-answer : i32 = 317811;
+target : i32 : 28;
+repeat : i32 : 5;
+answer : i32 : 317811;
 
-fib := (n: i32) -> i32 {
+fib :: (n: i32) -> i32 {
     if n <= 1 {
         n
     } else {
@@ -11,11 +11,11 @@ fib := (n: i32) -> i32 {
     }
 };
 
-main := () -> i32 {
+main :: () -> i32 {
     io.printf("Running Fibonacci(%d) x %d times...\nReady... Go!\n", target, repeat);
 
-    mut result := 0;
-    mut n := 0;
+    result := 0;
+    n := 0;
     while n < repeat {
         result = fib(target);
         n = n + 1;

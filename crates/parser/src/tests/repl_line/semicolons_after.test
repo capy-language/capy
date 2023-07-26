@@ -7,7 +7,7 @@ Root@0..14
     Colon@4..5 ":"
     Equals@5..6 "="
     Whitespace@6..7 " "
-    Ref@7..10
+    VarRef@7..10
       Path@7..10
         Ident@7..10 "bar"
   Semicolon@10..11 ";"

@@ -78,12 +78,77 @@ macro_rules! def_ast_token {
     };
 }
 
+macro_rules! def_multi_node {
+    (
+        $node_name:ident:
+        $($simple_child_name:ident -> $simple_child_node_kind:ident)*
+        ;
+        $($multi_child_name:ident -> $multi_child_node_kind:ident)*
+        ;
+        $(fn $fn_name:ident () -> $fn_return_ty:ty)*
+    ) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $node_name {
+            $($simple_child_name($simple_child_node_kind),)*
+            $($multi_child_name($multi_child_node_kind),)*
+        }
+
+        def_multi_node!(@create_impl $node_name $($fn_name -> $fn_return_ty)* ; ($($simple_child_name -> $simple_child_node_kind),*) @ ($($multi_child_name -> $multi_child_node_kind),*));
+
+        impl AstNode for $node_name {
+            fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
+                $(
+                    if let Some(inner) = $multi_child_node_kind::cast(node, tree) {
+                        return Some(Self::$multi_child_name(inner))
+                    }
+                )*
+
+                match node.kind(tree) {
+                    $(NodeKind::$simple_child_node_kind =>
+                        Some(Self::$simple_child_name($simple_child_node_kind(node))),)*
+                    _ => None,
+                }
+            }
+
+            fn syntax(self) -> SyntaxNode {
+                match self {
+                    $(Self::$simple_child_name(node) => node.syntax(),)*
+                    $(Self::$multi_child_name(node) => node.syntax(),)*
+                }
+            }
+        }
+    };
+    (@create_impl $node_name:ident $($fn_name:ident -> $fn_return_ty:ty)* ; $simple:tt @ $multi:tt) => {
+        impl $node_name {
+            $(
+                def_multi_node!(@create_fn $fn_name -> $fn_return_ty ; $simple ; $multi);
+            )*
+        }
+    };
+    (
+        @create_fn
+        $fn_name:ident -> $fn_return_ty:ty
+        ;
+        ($($simple_child_name:ident -> $simple_child_node_kind:ident),*)
+        ;
+        ($($multi_child_name:ident -> $multi_child_node_kind:ident),*)
+    ) => {
+        #[allow(dead_code)]
+        pub fn $fn_name(self, tree: &SyntaxTree) -> $fn_return_ty {
+            match self {
+                $(Self::$simple_child_name(inner) => inner.$fn_name(tree),)*
+                $(Self::$multi_child_name(inner) => inner.$fn_name(tree),)*
+            }
+        }
+    };
+}
+
 def_ast_node!(Root);
 
 impl Root {
-    pub fn defs(self, tree: &SyntaxTree) -> impl Iterator<Item = VarDef> + '_ {
+    pub fn defs(self, tree: &SyntaxTree) -> impl Iterator<Item = Define> + '_ {
         self.stmts(tree).filter_map(|stmt| match stmt {
-            Stmt::VarDef(def) => Some(def),
+            Stmt::Define(def) => Some(def),
             _ => None,
         })
     }
@@ -109,39 +174,30 @@ impl Lambda {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Stmt {
-    VarDef(VarDef),
-    VarSet(VarSet),
-    Expr(ExprStmt),
+def_multi_node! {
+    Stmt:
+    Assign -> Assign
+    Expr -> ExprStmt
+    ;
+    Define -> Define
+    ;
 }
 
-impl AstNode for Stmt {
-    fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
-        match node.kind(tree) {
-            NodeKind::VarDef => Some(Self::VarDef(VarDef(node))),
-            NodeKind::VarSet => Some(Self::VarSet(VarSet(node))),
-            NodeKind::ExprStmt => Some(Self::Expr(ExprStmt(node))),
-            _ => None,
-        }
-    }
-
-    fn syntax(self) -> SyntaxNode {
-        match self {
-            Self::VarDef(var_def) => var_def.syntax(),
-            Self::VarSet(var_set) => var_set.syntax(),
-            Self::Expr(expr) => expr.syntax(),
-        }
-    }
+def_multi_node! {
+    Define:
+    Binding -> Binding
+    Variable -> VarDef
+    ;
+    ;
+    fn name() -> Option<Ident>
+    fn colon() -> Option<Colon>
+    fn ty() -> Option<Ty>
+    fn value() -> Option<Expr>
 }
 
-def_ast_node!(VarDef);
+def_ast_node!(Binding);
 
-impl VarDef {
-    pub fn mutable(self, tree: &SyntaxTree) -> Option<Mut> {
-        token(self, tree)
-    }
-
+impl Binding {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
@@ -159,9 +215,29 @@ impl VarDef {
     }
 }
 
-def_ast_node!(VarSet);
+def_ast_node!(VarDef);
 
-impl VarSet {
+impl VarDef {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn colon(self, tree: &SyntaxTree) -> Option<Colon> {
+        token(self, tree)
+    }
+
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(Assign);
+
+impl Assign {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
@@ -195,47 +271,11 @@ impl Param {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Ty {
-    Array(ArrayTy),
-    Named(NamedTy),
-}
+def_ast_node!(Ty);
 
-impl AstNode for Ty {
-    fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
-        let result = match node.kind(tree) {
-            NodeKind::ArrayTy => Self::Array(ArrayTy(node)),
-            NodeKind::NamedTy => Self::Named(NamedTy(node)),
-            _ => return None,
-        };
-
-        Some(result)
-    }
-
-    fn syntax(self) -> SyntaxNode {
-        match self {
-            Self::Array(array_ty) => array_ty.syntax(),
-            Self::Named(named_ty) => named_ty.syntax(),
-        }
-    }
-}
-
-def_ast_node!(ArrayTy);
-
-impl ArrayTy {
-    pub fn size(self, tree: &SyntaxTree) -> Option<IntLiteral> {
-        node(self, tree)
-    }
-
-    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
-        node(self, tree)
-    }
-}
-
-def_ast_node!(NamedTy);
-
-impl NamedTy {
-    pub fn path(self, tree: &SyntaxTree) -> Option<Path> {
+impl Ty {
+    /// types are really just expressions
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
@@ -248,62 +288,27 @@ impl ExprStmt {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Expr {
-    Cast(CastExpr),
-    Binary(BinaryExpr),
-    Unary(UnaryExpr),
-    IntLiteral(IntLiteral),
-    BoolLiteral(BoolLiteral),
-    StringLiteral(StringLiteral),
-    Array(Array),
-    Ref(Ref),
-    Call(Call),
-    Block(Block),
-    If(IfExpr),
-    While(WhileExpr),
-    Lambda(Lambda),
-}
-
-impl AstNode for Expr {
-    fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
-        let result = match node.kind(tree) {
-            NodeKind::CastExpr => Self::Cast(CastExpr(node)),
-            NodeKind::BinaryExpr => Self::Binary(BinaryExpr(node)),
-            NodeKind::UnaryExpr => Self::Unary(UnaryExpr(node)),
-            NodeKind::IntLiteral => Self::IntLiteral(IntLiteral(node)),
-            NodeKind::BoolLiteral => Self::BoolLiteral(BoolLiteral(node)),
-            NodeKind::StringLiteral => Self::StringLiteral(StringLiteral(node)),
-            NodeKind::Array => Self::Array(Array(node)),
-            NodeKind::Ref => Self::Ref(Ref(node)),
-            NodeKind::Call => Self::Call(Call(node)),
-            NodeKind::Block => Self::Block(Block(node)),
-            NodeKind::IfExpr => Self::If(IfExpr(node)),
-            NodeKind::WhileExpr => Self::While(WhileExpr(node)),
-            NodeKind::Lambda => Self::Lambda(Lambda(node)),
-            _ => return None,
-        };
-
-        Some(result)
-    }
-
-    fn syntax(self) -> SyntaxNode {
-        match self {
-            Self::Cast(cast_expr) => cast_expr.syntax(),
-            Self::Binary(binary_expr) => binary_expr.syntax(),
-            Self::Unary(unnary_expr) => unnary_expr.syntax(),
-            Self::IntLiteral(int_literal) => int_literal.syntax(),
-            Self::BoolLiteral(bool_literal) => bool_literal.syntax(),
-            Self::StringLiteral(string_literal) => string_literal.syntax(),
-            Self::Array(array) => array.syntax(),
-            Self::Ref(var_ref) => var_ref.syntax(),
-            Self::Call(call) => call.syntax(),
-            Self::Block(block) => block.syntax(),
-            Self::If(if_expr) => if_expr.syntax(),
-            Self::While(while_expr) => while_expr.syntax(),
-            Self::Lambda(lambda) => lambda.syntax(),
-        }
-    }
+def_multi_node! {
+    Expr:
+    Cast -> CastExpr
+    Ref -> RefExpr
+    // todo: add distinct
+    Deref -> DerefExpr // todo: make derefexpr tests
+    Binary -> BinaryExpr
+    Unary -> UnaryExpr
+    IntLiteral -> IntLiteral
+    BoolLiteral -> BoolLiteral
+    StringLiteral -> StringLiteral
+    Array -> Array
+    IndexExpr -> IndexExpr
+    VarRef -> VarRef // a reference to a local, global, or parameter. e.g. `foo` in `foo * 2`
+    Call -> Call
+    Block -> Block
+    If -> IfExpr
+    While -> WhileExpr
+    Lambda -> Lambda
+    ;
+    ;
 }
 
 def_ast_node!(BinaryExpr);
@@ -330,6 +335,22 @@ impl CastExpr {
     }
 
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(RefExpr);
+
+impl RefExpr {
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(DerefExpr);
+
+impl DerefExpr {
+    pub fn pointer(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
@@ -373,28 +394,52 @@ impl ElseBranch {
 def_ast_node!(WhileExpr);
 
 impl WhileExpr {
-    pub fn condition(self, tree: &SyntaxTree) -> Option<Expr> {
-        let mut n = nodes(self, tree).collect::<Vec<Expr>>();
-        n.reverse();
-        n.iter().nth(1).copied()
+    pub fn condition(self, tree: &SyntaxTree) -> Option<Condition> {
+        node(self, tree)
     }
 
     pub fn body(self, tree: &SyntaxTree) -> Option<Expr> {
-        let mut n = nodes(self, tree).collect::<Vec<Expr>>();
-        n.reverse();
-        n.iter().next().copied()
+        node(self, tree)
+    }
+}
+
+def_ast_node!(Condition);
+
+impl Condition {
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
     }
 }
 
 def_ast_node!(Array);
 
 impl Array {
+    pub fn size(self, tree: &SyntaxTree) -> Option<ArraySize> {
+        node(self, tree)
+    }
+
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
 
+    pub fn body(self, tree: &SyntaxTree) -> Option<ArrayBody> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(ArrayBody);
+
+impl ArrayBody {
     pub fn items(self, tree: &SyntaxTree) -> impl Iterator<Item = ArrayItem> + '_ {
         nodes(self, tree)
+    }
+}
+
+def_ast_node!(ArraySize);
+
+impl ArraySize {
+    pub fn size(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
     }
 }
 
@@ -406,9 +451,37 @@ impl ArrayItem {
     }
 }
 
-def_ast_node!(Ref);
+def_ast_node!(IndexExpr);
 
-impl Ref {
+impl IndexExpr {
+    pub fn array(self, tree: &SyntaxTree) -> Option<IndexSource> {
+        node(self, tree)
+    }
+
+    pub fn index(self, tree: &SyntaxTree) -> Option<Index> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(IndexSource);
+
+impl IndexSource {
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(Index);
+
+impl Index {
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(VarRef);
+
+impl VarRef {
     pub fn name(self, tree: &SyntaxTree) -> Option<Path> {
         node(self, tree)
     }
@@ -577,7 +650,6 @@ impl AstToken for UnaryOp {
     }
 }
 
-def_ast_token!(Mut);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
 def_ast_token!(Hyphen);
@@ -683,7 +755,7 @@ mod tests {
         let (tree, root) = parse("foo := bar; baz * qux;");
         let mut statements = root.stmts(&tree);
 
-        assert!(matches!(statements.next(), Some(Stmt::VarDef(_))));
+        assert!(matches!(statements.next(), Some(Stmt::Define(_))));
         assert!(matches!(statements.next(), Some(Stmt::Expr(_))));
         assert!(statements.next().is_none());
     }
@@ -693,8 +765,13 @@ mod tests {
         let (tree, root) = parse("foo := 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
+            _ => unreachable!(),
+        };
+
+        let var_def = match def {
+            Define::Variable(var) => var,
             _ => unreachable!(),
         };
 
@@ -706,17 +783,22 @@ mod tests {
         let (tree, root) = parse("foo : string = 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
             _ => unreachable!(),
         };
 
-        let named_ty = match var_def.ty(&tree) {
-            Some(Ty::Named(ty)) => ty,
+        let var_def = match def {
+            Define::Variable(var) => var,
             _ => unreachable!(),
         };
 
-        let path = named_ty.path(&tree).unwrap();
+        let ty_ref = match var_def.ty(&tree).unwrap().expr(&tree) {
+            Some(Expr::VarRef(name)) => name,
+            _ => unreachable!(),
+        };
+
+        let path = ty_ref.name(&tree).unwrap();
 
         assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "string");
         assert!(path.nested_name(&tree).is_none());
@@ -727,31 +809,35 @@ mod tests {
         let (tree, root) = parse("foo : [3]i32 = []i32{1, 2, 3};");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
             _ => unreachable!(),
         };
 
-        let array_ty = match var_def.ty(&tree) {
-            Some(Ty::Array(ty)) => ty,
-            Some(Ty::Named(_)) => {
-                println!("PathTy");
-                unreachable!()
-            }
-            None => {
-                println!("None");
-                unreachable!()
-            }
-        };
-
-        assert!(matches!(array_ty.size(&tree), Some(IntLiteral(_))));
-
-        let sub_path_ty = match array_ty.ty(&tree) {
-            Some(Ty::Named(ty)) => ty,
+        let var_def = match def {
+            Define::Variable(var) => var,
             _ => unreachable!(),
         };
 
-        let sub_path = sub_path_ty.path(&tree).unwrap();
+        let array_ty = match var_def.ty(&tree).unwrap().expr(&tree) {
+            Some(Expr::Array(array)) => array,
+            _ => {
+                unreachable!()
+            }
+        };
+
+        let size = array_ty.size(&tree).unwrap().size(&tree);
+        assert!(matches!(size, Some(Expr::IntLiteral(_))));
+        assert_eq!(size.unwrap().text(&tree), "3");
+
+        assert!(matches!(array_ty.body(&tree), None));
+
+        let sub_ty = match array_ty.ty(&tree).unwrap().expr(&tree) {
+            Some(Expr::VarRef(name)) => name,
+            _ => unreachable!(),
+        };
+
+        let sub_path = sub_ty.name(&tree).unwrap();
 
         assert_eq!(sub_path.top_level_name(&tree).unwrap().text(&tree), "i32");
         assert!(sub_path.nested_name(&tree).is_none());
@@ -762,8 +848,13 @@ mod tests {
         let (tree, root) = parse("bar := 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
+            _ => unreachable!(),
+        };
+
+        let var_def = match def {
+            Define::Variable(var) => var,
             _ => unreachable!(),
         };
 
@@ -771,29 +862,39 @@ mod tests {
     }
 
     #[test]
-    fn get_var_def_is_unmutable() {
-        let (tree, root) = parse("constant := 42;");
+    fn get_name_of_binding() {
+        let (tree, root) = parse("foo :: 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
             _ => unreachable!(),
         };
 
-        assert!(matches!(var_def.mutable(&tree), None));
+        let binding = match def {
+            Define::Binding(var) => var,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(binding.name(&tree).unwrap().text(&tree), "foo");
     }
 
     #[test]
-    fn get_var_def_is_mutable() {
-        let (tree, root) = parse("mut to_change := 123;");
+    fn get_value_of_binding() {
+        let (tree, root) = parse("bar :: 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarDef(var_def) => var_def,
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
             _ => unreachable!(),
         };
 
-        assert!(matches!(var_def.mutable(&tree), Some(_)));
+        let binding = match def {
+            Define::Binding(var) => var,
+            _ => unreachable!(),
+        };
+
+        assert!(matches!(binding.value(&tree), Some(Expr::IntLiteral(_))));
     }
 
     #[test]
@@ -801,12 +902,12 @@ mod tests {
         let (tree, root) = parse("foo = 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarSet(var_def) => var_def,
+        let var_set = match statement {
+            Stmt::Assign(var_set) => var_set,
             _ => unreachable!(),
         };
 
-        assert_eq!(var_def.name(&tree).unwrap().text(&tree), "foo");
+        assert_eq!(var_set.name(&tree).unwrap().text(&tree), "foo");
     }
 
     #[test]
@@ -814,12 +915,12 @@ mod tests {
         let (tree, root) = parse("bar = 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_def = match statement {
-            Stmt::VarSet(var_def) => var_def,
+        let var_set = match statement {
+            Stmt::Assign(var_set) => var_set,
             _ => unreachable!(),
         };
 
-        assert!(matches!(var_def.value(&tree), Some(Expr::IntLiteral(_))));
+        assert!(matches!(var_set.value(&tree), Some(Expr::IntLiteral(_))));
     }
 
     #[test]
@@ -836,7 +937,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        assert!(matches!(binary_expr.lhs(&tree), Some(Expr::Ref(_))));
+        assert!(matches!(binary_expr.lhs(&tree), Some(Expr::VarRef(_))));
         assert!(matches!(binary_expr.rhs(&tree), Some(Expr::IntLiteral(_))));
     }
 
@@ -871,7 +972,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        assert!(matches!(unary_expr.expr(&tree), Some(Expr::Ref(_))));
+        assert!(matches!(unary_expr.expr(&tree), Some(Expr::VarRef(_))));
     }
 
     #[test]
@@ -922,7 +1023,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let mut items = array_expr.items(&tree);
+        let mut items = array_expr.body(&tree).unwrap().items(&tree);
 
         assert_eq!(items.next().unwrap().text(&tree), "4");
         assert_eq!(items.next().unwrap().text(&tree), "8");
@@ -931,6 +1032,76 @@ mod tests {
         assert_eq!(items.next().unwrap().text(&tree), "23");
         assert_eq!(items.next().unwrap().text(&tree), "42");
         assert!(items.next().is_none());
+    }
+
+    #[test]
+    fn get_array_of_index() {
+        let (tree, root) = parse("my_array[0]");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let index_expr = match expr {
+            Some(Expr::IndexExpr(index_expr)) => index_expr,
+            _ => unreachable!(),
+        };
+
+        let array_ref = match index_expr.array(&tree).unwrap().value(&tree) {
+            Some(Expr::VarRef(array_ref)) => array_ref,
+            _ => unreachable!(),
+        };
+        let path = array_ref.name(&tree).unwrap();
+
+        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "my_array");
+        assert!(path.nested_name(&tree).is_none());
+    }
+
+    #[test]
+    fn get_int_index_of_index() {
+        let (tree, root) = parse("list[2]");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let index_expr = match expr {
+            Some(Expr::IndexExpr(index_expr)) => index_expr,
+            _ => unreachable!(),
+        };
+
+        let index_num = match index_expr.index(&tree).unwrap().value(&tree) {
+            Some(Expr::IntLiteral(index_index)) => index_index,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(index_num.value(&tree).unwrap().text(&tree), "2");
+    }
+
+    #[test]
+    fn get_ref_index_of_index() {
+        let (tree, root) = parse("arr[idx]");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let index_expr = match expr {
+            Some(Expr::IndexExpr(index_expr)) => index_expr,
+            _ => unreachable!(),
+        };
+
+        let index_ref = match index_expr.index(&tree).unwrap().value(&tree) {
+            Some(Expr::VarRef(index_index)) => index_index,
+            _ => unreachable!(),
+        };
+        let path = index_ref.name(&tree).unwrap();
+
+        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "idx");
+        assert!(path.nested_name(&tree).is_none());
     }
 
     #[test]
@@ -943,7 +1114,7 @@ mod tests {
         };
 
         let var_ref = match expr {
-            Some(Expr::Ref(var_ref)) => var_ref,
+            Some(Expr::VarRef(var_ref)) => var_ref,
             _ => unreachable!(),
         };
         let path = var_ref.name(&tree).unwrap();
@@ -1062,8 +1233,8 @@ mod tests {
 
         let mut statements = block.stmts(&tree);
 
-        assert!(matches!(statements.next(), Some(Stmt::VarDef(_))));
-        assert!(matches!(statements.next(), Some(Stmt::VarSet(_))));
+        assert!(matches!(statements.next(), Some(Stmt::Define(_))));
+        assert!(matches!(statements.next(), Some(Stmt::Assign(_))));
         assert!(statements.next().is_none());
     }
 
@@ -1152,7 +1323,7 @@ mod tests {
 
         let mut statements = block.stmts(&tree);
 
-        assert!(matches!(statements.next(), Some(Stmt::VarDef(_))));
+        assert!(matches!(statements.next(), Some(Stmt::Define(_))));
     }
 
     #[test]
@@ -1195,7 +1366,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let condition = while_expr.condition(&tree);
+        let condition = while_expr.condition(&tree).unwrap().value(&tree);
 
         assert!(matches!(condition, Some(Expr::BoolLiteral(_))));
     }
@@ -1282,12 +1453,12 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let path_ty = match lambda.return_ty(&tree) {
-            Some(Ty::Named(ty)) => ty,
+        let ty_ref = match lambda.return_ty(&tree).unwrap().expr(&tree) {
+            Some(Expr::VarRef(ty_ref)) => ty_ref,
             _ => unreachable!(),
         };
 
-        let path = path_ty.path(&tree).unwrap();
+        let path = ty_ref.name(&tree).unwrap();
 
         assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "i32");
         assert!(path.nested_name(&tree).is_none());

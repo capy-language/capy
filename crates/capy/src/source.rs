@@ -4,6 +4,7 @@ use ast::{AstNode, Root};
 use diagnostics::{Diagnostic, Severity};
 use hir::Name;
 use interner::Interner;
+use la_arena::Arena;
 use line_index::LineIndex;
 use parser::Parse;
 use rustc_hash::FxHashMap;
@@ -16,6 +17,8 @@ pub(crate) struct SourceFile {
     parse: Parse,
     root: Root,
     diagnostics: Vec<Diagnostic>,
+    twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
+    resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
     interner: Rc<RefCell<Interner>>,
     bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
     tys_map: Rc<RefCell<FxHashMap<hir::Name, hir_ty::InferenceResult>>>,
@@ -27,6 +30,8 @@ impl SourceFile {
     pub(crate) fn parse(
         file_name: String,
         contents: String,
+        twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
+        resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
         interner: Rc<RefCell<Interner>>,
         bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
         tys_map: Rc<RefCell<FxHashMap<hir::Name, hir_ty::InferenceResult>>>,
@@ -49,11 +54,16 @@ impl SourceFile {
         let validation_diagnostics = ast::validation::validate(root, tree);
 
         let module = hir::Name(interner.borrow_mut().intern(module_name));
-        let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner.borrow_mut());
+        let (index, indexing_diagnostics) = hir::index(
+            root,
+            tree,
+            &mut twr_arena.borrow_mut(),
+            &mut interner.borrow_mut(),
+        );
         world_index.borrow_mut().add_module(module, index);
 
         if verbose >= 3 {
-            let world_index = world_index.borrow_mut();
+            let world_index = world_index.borrow();
             let index = world_index.get_module(module).unwrap();
 
             for name in index.definition_names() {
@@ -75,6 +85,8 @@ impl SourceFile {
             parse,
             root,
             diagnostics: Vec::new(),
+            twr_arena,
+            resolved_arena,
             interner,
             bodies_map,
             tys_map,
@@ -112,12 +124,17 @@ impl SourceFile {
             self.root,
             tree,
             self.module,
-            &self.world_index.borrow_mut(),
+            &self.world_index.borrow(),
+            &mut self.twr_arena.borrow_mut(),
             &mut self.interner.borrow_mut(),
         );
         if self.verbose >= 1 {
-            let interner = self.interner.borrow_mut();
-            let debug = bodies.debug(interner.lookup(self.module.0), &interner);
+            let interner = self.interner.borrow();
+            let debug = bodies.debug(
+                interner.lookup(self.module.0),
+                &self.twr_arena.borrow(),
+                &interner,
+            );
             println!("{}", debug);
         }
         self.bodies_map.borrow_mut().insert(self.module, bodies);
@@ -132,14 +149,16 @@ impl SourceFile {
     pub(crate) fn build_tys(&mut self) {
         let (inference, ty_diagnostics) = hir_ty::infer_all(
             self.bodies_map
-                .borrow_mut()
+                .borrow()
                 .get(&self.module)
                 .expect("this module should've been compiled"),
             self.module,
-            &self.world_index.borrow_mut(),
+            &self.world_index.borrow(),
+            &self.twr_arena.borrow(),
+            &mut self.resolved_arena.borrow_mut(),
         );
         if self.verbose >= 2 {
-            let debug = inference.debug(&self.interner.borrow_mut());
+            let debug = inference.debug(&self.resolved_arena.borrow(), &self.interner.borrow());
             println!("{}", debug);
             if !debug.is_empty() {
                 println!();
@@ -154,13 +173,13 @@ impl SourceFile {
         );
     }
 
-    pub(crate) fn has_main(&self) -> bool {
+    pub(crate) fn has_fn_of_name(&self, name: Name) -> bool {
         self.world_index
-            .borrow_mut()
+            .borrow()
             .get_module(self.module)
             .unwrap()
             .function_names()
-            .any(|name| self.interner.borrow_mut().lookup(name.0) == "main")
+            .any(|fn_name| fn_name == name)
     }
 
     pub(crate) fn print_diagnostics(&self) {
@@ -172,7 +191,8 @@ impl SourceFile {
                     .display(
                         &self.file_name,
                         &self.contents,
-                        &self.interner.borrow_mut(),
+                        &self.resolved_arena.borrow(),
+                        &self.interner.borrow(),
                         &line_index
                     )
                     .join("\n")

@@ -3,10 +3,10 @@ mod index;
 mod nameres;
 mod world_index;
 
-use ast::AstNode;
-use ast::AstToken;
+use ast::{AstNode, AstToken};
 pub use body::*;
 pub use index::*;
+use la_arena::{Arena, Idx};
 pub use nameres::*;
 use syntax::SyntaxTree;
 use text_size::TextRange;
@@ -25,7 +25,17 @@ pub struct Fqn {
     pub name: Name,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TyParseError {
+    ArrayMissingSize,
+    ArraySizeNotConst(TextRange),
+    ArraySizeOutOfBounds(TextRange),
+    ArrayHasBody(TextRange),
+    NotATy,
+    NonGlobalTy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TyWithRange {
     Unknown,
     /// a bit-width of u32::MAX represents an isize
@@ -46,12 +56,18 @@ pub enum TyWithRange {
     },
     Array {
         size: u32,
-        sub_ty: Box<TyWithRange>,
+        sub_ty: Idx<TyWithRange>,
+        range: TextRange,
+    },
+    Pointer {
+        sub_ty: Idx<TyWithRange>,
+        range: TextRange,
+    },
+    Type {
         range: TextRange,
     },
     Named {
-        name: Name,
-        range: TextRange,
+        path: PathWithRange,
     },
     Void {
         range: Option<TextRange>,
@@ -59,108 +75,207 @@ pub enum TyWithRange {
 }
 
 impl TyWithRange {
-    pub fn parse(ty: Option<ast::Ty>, interner: &mut Interner, tree: &SyntaxTree) -> TyWithRange {
-        let ty = if let Some(ty) = ty {
-            ty
-        } else {
-            return TyWithRange::Unknown;
+    pub fn primitive_id(&self) -> Option<u64> {
+        const INT_BIT: u64 = 1 << 63;
+        const SIGNED_BIT: u64 = 1 << 62;
+        const BOOL_BIT: u64 = 1 << 61;
+        const STRING_BIT: u64 = 1 << 60;
+        const TYPE_ID_BIT: u64 = 1 << 59;
+
+        match self {
+            TyWithRange::Unknown => Some(0),
+            TyWithRange::Void { .. } => Some(0),
+            TyWithRange::IInt { bit_width, .. } => Some(INT_BIT ^ SIGNED_BIT ^ (*bit_width as u64)),
+            TyWithRange::UInt { bit_width, .. } => Some(INT_BIT ^ (*bit_width as u64)),
+            TyWithRange::Bool { .. } => Some(BOOL_BIT),
+            TyWithRange::String { .. } => Some(STRING_BIT),
+            TyWithRange::Array { .. } => None,
+            TyWithRange::Pointer { .. } => None,
+            TyWithRange::Type { .. } => Some(TYPE_ID_BIT),
+            TyWithRange::Named { .. } => None,
+        }
+    }
+
+    pub fn parse(
+        ty: Option<ast::Expr>,
+        twr_arena: &mut Arena<TyWithRange>,
+        interner: &mut Interner,
+        tree: &SyntaxTree,
+    ) -> Result<Self, TyParseError> {
+        let ty = match ty {
+            Some(ty) => ty,
+            None => return Ok(TyWithRange::Unknown),
         };
 
         match ty {
-            ast::Ty::Array(array_ty) => TyWithRange::Array {
-                size: match array_ty
-                    .size(tree)
-                    .and_then(|ast| ast.value(tree))
-                    .map(|ast| ast.text(tree))
-                    .and_then(|ast| ast.parse().ok())
-                {
-                    Some(size) => size,
-                    None => return TyWithRange::Unknown,
-                },
-                sub_ty: Box::new(Self::parse(array_ty.ty(tree), interner, tree)),
-                range: array_ty.range(tree),
-            },
-            ast::Ty::Named(path_ty) => match path_ty.path(tree) {
-                Some(path) => {
-                    Self::from_name(Name(interner.intern(path.text(tree))), path.range(tree))
+            ast::Expr::Array(array_ty) => {
+                let size = match array_ty.size(tree) {
+                    Some(size) => match size.size(tree) {
+                        Some(ast::Expr::IntLiteral(int_literal)) => {
+                            match int_literal
+                                .value(tree)
+                                .and_then(|int| int.text(tree).parse::<u32>().ok())
+                            {
+                                Some(size) => size,
+                                None => {
+                                    return Err(TyParseError::ArraySizeOutOfBounds(
+                                        size.range(tree),
+                                    ))
+                                }
+                            }
+                        }
+                        _ => return Err(TyParseError::ArraySizeNotConst(size.range(tree))),
+                    },
+                    None => {
+                        return Err(TyParseError::ArrayMissingSize);
+                    }
+                };
+                let sub_ty = Self::parse(
+                    array_ty.ty(tree).and_then(|array_ty| array_ty.expr(tree)),
+                    twr_arena,
+                    interner,
+                    tree,
+                )?;
+                if let Some(body) = array_ty.body(tree) {
+                    return Err(TyParseError::ArrayHasBody(body.range(tree)));
                 }
-                None => TyWithRange::Unknown,
-            },
+
+                Ok(TyWithRange::Array {
+                    size: size as u32,
+                    sub_ty: twr_arena.alloc(sub_ty),
+                    range: array_ty.range(tree),
+                })
+            }
+            ast::Expr::Ref(ref_expr) => {
+                let sub_ty = Self::parse(ref_expr.expr(tree), twr_arena, interner, tree)?;
+
+                Ok(TyWithRange::Pointer {
+                    sub_ty: twr_arena.alloc(sub_ty),
+                    range: ref_expr.range(tree),
+                })
+            }
+            ast::Expr::VarRef(var_ref) => {
+                let path = match var_ref.name(tree) {
+                    Some(path) => path,
+                    None => return Ok(TyWithRange::Unknown),
+                };
+
+                let ident = match path.top_level_name(tree) {
+                    Some(ident) => ident,
+                    None => return Ok(TyWithRange::Unknown),
+                };
+
+                if let Some(var_name_token) = path.nested_name(tree) {
+                    let module_name_token = ident;
+
+                    let module_name = interner.intern(module_name_token.text(tree));
+                    let var_name = interner.intern(var_name_token.text(tree));
+
+                    let fqn = Fqn {
+                        module: Name(module_name),
+                        name: Name(var_name),
+                    };
+
+                    Ok(TyWithRange::Named {
+                        path: PathWithRange::OtherModule {
+                            fqn,
+                            module_range: module_name_token.range(tree),
+                            name_range: var_name_token.range(tree),
+                        },
+                    })
+                } else {
+                    let key = interner.intern(ident.text(tree));
+                    let range = ident.range(tree);
+
+                    Ok(
+                        Self::from_key(key, range).unwrap_or_else(|| TyWithRange::Named {
+                            path: PathWithRange::ThisModule {
+                                name: Name(key),
+                                range,
+                            },
+                        }),
+                    )
+                }
+            }
+            _ => Err(TyParseError::NotATy),
         }
     }
 
-    fn from_name(name: Name, range: TextRange) -> Self {
-        if name.0 == Key::void() {
+    pub fn from_key(key: Key, range: TextRange) -> Option<Self> {
+        Some(if key == Key::void() {
             TyWithRange::Void { range: Some(range) }
-        } else if name.0 == Key::isize() {
+        } else if key == Key::isize() {
             TyWithRange::IInt {
                 bit_width: u32::MAX,
                 range,
             }
-        } else if name.0 == Key::i128() {
+        } else if key == Key::i128() {
             TyWithRange::IInt {
                 bit_width: 128,
                 range,
             }
-        } else if name.0 == Key::i64() {
+        } else if key == Key::i64() {
             TyWithRange::IInt {
                 bit_width: 64,
                 range,
             }
-        } else if name.0 == Key::i32() {
+        } else if key == Key::i32() {
             TyWithRange::IInt {
                 bit_width: 32,
                 range,
             }
-        } else if name.0 == Key::i16() {
+        } else if key == Key::i16() {
             TyWithRange::IInt {
                 bit_width: 16,
                 range,
             }
-        } else if name.0 == Key::i8() {
+        } else if key == Key::i8() {
             TyWithRange::IInt {
                 bit_width: 8,
                 range,
             }
-        } else if name.0 == Key::usize() {
+        } else if key == Key::usize() {
             TyWithRange::UInt {
                 bit_width: u32::MAX,
                 range,
             }
-        } else if name.0 == Key::u128() {
+        } else if key == Key::u128() {
             TyWithRange::UInt {
                 bit_width: 128,
                 range,
             }
-        } else if name.0 == Key::u64() {
+        } else if key == Key::u64() {
             TyWithRange::UInt {
                 bit_width: 64,
                 range,
             }
-        } else if name.0 == Key::u32() {
+        } else if key == Key::u32() {
             TyWithRange::UInt {
                 bit_width: 32,
                 range,
             }
-        } else if name.0 == Key::u16() {
+        } else if key == Key::u16() {
             TyWithRange::UInt {
                 bit_width: 16,
                 range,
             }
-        } else if name.0 == Key::u8() {
+        } else if key == Key::u8() {
             TyWithRange::UInt {
                 bit_width: 8,
                 range,
             }
-        } else if name.0 == Key::bool() {
+        } else if key == Key::bool() {
             TyWithRange::Bool { range }
-        } else if name.0 == Key::string() {
+        } else if key == Key::string() {
             TyWithRange::String { range }
+        } else if key == Key::r#type() {
+            TyWithRange::Type { range }
         } else {
-            TyWithRange::Named { name, range }
-        }
+            return None;
+        })
     }
-    pub fn display(&self, interner: &Interner) -> String {
+
+    pub fn display(&self, ty_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
         match self {
             Self::Unknown { .. } => "?".to_string(),
             Self::IInt { bit_width, .. } => {
@@ -179,8 +294,14 @@ impl TyWithRange {
             }
             Self::Bool { .. } => "bool".to_string(),
             Self::String { .. } => "string".to_string(),
-            Self::Array { size, sub_ty, .. } => format!("[{size}]{}", sub_ty.display(interner)),
-            Self::Named { name, .. } => interner.lookup(name.0).to_string(),
+            Self::Array { size, sub_ty, .. } => {
+                format!("[{size}]{}", ty_arena[*sub_ty].display(ty_arena, interner))
+            }
+            Self::Pointer { sub_ty, .. } => {
+                format!("^{}", ty_arena[*sub_ty].display(ty_arena, interner))
+            }
+            Self::Type { .. } => "type".to_string(),
+            Self::Named { path } => path.path().display(interner),
             Self::Void { .. } => "void".to_string(),
         }
     }

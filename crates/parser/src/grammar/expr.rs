@@ -11,7 +11,18 @@ pub(super) fn parse_expr(
     p: &mut Parser,
     expected_syntax_name: &'static str,
 ) -> Option<CompletedMarker> {
+    // let bt = backtrace::Backtrace::force_capture();
+    // println!("parse_expr {}", bt);
+    // println!("parse_expr {:?} {:?}", p.peek(), p.peek_range());
     parse_expr_bp(p, 0, TokenSet::NONE, expected_syntax_name)
+}
+
+pub(super) fn parse_expr_with_recovery_set(
+    p: &mut Parser,
+    expected_syntax_name: &'static str,
+    recovery_set: TokenSet,
+) -> Option<CompletedMarker> {
+    parse_expr_bp(p, 0, recovery_set, expected_syntax_name)
 }
 
 // bp stands for binding power
@@ -25,6 +36,39 @@ fn parse_expr_bp(
     let mut lhs = parse_lhs(p, recovery_set, expected_syntax_name)?;
 
     loop {
+        let mut at_lbrack = p.at(TokenKind::LBrack);
+        let mut at_caret = p.at(TokenKind::Caret);
+        let mut at_as = p.at(TokenKind::As);
+        while at_lbrack || at_caret || at_as {
+            if at_lbrack {
+                let indexing_expr = lhs.precede(p).complete(p, NodeKind::IndexSource).precede(p);
+                p.bump();
+
+                let real_index = p.start();
+                parse_expr(p, "array index");
+                real_index.complete(p, NodeKind::Index);
+
+                p.expect_with_no_skip(TokenKind::RBrack);
+
+                lhs = indexing_expr.complete(p, NodeKind::IndexExpr);
+            } else if at_caret {
+                let deref = lhs.precede(p);
+                p.bump();
+                lhs = deref.complete(p, NodeKind::DerefExpr);
+            } else if at_as {
+                let cast = lhs.precede(p);
+                p.bump();
+
+                ty::parse_ty(p, "cast type", recovery_set);
+
+                lhs = cast.complete(p, NodeKind::CastExpr);
+            }
+
+            at_lbrack = p.at(TokenKind::LBrack);
+            at_caret = p.at(TokenKind::Caret);
+            at_as = p.at(TokenKind::As);
+        }
+
         let (left_bp, right_bp) = if p.at(TokenKind::Plus) || p.at(TokenKind::Hyphen) {
             (1, 2)
         } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) {
@@ -40,7 +84,7 @@ fn parse_expr_bp(
         } else if p.at(TokenKind::DoublePipe) {
             (9, 10)
         } else if p.at(TokenKind::DoubleAnd) {
-            (11, 12)
+            (11, 12) // make sure parse_prefix_expr has a higher binding power than this
         } else {
             break;
         };
@@ -67,44 +111,50 @@ fn parse_lhs(
     let _guard = p.expected_syntax_name(expected_syntax_name);
 
     let cm = if p.at(TokenKind::Int) {
+        // println!("parse int");
         parse_int_literal(p)
     } else if p.at(TokenKind::Bool) {
+        // println!("parse bool");
         parse_bool_literal(p)
     } else if p.at(TokenKind::Quote) {
+        // println!("parse string");
         parse_string_literal(p)
     } else if p.at(TokenKind::Ident) {
-        parse_ref_or_call(p)
+        // println!("parse var or call");
+        parse_var_or_call(p)
+    } else if p.at(TokenKind::Caret) {
+        // println!("parse ref");
+        parse_ref(p, recovery_set)
+    } else if p.at(TokenKind::Distinct) {
+        // println!("parse ref");
+        parse_distinct(p, recovery_set)
     } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) || p.at(TokenKind::Bang) {
-        return Some(parse_prefix_expr(p, recovery_set));
+        // println!("parse prefix");
+        parse_prefix_expr(p, recovery_set)
     } else if p.at(TokenKind::If) {
+        // println!("parse if");
         parse_if(
             p,
             recovery_set.union(TokenSet::new([TokenKind::If, TokenKind::Else])),
         )
     } else if p.at(TokenKind::While) || p.at(TokenKind::Loop) {
-        return Some(parse_loop(p, recovery_set));
+        // println!("parse loop");
+        parse_loop(p, recovery_set)
     } else if p.at(TokenKind::LParen) {
-        return Some(parse_lambda(p, recovery_set));
+        // println!("parse lambda");
+        parse_lambda(p, recovery_set)
     } else if p.at(TokenKind::LBrack) {
-        return Some(parse_array(p, recovery_set));
+        // println!("parse array");
+        parse_array(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
+        // println!("parse block");
         parse_block(p, recovery_set)
     } else {
+        // println!("error {:?} {} {:?}", p.peek(), p.at_eof(), p.peek_range());
         return p.error_with_recovery_set(recovery_set);
     };
 
-    // todo: this should go into the binary expr fn, but that would require a slight refactor of the type system
-    if p.at(TokenKind::As) {
-        let new_cm = cm.precede(p);
-        p.bump();
-
-        let _guard = p.expected_syntax_name("cast type");
-        ty::parse_ty(p, recovery_set);
-
-        Some(new_cm.complete(p, NodeKind::CastExpr))
-    } else {
-        Some(cm)
-    }
+    Some(cm)
 }
 
 fn parse_int_literal(p: &mut Parser) -> CompletedMarker {
@@ -134,7 +184,27 @@ fn parse_string_literal(p: &mut Parser) -> CompletedMarker {
     m.complete(p, NodeKind::StringLiteral)
 }
 
-fn parse_ref_or_call(p: &mut Parser) -> CompletedMarker {
+fn parse_ref(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    assert!(p.at(TokenKind::Caret));
+    let m = p.start();
+    p.bump();
+
+    parse_expr_bp(p, 14, recovery_set, "operand");
+
+    m.complete(p, NodeKind::RefExpr)
+}
+
+fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    assert!(p.at(TokenKind::Distinct));
+    let m = p.start();
+    p.bump();
+
+    parse_ty(p, "type", recovery_set);
+
+    m.complete(p, NodeKind::Distinct)
+}
+
+fn parse_var_or_call(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Ident));
     let m = p.start();
     parse_path(p, TokenSet::NONE);
@@ -167,7 +237,7 @@ fn parse_ref_or_call(p: &mut Parser) -> CompletedMarker {
         arg_list_m.complete(p, NodeKind::ArgList);
         m.complete(p, NodeKind::Call)
     } else {
-        m.complete(p, NodeKind::Ref)
+        m.complete(p, NodeKind::VarRef)
     }
 }
 
@@ -218,8 +288,11 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
         p.expect_with_no_skip(TokenKind::Colon);
 
-        let _guard = p.expected_syntax_name("parameter type");
-        parse_ty(p, TokenSet::new([TokenKind::Comma, TokenKind::RParen]));
+        parse_ty(
+            p,
+            "parameter type",
+            TokenSet::new([TokenKind::Comma, TokenKind::RParen]),
+        );
 
         param_m.complete(p, NodeKind::Param);
 
@@ -240,9 +313,12 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     p.expect_with_no_skip(TokenKind::Arrow);
 
-    if p.at(TokenKind::Ident) {
-        let _guard = p.expected_syntax_name("return type");
-        parse_ty(p, recovery_set.union(TokenSet::new([TokenKind::LBrace])));
+    if p.at(TokenKind::Ident) || p.at(TokenKind::LBrack) || p.at(TokenKind::Caret) {
+        parse_ty(
+            p,
+            "return type",
+            recovery_set.union(TokenSet::new([TokenKind::LBrace])),
+        );
     }
 
     if p.at(TokenKind::LBrace) {
@@ -298,7 +374,9 @@ fn parse_loop(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     p.bump();
 
     if at_while {
+        let m = p.start();
         parse_expr(p, "condition");
+        m.complete(p, NodeKind::Condition);
     }
 
     if p.at(TokenKind::LBrace) {
@@ -336,23 +414,28 @@ fn parse_array(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     let m = p.start();
     p.bump();
 
-    // todo: better errors in the situation `arr := [3]i32{ 1, 2, 3 };`
+    if !p.at(TokenKind::RBrack) {
+        let size = p.start();
+        parse_expr(p, "array size");
+        size.complete(p, NodeKind::ArraySize);
+    }
 
     p.expect_with_recovery_set(
         TokenKind::RBrack,
         recovery_set.union(TokenSet::new([TokenKind::LBrace])),
     );
 
-    let _guard = p.expected_syntax_name("array type");
-    ty::parse_ty(p, recovery_set);
+    ty::parse_ty(p, "array type", recovery_set);
 
-    if p.at(TokenKind::LBrace) {
+    if !recovery_set.contains(TokenKind::LBrace) && p.at(TokenKind::LBrace) {
+        let body = p.start();
+
         p.bump();
 
         loop {
-            let item_m = p.start();
-            parse_expr(p, "item");
-            item_m.complete(p, NodeKind::ArrayItem);
+            if let Some(item) = parse_expr(p, "item") {
+                item.precede(p).complete(p, NodeKind::ArrayItem);
+            }
 
             if p.at(TokenKind::RBrace) || p.at_eof() {
                 break;
@@ -362,10 +445,11 @@ fn parse_array(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         }
 
         p.expect_with_recovery_set(TokenKind::RBrace, recovery_set);
-    } else {
-        let _guard = p.expected_syntax_name("array body");
-        p.error_with_recovery_set(recovery_set);
+
+        body.complete(p, NodeKind::ArrayBody);
     }
+
+    // println!("done {:?} {:?}", p.peek(), p.peek_range());
 
     m.complete(p, NodeKind::Array)
 }

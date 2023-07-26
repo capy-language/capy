@@ -5,12 +5,12 @@ use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
-use text_size::TextRange;
+use text_size::{TextRange, TextSize};
 
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::{GetDefinitionError, WorldIndex},
-    Definition, Fqn, Function, Name, TyWithRange,
+    Definition, Fqn, Function, Name, TyParseError, TyWithRange,
 };
 
 #[derive(Clone)]
@@ -36,6 +36,12 @@ pub enum Expr {
         expr: Idx<Expr>,
         ty: TyWithRange,
     },
+    Ref {
+        expr: Idx<Expr>,
+    },
+    Deref {
+        pointer: Idx<Expr>,
+    },
     Binary {
         lhs: Idx<Expr>,
         rhs: Idx<Expr>,
@@ -48,6 +54,10 @@ pub enum Expr {
     Array {
         items: Vec<Idx<Expr>>,
         ty: TyWithRange,
+    },
+    Index {
+        array: Idx<Expr>,
+        index: Idx<Expr>,
     },
     Block {
         stmts: Vec<Idx<Stmt>>,
@@ -71,6 +81,9 @@ pub enum Expr {
         path: PathWithRange,
         args: Vec<Idx<Expr>>,
     },
+    Ty {
+        ty: Idx<TyWithRange>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -85,14 +98,14 @@ pub struct LocalDef {
     pub mutable: bool,
     pub ty: TyWithRange,
     pub value: Idx<Expr>,
-    pub ast: ast::VarDef,
+    pub ast: ast::Define,
 }
 
 #[derive(Clone)]
 pub struct LocalSet {
     pub local_def: Option<Idx<LocalDef>>,
     pub value: Idx<Expr>,
-    pub ast: ast::VarSet,
+    pub ast: ast::Assign,
 }
 
 impl std::fmt::Debug for LocalDef {
@@ -149,6 +162,8 @@ pub enum LoweringDiagnosticKind {
     SetImmutable { name: Key },
     MismatchedArgCount { name: Key, expected: u32, got: u32 },
     CalledNonLambda { name: Key },
+    ArrayMissingBody,
+    TyParseError(TyParseError),
     InvalidEscape,
 }
 
@@ -157,6 +172,7 @@ pub enum Symbol {
     Local(Idx<LocalDef>),
     Param(ast::Param),
     Global(Path),
+    PrimitiveTy(Idx<TyWithRange>),
     Function(Path),
     Module(Name),
     Unknown,
@@ -167,20 +183,19 @@ pub fn lower(
     tree: &SyntaxTree,
     module: Name,
     world_index: &WorldIndex,
+    twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(module, world_index, interner, tree);
+    let mut ctx = Ctx::new(module, world_index, twr_arena, interner, tree);
 
     for def in root.defs(tree) {
-        if let Some(mutable) = def.mutable(tree) {
-            ctx.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::MutableGlobal,
-                range: mutable.range(tree),
-            })
-        }
-        match def.value(tree) {
-            Some(ast::Expr::Lambda(lambda)) => ctx.lower_lambda(def.name(tree), lambda),
-            val => ctx.lower_global(def.name(tree), val),
+        let (name, value) = match def {
+            ast::Define::Binding(binding) => (binding.name(tree), binding.value(tree)),
+            ast::Define::Variable(variable) => (variable.name(tree), variable.value(tree)),
+        };
+        match value {
+            Some(ast::Expr::Lambda(lambda)) => ctx.lower_lambda(name, lambda),
+            val => ctx.lower_global(name, val),
         }
     }
 
@@ -193,6 +208,7 @@ struct Ctx<'a> {
     bodies: Bodies,
     module: Name,
     world_index: &'a WorldIndex,
+    twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
     tree: &'a SyntaxTree,
     diagnostics: Vec<LoweringDiagnostic>,
@@ -204,6 +220,7 @@ impl<'a> Ctx<'a> {
     fn new(
         module: Name,
         world_index: &'a WorldIndex,
+        ty_arena: &'a mut Arena<TyWithRange>,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
     ) -> Self {
@@ -221,11 +238,32 @@ impl<'a> Ctx<'a> {
             },
             module,
             world_index,
+            twr_arena: ty_arena,
             interner,
             tree,
             diagnostics: Vec::new(),
             scopes: vec![FxHashMap::default()],
             params: FxHashMap::default(),
+        }
+    }
+
+    pub fn lower_ty(&mut self, ty: Option<ast::Ty>) -> TyWithRange {
+        match TyWithRange::parse(
+            ty.and_then(|ty| ty.expr(self.tree)),
+            self.twr_arena,
+            self.interner,
+            self.tree,
+        ) {
+            Ok(ty) => ty,
+            Err(why) => {
+                let range = ty.unwrap().range(self.tree);
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::TyParseError(why),
+                    range,
+                });
+
+                TyWithRange::Unknown
+            }
         }
     }
 
@@ -281,8 +319,8 @@ impl<'a> Ctx<'a> {
 
     fn lower_stmt(&mut self, stmt: ast::Stmt) -> Stmt {
         match stmt {
-            ast::Stmt::VarDef(local_def) => self.lower_local_def(local_def),
-            ast::Stmt::VarSet(local_set) => self.lower_local_set(local_set),
+            ast::Stmt::Define(local_def) => self.lower_local_define(local_def),
+            ast::Stmt::Assign(local_set) => self.lower_assignment(local_set),
             ast::Stmt::Expr(expr_stmt) => {
                 let expr = self.lower_expr(expr_stmt.expr(self.tree));
                 Stmt::Expr(expr)
@@ -290,11 +328,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn lower_local_def(&mut self, local_def: ast::VarDef) -> Stmt {
-        let ty = TyWithRange::parse(local_def.ty(self.tree), self.interner, self.tree);
+    fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
+        let ty = self.lower_ty(local_def.ty(self.tree));
         let value = self.lower_expr(local_def.value(self.tree));
         let id = self.bodies.local_defs.alloc(LocalDef {
-            mutable: local_def.mutable(self.tree).is_some(),
+            mutable: matches!(local_def, ast::Define::Variable(_)),
             ty,
             value,
             ast: local_def,
@@ -308,7 +346,7 @@ impl<'a> Ctx<'a> {
         Stmt::LocalDef(id)
     }
 
-    fn lower_local_set(&mut self, local_set: ast::VarSet) -> Stmt {
+    fn lower_assignment(&mut self, local_set: ast::Assign) -> Stmt {
         let name = self
             .interner
             .intern(local_set.name(self.tree).unwrap().text(self.tree));
@@ -360,21 +398,7 @@ impl<'a> Ctx<'a> {
 
         let range = expr_ast.range(self.tree);
 
-        let expr = match expr_ast {
-            ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
-            ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
-            ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
-            ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
-            ast::Expr::Block(block) => self.lower_block(block),
-            ast::Expr::If(if_expr) => self.lower_if(if_expr),
-            ast::Expr::While(while_expr) => self.lower_while(while_expr),
-            ast::Expr::Call(call) => self.lower_call(call),
-            ast::Expr::Ref(var_ref) => self.lower_ref(var_ref),
-            ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
-            ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
-            ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
-            ast::Expr::Lambda(_) => unreachable!(),
-        };
+        let expr = self.lower_expr_raw(expr_ast);
 
         let id = self.bodies.exprs.alloc(expr);
         self.bodies.expr_ranges.insert(id, range);
@@ -382,12 +406,45 @@ impl<'a> Ctx<'a> {
         id
     }
 
+    fn lower_expr_raw(&mut self, expr: ast::Expr) -> Expr {
+        match expr {
+            ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
+            ast::Expr::Ref(ref_expr) => self.lower_ref_expr(ref_expr),
+            ast::Expr::Deref(deref_expr) => self.lower_deref_expr(deref_expr),
+            ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
+            ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
+            ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
+            ast::Expr::Block(block) => self.lower_block(block),
+            ast::Expr::If(if_expr) => self.lower_if(if_expr),
+            ast::Expr::While(while_expr) => self.lower_while(while_expr),
+            ast::Expr::Call(call) => self.lower_call(call),
+            ast::Expr::IndexExpr(index_expr) => self.lower_index_expr(index_expr),
+            ast::Expr::VarRef(var_ref) => self.lower_var_ref(var_ref),
+            ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
+            ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
+            ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
+            ast::Expr::Lambda(_) => unreachable!(),
+        }
+    }
+
     fn lower_cast_expr(&mut self, cast_expr: ast::CastExpr) -> Expr {
-        let ty = TyWithRange::parse(cast_expr.ty(self.tree), self.interner, self.tree);
+        let ty = self.lower_ty(cast_expr.ty(self.tree));
 
         let expr = self.lower_expr(cast_expr.expr(self.tree));
 
         Expr::Cast { expr, ty }
+    }
+
+    fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
+        let expr = self.lower_expr(ref_expr.expr(self.tree));
+
+        Expr::Ref { expr }
+    }
+
+    fn lower_deref_expr(&mut self, deref_expr: ast::DerefExpr) -> Expr {
+        let pointer = self.lower_expr(deref_expr.pointer(self.tree));
+
+        Expr::Deref { pointer }
     }
 
     fn lower_binary_expr(&mut self, binary_expr: ast::BinaryExpr) -> Expr {
@@ -427,9 +484,27 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
-        let ty = TyWithRange::parse(array_expr.ty(self.tree), self.interner, self.tree);
+        let ty = self.lower_ty(array_expr.ty(self.tree));
 
-        let items = array_expr
+        let body = match array_expr.body(self.tree) {
+            Some(body) => body,
+            None => {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ArrayMissingBody,
+                    range: TextRange::new(
+                        array_expr.range(self.tree).end(),
+                        array_expr
+                            .range(self.tree)
+                            .end()
+                            .checked_add(TextSize::from(1))
+                            .unwrap(),
+                    ),
+                });
+                return Expr::Missing;
+            }
+        };
+
+        let items = body
             .items(self.tree)
             .map(|item| self.lower_expr(item.value(self.tree)))
             .collect();
@@ -475,8 +550,10 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_while(&mut self, while_expr: ast::WhileExpr) -> Expr {
-        let condition = while_expr.condition(self.tree);
-        let condition = condition.map(|_| self.lower_expr(condition));
+        let condition = while_expr
+            .condition(self.tree)
+            .and_then(|condition| condition.value(self.tree))
+            .map(|condition| self.lower_expr(Some(condition)));
 
         let body = self.lower_expr(while_expr.body(self.tree));
 
@@ -527,6 +604,7 @@ impl<'a> Ctx<'a> {
                             return lower(self, call, function, path, function_name_token);
                         }
                         Definition::Global(_) => todo!(),
+                        Definition::NamedTy(_) => todo!(),
                     }
                 }
                 Err(GetDefinitionError::UnknownModule) => {
@@ -616,6 +694,19 @@ impl<'a> Ctx<'a> {
                         .insert(ident, Symbol::Global(path.path()));
                     return Expr::Global(path);
                 }
+                Definition::NamedTy(ty) => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::CalledNonLambda { name: name.0 },
+                        range: ident.range(self.tree),
+                    });
+
+                    self.bodies
+                        .symbol_map
+                        .insert(ident, Symbol::Global(path.path()));
+                    return Expr::Ty {
+                        ty: self.twr_arena.alloc(*ty),
+                    };
+                }
             }
         }
 
@@ -674,7 +765,20 @@ impl<'a> Ctx<'a> {
         return Expr::Missing;
     }
 
-    fn lower_ref(&mut self, var_ref: ast::Ref) -> Expr {
+    fn lower_index_expr(&mut self, index_expr: ast::IndexExpr) -> Expr {
+        let array = match index_expr.array(self.tree) {
+            Some(array) => self.lower_expr(array.value(self.tree)),
+            None => unreachable!(),
+        };
+        let index = match index_expr.index(self.tree) {
+            Some(index) => self.lower_expr(index.value(self.tree)),
+            None => unreachable!(),
+        };
+
+        Expr::Index { array, index }
+    }
+
+    fn lower_var_ref(&mut self, var_ref: ast::VarRef) -> Expr {
         let path = match var_ref.name(self.tree) {
             Some(path) => path,
             None => return Expr::Missing,
@@ -777,6 +881,16 @@ impl<'a> Ctx<'a> {
                 .insert(ident, Symbol::Global(path.path()));
 
             return Expr::Global(path);
+        }
+
+        if let Some(ty) = TyWithRange::from_key(name.0, ident.range(self.tree)) {
+            let ty = self.twr_arena.alloc(ty);
+
+            self.bodies
+                .symbol_map
+                .insert(ident, Symbol::PrimitiveTy(ty));
+
+            return Expr::Ty { ty };
         }
 
         self.diagnostics.push(LoweringDiagnostic {
@@ -901,6 +1015,7 @@ impl Bodies {
         &self.other_module_references
     }
 
+    // todo: check if this is used
     pub fn symbol(&self, ident: ast::Ident) -> Option<Symbol> {
         self.symbol_map.get(&ident).copied()
     }
@@ -959,7 +1074,12 @@ impl std::ops::Index<Idx<Expr>> for Bodies {
 }
 
 impl Bodies {
-    pub fn debug(&self, module_name: &str, interner: &Interner) -> String {
+    pub fn debug(
+        &self,
+        module_name: &str,
+        twr_arena: &Arena<TyWithRange>,
+        interner: &Interner,
+    ) -> String {
         let mut s = String::new();
 
         let mut globals: Vec<_> = self.globals.iter().collect();
@@ -971,7 +1091,7 @@ impl Bodies {
                 module_name,
                 interner.lookup(name.0)
             ));
-            write_expr(*expr_id, self, &mut s, interner, 0);
+            write_expr(*expr_id, self, &mut s, twr_arena, interner, 0);
             s.push(';');
         }
 
@@ -984,7 +1104,7 @@ impl Bodies {
                 module_name,
                 interner.lookup(name.0)
             ));
-            write_expr(*expr_id, self, &mut s, interner, 0);
+            write_expr(*expr_id, self, &mut s, twr_arena, interner, 0);
             s.push(';');
         }
 
@@ -1011,6 +1131,7 @@ impl Bodies {
             id: Idx<Expr>,
             bodies: &Bodies,
             s: &mut String,
+            ty_arena: &Arena<TyWithRange>,
             interner: &Interner,
             mut indentation: usize,
         ) {
@@ -1025,12 +1146,12 @@ impl Bodies {
 
                 Expr::Array { items, ty } => {
                     s.push_str("[]");
-                    s.push_str(ty.display(interner).as_str());
+                    s.push_str(ty.display(ty_arena, interner).as_str());
                     s.push('{');
 
                     for (idx, item) in items.iter().enumerate() {
                         s.push(' ');
-                        write_expr(*item, bodies, s, interner, indentation);
+                        write_expr(*item, bodies, s, ty_arena, interner, indentation);
                         if idx != items.len() - 1 {
                             s.push(',');
                         }
@@ -1039,16 +1160,35 @@ impl Bodies {
                     s.push_str(" }");
                 }
 
+                Expr::Index { array, index } => {
+                    write_expr(*array, bodies, s, ty_arena, interner, indentation);
+                    s.push_str("[ ");
+                    write_expr(*index, bodies, s, ty_arena, interner, indentation);
+                    s.push_str(" ]");
+                }
+
                 Expr::Cast { expr, ty } => {
-                    write_expr(*expr, bodies, s, interner, indentation);
+                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
 
                     s.push_str(" as ");
 
-                    s.push_str(ty.display(interner).as_str());
+                    s.push_str(ty.display(ty_arena, interner).as_str());
+                }
+
+                Expr::Ref { expr } => {
+                    s.push_str("^");
+
+                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
+                }
+
+                Expr::Deref { pointer } => {
+                    write_expr(*pointer, bodies, s, ty_arena, interner, indentation);
+
+                    s.push_str("^");
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(*lhs, bodies, s, interner, indentation);
+                    write_expr(*lhs, bodies, s, ty_arena, interner, indentation);
 
                     s.push(' ');
 
@@ -1069,7 +1209,7 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(*rhs, bodies, s, interner, indentation);
+                    write_expr(*rhs, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Unary { expr, op } => {
@@ -1079,7 +1219,7 @@ impl Bodies {
                         UnaryOp::Not => s.push('!'),
                     }
 
-                    write_expr(*expr, bodies, s, interner, indentation);
+                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Block {
@@ -1094,7 +1234,7 @@ impl Bodies {
                     tail_expr: Some(tail_expr),
                 } if stmts.is_empty() => {
                     s.push_str("{ ");
-                    write_expr(*tail_expr, bodies, s, interner, indentation + 4);
+                    write_expr(*tail_expr, bodies, s, ty_arena, interner, indentation + 4);
                     s.push_str(" }");
                 }
 
@@ -1105,13 +1245,13 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(stmt, bodies, s, interner, indentation);
+                        write_stmt(stmt, bodies, s, ty_arena, interner, indentation);
                         s.push('\n');
                     }
 
                     if let Some(tail_expr) = tail_expr {
                         s.push_str(&" ".repeat(indentation));
-                        write_expr(*tail_expr, bodies, s, interner, indentation);
+                        write_expr(*tail_expr, bodies, s, ty_arena, interner, indentation);
                         s.push('\n');
                     }
 
@@ -1127,24 +1267,24 @@ impl Bodies {
                     else_branch,
                 } => {
                     s.push_str("if ");
-                    write_expr(*condition, bodies, s, interner, indentation);
+                    write_expr(*condition, bodies, s, ty_arena, interner, indentation);
                     s.push(' ');
-                    write_expr(*body, bodies, s, interner, indentation);
+                    write_expr(*body, bodies, s, ty_arena, interner, indentation);
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
-                        write_expr(*else_branch, bodies, s, interner, indentation);
+                        write_expr(*else_branch, bodies, s, ty_arena, interner, indentation);
                     }
                 }
 
                 Expr::While { condition, body } => {
                     if let Some(condition) = condition {
                         s.push_str("while ");
-                        write_expr(*condition, bodies, s, interner, indentation);
+                        write_expr(*condition, bodies, s, ty_arena, interner, indentation);
                         s.push(' ');
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(*body, bodies, s, interner, indentation);
+                    write_expr(*body, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
@@ -1169,7 +1309,7 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(*arg, bodies, s, interner, indentation);
+                        write_expr(*arg, bodies, s, ty_arena, interner, indentation);
                     }
                     s.push_str(")");
                 }
@@ -1182,6 +1322,8 @@ impl Bodies {
                         interner.lookup(fqn.name.0)
                     )),
                 },
+
+                Expr::Ty { ty, .. } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
             }
         }
 
@@ -1189,12 +1331,13 @@ impl Bodies {
             id: Idx<Stmt>,
             bodies: &Bodies,
             s: &mut String,
+            ty_arena: &Arena<TyWithRange>,
             interner: &Interner,
             indentation: usize,
         ) {
             match &bodies[id] {
                 Stmt::Expr(expr_id) => {
-                    write_expr(*expr_id, bodies, s, interner, indentation);
+                    write_expr(*expr_id, bodies, s, ty_arena, interner, indentation);
                     s.push(';');
                 }
                 Stmt::LocalDef(local_def_id) => {
@@ -1203,6 +1346,7 @@ impl Bodies {
                         bodies[*local_def_id].value,
                         bodies,
                         s,
+                        ty_arena,
                         interner,
                         indentation,
                     );
@@ -1219,6 +1363,7 @@ impl Bodies {
                         bodies[*local_set_id].value,
                         bodies,
                         s,
+                        ty_arena,
                         interner,
                         indentation,
                     );

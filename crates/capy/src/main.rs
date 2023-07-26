@@ -4,6 +4,7 @@ use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
 
 use clap::{Parser, Subcommand};
 use hir::WorldIndex;
+use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use std::fs;
 
@@ -21,17 +22,31 @@ struct CompilerConfig {
 
 #[derive(Debug, Subcommand)]
 enum BuildAction {
+    /// Takes in one or more .capy files and compiles them
     Build {
+        /// The files to compile
         #[arg(required = true)]
         files: Vec<String>,
 
+        /// The entry point function of the program
+        #[arg(long, default_value = "main")]
+        entry_point: String,
+
+        /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
     },
+    /// Takes in one or more .capy files, compiles them, and runs the compiled executable
     Run {
+        /// The files to compile and run
         #[arg(required = true)]
         files: Vec<String>,
 
+        /// The entry point function of the program
+        #[arg(long, default_value = "main")]
+        entry_point: String,
+
+        /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
     },
@@ -42,13 +57,26 @@ const ANSI_GREEN: &str = "\x1B[1;92m";
 const ANSI_WHITE: &str = "\x1B[1;97m";
 const ANSI_RESET: &str = "\x1B[0m";
 
+macro_rules! get_build_config {
+    (
+        $action:expr => $($property:ident),+
+    ) => {
+        match $action {
+            BuildAction::Build {
+                $($property,)+
+            } => ($($property,)+ false),
+            BuildAction::Run {
+                $($property,)+
+            } => ($($property,)+ true)
+        }
+    };
+}
+
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (files, verbose, should_run) = match config.action {
-        BuildAction::Build { files, verbose } => (files, verbose, false),
-        BuildAction::Run { files, verbose } => (files, verbose, true),
-    };
+    let (files, entry_point, verbose, should_run) =
+        get_build_config!(config.action => files, entry_point, verbose);
 
     let files = files
         .iter()
@@ -61,10 +89,15 @@ fn main() -> io::Result<()> {
         })
         .collect();
 
-    compile_files(files, should_run, verbose)
+    compile_files(files, entry_point, should_run, verbose)
 }
 
-fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) -> io::Result<()> {
+fn compile_files(
+    files: Vec<(String, String)>,
+    entry_point: String,
+    should_run: bool,
+    verbose: u8,
+) -> io::Result<()> {
     println!("{ANSI_GREEN}Compiling{ANSI_RESET}  ...");
     let compilation_start = Instant::now();
 
@@ -72,12 +105,16 @@ fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) ->
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let tys_map = Rc::new(RefCell::new(FxHashMap::default()));
+    let twr_arena = Rc::new(RefCell::new(Arena::new()));
+    let resolved_arena = Rc::new(RefCell::new(Arena::new()));
 
     let mut source_files = Vec::new();
     for (file_name, contents) in files {
         source_files.push(SourceFile::parse(
             file_name.clone(),
             contents.clone(),
+            twr_arena.clone(),
+            resolved_arena.clone(),
             interner.clone(),
             bodies_map.clone(),
             tys_map.clone(),
@@ -89,15 +126,25 @@ fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) ->
         println!();
     }
 
+    let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
+
     let main_modules = source_files
         .iter()
-        .filter(|source| source.has_main())
+        .filter(|source| source.has_fn_of_name(main_fn))
         .map(|source| (source.file_name.clone(), source.module))
         .collect::<Vec<_>>();
     if main_modules.is_empty() {
-        println!("{ANSI_RED}error{ANSI_WHITE}: there is no main function{ANSI_RESET}");
+        println!(
+            "{ANSI_RED}error{ANSI_WHITE}: there is no `{}` function{ANSI_RESET}",
+            interner.borrow().lookup(main_fn.0)
+        );
+        std::process::exit(1);
     } else if main_modules.len() > 1 {
-        println!("{ANSI_RED}error{ANSI_WHITE}: there are multiple main functions{ANSI_RESET}");
+        println!(
+            "{ANSI_RED}error{ANSI_WHITE}: there are multiple `{}` functions{ANSI_RESET}",
+            interner.borrow().lookup(main_fn.0)
+        );
+        std::process::exit(1);
     }
 
     source_files
@@ -119,7 +166,6 @@ fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) ->
         exit(1);
     }
 
-    let main_fn = hir::Name(interner.borrow_mut().intern("main"));
     let (main_file_name, main_module) = main_modules.first().unwrap();
 
     let parse_finish = compilation_start.elapsed();
@@ -136,10 +182,11 @@ fn compile_files(files: Vec<(String, String)>, should_run: bool, verbose: u8) ->
             module: *main_module,
             name: main_fn,
         },
+        &resolved_arena.borrow(),
         &interner,
-        &bodies_map.borrow_mut(),
-        &tys_map.borrow_mut(),
-        &world_index.borrow_mut(),
+        &bodies_map.borrow(),
+        &tys_map.borrow(),
+        &world_index.borrow(),
     ) {
         Ok(output) => {
             let output_folder = env::current_dir().unwrap().join("out");

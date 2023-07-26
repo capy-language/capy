@@ -19,7 +19,7 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
 
     // Idents can start expressions AND definitions
     // this code tells the difference by looking ahead
-    if p.at(TokenKind::Mut) || (p.at(TokenKind::Ident) && p.at_ahead(1, DEF_QUALIFIERS)) {
+    if p.at(TokenKind::Ident) && p.at_ahead(1, DEF_QUALIFIERS) {
         let res = Some(parse_def(p, true));
         p.expect_with_no_skip(TokenKind::Semicolon);
         return res;
@@ -43,41 +43,48 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
     res
 }
 
+enum Def {
+    Binding,
+    Variable,
+    Assignment,
+}
+
 pub(crate) fn parse_def(p: &mut Parser, allow_set: bool) -> CompletedMarker {
     let _guard = p.expected_syntax_name("statement");
 
     let m = p.start();
 
-    let allow_set = if p.at(TokenKind::Mut) {
-        p.bump();
-        false
-    } else {
-        allow_set
-    };
-
     p.expect(TokenKind::Ident);
 
     let def = if !allow_set || p.at(TokenKind::Colon) {
         p.expect_with_no_skip(TokenKind::Colon);
-        if !p.at(TokenKind::Equals) {
-            let _guard = p.expected_syntax_name("defined type");
-            parse_ty(p, TokenSet::new([TokenKind::Equals]));
-        }
-        true
-    } else {
-        false
-    };
 
-    p.expect(TokenKind::Equals);
+        let def_set = TokenSet::new([TokenKind::Equals, TokenKind::Colon]);
+        if !p.at_set(def_set) {
+            parse_ty(p, "type annotation", def_set);
+        }
+
+        if p.at(TokenKind::Colon) {
+            p.expect(TokenKind::Colon);
+            Def::Binding
+        } else {
+            p.expect(TokenKind::Equals);
+            Def::Variable
+        }
+    } else {
+        p.expect(TokenKind::Equals);
+
+        Def::Assignment
+    };
 
     expr::parse_expr(p, "value");
 
     m.complete(
         p,
-        if def {
-            NodeKind::VarDef
-        } else {
-            NodeKind::VarSet
+        match def {
+            Def::Binding => NodeKind::Binding,
+            Def::Variable => NodeKind::VarDef,
+            Def::Assignment => NodeKind::Assign,
         },
     )
 }

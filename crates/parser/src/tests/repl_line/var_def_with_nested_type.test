@@ -5,15 +5,16 @@ Root@0..19
     Ident@0..3 "foo"
     Colon@3..4 ":"
     Whitespace@4..5 " "
-    NamedTy@5..12
-      Path@5..12
-        Ident@5..8 "bar"
-        Dot@8..9 "."
-        Ident@9..12 "baz"
+    Ty@5..12
+      VarRef@5..12
+        Path@5..12
+          Ident@5..8 "bar"
+          Dot@8..9 "."
+          Ident@9..12 "baz"
     Whitespace@12..13 " "
     Equals@13..14 "="
     Whitespace@14..15 " "
-    Ref@15..18
+    VarRef@15..18
       Path@15..18
         Ident@15..18 "qux"
   Semicolon@18..19 ";"

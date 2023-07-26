@@ -1,4 +1,4 @@
-use crate::{AstNode, Lambda, Ty};
+use crate::{AstNode, Expr, Lambda};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
@@ -18,8 +18,8 @@ pub fn validate(ast: impl AstNode, tree: &SyntaxTree) -> Vec<ValidationDiagnosti
 
     for node in ast.syntax().descendant_nodes(tree) {
         if let Some(lamda) = Lambda::cast(node, tree) {
-            match lamda.return_ty(tree) {
-                Some(Ty::Named(path_ty)) => {
+            match lamda.return_ty(tree).and_then(|ty| ty.expr(tree)) {
+                Some(Expr::VarRef(path_ty)) => {
                     if path_ty.text(tree) == "void" {
                         errors.push(ValidationDiagnostic {
                             kind: ValidationDiagnosticKind::UnneededVoid,

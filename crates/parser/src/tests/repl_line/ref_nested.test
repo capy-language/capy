@@ -2,7 +2,7 @@ foo.bar;
 ===
 Root@0..8
   ExprStmt@0..7
-    Ref@0..7
+    VarRef@0..7
       Path@0..7
         Ident@0..3 "foo"
         Dot@3..4 "."

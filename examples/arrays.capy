@@ -1,0 +1,22 @@
+
+// global_int : i32 = 123;
+
+main :: () -> {
+    my_array : [6] i32 = build_array();
+
+    my_array_ptr := ^my_array;
+
+    idx := 0;
+    while idx < 6 {
+        printf("%i\n", my_array_ptr^[idx]);
+        idx = idx + 1;
+    };
+};
+
+build_array :: () -> [6]i32 {
+    my_array : [6] i32 = [] i32 { 4, 8, 15, 16, 23, 42 };
+
+    my_array
+};
+
+printf :: (s: string, n1: i32) -> {};

@@ -20,6 +20,7 @@ impl Default for Interner {
         interner.intern("u8");
         interner.intern("bool");
         interner.intern("string");
+        interner.intern("type");
         interner
     }
 }
@@ -96,6 +97,10 @@ impl Key {
 
     pub fn string() -> Self {
         Self::from_raw(15)
+    }
+
+    pub fn r#type() -> Self {
+        Self::from_raw(16)
     }
 
     pub fn from_raw(raw: u32) -> Self {

@@ -23,7 +23,14 @@ pub fn lex(text: &str) -> Tokens {
         match kind {
             LexerTokenKind::__InternalString => lex_string(lexer.slice(), start, handler),
             LexerTokenKind::__InternalComment => lex_comment(start, range.len(), handler),
-            _ => handler(unsafe { mem::transmute(kind) }, start),
+            _ => {
+                let transmuted = unsafe { mem::transmute(kind) };
+                // we compare the debug names of the two values to ensure that no transmutation bugs occured
+                let og_name = format!("{:?}", kind);
+                let new_name = format!("{:?}", transmuted);
+                assert_eq!(og_name, new_name);
+                handler(transmuted, start)
+            }
         }
     }
 
@@ -76,133 +83,6 @@ fn lex_comment(offset: TextSize, len: usize, mut f: impl FnMut(TokenKind, TextSi
     }
 }
 
-// ! This enum must match up exactly with the contents of syntax::TokenKind
-// ! The source of a really horrible bug
-#[derive(Debug, Copy, Clone, PartialEq, Logos)]
-pub enum LexerTokenKind {
-    #[regex("[ \r\n]+")]
-    Whitespace,
-
-    #[token("mut")]
-    Mut,
-
-    #[token("as")]
-    As,
-
-    #[token("if")]
-    If,
-
-    #[token("else")]
-    Else,
-
-    #[token("while")]
-    While,
-
-    #[token("loop")]
-    Loop,
-
-    #[regex("[A-Za-z_][A-Za-z0-9_]*")]
-    Ident,
-
-    #[regex("[0-9]+")]
-    Int,
-
-    #[regex("true|false")]
-    Bool,
-
-    _Quote,
-
-    _Escape,
-
-    _StringContents,
-
-    #[token("+")]
-    Plus,
-
-    #[token("-")]
-    Hyphen,
-
-    #[token("*")]
-    Asterisk,
-
-    #[token("/")]
-    Slash,
-
-    #[token("<")]
-    Less,
-
-    #[token("<=")]
-    LessEquals,
-
-    #[token(">")]
-    Greater,
-
-    #[token(">=")]
-    GreaterEquals,
-
-    #[token("!")]
-    Bang,
-
-    #[token("!=")]
-    BangEquals,
-
-    #[token("&&")]
-    DoubleAnd,
-
-    #[token("||")]
-    DoublePipe,
-
-    #[token("==")]
-    DoubleEquals,
-
-    #[token("=")]
-    Equals,
-
-    #[token(",")]
-    Comma,
-
-    #[token(".")]
-    Dot,
-
-    #[token("->")]
-    Arrow,
-
-    #[token("(")]
-    LParen,
-
-    #[token(")")]
-    RParen,
-
-    #[token("[")]
-    LBrack,
-
-    #[token("]")]
-    RBrack,
-
-    #[token("{")]
-    LBrace,
-
-    #[token("}")]
-    RBrace,
-
-    _CommentLeader,
-
-    _CommentContents,
-
-    #[token(":")]
-    Colon,
-
-    #[token(";")]
-    Semicolon,
-
-    #[error]
-    Error,
-
-    // These are internal and so don't have to have
-    // representation in syntax::TokenKind
-    #[regex(r#""([^"\\\n]|\\.)*"?"#)]
-    __InternalString,
-
-    #[regex("//.*")]
-    __InternalComment,
+capy_macros::define_token_enum! {
+    LexerTokenKind, full, "../../tokens.lex"
 }

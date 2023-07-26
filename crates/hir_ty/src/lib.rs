@@ -2,19 +2,20 @@ mod cast;
 mod ctx;
 
 use ctx::InferenceCtx;
+use hir::TyWithRange;
 use interner::{Interner, Key};
-use la_arena::{ArenaMap, Idx};
+use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::FxHashMap;
 use text_size::TextRange;
 
 #[derive(Clone)]
 pub struct InferenceResult {
     signatures: FxHashMap<hir::Fqn, Signature>,
-    expr_types: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
-    local_types: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
+    expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
+    local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum ResolvedTy {
     Unknown,
     /// a bit-width of u32::MAX represents an isize
@@ -27,17 +28,35 @@ pub enum ResolvedTy {
     String,
     Array {
         size: u32,
-        sub_ty: Box<ResolvedTy>,
+        sub_ty: Idx<ResolvedTy>,
     },
+    Pointer {
+        sub_ty: Idx<ResolvedTy>,
+    },
+    Type,
     Named(hir::Fqn),
     Void,
+}
+
+impl ResolvedTy {
+    pub fn to_type_id(&self) -> u64 {
+        0
+    }
+}
+
+impl std::ops::Index<hir::Fqn> for InferenceResult {
+    type Output = Signature;
+
+    fn index(&self, fqn: hir::Fqn) -> &Self::Output {
+        &self.signatures[&fqn]
+    }
 }
 
 impl std::ops::Index<Idx<hir::Expr>> for InferenceResult {
     type Output = ResolvedTy;
 
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
-        &self.expr_types[expr]
+        &self.expr_tys[expr]
     }
 }
 
@@ -45,36 +64,41 @@ impl std::ops::Index<Idx<hir::LocalDef>> for InferenceResult {
     type Output = ResolvedTy;
 
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
-        &self.local_types[local_def]
+        &self.local_tys[local_def]
     }
 }
 
 #[derive(Debug, Clone)]
-enum Signature {
-    Function {
-        return_type: ResolvedTy,
-        param_types: Vec<ResolvedTy>,
-    },
-    Global(ResolvedTy),
+pub enum Signature {
+    Function(FunctionSignature),
+    Global(GlobalSignature),
 }
 
 impl Signature {
-    pub(crate) fn as_function(&self) -> Option<(&ResolvedTy, &Vec<ResolvedTy>)> {
+    pub fn as_function(&self) -> Option<&FunctionSignature> {
         match self {
-            Signature::Function {
-                return_type,
-                param_types,
-            } => Some((return_type, param_types)),
+            Signature::Function(signature) => Some(signature),
             Signature::Global(_) => None,
         }
     }
 
-    pub(crate) fn as_global(&self) -> Option<&ResolvedTy> {
+    pub fn as_global(&self) -> Option<&GlobalSignature> {
         match self {
             Signature::Function { .. } => None,
-            Signature::Global(type_) => Some(type_),
+            Signature::Global(signature) => Some(signature),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionSignature {
+    pub return_ty: ResolvedTy,
+    pub param_tys: Vec<ResolvedTy>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalSignature {
+    pub ty: ResolvedTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +126,12 @@ pub enum TyDiagnosticKind {
         found: ResolvedTy,
         expected: ResolvedTy,
     },
+    IndexMismatch {
+        found: ResolvedTy,
+    },
+    DerefMismatch {
+        found: ResolvedTy,
+    },
     MissingElse {
         expected: ResolvedTy,
     },
@@ -114,6 +144,8 @@ pub fn infer_all(
     bodies: &hir::Bodies,
     module: hir::Name,
     world_index: &hir::WorldIndex,
+    twr_arena: &Arena<TyWithRange>,
+    resolved_arena: &mut Arena<ResolvedTy>,
 ) -> (InferenceResult, Vec<TyDiagnostic>) {
     let index = world_index
         .get_module(module)
@@ -130,6 +162,8 @@ pub fn infer_all(
                 global,
                 module,
                 world_index,
+                twr_arena,
+                resolved_arena,
                 &mut diagnostics,
             ))
             .as_global()
@@ -137,6 +171,8 @@ pub fn infer_all(
             .clone();
 
         InferenceCtx {
+            twr_arena,
+            resolved_arena,
             expr_tys: &mut expr_types,
             local_tys: &mut local_types,
             param_tys: &[],
@@ -146,84 +182,45 @@ pub fn infer_all(
             diagnostics: &mut diagnostics,
             signatures: &mut signatures,
         }
-        .finish(bodies.global(name), &global_type);
+        .finish(bodies.global(name), global_type.ty);
     }
 
     for (name, function) in index.functions() {
-        let (return_type, param_types) = signatures
+        let function_signature = signatures
             .entry(hir::Fqn { module, name })
-            .or_insert_with(|| get_fn_signature(function, module, world_index, &mut diagnostics))
+            .or_insert_with(|| {
+                get_fn_signature(
+                    function,
+                    module,
+                    world_index,
+                    twr_arena,
+                    resolved_arena,
+                    &mut diagnostics,
+                )
+            })
             .as_function()
-            .map(|(a, b)| (a.clone(), b.clone()))
+            .cloned()
             .unwrap();
 
         InferenceCtx {
+            twr_arena,
+            resolved_arena,
             expr_tys: &mut expr_types,
             local_tys: &mut local_types,
-            param_tys: &param_types,
+            param_tys: &function_signature.param_tys,
             bodies,
             world_index,
             module,
             diagnostics: &mut diagnostics,
             signatures: &mut signatures,
         }
-        .finish(bodies.function_body(name), &return_type);
+        .finish(bodies.function_body(name), function_signature.return_ty);
     }
 
     let mut result = InferenceResult {
         signatures,
-        expr_types,
-        local_types,
-    };
-    result.shrink_to_fit();
-
-    (result, diagnostics)
-}
-
-pub fn infer(
-    fn_name: hir::Fqn,
-    bodies: &hir::Bodies,
-    world_index: &hir::WorldIndex,
-) -> (InferenceResult, Vec<TyDiagnostic>) {
-    let function = match world_index.get_definition(fn_name) {
-        Ok(hir::Definition::Function(f)) => f,
-        Ok(_) | Err(_) => panic!("passed non-function for inference"),
-    };
-
-    let mut expr_types = ArenaMap::default();
-    let mut local_types = ArenaMap::default();
-    let mut diagnostics = Vec::new();
-
-    let mut signatures = FxHashMap::default();
-
-    let (return_type, param_types) = signatures
-        .entry(fn_name)
-        .or_insert(get_fn_signature(
-            function,
-            fn_name.module,
-            world_index,
-            &mut diagnostics,
-        ))
-        .as_function()
-        .map(|(a, b)| (a.clone(), b.clone()))
-        .unwrap();
-
-    InferenceCtx {
-        expr_tys: &mut expr_types,
-        local_tys: &mut local_types,
-        param_tys: &param_types,
-        bodies,
-        module: fn_name.module,
-        world_index,
-        diagnostics: &mut diagnostics,
-        signatures: &mut signatures,
-    }
-    .finish(bodies.function_body(fn_name.name), &return_type);
-
-    let mut result = InferenceResult {
-        signatures,
-        expr_types,
-        local_types,
+        expr_tys: expr_types,
+        local_tys: local_types,
     };
     result.shrink_to_fit();
 
@@ -234,40 +231,66 @@ fn get_global_signature(
     global: &hir::Global,
     module: hir::Name,
     world_index: &hir::WorldIndex,
+    twr_arena: &Arena<TyWithRange>,
+    resolved_arena: &mut Arena<ResolvedTy>,
     diagnostics: &mut Vec<TyDiagnostic>,
 ) -> Signature {
-    Signature::Global(resolve_type(
-        global.ty.clone(),
-        module,
-        world_index,
-        diagnostics,
-    ))
+    Signature::Global(GlobalSignature {
+        ty: resolve_ty(
+            global.ty.clone(),
+            module,
+            world_index,
+            twr_arena,
+            resolved_arena,
+            diagnostics,
+        ),
+    })
 }
 
 fn get_fn_signature(
     function: &hir::Function,
     module: hir::Name,
     world_index: &hir::WorldIndex,
+    twr_arena: &Arena<TyWithRange>,
+    resolved_arena: &mut Arena<ResolvedTy>,
     diagnostics: &mut Vec<TyDiagnostic>,
 ) -> Signature {
-    let return_type = resolve_type(function.return_ty.clone(), module, world_index, diagnostics);
+    let return_ty = resolve_ty(
+        function.return_ty.clone(),
+        module,
+        world_index,
+        twr_arena,
+        resolved_arena,
+        diagnostics,
+    );
 
-    let param_types: Vec<_> = function
+    let param_tys: Vec<_> = function
         .params
         .iter()
-        .map(|param| resolve_type(param.ty.clone(), module, world_index, diagnostics))
+        .map(|param| {
+            resolve_ty(
+                param.ty.clone(),
+                module,
+                world_index,
+                twr_arena,
+                resolved_arena,
+                diagnostics,
+            )
+        })
         .collect();
 
-    Signature::Function {
-        return_type,
-        param_types,
-    }
+    Signature::Function(FunctionSignature {
+        param_tys,
+        return_ty,
+    })
 }
 
-fn resolve_type(
+fn resolve_ty(
     ty: hir::TyWithRange,
     module: hir::Name,
     world_index: &hir::WorldIndex,
+    twr_arena: &Arena<TyWithRange>,
+    resolved_arena: &mut Arena<ResolvedTy>,
     diagnostics: &mut Vec<TyDiagnostic>,
 ) -> ResolvedTy {
     match ty {
@@ -278,16 +301,57 @@ fn resolve_type(
         hir::TyWithRange::String { .. } => ResolvedTy::String,
         hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
             size,
-            sub_ty: Box::new(resolve_type(*sub_ty, module, world_index, diagnostics)),
+            sub_ty: {
+                let ty = resolve_ty(
+                    twr_arena[sub_ty],
+                    module,
+                    world_index,
+                    twr_arena,
+                    resolved_arena,
+                    diagnostics,
+                );
+                resolved_arena.alloc(ty)
+            },
         },
-        hir::TyWithRange::Named { name, range } => {
-            match world_index.get_definition(hir::Fqn { module, name }) {
+        hir::TyWithRange::Pointer { sub_ty, .. } => ResolvedTy::Pointer {
+            sub_ty: {
+                let ty = resolve_ty(
+                    twr_arena[sub_ty],
+                    module,
+                    world_index,
+                    twr_arena,
+                    resolved_arena,
+                    diagnostics,
+                );
+                resolved_arena.alloc(ty)
+            },
+        },
+        hir::TyWithRange::Type { .. } => ResolvedTy::Type,
+        hir::TyWithRange::Named { path } => {
+            let (fqn, range) = match path {
+                hir::PathWithRange::ThisModule { name, range } => {
+                    (hir::Fqn { module, name }, range)
+                }
+                hir::PathWithRange::OtherModule {
+                    fqn, name_range, ..
+                } => (fqn, name_range),
+            };
+
+            match world_index.get_definition(fqn) {
                 Ok(definition) => match definition {
+                    hir::Definition::NamedTy(ty) => resolve_ty(
+                        *ty,
+                        module,
+                        world_index,
+                        twr_arena,
+                        resolved_arena,
+                        diagnostics,
+                    ),
                     _ => todo!(),
                 },
                 Err(_) => {
                     diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::Undefined { name: name.0 },
+                        kind: TyDiagnosticKind::Undefined { name: fqn.name.0 },
                         range,
                     });
                     ResolvedTy::Unknown
@@ -308,54 +372,57 @@ impl InferenceResult {
 }
 
 impl InferenceResult {
-    pub fn debug(&self, interner: &Interner) -> String {
+    pub fn debug(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
         let mut s = String::new();
 
         for (name, signature) in &self.signatures {
             match signature {
-                Signature::Function {
-                    return_type,
-                    param_types,
-                } => {
+                Signature::Function(FunctionSignature {
+                    return_ty,
+                    param_tys,
+                }) => {
                     s.push_str(&format!(
                         "{}.{} : (",
                         interner.lookup(name.module.0),
                         interner.lookup(name.name.0)
                     ));
-                    for (idx, param_type) in param_types.iter().enumerate() {
+                    for (idx, param_type) in param_tys.iter().enumerate() {
                         if idx != 0 {
                             s.push_str(", ");
                         }
-                        s.push_str(&param_type.display(interner));
+                        s.push_str(&param_type.display(resolved_arena, interner));
                     }
                     s.push(')');
 
-                    s.push_str(&format!(" -> {}\n", return_type.display(interner)));
+                    s.push_str(&format!(
+                        " -> {}\n",
+                        return_ty.display(resolved_arena, interner)
+                    ));
                 }
-                Signature::Global(type_) => {
+                Signature::Global(GlobalSignature { ty }) => {
                     s.push_str(&format!(
                         "{}.{} : ",
                         interner.lookup(name.module.0),
                         interner.lookup(name.name.0)
                     ));
-                    s.push_str(&format!("{}\n", type_.display(interner)));
+                    s.push_str(&format!("{}\n", ty.display(resolved_arena, interner)));
                 }
             }
         }
 
-        for (expr_idx, type_) in self.expr_types.iter() {
+        for (expr_idx, ty) in self.expr_tys.iter() {
             s.push_str(&format!(
                 "{} : {}\n",
                 expr_idx.into_raw(),
-                type_.display(interner)
+                ty.display(resolved_arena, interner)
             ));
         }
 
-        for (local_def_idx, type_) in self.local_types.iter() {
+        for (local_def_idx, ty) in self.local_tys.iter() {
             s.push_str(&format!(
                 "l{} : {}\n",
                 local_def_idx.into_raw(),
-                type_.display(interner)
+                ty.display(resolved_arena, interner)
             ));
         }
 
@@ -364,7 +431,7 @@ impl InferenceResult {
 }
 
 impl ResolvedTy {
-    pub fn display(&self, interner: &Interner) -> String {
+    pub fn display(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
         match self {
             Self::Unknown => "<unknown>".to_string(),
             Self::IInt(bit_width) => match *bit_width {
@@ -380,8 +447,18 @@ impl ResolvedTy {
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
             Self::Array { size, sub_ty } => {
-                format!("[{size}]{}", sub_ty.display(interner))
+                format!(
+                    "[{size}]{}",
+                    resolved_arena[*sub_ty].display(resolved_arena, interner)
+                )
             }
+            Self::Pointer { sub_ty } => {
+                format!(
+                    "^{}",
+                    resolved_arena[*sub_ty].display(resolved_arena, interner)
+                )
+            }
+            Self::Type => "type".to_string(),
             Self::Named(fqn) => {
                 format!(
                     "{}.{}",
@@ -404,13 +481,14 @@ mod tests {
     #[track_caller]
     fn check<const N: usize>(
         input: &str,
-        function_name: &str,
         expect: Expect,
         expected_diagnostics: impl Fn(&mut Interner) -> [(TyDiagnosticKind, std::ops::Range<u32>); N],
     ) {
         let modules = test_utils::split_multi_module_test_data(input);
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
+
+        let mut twr_arena = Arena::new();
 
         for (name, text) in &modules {
             if *name == "main" {
@@ -420,7 +498,7 @@ mod tests {
             let tokens = lexer::lex(text);
             let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
-            let (index, _) = hir::index(root, &tree, &mut interner);
+            let (index, _) = hir::index(root, &tree, &mut twr_arena, &mut interner);
 
             world_index.add_module(hir::Name(interner.intern(name)), index);
         }
@@ -430,21 +508,29 @@ mod tests {
         let tokens = lexer::lex(text);
         let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, _) = hir::index(root, &tree, &mut interner);
+        let (index, _) = hir::index(root, &tree, &mut twr_arena, &mut interner);
         world_index.add_module(module, index);
 
-        let (bodies, _) = hir::lower(root, &tree, module, &world_index, &mut interner);
-
-        let (inference_result, actual_diagnostics) = infer(
-            hir::Fqn {
-                module,
-                name: hir::Name(interner.intern(function_name)),
-            },
-            &bodies,
+        let (bodies, _) = hir::lower(
+            root,
+            &tree,
+            module,
             &world_index,
+            &mut twr_arena,
+            &mut interner,
         );
 
-        expect.assert_eq(&inference_result.debug(&interner));
+        let mut resolved_arena = Arena::new();
+
+        let (inference_result, actual_diagnostics) = infer_all(
+            &bodies,
+            module,
+            &world_index,
+            &twr_arena,
+            &mut resolved_arena,
+        );
+
+        expect.assert_eq(&inference_result.debug(&resolved_arena, &interner));
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
@@ -461,9 +547,8 @@ mod tests {
     fn unit_function() {
         check(
             r#"
-                foo := () -> {};
+                foo :: () -> {};
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> void
                 0 : void
@@ -476,9 +561,8 @@ mod tests {
     fn function_with_return_ty() {
         check(
             r#"
-                one := () -> i32 { 1 };
+                one :: () -> i32 { 1 };
             "#,
-            "one",
             expect![[r#"
                 main.one : () -> i32
                 0 : i32
@@ -492,21 +576,30 @@ mod tests {
     fn functions_with_undefined_return_ty() {
         check(
             r#"
-                one := () -> foo {};
-                two := () -> bar.baz {};
+                one :: () -> foo {};
+                two :: () -> bar.baz {};
             "#,
-            "one", // `main.two` doesn't appear as it's not referenced by `main.one`
             expect![[r#"
+                main.two : () -> <unknown>
                 main.one : () -> <unknown>
                 0 : void
+                1 : void
             "#]],
             |i| {
-                [(
-                    TyDiagnosticKind::Undefined {
-                        name: i.intern("foo"),
-                    },
-                    30..33,
-                )]
+                [
+                    (
+                        TyDiagnosticKind::Undefined {
+                            name: i.intern("baz"),
+                        },
+                        71..74,
+                    ),
+                    (
+                        TyDiagnosticKind::Undefined {
+                            name: i.intern("foo"),
+                        },
+                        30..33,
+                    ),
+                ]
             },
         );
     }
@@ -515,9 +608,8 @@ mod tests {
     fn binary_expr() {
         check(
             r#"
-                twenty := () -> u8 { 10 + 10 };
+                twenty :: () -> u8 { 10 + 10 };
             "#,
-            "twenty",
             expect![[r#"
                 main.twenty : () -> u8
                 0 : u8
@@ -533,13 +625,12 @@ mod tests {
     fn binary_expr_diff_types() {
         check(
             r#"
-                calc := () -> isize {
+                calc :: () -> isize {
                     num1 := 4 as i128;
                     num2 := 8 as u16;
                     num1 + num2
                 };
             "#,
-            "calc",
             expect![[r#"
                 main.calc : () -> isize
                 0 : i128
@@ -561,12 +652,11 @@ mod tests {
     fn binary_expr_weak_uint_type() {
         check(
             r#"
-                calc := () -> u128 {
+                calc :: () -> u128 {
                     num1 := 4 as u16;
                     num1 + 8
                 };
             "#,
-            "calc",
             expect![[r#"
                 main.calc : () -> u128
                 0 : u16
@@ -585,12 +675,11 @@ mod tests {
     fn binary_expr_weak_int_type() {
         check(
             r#"
-                calc := () -> i128 {
+                calc :: () -> i128 {
                     num1: u16 = 4;
                     num1 + -8
                 };
             "#,
-            "calc",
             expect![[r#"
                 main.calc : () -> i128
                 0 : u16
@@ -618,13 +707,12 @@ mod tests {
     fn cast() {
         check(
             r#"
-                check := () -> bool {
+                check :: () -> bool {
                     num := 5;
                     is_true := num as bool;
                     is_true
                 };
             "#,
-            "check",
             expect![[r#"
                 main.check : () -> bool
                 0 : {uint}
@@ -643,13 +731,12 @@ mod tests {
     fn cast_unrelated() {
         check(
             r#"
-                how_old := () -> usize {
+                how_old :: () -> usize {
                     name := "Gandalf";
                     age := name as usize;
                     age
                 };
             "#,
-            "how_old",
             expect![[r#"
                 main.how_old : () -> usize
                 0 : string
@@ -676,13 +763,12 @@ mod tests {
     fn inference_simple_by_annotation() {
         check(
             r#"
-                main := () -> {
+                main :: () -> {
                     num1 := 5;
                     num2 := num1;
                     num3 : usize = num2;
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> void
                 0 : usize
@@ -701,7 +787,7 @@ mod tests {
     fn inference_complex_by_annotation() {
         check(
             r#"
-                main := () -> {
+                main :: () -> {
                     num: i16 = {
                         res := 23;
                         if true {
@@ -712,7 +798,6 @@ mod tests {
                     };
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> void
                 0 : i16
@@ -736,13 +821,12 @@ mod tests {
     fn inference_simple_by_return() {
         check(
             r#"
-                main := () -> usize {
+                main :: () -> usize {
                     num1 := 5;
                     num2 := num1;
                     num2
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> usize
                 0 : usize
@@ -760,7 +844,7 @@ mod tests {
     fn inference_complex_by_return_ok() {
         check(
             r#"
-                main := () -> i8 {
+                main :: () -> i8 {
                     num := {
                         res := 23;
                         if true {
@@ -772,7 +856,6 @@ mod tests {
                     num
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> i8
                 0 : i8
@@ -797,7 +880,7 @@ mod tests {
     fn inference_complex_by_return_err() {
         check(
             r#"
-                main := () -> u8 {
+                main :: () -> u8 {
                     num := {
                         res := 23;
                         if true {
@@ -809,7 +892,6 @@ mod tests {
                     num
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> u8
                 0 : u8
@@ -842,9 +924,8 @@ mod tests {
     fn function_with_params() {
         check(
             r#"
-                add := (x: i32, y: i32) -> i32 { x + y };
+                add :: (x: i32, y: i32) -> i32 { x + y };
             "#,
-            "add",
             expect![[r#"
                 main.add : (i32, i32) -> i32
                 0 : i32
@@ -860,12 +941,11 @@ mod tests {
     fn local_definition_and_usage() {
         check(
             r#"
-                main := () -> {
+                main :: () -> {
                     a := 10;
                     a;
                 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> void
                 0 : {uint}
@@ -881,13 +961,12 @@ mod tests {
     fn local_shadowing() {
         check(
             r#"
-                foo := () -> {
+                foo :: () -> {
                     a := 10;
                     a := "10";
                     a;
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> void
                 0 : {uint}
@@ -905,13 +984,12 @@ mod tests {
     fn local_set() {
         check(
             r#"
-                foo := () -> {
+                foo :: () -> {
                     a := "Hello";
                     a = "World";
                     a;
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> void
                 0 : string
@@ -928,13 +1006,12 @@ mod tests {
     fn local_auto_small_to_big_same_sign() {
         check(
             r#"
-                foo := () -> i16 {
+                foo :: () -> i16 {
                     small: i8 = 42;
                     big: i16 = small;
                     big
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> i16
                 0 : i8
@@ -952,13 +1029,12 @@ mod tests {
     fn local_auto_big_to_small_same_sign() {
         check(
             r#"
-                foo := () -> u8 {
+                foo :: () -> u8 {
                     big: u16 = 42;
                     small: u8 = big;
                     small
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> u8
                 0 : u16
@@ -984,13 +1060,12 @@ mod tests {
     fn local_auto_small_unsign_to_big_sign() {
         check(
             r#"
-                foo := () -> i16 {
+                foo :: () -> i16 {
                     small: u8 = 42;
                     big: i16 = small;
                     big
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> i16
                 0 : u8
@@ -1008,13 +1083,12 @@ mod tests {
     fn local_auto_small_sign_to_big_unsign() {
         check(
             r#"
-                foo := () -> u16 {
+                foo :: () -> u16 {
                     small: i8 = 42;
                     big: u16 = small;
                     big
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> u16
                 0 : i8
@@ -1041,13 +1115,12 @@ mod tests {
     fn local_auto_sign_to_unsign() {
         check(
             r#"
-                foo := () -> u16 {
+                foo :: () -> u16 {
                     sign: i16 = 42;
                     nada: u16 = sign;
                     nada
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> u16
                 0 : i16
@@ -1073,13 +1146,12 @@ mod tests {
     fn local_auto_big_sign_to_small_unsign() {
         check(
             r#"
-                foo := () -> u8 {
+                foo :: () -> u8 {
                     big: i16 = 42;
                     small: u8 = big;
                     small
                 };
             "#,
-            "foo",
             expect![[r#"
                 main.foo : () -> u8
                 0 : i16
@@ -1105,9 +1177,8 @@ mod tests {
     fn non_int_binary_expr() {
         check(
             r#"
-                sum := () -> i32 { "foo" + 1 };
+                sum :: () -> i32 { "foo" + 1 };
             "#,
-            "sum",
             expect![[r#"
                 main.sum : () -> i32
                 0 : string
@@ -1132,9 +1203,8 @@ mod tests {
     fn binary_expr_with_missing_operand() {
         check(
             r#"
-                f := () -> i32 { 5 + };
+                f :: () -> i32 { 5 + };
             "#,
-            "f",
             expect![[r#"
                 main.f : () -> i32
                 0 : i32
@@ -1150,9 +1220,8 @@ mod tests {
     fn invalid_binary_expr_with_missing_operand() {
         check(
             r#"
-                f := () -> string { "hello" + };
+                f :: () -> string { "hello" + };
             "#,
-            "f",
             expect![[r#"
                 main.f : () -> string
                 0 : string
@@ -1168,9 +1237,8 @@ mod tests {
     fn invalid_num_cmp_binary_expr() {
         check(
             r#"
-                f := () -> bool { true < 5 };
+                f :: () -> bool { true < 5 };
             "#,
-            "f",
             expect![[r#"
                 main.f : () -> bool
                 0 : bool
@@ -1195,9 +1263,8 @@ mod tests {
     fn invalid_bool_cmp_binary_expr() {
         check(
             r#"
-                f := () -> bool { "hello" && "world" };
+                f :: () -> bool { "hello" && "world" };
             "#,
-            "f",
             expect![[r#"
                 main.f : () -> bool
                 0 : string
@@ -1222,9 +1289,8 @@ mod tests {
     fn bool_binary_expr() {
         check(
             r#"
-                both := () -> bool { true && false };
+                both :: () -> bool { true && false };
             "#,
-            "both",
             expect![[r#"
                 main.both : () -> bool
                 0 : bool
@@ -1240,9 +1306,8 @@ mod tests {
     fn bool_binary_expr_with_missing_operand() {
         check(
             r#"
-                either := () -> bool { true || };
+                either :: () -> bool { true || };
             "#,
-            "either",
             expect![[r#"
                 main.either : () -> bool
                 0 : bool
@@ -1258,9 +1323,8 @@ mod tests {
     fn cmp_binary_expr() {
         check(
             r#"
-                less := () -> bool { 5 <= 10 };
+                less :: () -> bool { 5 <= 10 };
             "#,
-            "less",
             expect![[r#"
                 main.less : () -> bool
                 0 : {uint}
@@ -1276,9 +1340,8 @@ mod tests {
     fn cmp_binary_expr_with_missing_operands() {
         check(
             r#"
-                equality := () -> bool { 42 == };
+                equality :: () -> bool { 42 == };
             "#,
-            "equality",
             expect![[r#"
                 main.equality : () -> bool
                 0 : {uint}
@@ -1294,9 +1357,8 @@ mod tests {
     fn pos_unary_expr() {
         check(
             r#"
-                redundant := () -> u8 { +4 };
+                redundant :: () -> u8 { +4 };
             "#,
-            "redundant",
             expect![[r#"
                 main.redundant : () -> u8
                 0 : u8
@@ -1311,9 +1373,8 @@ mod tests {
     fn neg_unary_expr() {
         check(
             r#"
-                neg := () -> u8 { -4 };
+                neg :: () -> u8 { -4 };
             "#,
-            "neg",
             expect![[r#"
                 main.neg : () -> u8
                 0 : u8
@@ -1336,9 +1397,8 @@ mod tests {
     fn multi_neg_unary_expr() {
         check(
             r#"
-                pos := () -> u8 { ----4 };
+                pos :: () -> u8 { ----4 };
             "#,
-            "pos",
             expect![[r#"
                 main.pos : () -> u8
                 0 : u8
@@ -1356,9 +1416,8 @@ mod tests {
     fn bang_unary_expr() {
         check(
             r#"
-                not := () -> bool { !true };
+                not :: () -> bool { !true };
             "#,
-            "not",
             expect![[r#"
                 main.not : () -> bool
                 0 : bool
@@ -1373,9 +1432,8 @@ mod tests {
     fn mismatched_function_body() {
         check(
             r#"
-                s := () -> string { 92 };
+                s :: () -> string { 92 };
             "#,
-            "s",
             expect![[r#"
                 main.s : () -> string
                 0 : {uint}
@@ -1397,15 +1455,15 @@ mod tests {
     fn call_void_function() {
         check(
             r#"
-                main := () -> { nothing(); };
-                nothing := () -> {};
+                main :: () -> { nothing(); };
+                nothing :: () -> {};
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> void
                 main.nothing : () -> void
                 0 : void
                 1 : void
+                2 : void
             "#]],
             |_| [],
         );
@@ -1415,15 +1473,16 @@ mod tests {
     fn call_function_with_return_ty() {
         check(
             r#"
-                main := () -> i32 { number() };
-                number := () -> i32 { 5 };
+                main :: () -> i32 { number() };
+                number :: () -> i32 { 5 };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> i32
                 main.number : () -> i32
                 0 : i32
                 1 : i32
+                2 : i32
+                3 : i32
             "#]],
             |_| [],
         );
@@ -1433,16 +1492,17 @@ mod tests {
     fn call_function_with_params() {
         check(
             r#"
-                main := () -> i32 { id(10) };
-                id := (n: i32) -> i32 { n };
+                main :: () -> i32 { id(10) };
+                id :: (n: i32) -> i32 { n };
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> i32
                 main.id : (i32) -> i32
                 0 : i32
                 1 : i32
                 2 : i32
+                3 : i32
+                4 : i32
             "#]],
             |_| [],
         );
@@ -1452,10 +1512,9 @@ mod tests {
     fn mismatched_param_tys() {
         check(
             r#"
-                main := () -> i32 { multiply({}, "a") };
-                multiply := (x: i32, y: i32) -> i32 { x * y };
+                main :: () -> i32 { multiply({}, "a") };
+                multiply :: (x: i32, y: i32) -> i32 { x * y };
             "#,
-            "main", // `main` references `multiply`, so it shows up here
             expect![[r#"
                 main.main : () -> i32
                 main.multiply : (i32, i32) -> i32
@@ -1463,6 +1522,10 @@ mod tests {
                 1 : string
                 2 : i32
                 3 : i32
+                4 : i32
+                5 : i32
+                6 : i32
+                7 : i32
             "#]],
             |_| {
                 [
@@ -1490,14 +1553,13 @@ mod tests {
         check(
             r#"
                 #- main
-                a := () -> string { greetings.informal(10) };
+                a :: () -> string { greetings.informal(10) };
                 #- greetings
-                informal := (n: i32) -> string { "Hello!" };
+                informal :: (n: i32) -> string { "Hello!" };
             "#,
-            "a",
             expect![[r#"
-                main.a : () -> string
                 greetings.informal : (i32) -> string
+                main.a : () -> string
                 0 : i32
                 1 : string
                 2 : string
@@ -1510,16 +1572,15 @@ mod tests {
     fn attach_mismatch_diagnostics_to_block_tail_expr() {
         check(
             r#"
-                main := () -> {
+                main :: () -> {
                     take_i32({
                         a := 10 + 10;
                         "foo"
                     });
                 };
 
-                take_i32 := (n: i32) {};
+                take_i32 :: (n: i32) {};
             "#,
-            "main",
             expect![[r#"
                 main.main : () -> void
                 main.take_i32 : (i32) -> void
@@ -1530,6 +1591,7 @@ mod tests {
                 4 : string
                 5 : void
                 6 : void
+                7 : void
                 l0 : {uint}
             "#]],
             |_| {

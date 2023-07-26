@@ -1,0 +1,15 @@
+while true { }
+===
+Root@0..14
+  ExprStmt@0..14
+    WhileExpr@0..14
+      While@0..5 "while"
+      Whitespace@5..6 " "
+      Condition@6..10
+        BoolLiteral@6..10
+          Bool@6..10 "true"
+      Whitespace@10..11 " "
+      Block@11..14
+        LBrace@11..12 "{"
+        Whitespace@12..13 " "
+        RBrace@13..14 "}"

@@ -1,0 +1,24 @@
+
+// run with `capy entry_point.capy --entry-point _start`
+_start :: () -> {
+    printf("_start\n", 0);
+
+    code := main();
+    
+    printf("main() returned with: %i\n", code);
+    // exit(505);
+};
+
+main :: () -> i32 {
+    printf("Hello from Main!\n", 0);
+
+    0
+};
+
+printf :: (str: string, i: i32) -> {
+    // libc defined
+};
+
+exit :: (code: i32) -> {
+    // libc defined
+};

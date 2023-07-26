@@ -1,9 +1,13 @@
 use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
-use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
-use hir_ty::TyDiagnostic;
+use hir::{
+    IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind,
+    TyParseError,
+};
+use hir_ty::{ResolvedTy, TyDiagnostic};
 use interner::Interner;
+use la_arena::Arena;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
 use syntax::TokenKind;
@@ -50,6 +54,7 @@ impl Diagnostic {
         &self,
         filename: &str,
         input: &str,
+        resolved_arena: &Arena<ResolvedTy>,
         interner: &Interner,
         line_index: &LineIndex,
     ) -> Vec<String> {
@@ -74,7 +79,7 @@ impl Diagnostic {
             "{}{}: {}",
             severity,
             ANSI_WHITE,
-            self.message(interner)
+            self.message(resolved_arena, interner)
         )];
 
         input_snippet(
@@ -111,13 +116,13 @@ impl Diagnostic {
         }
     }
 
-    pub fn message(&self, interner: &Interner) -> String {
+    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
         match &self.0 {
             Repr::Syntax(e) => syntax_error_message(e),
             Repr::Validation(d) => validation_diagnostic_message(d),
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
-            Repr::Ty(d) => ty_diagnostic_message(d, interner),
+            Repr::Ty(d) => ty_diagnostic_message(d, resolved_arena, interner),
         }
     }
 }
@@ -185,9 +190,10 @@ fn input_snippet(
     let line_number_padding = " ".repeat(count_digits(end_line.0 + 1, 10));
 
     lines.push(format!(
-        "{}{}--> at {}:{}",
+        "{}{}--> at {}:{}:{}",
         ANSI_GRAY,
         line_number_padding,
+        filename,
         start_line.0 + 1,
         start_col.0 + 1,
     ));
@@ -307,6 +313,9 @@ fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
 
 fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> String {
     match &d.kind {
+        IndexingDiagnosticKind::NonBindingAtRoot => {
+            "globals must be binding `::` and not variable `:=`".to_string()
+        }
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
         }
@@ -314,6 +323,7 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
             format!("global `{}` must have a type", interner.lookup(*name))
         }
         IndexingDiagnosticKind::FunctionTy => "lambdas can not be typed".to_string(),
+        IndexingDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
 
@@ -349,29 +359,48 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             )
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
+        LoweringDiagnosticKind::ArrayMissingBody => "array missing a body `{}`".to_string(),
+        LoweringDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
 
-fn ty_diagnostic_message(d: &TyDiagnostic, interner: &Interner) -> String {
+fn lower_ty_parse_error(d: &TyParseError) -> String {
+    match d {
+        TyParseError::ArrayMissingSize => "array type is missing an explicit size".to_string(),
+        TyParseError::ArraySizeNotConst(_) => {
+            "array type size must be a constant integer".to_string()
+        }
+        TyParseError::ArraySizeOutOfBounds(_) => "integer literal out of range".to_string(),
+        TyParseError::ArrayHasBody(_) => "array type cannot have a body".to_string(),
+        TyParseError::NotATy => "expected a type".to_string(),
+        TyParseError::NonGlobalTy => "tried to use a non-global variable as a type".to_string(),
+    }
+}
+
+fn ty_diagnostic_message(
+    d: &TyDiagnostic,
+    resolved_arena: &Arena<ResolvedTy>,
+    interner: &Interner,
+) -> String {
     match &d.kind {
         hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
             format!(
                 "expected `{}` but found `{}`",
-                expected.display(interner),
-                found.display(interner)
+                expected.display(resolved_arena, interner),
+                found.display(resolved_arena, interner)
             )
         }
         hir_ty::TyDiagnosticKind::Uncastable { from, to } => {
             format!(
                 "cannot cast `{}` to `{}`",
-                from.display(interner),
-                to.display(interner)
+                from.display(resolved_arena, interner),
+                to.display(resolved_arena, interner)
             )
         }
         hir_ty::TyDiagnosticKind::OpMismatch { op, first, second } => {
             format!(
                 "`{}` cannot be {} `{}`",
-                first.display(interner),
+                first.display(resolved_arena, interner),
                 match op {
                     hir::BinaryOp::Add => "added to",
                     hir::BinaryOp::Sub => "subtracted by",
@@ -386,20 +415,32 @@ fn ty_diagnostic_message(d: &TyDiagnostic, interner: &Interner) -> String {
                     | hir::BinaryOp::And
                     | hir::BinaryOp::Or => "compared to",
                 },
-                second.display(interner)
+                second.display(resolved_arena, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
             format!(
                 "`if` and `else` have different types, expected `{}` but found `{}`",
-                found.display(interner),
-                expected.display(interner)
+                found.display(resolved_arena, interner),
+                expected.display(resolved_arena, interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::IndexMismatch { found } => {
+            format!(
+                "tried indexing `[]` a non-array, `{}`",
+                found.display(resolved_arena, interner)
+            )
+        }
+        hir_ty::TyDiagnosticKind::DerefMismatch { found } => {
+            format!(
+                "tried dereferencing `^` a non-pointer, `{}`",
+                found.display(resolved_arena, interner)
             )
         }
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
-                expected.display(interner)
+                expected.display(resolved_arena, interner)
             )
         }
         hir_ty::TyDiagnosticKind::Undefined { name } => {
@@ -411,12 +452,12 @@ fn ty_diagnostic_message(d: &TyDiagnostic, interner: &Interner) -> String {
 fn format_kind(kind: TokenKind) -> &'static str {
     match kind {
         TokenKind::Ident => "identifier",
-        TokenKind::Mut => "`mut`",
         TokenKind::As => "`as`",
         TokenKind::If => "`if`",
         TokenKind::Else => "`else`",
         TokenKind::While => "`while`",
         TokenKind::Loop => "`loop`",
+        TokenKind::Distinct => "`distinct`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Quote => "`\"`",
@@ -441,6 +482,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Comma => "`,`",
         TokenKind::Semicolon => "`;`",
         TokenKind::Arrow => "`->`",
+        TokenKind::Caret => "`^`",
         TokenKind::LParen => "`(`",
         TokenKind::RParen => "`)`",
         TokenKind::LBrack => "`[`",

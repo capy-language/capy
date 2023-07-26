@@ -6,6 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+capy_macros = {path = "../capy_macros"}
+backtrace = "0.3.68"
 chrono = "0.4.23"
 drop_bomb = "0.1.5"
 static_assertions = "1.1"

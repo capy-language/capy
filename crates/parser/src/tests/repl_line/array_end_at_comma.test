@@ -5,20 +5,21 @@ Root@0..12
     Array@0..12
       LBrack@0..1 "["
       RBrack@1..2 "]"
-      NamedTy@2..5
-        Path@2..5
-          Ident@2..5 "i32"
-      LBrace@5..6 "{"
-      ArrayItem@6..11
-        BinaryExpr@6..11
-          IntLiteral@6..7
-            Int@6..7 "5"
-          Whitespace@7..8 " "
-          Asterisk@8..9 "*"
-          Whitespace@9..10 " "
-          IntLiteral@10..11
-            Int@10..11 "2"
-      Comma@11..12 ","
-      ArrayItem@12..12
+      Ty@2..5
+        VarRef@2..5
+          Path@2..5
+            Ident@2..5 "i32"
+      ArrayBody@5..12
+        LBrace@5..6 "{"
+        ArrayItem@6..11
+          BinaryExpr@6..11
+            IntLiteral@6..7
+              Int@6..7 "5"
+            Whitespace@7..8 " "
+            Asterisk@8..9 "*"
+            Whitespace@9..10 " "
+            IntLiteral@10..11
+              Int@10..11 "2"
+        Comma@11..12 ","
 error at 12: missing item
 error at 12: missing RBrace

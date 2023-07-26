@@ -2,11 +2,12 @@ use std::collections::hash_map::Entry;
 
 use ast::{AstNode, AstToken, Ident};
 use interner::{Interner, Key};
+use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
-use crate::{Name, TyWithRange};
+use crate::{Name, TyParseError, TyWithRange};
 
 #[derive(Clone)]
 pub struct Index {
@@ -76,6 +77,7 @@ impl Index {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Definition {
     Function(Function),
+    NamedTy(TyWithRange),
     Global(Global),
 }
 
@@ -105,6 +107,7 @@ pub struct Param {
 pub fn index(
     root: ast::Root,
     tree: &SyntaxTree,
+    twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
 ) -> (Index, Vec<IndexingDiagnostic>) {
     let mut ctx = Ctx {
@@ -114,10 +117,17 @@ pub fn index(
         },
         diagnostics: Vec::new(),
         tree,
+        twr_arena,
         interner,
     };
 
     for def in root.defs(tree) {
+        if matches!(def, ast::Define::Variable(_)) {
+            ctx.diagnostics.push(IndexingDiagnostic {
+                kind: IndexingDiagnosticKind::NonBindingAtRoot,
+                range: def.range(tree),
+            })
+        }
         ctx.index_def(def);
     }
 
@@ -130,11 +140,30 @@ struct Ctx<'a> {
     index: Index,
     diagnostics: Vec<IndexingDiagnostic>,
     tree: &'a SyntaxTree,
+    twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
 }
 
 impl Ctx<'_> {
-    fn index_def(&mut self, def: ast::VarDef) {
+    fn parse_ty(&mut self, ty: Option<ast::Ty>) -> TyWithRange {
+        self.parse_ty_expr(ty.and_then(|ty| ty.expr(self.tree)))
+    }
+
+    fn parse_ty_expr(&mut self, ty: Option<ast::Expr>) -> TyWithRange {
+        match TyWithRange::parse(ty, self.twr_arena, self.interner, self.tree) {
+            Ok(ty) => ty,
+            Err(why) => {
+                let range = ty.unwrap().range(self.tree);
+                self.diagnostics.push(IndexingDiagnostic {
+                    kind: IndexingDiagnosticKind::TyParseError(why),
+                    range,
+                });
+                TyWithRange::Unknown
+            }
+        }
+    }
+
+    fn index_def(&mut self, def: ast::Define) {
         let result = match def.value(self.tree) {
             Some(ast::Expr::Lambda(lambda)) => {
                 self.index_lambda(def.name(self.tree), def.ty(self.tree), lambda)
@@ -199,19 +228,19 @@ impl Ctx<'_> {
                     .name(self.tree)
                     .map(|ident| Name(self.interner.intern(ident.text(self.tree))));
 
-                let type_ = param.ty(self.tree);
-                param_type_ranges.push(type_.map(|type_| type_.range(self.tree)));
+                let ty = param.ty(self.tree);
+                param_type_ranges.push(ty.map(|type_| type_.range(self.tree)));
 
-                let type_ = TyWithRange::parse(type_, self.interner, self.tree);
+                let ty = self.parse_ty(ty);
 
-                params.push(Param { name, ty: type_ });
+                params.push(Param { name, ty });
             }
         }
 
         let return_type = lambda
             .return_ty(self.tree)
             .map_or(TyWithRange::Void { range: None }, |ty| {
-                TyWithRange::parse(Some(ty), self.interner, self.tree)
+                self.parse_ty(Some(ty))
             });
 
         IndexDefinitionResult::Ok {
@@ -224,7 +253,7 @@ impl Ctx<'_> {
         }
     }
 
-    fn index_global(&mut self, var_def: ast::VarDef) -> IndexDefinitionResult {
+    fn index_global(&mut self, var_def: ast::Define) -> IndexDefinitionResult {
         let name_token = match var_def.name(self.tree) {
             Some(ident) => ident,
             None => return IndexDefinitionResult::NoName,
@@ -241,12 +270,19 @@ impl Ctx<'_> {
                 },
             });
         }
-        let ty = TyWithRange::parse(var_def.ty(self.tree), self.interner, self.tree);
+        let ty = self.parse_ty(var_def.ty(self.tree));
 
-        IndexDefinitionResult::Ok {
-            definition: Definition::Global(Global { ty }),
-            name,
-            name_token,
+        match ty {
+            TyWithRange::Type { .. } => IndexDefinitionResult::Ok {
+                definition: Definition::NamedTy(self.parse_ty_expr(var_def.value(self.tree))),
+                name,
+                name_token,
+            },
+            _ => IndexDefinitionResult::Ok {
+                definition: Definition::Global(Global { ty }),
+                name,
+                name_token,
+            },
         }
     }
 }
@@ -268,7 +304,9 @@ pub struct IndexingDiagnostic {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexingDiagnosticKind {
+    NonBindingAtRoot,
     AlreadyDefined { name: Key },
     MissingTy { name: Key },
     FunctionTy,
+    TyParseError(TyParseError),
 }

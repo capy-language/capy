@@ -10,7 +10,8 @@ Root@0..13
         Whitespace@3..4 " "
         As@4..6 "as"
         Whitespace@6..7 " "
-        NamedTy@7..12
-          Path@7..12
-            Ident@7..12 "usize"
+        Ty@7..12
+          VarRef@7..12
+            Path@7..12
+              Ident@7..12 "usize"
   Semicolon@12..13 ";"

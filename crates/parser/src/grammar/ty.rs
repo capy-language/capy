@@ -1,31 +1,18 @@
-use syntax::{NodeKind, TokenKind};
+use syntax::NodeKind;
 
 use crate::{
     parser::{marker::CompletedMarker, Parser},
     token_set::TokenSet,
 };
 
-use super::path::parse_path;
+use super::expr::parse_expr_with_recovery_set;
 
-pub(super) fn parse_ty(p: &mut Parser<'_>, recovery_set: TokenSet) -> CompletedMarker {
-    if p.at(TokenKind::LBrack) {
-        let array_m = p.start();
-        p.bump();
-
-        let guard = p.expected_syntax_name("array size");
-        let size = p.start();
-        p.expect_with_no_skip(TokenKind::Int);
-        size.complete(p, NodeKind::IntLiteral);
-        drop(guard);
-
-        p.expect_with_no_skip(TokenKind::RBrack);
-
-        parse_ty(p, recovery_set);
-
-        array_m.complete(p, NodeKind::ArrayTy)
-    } else {
-        let path_m = p.start();
-        parse_path(p, recovery_set);
-        path_m.complete(p, NodeKind::NamedTy)
-    }
+pub(super) fn parse_ty(
+    p: &mut Parser<'_>,
+    expected_syntax_name: &'static str,
+    recovery_set: TokenSet,
+) -> CompletedMarker {
+    let path_m = p.start();
+    parse_expr_with_recovery_set(p, expected_syntax_name, recovery_set);
+    path_m.complete(p, NodeKind::Ty)
 }

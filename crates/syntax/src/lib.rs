@@ -15,81 +15,46 @@ impl eventree::TreeConfig for TreeConfig {
     type TokenKind = TokenKind;
 }
 
-// ! This enum must match up exactly with the contents of lexer::LexerTokenKind
-// ! The source of a really horrible bug
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TokenKind {
-    Whitespace,
-    Mut,
-    As,
-    If,
-    Else,
-    While,
-    Loop,
-    Ident,
-    Int,
-    Bool,
-    Quote,
-    Escape,
-    StringContents,
-    Plus,
-    Hyphen,
-    Asterisk,
-    Slash,
-    Less,
-    LessEquals,
-    Greater,
-    GreaterEquals,
-    Bang,
-    BangEquals,
-    DoubleAnd,
-    DoublePipe,
-    DoubleEquals,
-    Equals,
-    Comma,
-    Dot,
-    Arrow,
-    LParen,
-    RParen,
-    LBrack,
-    RBrack,
-    LBrace,
-    RBrace,
-    CommentLeader,
-    CommentContents,
-    Colon,
-    Semicolon,
-    Error,
+capy_macros::define_token_enum! {
+    TokenKind, stripped, "../../tokens.lex"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NodeKind {
     Root,
-    Ref,
+    VarRef,
     Call,
     ArgList,
     Arg,
-    ArrayItem,
     Array,
+    ArraySize,
+    ArrayBody,
+    ArrayItem,
+    IndexExpr,   // the entire expression of indexing. e.g. `my_array[6]`
+    IndexSource, // the expr that is being indexed. `my_array` in `my_array[6]`
+    Index,       // the actual index. `6` in `my_array[6]`
+    Distinct,
     Block,
     IfExpr,
     ElseBranch,
     WhileExpr,
+    Condition,
     IntLiteral,
     BoolLiteral,
     StringLiteral,
     CastExpr,
+    RefExpr,
+    DerefExpr,
     BinaryExpr,
     UnaryExpr,
-    VarDef,
-    VarSet,
+    Binding, // e.g. `x :: 5`
+    VarDef,  // e.g. `x := 5`
+    Assign,
     ExprStmt,
     Lambda,
     ParamList,
     Param,
-    ReturnTy,
-    ArrayTy,
-    NamedTy,
+    Ty,
     Path,
     Comment,
     Error,

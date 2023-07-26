@@ -2,12 +2,13 @@
 // !!! This is a theoretical function !!!
 // !!!     This does not work yet     !!!
 
-main := () -> {
+main :: () -> {
     
 };
 
-int_to_string := (n: i32) -> string {
-    s := [_]u8{};
+int_to_string :: (n: i32) -> string {
+    s := [_]u8{}; // dyamic array of characters
+    n := n;
     sign := if n < 0 {
         n = -n;
         true
@@ -15,7 +16,7 @@ int_to_string := (n: i32) -> string {
         false
     }
     loop {
-        remainder = n % 10;
+        remainder := n % 10;
         n = n / 10;
         s.insert(0, '0' + remainder);
         if n == 0 {
@@ -26,4 +27,4 @@ int_to_string := (n: i32) -> string {
         s.insert(0, '-');
     }
     s
-}
+};

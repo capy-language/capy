@@ -1,12 +1,15 @@
 mod gen;
+mod mangle;
 mod ty;
 
+use hir_ty::ResolvedTy;
 use inkwell::context::Context;
 use inkwell::OptimizationLevel;
 
 use gen::CodeGen;
-use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine, InitializationConfig};
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use interner::Interner;
+use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,6 +18,7 @@ pub fn compile(
     source_file_name: &str,
     verbose: bool,
     entry_point: hir::Fqn,
+    resolved_arena: &Arena<ResolvedTy>,
     interner: &Interner,
     bodies_map: &FxHashMap<hir::Name, hir::Bodies>,
     types_map: &FxHashMap<hir::Name, hir_ty::InferenceResult>,
@@ -47,6 +51,7 @@ pub fn compile(
     module.set_data_layout(&target_machine.get_target_data().get_data_layout());
 
     let code_gen = CodeGen {
+        resolved_arena,
         interner,
         bodies_map,
         types_map,
@@ -54,6 +59,7 @@ pub fn compile(
         context: &context,
         module: &module,
         builder_stack: Vec::new(),
+        entry_point: entry_point.clone(),
         functions_to_compile: vec![entry_point],
         functions: FxHashMap::default(),
         globals: FxHashMap::default(),

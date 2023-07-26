@@ -8,7 +8,7 @@ Root@0..23
     Colon@4..5 ":"
     Equals@5..6 "="
     Whitespace@6..7 " "
-    Ref@7..10
+    VarRef@7..10
       Path@7..10
         Ident@7..10 "bar"
   Semicolon@10..11 ";"
@@ -19,7 +19,7 @@ Root@0..23
     Colon@16..17 ":"
     Equals@17..18 "="
     Whitespace@18..19 " "
-    Ref@19..22
+    VarRef@19..22
       Path@19..22
         Ident@19..22 "qux"
   Semicolon@22..23 ";"

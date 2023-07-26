@@ -57,50 +57,6 @@ pub(crate) trait ToCompType {
     fn to_comp_type<'ctx>(&self, gen: &CodeGen<'_, 'ctx>) -> CompType<'ctx>;
 }
 
-impl ToCompType for hir::TyWithRange {
-    fn to_comp_type<'ctx>(&self, gen: &CodeGen<'_, 'ctx>) -> CompType<'ctx> {
-        match self {
-            hir::TyWithRange::Unknown => unreachable!(),
-            hir::TyWithRange::IInt { bit_width, .. } | hir::TyWithRange::UInt { bit_width, .. } => {
-                match *bit_width {
-                    u32::MAX => CompType::Basic(
-                        gen.context
-                            .ptr_sized_int_type(
-                                &gen.target_machine.get_target_data(),
-                                Some(AddressSpace::default()),
-                            )
-                            .as_basic_type_enum(),
-                    ),
-                    0 => CompType::Basic(gen.context.i32_type().as_basic_type_enum()),
-                    other_width => CompType::Basic(
-                        gen.context
-                            .custom_width_int_type(other_width)
-                            .as_basic_type_enum(),
-                    ),
-                }
-            }
-            hir::TyWithRange::Bool { .. } => {
-                CompType::Basic(gen.context.bool_type().as_basic_type_enum())
-            }
-            hir::TyWithRange::String { .. } => CompType::Basic(
-                gen.context
-                    .i8_type()
-                    .ptr_type(AddressSpace::default())
-                    .as_basic_type_enum(),
-            ),
-            hir::TyWithRange::Array { size, sub_ty, .. } => CompType::Basic(
-                sub_ty
-                    .to_comp_type(gen)
-                    .into_basic_type()
-                    .array_type(*size as u32)
-                    .as_basic_type_enum(),
-            ),
-            hir::TyWithRange::Named { .. } => todo!(),
-            hir::TyWithRange::Void { .. } => CompType::Void(gen.context.void_type()),
-        }
-    }
-}
-
 impl ToCompType for ResolvedTy {
     fn to_comp_type<'ctx>(&self, gen: &CodeGen<'_, 'ctx>) -> CompType<'ctx> {
         match self {
@@ -133,12 +89,20 @@ impl ToCompType for ResolvedTy {
                     .as_basic_type_enum(),
             ),
             hir_ty::ResolvedTy::Array { size, sub_ty, .. } => CompType::Basic(
-                sub_ty
+                gen.resolved_arena[*sub_ty]
                     .to_comp_type(gen)
                     .into_basic_type()
                     .array_type(*size as u32)
                     .as_basic_type_enum(),
             ),
+            hir_ty::ResolvedTy::Pointer { sub_ty } => CompType::Basic(
+                gen.resolved_arena[*sub_ty]
+                    .to_comp_type(gen)
+                    .into_basic_type()
+                    .ptr_type(AddressSpace::default())
+                    .as_basic_type_enum(),
+            ),
+            hir_ty::ResolvedTy::Type => CompType::Void(gen.context.void_type()),
             hir_ty::ResolvedTy::Named(_) => todo!(),
             hir_ty::ResolvedTy::Void => CompType::Void(gen.context.void_type()),
         }

@@ -5,7 +5,7 @@ A cool programming language
 ```capy
 to_print : string = "Hello, World!\n";
 
-main := () -> i32 {
+main :: () -> i32 {
     // prints "Hello, World!" to the screen
     printf(to_print);
 
@@ -13,7 +13,7 @@ main := () -> i32 {
     0
 };
 
-printf := (some_text: string) -> {
+printf :: (some_text: string) -> {
     // libc defined
 };
 ```

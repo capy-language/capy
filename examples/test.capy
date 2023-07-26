@@ -1,13 +1,14 @@
 
-main := () -> i32 {
-    //num : i16 = 257;
-    //num := num as i8;
+int : type : i32;
+long : type : i64;
 
-    mut num : u64 = 0;
-    num = num - 1;
-    printf("%lld %llu %llx %llo\n", num, num, num, num);
+main :: () -> {
 
-    0
+    my_var_1 : int = 4;
+    my_var_2 : long = 4;
+
+    printf("%b\n", my_var_1 == my_var_2);
+
 };
 
-printf := (s: string, n1: usize, n2: usize, n3: usize, n4: usize) -> {};
+printf :: (s: string, i: bool) -> {};

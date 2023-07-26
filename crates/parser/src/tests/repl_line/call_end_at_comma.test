@@ -8,7 +8,7 @@ Root@0..8
       ArgList@3..8
         LParen@3..4 "("
         Arg@4..7
-          Ref@4..7
+          VarRef@4..7
             Path@4..7
               Ident@4..7 "bar"
         Comma@7..8 ","

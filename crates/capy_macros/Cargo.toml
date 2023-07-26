@@ -1,13 +1,13 @@
 [package]
-name = "lexer"
+name = "capy_macros"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+proc-macro = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-logos = "0.12.0"
-token = {path = "../token"}
-text-size = "1.0.0"
-syntax = {path = "../syntax"}
-capy_macros = {path = "../capy_macros"}
+litrs = "0.4.0"
+quote = "1.0.31"

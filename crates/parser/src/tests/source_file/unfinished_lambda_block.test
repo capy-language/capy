@@ -19,7 +19,7 @@ Root@0..22
         LBrace@13..14 "{"
         Whitespace@14..19 "\n    "
         ExprStmt@19..22
-          Ref@19..22
+          VarRef@19..22
             Path@19..22
               Ident@19..22 "bar"
 error at 22: missing RBrace

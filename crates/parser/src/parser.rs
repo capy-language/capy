@@ -245,6 +245,10 @@ impl<'tokens> Parser<'tokens> {
     pub(crate) fn peek(&self) -> Option<TokenKind> {
         self.tokens.get_kind(self.token_idx)
     }
+
+    // pub(crate) fn peek_range(&self) -> TextRange {
+    //     self.tokens.range(self.token_idx)
+    // }
 }
 
 pub(crate) struct ExpectedSyntaxGuard {

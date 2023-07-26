@@ -9,9 +9,10 @@ Root@0..15
           Ident@1..2 "x"
           Colon@2..3 ":"
           Whitespace@3..4 " "
-          NamedTy@4..7
-            Path@4..7
-              Ident@4..7 "i32"
+          Ty@4..7
+            VarRef@4..7
+              Path@4..7
+                Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
       Arrow@9..11 "->"
