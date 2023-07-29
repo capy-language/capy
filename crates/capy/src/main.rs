@@ -3,7 +3,7 @@ mod source;
 use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
 
 use clap::{Parser, Subcommand};
-use hir::WorldIndex;
+use hir::{UIDGenerator, WorldIndex};
 use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use std::fs;
@@ -105,6 +105,7 @@ fn compile_files(
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let tys_map = Rc::new(RefCell::new(FxHashMap::default()));
+    let uid_gen = Rc::new(RefCell::new(UIDGenerator::new()));
     let twr_arena = Rc::new(RefCell::new(Arena::new()));
     let resolved_arena = Rc::new(RefCell::new(Arena::new()));
 
@@ -113,6 +114,7 @@ fn compile_files(
         source_files.push(SourceFile::parse(
             file_name.clone(),
             contents.clone(),
+            uid_gen.clone(),
             twr_arena.clone(),
             resolved_arena.clone(),
             interner.clone(),

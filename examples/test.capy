@@ -1,14 +1,12 @@
+imaginary : type : distinct i8;
 
-int : type : i32;
-long : type : i64;
+imaginary_ref : type : imaginary;
 
 main :: () -> {
+    i : distinct i8 = 1;
+    x : distinct i8 = 1;
 
-    my_var_1 : int = 4;
-    my_var_2 : long = 4;
-
-    printf("%b\n", my_var_1 == my_var_2);
-
+    printf("imaginary: %i\n", i + x);
 };
 
-printf :: (s: string, i: bool) -> {};
+printf :: (str: string, i: imaginary) -> {};

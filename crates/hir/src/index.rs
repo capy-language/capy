@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
-use crate::{Name, TyParseError, TyWithRange};
+use crate::{Name, TyParseError, TyWithRange, UIDGenerator};
 
 #[derive(Clone)]
 pub struct Index {
@@ -107,6 +107,7 @@ pub struct Param {
 pub fn index(
     root: ast::Root,
     tree: &SyntaxTree,
+    uid_gen: &mut UIDGenerator,
     twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
 ) -> (Index, Vec<IndexingDiagnostic>) {
@@ -117,6 +118,7 @@ pub fn index(
         },
         diagnostics: Vec::new(),
         tree,
+        uid_gen,
         twr_arena,
         interner,
     };
@@ -140,6 +142,7 @@ struct Ctx<'a> {
     index: Index,
     diagnostics: Vec<IndexingDiagnostic>,
     tree: &'a SyntaxTree,
+    uid_gen: &'a mut UIDGenerator,
     twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
 }
@@ -150,7 +153,7 @@ impl Ctx<'_> {
     }
 
     fn parse_ty_expr(&mut self, ty: Option<ast::Expr>) -> TyWithRange {
-        match TyWithRange::parse(ty, self.twr_arena, self.interner, self.tree) {
+        match TyWithRange::parse(ty, self.uid_gen, self.twr_arena, self.interner, self.tree) {
             Ok(ty) => ty,
             Err(why) => {
                 let range = ty.unwrap().range(self.tree);

@@ -102,6 +102,7 @@ impl ToCompType for ResolvedTy {
                     .ptr_type(AddressSpace::default())
                     .as_basic_type_enum(),
             ),
+            hir_ty::ResolvedTy::Distinct { ty, .. } => gen.resolved_arena[*ty].to_comp_type(gen),
             hir_ty::ResolvedTy::Type => CompType::Void(gen.context.void_type()),
             hir_ty::ResolvedTy::Named(_) => todo!(),
             hir_ty::ResolvedTy::Void => CompType::Void(gen.context.void_type()),

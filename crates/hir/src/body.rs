@@ -10,7 +10,7 @@ use text_size::{TextRange, TextSize};
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::{GetDefinitionError, WorldIndex},
-    Definition, Fqn, Function, Name, TyParseError, TyWithRange,
+    Definition, Fqn, Function, Name, TyParseError, TyWithRange, UIDGenerator,
 };
 
 #[derive(Clone)]
@@ -82,6 +82,10 @@ pub enum Expr {
         args: Vec<Idx<Expr>>,
     },
     Ty {
+        ty: Idx<TyWithRange>,
+    },
+    Distinct {
+        uid: u32,
         ty: Idx<TyWithRange>,
     },
 }
@@ -183,10 +187,11 @@ pub fn lower(
     tree: &SyntaxTree,
     module: Name,
     world_index: &WorldIndex,
+    uid_gen: &mut UIDGenerator,
     twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(module, world_index, twr_arena, interner, tree);
+    let mut ctx = Ctx::new(module, world_index, uid_gen, twr_arena, interner, tree);
 
     for def in root.defs(tree) {
         let (name, value) = match def {
@@ -208,6 +213,7 @@ struct Ctx<'a> {
     bodies: Bodies,
     module: Name,
     world_index: &'a WorldIndex,
+    uid_gen: &'a mut UIDGenerator,
     twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
     tree: &'a SyntaxTree,
@@ -220,7 +226,8 @@ impl<'a> Ctx<'a> {
     fn new(
         module: Name,
         world_index: &'a WorldIndex,
-        ty_arena: &'a mut Arena<TyWithRange>,
+        uid_gen: &'a mut UIDGenerator,
+        twr_arena: &'a mut Arena<TyWithRange>,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
     ) -> Self {
@@ -238,7 +245,8 @@ impl<'a> Ctx<'a> {
             },
             module,
             world_index,
-            twr_arena: ty_arena,
+            uid_gen,
+            twr_arena,
             interner,
             tree,
             diagnostics: Vec::new(),
@@ -247,9 +255,10 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    pub fn lower_ty(&mut self, ty: Option<ast::Ty>) -> TyWithRange {
+    fn lower_ty(&mut self, ty: Option<ast::Ty>) -> TyWithRange {
         match TyWithRange::parse(
             ty.and_then(|ty| ty.expr(self.tree)),
+            self.uid_gen,
             self.twr_arena,
             self.interner,
             self.tree,
@@ -423,6 +432,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
             ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
+            ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
             ast::Expr::Lambda(_) => unreachable!(),
         }
     }
@@ -445,6 +455,15 @@ impl<'a> Ctx<'a> {
         let pointer = self.lower_expr(deref_expr.pointer(self.tree));
 
         Expr::Deref { pointer }
+    }
+
+    fn lower_distinct(&mut self, distinct: ast::Distinct) -> Expr {
+        let ty = self.lower_ty(distinct.ty(self.tree));
+
+        Expr::Distinct {
+            uid: self.uid_gen.generate_unique_id(),
+            ty: self.twr_arena.alloc(ty),
+        }
     }
 
     fn lower_binary_expr(&mut self, binary_expr: ast::BinaryExpr) -> Expr {
@@ -1323,7 +1342,14 @@ impl Bodies {
                     )),
                 },
 
-                Expr::Ty { ty, .. } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
+                Expr::Ty { ty } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
+
+                Expr::Distinct { uid, ty } => {
+                    s.push_str("distinct'");
+                    s.push_str(&uid.to_string());
+                    s.push(' ');
+                    s.push_str(&ty_arena[*ty].display(ty_arena, interner));
+                }
             }
         }
 

@@ -372,7 +372,7 @@ fn lower_ty_parse_error(d: &TyParseError) -> String {
         }
         TyParseError::ArraySizeOutOfBounds(_) => "integer literal out of range".to_string(),
         TyParseError::ArrayHasBody(_) => "array type cannot have a body".to_string(),
-        TyParseError::NotATy => "expected a type".to_string(),
+        TyParseError::NotATy => "expression cannot be converted into a type".to_string(),
         TyParseError::NonGlobalTy => "tried to use a non-global variable as a type".to_string(),
     }
 }

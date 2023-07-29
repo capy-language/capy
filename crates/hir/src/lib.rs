@@ -25,6 +25,22 @@ pub struct Fqn {
     pub name: Name,
 }
 
+pub struct UIDGenerator {
+    inner: u32,
+}
+
+impl UIDGenerator {
+    pub fn new() -> Self {
+        Self { inner: 0 }
+    }
+
+    pub fn generate_unique_id(&mut self) -> u32 {
+        let id = self.inner;
+        self.inner += 1;
+        id
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TyParseError {
     ArrayMissingSize,
@@ -63,6 +79,10 @@ pub enum TyWithRange {
         sub_ty: Idx<TyWithRange>,
         range: TextRange,
     },
+    Distinct {
+        uid: u32,
+        ty: Idx<TyWithRange>,
+    },
     Type {
         range: TextRange,
     },
@@ -92,12 +112,14 @@ impl TyWithRange {
             TyWithRange::Array { .. } => None,
             TyWithRange::Pointer { .. } => None,
             TyWithRange::Type { .. } => Some(TYPE_ID_BIT),
+            TyWithRange::Distinct { .. } => None,
             TyWithRange::Named { .. } => None,
         }
     }
 
     pub fn parse(
         ty: Option<ast::Expr>,
+        uid_gen: &mut UIDGenerator,
         twr_arena: &mut Arena<TyWithRange>,
         interner: &mut Interner,
         tree: &SyntaxTree,
@@ -132,6 +154,7 @@ impl TyWithRange {
                 };
                 let sub_ty = Self::parse(
                     array_ty.ty(tree).and_then(|array_ty| array_ty.expr(tree)),
+                    uid_gen,
                     twr_arena,
                     interner,
                     tree,
@@ -147,7 +170,7 @@ impl TyWithRange {
                 })
             }
             ast::Expr::Ref(ref_expr) => {
-                let sub_ty = Self::parse(ref_expr.expr(tree), twr_arena, interner, tree)?;
+                let sub_ty = Self::parse(ref_expr.expr(tree), uid_gen, twr_arena, interner, tree)?;
 
                 Ok(TyWithRange::Pointer {
                     sub_ty: twr_arena.alloc(sub_ty),
@@ -196,6 +219,20 @@ impl TyWithRange {
                         }),
                     )
                 }
+            }
+            ast::Expr::Distinct(distinct) => {
+                let ty = Self::parse(
+                    distinct.ty(tree).and_then(|ty| ty.expr(tree)),
+                    uid_gen,
+                    twr_arena,
+                    interner,
+                    tree,
+                )?;
+
+                Ok(TyWithRange::Distinct {
+                    uid: uid_gen.generate_unique_id(),
+                    ty: twr_arena.alloc(ty),
+                })
             }
             _ => Err(TyParseError::NotATy),
         }
@@ -275,7 +312,7 @@ impl TyWithRange {
         })
     }
 
-    pub fn display(&self, ty_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
+    pub fn display(&self, twr_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
         match self {
             Self::Unknown { .. } => "?".to_string(),
             Self::IInt { bit_width, .. } => {
@@ -295,12 +332,22 @@ impl TyWithRange {
             Self::Bool { .. } => "bool".to_string(),
             Self::String { .. } => "string".to_string(),
             Self::Array { size, sub_ty, .. } => {
-                format!("[{size}]{}", ty_arena[*sub_ty].display(ty_arena, interner))
+                format!(
+                    "[{size}]{}",
+                    twr_arena[*sub_ty].display(twr_arena, interner)
+                )
             }
             Self::Pointer { sub_ty, .. } => {
-                format!("^{}", ty_arena[*sub_ty].display(ty_arena, interner))
+                format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
             }
             Self::Type { .. } => "type".to_string(),
+            Self::Distinct { uid, ty } => {
+                format!(
+                    "distinct'{} {}",
+                    uid,
+                    twr_arena[*ty].display(twr_arena, interner)
+                )
+            }
             Self::Named { path } => path.path().display(interner),
             Self::Void { .. } => "void".to_string(),
         }

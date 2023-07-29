@@ -292,7 +292,6 @@ def_multi_node! {
     Expr:
     Cast -> CastExpr
     Ref -> RefExpr
-    // todo: add distinct
     Deref -> DerefExpr // todo: make derefexpr tests
     Binary -> BinaryExpr
     Unary -> UnaryExpr
@@ -306,6 +305,7 @@ def_multi_node! {
     Block -> Block
     If -> IfExpr
     While -> WhileExpr
+    Distinct -> Distinct
     Lambda -> Lambda
     ;
     ;
@@ -351,6 +351,14 @@ def_ast_node!(DerefExpr);
 
 impl DerefExpr {
     pub fn pointer(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(Distinct);
+
+impl Distinct {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
 }

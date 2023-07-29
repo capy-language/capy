@@ -740,6 +740,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 .map(|real_idx| self.function_stack.last().unwrap().get_nth_param(real_idx))
                 .flatten(),
             hir::Expr::Ty { .. } => None,
+            hir::Expr::Distinct { .. } => None,
         }
     }
 }

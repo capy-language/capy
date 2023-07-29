@@ -33,6 +33,11 @@ pub enum ResolvedTy {
     Pointer {
         sub_ty: Idx<ResolvedTy>,
     },
+    Distinct {
+        fqn: Option<hir::Fqn>,
+        uid: u32,
+        ty: Idx<ResolvedTy>,
+    },
     Type,
     Named(hir::Fqn),
     Void,
@@ -326,6 +331,21 @@ fn resolve_ty(
                 resolved_arena.alloc(ty)
             },
         },
+        hir::TyWithRange::Distinct { uid, ty } => ResolvedTy::Distinct {
+            fqn: None,
+            uid,
+            ty: {
+                let ty = resolve_ty(
+                    twr_arena[ty],
+                    module,
+                    world_index,
+                    twr_arena,
+                    resolved_arena,
+                    diagnostics,
+                );
+                resolved_arena.alloc(ty)
+            },
+        },
         hir::TyWithRange::Type { .. } => ResolvedTy::Type,
         hir::TyWithRange::Named { path } => {
             let (fqn, range) = match path {
@@ -339,14 +359,33 @@ fn resolve_ty(
 
             match world_index.get_definition(fqn) {
                 Ok(definition) => match definition {
-                    hir::Definition::NamedTy(ty) => resolve_ty(
-                        *ty,
-                        module,
-                        world_index,
-                        twr_arena,
-                        resolved_arena,
-                        diagnostics,
-                    ),
+                    hir::Definition::NamedTy(ty) => {
+                        let mut ty = resolve_ty(
+                            *ty,
+                            module,
+                            world_index,
+                            twr_arena,
+                            resolved_arena,
+                            diagnostics,
+                        );
+
+                        match ty {
+                            ResolvedTy::Distinct {
+                                fqn: distinct_fqn,
+                                uid,
+                                ty: distinct_ty,
+                            } if distinct_fqn == None => {
+                                ty = ResolvedTy::Distinct {
+                                    fqn: Some(fqn),
+                                    uid,
+                                    ty: distinct_ty,
+                                };
+                            }
+                            _ => {}
+                        }
+
+                        ty
+                    }
                     _ => todo!(),
                 },
                 Err(_) => {
@@ -458,6 +497,18 @@ impl ResolvedTy {
                     resolved_arena[*sub_ty].display(resolved_arena, interner)
                 )
             }
+            Self::Distinct { fqn, uid, ty } => match fqn {
+                Some(fqn) => format!(
+                    "{}.{}",
+                    interner.lookup(fqn.module.0),
+                    interner.lookup(fqn.name.0)
+                ),
+                None => format!(
+                    "distinct'{} {}",
+                    uid,
+                    resolved_arena[*ty].display(resolved_arena, interner)
+                ),
+            },
             Self::Type => "type".to_string(),
             Self::Named(fqn) => {
                 format!(
@@ -476,7 +527,9 @@ mod tests {
     use super::*;
     use ast::AstNode;
     use expect_test::{expect, Expect};
+    use hir::UIDGenerator;
     use interner::Interner;
+    use la_arena::RawIdx;
 
     #[track_caller]
     fn check<const N: usize>(
@@ -488,6 +541,7 @@ mod tests {
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
 
+        let mut uid_gen = UIDGenerator::new();
         let mut twr_arena = Arena::new();
 
         for (name, text) in &modules {
@@ -498,7 +552,7 @@ mod tests {
             let tokens = lexer::lex(text);
             let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
-            let (index, _) = hir::index(root, &tree, &mut twr_arena, &mut interner);
+            let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
             world_index.add_module(hir::Name(interner.intern(name)), index);
         }
@@ -508,7 +562,7 @@ mod tests {
         let tokens = lexer::lex(text);
         let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, _) = hir::index(root, &tree, &mut twr_arena, &mut interner);
+        let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
         world_index.add_module(module, index);
 
         let (bodies, _) = hir::lower(
@@ -516,6 +570,7 @@ mod tests {
             &tree,
             module,
             &world_index,
+            &mut uid_gen,
             &mut twr_arena,
             &mut interner,
         );
@@ -1601,6 +1656,190 @@ mod tests {
                         found: ResolvedTy::String,
                     },
                     126..131,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn distinct_int_mismatch() {
+        check(
+            r#"
+                imaginary : type : distinct i32;
+
+                main :: () -> i32 {
+                    i : imaginary = 1;
+
+                    i
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> i32
+                1 : main.imaginary
+                2 : main.imaginary
+                3 : main.imaginary
+                l0 : main.imaginary
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::IInt(32),
+                        found: ResolvedTy::Distinct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::Name(interner.intern("main")),
+                                name: hir::Name(interner.intern("imaginary")),
+                            }),
+                            uid: 0,
+                            ty: Idx::from_raw(RawIdx::from(0)),
+                        },
+                    },
+                    147..148,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn distinct_int_binary_weak_int() {
+        check(
+            r#"
+                imaginary : type : distinct i32;
+
+                main :: () -> imaginary {
+                    i : imaginary = 1;
+
+                    i + 2
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> main.imaginary
+                1 : main.imaginary
+                2 : main.imaginary
+                3 : main.imaginary
+                4 : main.imaginary
+                5 : main.imaginary
+                l0 : main.imaginary
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn distinct_int_binary_itself() {
+        check(
+            r#"
+                imaginary : type : distinct i32;
+
+                main :: () -> imaginary {
+                    i : imaginary = 1;
+
+                    i + i
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> main.imaginary
+                1 : main.imaginary
+                2 : main.imaginary
+                3 : main.imaginary
+                4 : main.imaginary
+                5 : main.imaginary
+                l0 : main.imaginary
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn distinct_int_binary_strong_int() {
+        check(
+            r#"
+                imaginary : type : distinct i32;
+
+                main :: () -> imaginary {
+                    i : imaginary = 1;
+                    x : i32 = 1;
+
+                    i + x
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> main.imaginary
+                1 : main.imaginary
+                2 : i32
+                3 : main.imaginary
+                4 : i32
+                5 : main.imaginary
+                6 : main.imaginary
+                l0 : main.imaginary
+                l1 : i32
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::OpMismatch {
+                        op: hir::BinaryOp::Add,
+                        first: ResolvedTy::Distinct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::Name(interner.intern("main")),
+                                name: hir::Name(interner.intern("imaginary")),
+                            }),
+                            uid: 0,
+                            ty: Idx::from_raw(RawIdx::from(1)),
+                        },
+                        second: ResolvedTy::IInt(32),
+                    },
+                    186..191,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn distinct_int_binary_other_distinct() {
+        check(
+            r#"
+                imaginary : type : distinct i32;
+                extra_imaginary : type : distinct i32;
+
+                main :: () -> imaginary {
+                    i : imaginary = 1;
+                    x : extra_imaginary = 1;
+
+                    i + x
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> main.imaginary
+                2 : main.imaginary
+                3 : main.extra_imaginary
+                4 : main.imaginary
+                5 : main.extra_imaginary
+                6 : main.imaginary
+                7 : main.imaginary
+                l0 : main.imaginary
+                l1 : main.extra_imaginary
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::OpMismatch {
+                        op: hir::BinaryOp::Add,
+                        first: ResolvedTy::Distinct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::Name(interner.intern("main")),
+                                name: hir::Name(interner.intern("imaginary")),
+                            }),
+                            uid: 0,
+                            ty: Idx::from_raw(RawIdx::from(1)),
+                        },
+                        second: ResolvedTy::Distinct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::Name(interner.intern("main")),
+                                name: hir::Name(interner.intern("extra_imaginary")),
+                            }),
+                            uid: 1,
+                            ty: Idx::from_raw(RawIdx::from(2)),
+                        },
+                    },
+                    253..258,
                 )]
             },
         );

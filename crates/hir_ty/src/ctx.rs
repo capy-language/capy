@@ -27,6 +27,32 @@ impl InferenceCtx<'_> {
         self.infer_weak_tys(body, expected_type);
     }
 
+    fn is_weak_type_replacable(
+        resolved_arena: &Arena<ResolvedTy>,
+        found: ResolvedTy,
+        expected: ResolvedTy,
+    ) -> bool {
+        // println!("is_weak_type_replacable({:?}, {:?})", found, expected);
+        let res = match (found, expected) {
+            (
+                ResolvedTy::IInt(0) | ResolvedTy::UInt(0),
+                ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
+            ) => true,
+            (ResolvedTy::IInt(0) | ResolvedTy::UInt(0), ResolvedTy::Distinct { ty, .. }) => {
+                Self::is_weak_type_replacable(resolved_arena, found, resolved_arena[ty])
+            }
+            (
+                ResolvedTy::Distinct { uid: found_uid, .. },
+                ResolvedTy::Distinct {
+                    uid: expected_uid, ..
+                },
+            ) => found_uid == expected_uid,
+            _ => found == expected,
+        };
+        // println!("- {}", res);
+        res
+    }
+
     /// recursively infers weakly-typed expressions into strong types.
     ///
     /// ```text
@@ -36,15 +62,14 @@ impl InferenceCtx<'_> {
     ///
     /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
     fn infer_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: ResolvedTy) -> bool {
-        if !matches!(
-            (&self.expr_tys[expr], new_ty),
-            (
-                ResolvedTy::IInt(0) | ResolvedTy::UInt(0),
-                ResolvedTy::IInt(_) | ResolvedTy::UInt(_)
-            )
-        ) {
+        println!("should replace {:?} with {:?}?", self.bodies[expr], new_ty);
+
+        if !Self::is_weak_type_replacable(&self.resolved_arena, self.expr_tys[expr], new_ty) {
+            println!("nah");
             return false;
         }
+
+        println!("yes");
 
         self.expr_tys.insert(expr, new_ty.clone());
 
@@ -250,7 +275,7 @@ impl InferenceCtx<'_> {
                 let lhs_ty = self.infer_expr(*lhs);
                 let rhs_ty = self.infer_expr(*rhs);
 
-                let (expected_tys, default_ty): (&[ResolvedTy], _) = match op {
+                let (can_perform, default_ty): (&[ResolvedTy], _) = match op {
                     hir::BinaryOp::Add
                     | hir::BinaryOp::Sub
                     | hir::BinaryOp::Mul
@@ -268,11 +293,11 @@ impl InferenceCtx<'_> {
                     }
                 };
 
-                if let Some(real_ty) = cast::max_cast(lhs_ty, rhs_ty) {
+                if let Some(real_ty) = cast::max_cast(self.resolved_arena, lhs_ty, rhs_ty) {
                     if lhs_ty != ResolvedTy::Unknown
                         && rhs_ty != ResolvedTy::Unknown
-                        && !expected_tys.into_iter().any(|expected_ty| {
-                            cast::can_fit(self.resolved_arena, real_ty, *expected_ty)
+                        && !can_perform.into_iter().any(|expected_ty| {
+                            cast::has_semantics_of(self.resolved_arena, real_ty, *expected_ty)
                         })
                     {
                         self.diagnostics.push(TyDiagnostic {
@@ -349,7 +374,7 @@ impl InferenceCtx<'_> {
                 if let Some(else_branch) = else_branch {
                     let else_ty = self.infer_expr(*else_branch);
 
-                    if let Some(real_ty) = cast::max_cast(body_ty, else_ty) {
+                    if let Some(real_ty) = cast::max_cast(self.resolved_arena, body_ty, else_ty) {
                         self.infer_weak_tys(*body, real_ty);
                         self.infer_weak_tys(*else_branch, real_ty);
                         real_ty
@@ -433,8 +458,11 @@ impl InferenceCtx<'_> {
                     .unwrap();
 
                 for (idx, arg) in args.iter().enumerate() {
-                    let arg_type = self.infer_expr(*arg);
-                    self.expect_match(arg_type, function_signature.param_tys[idx], *arg);
+                    let arg_ty = self.infer_expr(*arg);
+                    let param_ty = function_signature.param_tys[idx];
+                    self.expect_match(arg_ty, param_ty, *arg);
+
+                    self.infer_weak_tys(*arg, param_ty);
                 }
 
                 function_signature.return_ty
@@ -485,6 +513,7 @@ impl InferenceCtx<'_> {
                 global_signature.ty.clone()
             }
             hir::Expr::Ty { .. } => ResolvedTy::Type,
+            hir::Expr::Distinct { .. } => ResolvedTy::Type,
         };
 
         self.expr_tys.insert(expr, ty.clone());

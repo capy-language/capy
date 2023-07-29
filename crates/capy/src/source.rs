@@ -17,6 +17,7 @@ pub(crate) struct SourceFile {
     parse: Parse,
     root: Root,
     diagnostics: Vec<Diagnostic>,
+    uid_gen: Rc<RefCell<hir::UIDGenerator>>,
     twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
     resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
     interner: Rc<RefCell<Interner>>,
@@ -30,6 +31,7 @@ impl SourceFile {
     pub(crate) fn parse(
         file_name: String,
         contents: String,
+        uid_gen: Rc<RefCell<hir::UIDGenerator>>,
         twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
         resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
         interner: Rc<RefCell<Interner>>,
@@ -57,6 +59,7 @@ impl SourceFile {
         let (index, indexing_diagnostics) = hir::index(
             root,
             tree,
+            &mut uid_gen.borrow_mut(),
             &mut twr_arena.borrow_mut(),
             &mut interner.borrow_mut(),
         );
@@ -85,6 +88,7 @@ impl SourceFile {
             parse,
             root,
             diagnostics: Vec::new(),
+            uid_gen,
             twr_arena,
             resolved_arena,
             interner,
@@ -125,6 +129,7 @@ impl SourceFile {
             tree,
             self.module,
             &self.world_index.borrow(),
+            &mut self.uid_gen.borrow_mut(),
             &mut self.twr_arena.borrow_mut(),
             &mut self.interner.borrow_mut(),
         );
