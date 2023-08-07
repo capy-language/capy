@@ -127,6 +127,7 @@ impl Diagnostic {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn input_snippet(
     filename: &str,
     input: &str,
@@ -228,7 +229,12 @@ fn input_snippet(
         //"-".repeat(first_line.len() - start_col.0 as usize + 2)
     ));
 
-    for num in start_line.0 as usize + 1..end_line.0 as usize {
+    for (num, file_line) in file_lines
+        .iter()
+        .enumerate()
+        .take(start_line.0 as usize + 1)
+        .skip(end_line.0 as usize)
+    {
         lines.push(format!(
             "{}{}{}{}{}{}{}{}",
             ANSI_GRAY,
@@ -238,7 +244,7 @@ fn input_snippet(
             ANSI_YELLOW,
             "| ",
             ANSI_RESET,
-            &file_lines[num]
+            file_line
         ));
     }
 
@@ -284,8 +290,8 @@ fn count_digits(n: u32, base: u32) -> usize {
 
 fn syntax_error_message(e: &SyntaxError) -> String {
     let write_expected_syntax = |buf: &mut String| match e.expected_syntax {
-        ExpectedSyntax::Named(name) => buf.push_str(&format!("{}", name)),
-        ExpectedSyntax::Unnamed(kind) => buf.push_str(&format!("{}", format_kind(kind))),
+        ExpectedSyntax::Named(name) => buf.push_str(name),
+        ExpectedSyntax::Unnamed(kind) => buf.push_str(format_kind(kind)),
     };
 
     let mut message = String::new();
@@ -460,11 +466,10 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::Undefined { name } => {
             format!("undefined type `{}`", interner.lookup(*name))
         }
-        hir_ty::TyDiagnosticKind::NotYetResolved { fqn } => {
+        hir_ty::TyDiagnosticKind::NotYetResolved { path } => {
             format!(
-                "circular definition, `{}.{}` has not yet been resolved",
-                interner.lookup(fqn.module.0),
-                interner.lookup(fqn.name.0),
+                "circular definition, `{}` has not yet been resolved",
+                path.display(interner),
             )
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),

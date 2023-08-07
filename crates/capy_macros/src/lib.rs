@@ -247,7 +247,7 @@ pub fn define_token_set(input: TokenStream) -> TokenStream {
     ];
 
     let (_, ty_name) = match INT_SIZES
-        .into_iter()
+        .iter()
         .filter_map(|(bit_width, ty_name)| {
             bit_width
                 .checked_sub(number_of_tokens)

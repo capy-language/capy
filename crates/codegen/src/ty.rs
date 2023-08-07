@@ -16,18 +16,12 @@ pub(crate) enum CompType<'a> {
 impl<'a> CompType<'a> {
     #[allow(dead_code)]
     pub(crate) fn is_basic_type(&self) -> bool {
-        match self {
-            CompType::Basic(_) => true,
-            _ => false,
-        }
+        matches!(self, CompType::Basic(_))
     }
 
     #[allow(dead_code)]
     pub(crate) fn is_void_type(&self) -> bool {
-        match self {
-            CompType::Void(_) => true,
-            _ => false,
-        }
+        matches!(self, CompType::Void(_))
     }
 
     pub(crate) fn into_basic_type(self) -> BasicTypeEnum<'a> {

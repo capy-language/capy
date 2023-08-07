@@ -105,7 +105,7 @@ fn compile_files(
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let tys_map = Rc::new(RefCell::new(FxHashMap::default()));
-    let uid_gen = Rc::new(RefCell::new(UIDGenerator::new()));
+    let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
     let twr_arena = Rc::new(RefCell::new(Arena::new()));
     let resolved_arena = Rc::new(RefCell::new(Arena::new()));
 
@@ -178,7 +178,7 @@ fn compile_files(
     );
     let interner = interner.borrow_mut();
     match codegen::compile(
-        &main_file_name,
+        main_file_name,
         verbose >= 1,
         hir::Fqn {
             module: *main_module,
@@ -192,7 +192,7 @@ fn compile_files(
     ) {
         Ok(output) => {
             let output_folder = env::current_dir().unwrap().join("out");
-            let file = output_folder.join(&format!("{}.o", interner.lookup(main_module.0)));
+            let file = output_folder.join(format!("{}.o", interner.lookup(main_module.0)));
             fs::write(&file, output.as_slice()).unwrap_or_else(|why| {
                 println!("{}: {why}", file.display());
                 exit(1);
@@ -213,10 +213,10 @@ fn compile_files(
             println!("{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n", exec.display());
             match std::process::Command::new(exec).status() {
                 Ok(status) => {
-                    println!("\nProcess exited with {}", status.to_string());
+                    println!("\nProcess exited with {}", status);
                 }
                 Err(why) => {
-                    println!("\nProcess exited early: {}", why.to_string());
+                    println!("\nProcess exited early: {}", why);
                 }
             }
         }

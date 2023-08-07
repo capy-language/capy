@@ -162,7 +162,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 exit(1)
             });
 
-        let global_ty = signature.ty.to_comp_type(&self);
+        let global_ty = signature.ty.to_comp_type(self);
 
         if global_ty.is_void_type() {
             return;
@@ -202,7 +202,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             .filter_map(|param_ty| {
                 let param_type = match param_ty {
                     hir_ty::ResolvedTy::Void { .. } => None,
-                    other_ty => Some(other_ty.to_comp_type(&self).into_basic_type().into()),
+                    other_ty => Some(other_ty.to_comp_type(self).into_basic_type().into()),
                 };
                 param_map.push(param_type.map(|_| 0)); // 0 is a temporary value
                 param_type
@@ -219,7 +219,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             });
         self.param_stack_map.push(param_map);
 
-        let fn_type = signature.return_ty.to_comp_type(&self).fn_type(param_types);
+        let fn_type = signature.return_ty.to_comp_type(self).fn_type(param_types);
 
         let function = self
             .module
@@ -267,7 +267,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 };
 
                 let ty = self.types_map[&module][local_def]
-                    .to_comp_type(&self)
+                    .to_comp_type(self)
                     .into_basic_type();
 
                 let var = self.create_alloca(ty, &format!("l{}", local_def.into_raw()));
@@ -308,7 +308,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => Some(
                 self.types_map[&module][expr]
-                    .to_comp_type(&self)
+                    .to_comp_type(self)
                     .into_basic_type()
                     .into_int_type()
                     .const_int(n, false)
@@ -330,7 +330,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             }
             hir::Expr::Array { items, .. } => {
                 let array_ty = self.types_map[&module][expr]
-                    .to_comp_type(&self)
+                    .to_comp_type(self)
                     .into_basic_type()
                     .into_array_type();
 
@@ -392,22 +392,17 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 if cast_from.is_functionally_equivalent_to(*cast_to, self.resolved_arena) {
                     println!("irrelevant");
                     inner
-                } else if let Some(inner) = inner {
-                    Some(
+                } else {
+                    inner.map(|inner| {
                         self.builder()
                             .build_int_cast_sign_flag(
                                 inner.into_int_value(),
-                                cast_to
-                                    .to_comp_type(&self)
-                                    .into_basic_type()
-                                    .into_int_type(),
+                                cast_to.to_comp_type(self).into_basic_type().into_int_type(),
                                 true,
                                 ".cast",
                             )
-                            .as_basic_value_enum(),
-                    )
-                } else {
-                    None
+                            .as_basic_value_enum()
+                    })
                 }
             }
             hir::Expr::Ref { expr } => {
@@ -542,7 +537,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 };
 
                 let function = match self.functions.get(&fqn) {
-                    Some(function) => function.clone(),
+                    Some(function) => *function,
                     None => {
                         if self.interner.lookup(fqn.name.0) == "printf" {
                             if let Some(printf) = self.module.get_function("printf") {
@@ -550,7 +545,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                             } else {
                                 let fn_type = self.context.void_type().fn_type(
                                     &[ResolvedTy::String
-                                        .to_comp_type(&self)
+                                        .to_comp_type(self)
                                         .into_basic_type()
                                         .into()],
                                     true,
@@ -558,7 +553,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                                 let printf = self.module.add_function("printf", fn_type, None);
                                 self.functions.insert(fqn, printf);
                             }
-                            self.functions.get(&fqn).unwrap().clone()
+                            *self.functions.get(&fqn).unwrap()
                         } else if self.interner.lookup(fqn.name.0) == "exit" {
                             if let Some(exit) = self.module.get_function("exit") {
                                 self.functions.insert(fqn, exit);
@@ -570,10 +565,10 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                                 let exit = self.module.add_function("exit", fn_type, None);
                                 self.functions.insert(fqn, exit);
                             }
-                            self.functions.get(&fqn).unwrap().clone()
+                            *self.functions.get(&fqn).unwrap()
                         } else {
                             self.compile_function(fqn);
-                            self.functions.get(&fqn).unwrap().clone()
+                            *self.functions.get(&fqn).unwrap()
                         }
                     }
                 };
@@ -602,7 +597,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 };
 
                 let global = match self.globals.get(&fqn) {
-                    Some(global) => global.clone(),
+                    Some(global) => *global,
                     None => {
                         // todo: fix recursive definition stack overflow
                         // a : i32 : b;
@@ -725,11 +720,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 // emit merge block
                 self.builder().position_at_end(break_block);
 
-                if let Some(loop_val) = loop_val {
-                    Some(loop_val)
-                } else {
-                    None
-                }
+                loop_val
             }
             hir::Expr::Local(local_def) => {
                 if let Some(var) = self.locals.get(&local_def) {

@@ -19,7 +19,7 @@ impl Mangle for Fqn {
         mangled.push_str(&name_str.len().to_string());
         mangled.push_str(name_str);
 
-        mangled.push_str("E");
+        mangled.push('E');
 
         mangled
     }

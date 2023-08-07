@@ -28,6 +28,7 @@ pub(crate) struct SourceFile {
 }
 
 impl SourceFile {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
         file_name: String,
         contents: String,

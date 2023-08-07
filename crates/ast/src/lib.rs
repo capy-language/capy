@@ -9,7 +9,7 @@ pub trait AstNode: Copy + Sized {
     fn syntax(self) -> SyntaxNode;
 
     fn text(self, tree: &SyntaxTree) -> &str {
-        &self.syntax().text(tree)
+        self.syntax().text(tree)
     }
 
     fn range(self, tree: &SyntaxTree) -> TextRange {

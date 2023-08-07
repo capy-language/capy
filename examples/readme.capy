@@ -1,5 +1,8 @@
 to_print :: "Hello, World!\n";
 
+a :: b;
+b :: a;
+
 main :: () -> i32 {
     // prints "Hello, World!" to the screen
     printf(to_print);

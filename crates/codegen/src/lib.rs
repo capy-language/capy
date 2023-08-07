@@ -14,6 +14,7 @@ use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile(
     source_file_name: &str,
     verbose: bool,
@@ -59,7 +60,7 @@ pub fn compile(
         context: &context,
         module: &module,
         builder_stack: Vec::new(),
-        entry_point: entry_point.clone(),
+        entry_point,
         functions_to_compile: vec![entry_point],
         functions: FxHashMap::default(),
         globals: FxHashMap::default(),
@@ -74,7 +75,7 @@ pub fn compile(
 pub fn link_to_exec(path: &PathBuf) -> PathBuf {
     let exe_path = path.parent().unwrap().join(path.file_stem().unwrap());
     let success = Command::new("gcc")
-        .arg(&path)
+        .arg(path)
         .arg("-o")
         .arg(&exe_path)
         .status()

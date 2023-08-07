@@ -1,8 +1,6 @@
 mod cast;
 mod ctx;
 
-use std::collections::HashMap;
-
 use hir::TyWithRange;
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
@@ -243,7 +241,7 @@ pub enum TyDiagnosticKind {
         name: Key,
     },
     NotYetResolved {
-        fqn: hir::Fqn,
+        path: hir::Path,
     },
     ParamNotATy,
     MutableTy,
@@ -292,6 +290,7 @@ impl<'a> InferenceCtx<'a> {
         for (name, global) in index.globals() {
             let fqn = hir::Fqn { module, name };
 
+            #[allow(clippy::map_entry)]
             if !self.signatures.contains_key(&fqn) {
                 let global_sig = self.generate_global_signature(global, fqn);
                 self.signatures.insert(fqn, global_sig);
@@ -301,6 +300,7 @@ impl<'a> InferenceCtx<'a> {
         for (name, function) in index.functions() {
             let fqn = hir::Fqn { module, name };
 
+            #[allow(clippy::map_entry)]
             if !self.signatures.contains_key(&fqn) {
                 let fn_sig = self.generate_function_signature(function, fqn);
                 self.signatures.insert(fqn, fn_sig);
@@ -395,12 +395,12 @@ impl<'a> InferenceCtx<'a> {
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
 
-        let return_ty = self.resolve_ty(function.return_ty.clone());
+        let return_ty = self.resolve_ty(function.return_ty);
 
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| self.resolve_ty(param.ty.clone()))
+            .map(|param| self.resolve_ty(param.ty))
             .collect();
 
         let sig = Signature::Function(FunctionSignature {
@@ -470,7 +470,7 @@ impl<'a> InferenceCtx<'a> {
                             fqn: distinct_fqn,
                             uid,
                             ty: distinct_ty,
-                        } if distinct_fqn == None => ResolvedTy::Distinct {
+                        } if distinct_fqn.is_none() => ResolvedTy::Distinct {
                             fqn: Some(fqn),
                             uid,
                             ty: distinct_ty,
@@ -732,7 +732,7 @@ mod tests {
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
 
-        let mut uid_gen = UIDGenerator::new();
+        let mut uid_gen = UIDGenerator::default();
         let mut twr_arena = Arena::new();
         let mut bodies_map = FxHashMap::default();
 
@@ -2324,10 +2324,7 @@ mod tests {
             |interner| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        fqn: hir::Fqn {
-                            module: hir::Name(interner.intern("main")),
-                            name: hir::Name(interner.intern("foo")),
-                        },
+                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
                     },
                     53..56,
                 )]

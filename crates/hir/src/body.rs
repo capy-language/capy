@@ -873,7 +873,7 @@ impl<'a> Ctx<'a> {
             Expr::Call { path, args }
         }
 
-        return Expr::Missing;
+        Expr::Missing
     }
 
     fn lower_index_expr(&mut self, index_expr: ast::IndexExpr) -> Expr {
@@ -978,10 +978,14 @@ impl<'a> Ctx<'a> {
         }
 
         let name = Name(name);
-        if let Ok(_) = self.world_index.get_definition(Fqn {
-            module: self.module,
-            name,
-        }) {
+        if self
+            .world_index
+            .get_definition(Fqn {
+                module: self.module,
+                name,
+            })
+            .is_ok()
+        {
             let path = PathWithRange::ThisModule {
                 name,
                 range: ident.range(self.tree),
@@ -1011,7 +1015,7 @@ impl<'a> Ctx<'a> {
 
         self.bodies.symbol_map.insert(ident, Symbol::Unknown);
 
-        return Expr::Missing;
+        Expr::Missing
     }
 
     fn lower_int_literal(&mut self, int_literal: ast::IntLiteral) -> Expr {
@@ -1314,7 +1318,7 @@ impl Bodies {
                 }
 
                 Expr::Ref { expr } => {
-                    s.push_str("^");
+                    s.push('^');
 
                     write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
@@ -1330,7 +1334,7 @@ impl Bodies {
                         indentation,
                     );
 
-                    s.push_str("^");
+                    s.push('^');
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
@@ -1478,18 +1482,9 @@ impl Bodies {
                 Expr::Param { idx } => s.push_str(&format!("p{}", idx)),
 
                 Expr::Call { path, args } => {
-                    match path {
-                        PathWithRange::ThisModule { name, .. } => {
-                            s.push_str(interner.lookup(name.0))
-                        }
-                        PathWithRange::OtherModule { fqn, .. } => s.push_str(&format!(
-                            "{}.{}",
-                            interner.lookup(fqn.module.0),
-                            interner.lookup(fqn.name.0)
-                        )),
-                    }
+                    s.push_str(&path.path().display(interner));
 
-                    s.push_str("(");
+                    s.push('(');
                     for (idx, arg) in args.iter().enumerate() {
                         if idx != 0 {
                             s.push_str(", ");
@@ -1497,17 +1492,10 @@ impl Bodies {
 
                         write_expr(*arg, show_idx, bodies, s, ty_arena, interner, indentation);
                     }
-                    s.push_str(")");
+                    s.push(')');
                 }
 
-                Expr::Global(path) => match path {
-                    PathWithRange::ThisModule { name, .. } => s.push_str(interner.lookup(name.0)),
-                    PathWithRange::OtherModule { fqn, .. } => s.push_str(&format!(
-                        "{}.{}",
-                        interner.lookup(fqn.module.0),
-                        interner.lookup(fqn.name.0)
-                    )),
-                },
+                Expr::Global(path) => s.push_str(&path.path().display(interner)),
 
                 Expr::PrimitiveTy { ty } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
             }

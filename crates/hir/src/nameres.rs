@@ -3,7 +3,7 @@ use text_size::TextRange;
 
 use crate::{Fqn, Name};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Path {
     ThisModule(Name),
     OtherModule(Fqn),
@@ -12,7 +12,7 @@ pub enum Path {
 impl Path {
     pub fn display(&self, interner: &Interner) -> String {
         match self {
-            Path::ThisModule(name) => format!("{}", interner.lookup(name.0)),
+            Path::ThisModule(name) => interner.lookup(name.0).to_string(),
             Path::OtherModule(fqn) => format!(
                 "{}.{}",
                 interner.lookup(fqn.module.0),

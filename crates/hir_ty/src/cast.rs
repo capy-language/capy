@@ -23,7 +23,7 @@ pub(crate) fn max_cast(
     second: ResolvedTy,
 ) -> Option<ResolvedTy> {
     if first == second {
-        return Some(first.clone());
+        return Some(first);
     }
 
     match (first, second) {
@@ -76,7 +76,7 @@ pub(crate) fn max_cast(
                 None
             }
         }
-        (ResolvedTy::Unknown, other) | (other, ResolvedTy::Unknown) => Some(other.clone()),
+        (ResolvedTy::Unknown, other) | (other, ResolvedTy::Unknown) => Some(other),
         _ => None,
     }
 }

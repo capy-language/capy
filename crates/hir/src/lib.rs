@@ -25,15 +25,12 @@ pub struct Fqn {
     pub name: Name,
 }
 
+#[derive(Default)]
 pub struct UIDGenerator {
     inner: u32,
 }
 
 impl UIDGenerator {
-    pub fn new() -> Self {
-        Self { inner: 0 }
-    }
-
     pub fn generate_unique_id(&mut self) -> u32 {
         let id = self.inner;
         self.inner += 1;
