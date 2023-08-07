@@ -54,6 +54,12 @@ macro_rules! def_ast_node {
                 self.0
             }
         }
+
+        impl std::fmt::Debug for $kind {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_tuple("$kind").finish()
+            }
+        }
     };
 }
 
@@ -73,6 +79,12 @@ macro_rules! def_ast_token {
 
             fn syntax(self) -> SyntaxToken {
                 self.0
+            }
+        }
+
+        impl std::fmt::Debug for $kind {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_tuple("$kind").finish()
             }
         }
     };
@@ -114,6 +126,15 @@ macro_rules! def_multi_node {
                 match self {
                     $(Self::$simple_child_name(node) => node.syntax(),)*
                     $(Self::$multi_child_name(node) => node.syntax(),)*
+                }
+            }
+        }
+
+        impl std::fmt::Debug for $node_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Self::$simple_child_name(node) => f.debug_tuple("$simple_child_name").field(node).finish(),)*
+                    $(Self::$multi_child_name(node) => f.debug_tuple("$multi_child_name").field(node).finish(),)*
                 }
             }
         }
@@ -292,7 +313,7 @@ def_multi_node! {
     Expr:
     Cast -> CastExpr
     Ref -> RefExpr
-    Deref -> DerefExpr // todo: make derefexpr tests
+    Deref -> DerefExpr
     Binary -> BinaryExpr
     Unary -> UnaryExpr
     IntLiteral -> IntLiteral

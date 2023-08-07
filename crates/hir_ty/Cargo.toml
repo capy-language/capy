@@ -11,6 +11,7 @@ hir = {path = "../hir"}
 interner = {path = "../interner"}
 rustc-hash = "1.1"
 text-size = "1.1"
+backtrace = "0.3.68"
 
 [dev-dependencies]
 ast = {path = "../ast"}

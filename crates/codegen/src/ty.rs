@@ -60,7 +60,7 @@ pub(crate) trait ToCompType {
 impl ToCompType for ResolvedTy {
     fn to_comp_type<'ctx>(&self, gen: &CodeGen<'_, 'ctx>) -> CompType<'ctx> {
         match self {
-            hir_ty::ResolvedTy::Unknown => unreachable!(),
+            hir_ty::ResolvedTy::NotYetResolved | hir_ty::ResolvedTy::Unknown => unreachable!(),
             hir_ty::ResolvedTy::IInt(bit_width) | hir_ty::ResolvedTy::UInt(bit_width) => {
                 match *bit_width {
                     u32::MAX => CompType::Basic(

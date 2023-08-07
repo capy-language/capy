@@ -77,7 +77,6 @@ impl Index {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Definition {
     Function(Function),
-    NamedTy(TyWithRange),
     Global(Global),
 }
 
@@ -153,7 +152,14 @@ impl Ctx<'_> {
     }
 
     fn parse_ty_expr(&mut self, ty: Option<ast::Expr>) -> TyWithRange {
-        match TyWithRange::parse(ty, self.uid_gen, self.twr_arena, self.interner, self.tree) {
+        match TyWithRange::parse(
+            ty,
+            self.uid_gen,
+            self.twr_arena,
+            self.interner,
+            self.tree,
+            false,
+        ) {
             Ok(ty) => ty,
             Err(why) => {
                 let range = ty.unwrap().range(self.tree);
@@ -263,29 +269,22 @@ impl Ctx<'_> {
         };
         let name = Name(self.interner.intern(name_token.text(self.tree)));
 
-        if var_def.ty(self.tree).is_none() {
-            self.diagnostics.push(IndexingDiagnostic {
-                kind: IndexingDiagnosticKind::MissingTy { name: name.0 },
-                range: if let Some(colon) = var_def.colon(self.tree) {
-                    colon.range_after(self.tree)
-                } else {
-                    name_token.range_after(self.tree)
-                },
-            });
-        }
+        // if var_def.ty(self.tree).is_none() {
+        //     self.diagnostics.push(IndexingDiagnostic {
+        //         kind: IndexingDiagnosticKind::MissingTy { name: name.0 },
+        //         range: if let Some(colon) = var_def.colon(self.tree) {
+        //             colon.range_after(self.tree)
+        //         } else {
+        //             name_token.range_after(self.tree)
+        //         },
+        //     });
+        // }
         let ty = self.parse_ty(var_def.ty(self.tree));
 
-        match ty {
-            TyWithRange::Type { .. } => IndexDefinitionResult::Ok {
-                definition: Definition::NamedTy(self.parse_ty_expr(var_def.value(self.tree))),
-                name,
-                name_token,
-            },
-            _ => IndexDefinitionResult::Ok {
-                definition: Definition::Global(Global { ty }),
-                name,
-                name_token,
-            },
+        IndexDefinitionResult::Ok {
+            definition: Definition::Global(Global { ty }),
+            name,
+            name_token,
         }
     }
 }

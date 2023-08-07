@@ -343,7 +343,7 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::MismatchedArgCount {
             name,
             expected,
-            got,
+            found: got,
         } => {
             format!(
                 "`{}` expected {} arguments, but got {}",
@@ -360,20 +360,22 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
         LoweringDiagnosticKind::ArrayMissingBody => "array missing a body `{}`".to_string(),
+        LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
+            format!("expected `{}` elements, found `{}`", expected, found)
+        }
         LoweringDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
 
 fn lower_ty_parse_error(d: &TyParseError) -> String {
     match d {
-        TyParseError::ArrayMissingSize => "array type is missing an explicit size".to_string(),
-        TyParseError::ArraySizeNotConst(_) => {
-            "array type size must be a constant integer".to_string()
-        }
+        TyParseError::ArrayMissingSize => "array is missing an explicit size".to_string(),
+        TyParseError::ArraySizeNotConst(_) => "array size must be a constant integer".to_string(),
         TyParseError::ArraySizeOutOfBounds(_) => "integer literal out of range".to_string(),
         TyParseError::ArrayHasBody(_) => "array type cannot have a body".to_string(),
         TyParseError::NotATy => "expression cannot be converted into a type".to_string(),
         TyParseError::NonGlobalTy => "tried to use a non-global variable as a type".to_string(),
+        TyParseError::NonPrimitive => unreachable!(),
     }
 }
 
@@ -431,6 +433,18 @@ fn ty_diagnostic_message(
                 found.display(resolved_arena, interner)
             )
         }
+        hir_ty::TyDiagnosticKind::IndexOutOfBounds {
+            index,
+            actual_size,
+            array_ty,
+        } => {
+            format!(
+                "index `[{}]` is too big, `{}` has size `{}`",
+                index,
+                array_ty.display(resolved_arena, interner),
+                actual_size,
+            )
+        }
         hir_ty::TyDiagnosticKind::DerefMismatch { found } => {
             format!(
                 "tried dereferencing `^` a non-pointer, `{}`",
@@ -446,6 +460,15 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::Undefined { name } => {
             format!("undefined type `{}`", interner.lookup(*name))
         }
+        hir_ty::TyDiagnosticKind::NotYetResolved { fqn } => {
+            format!(
+                "circular definition, `{}.{}` has not yet been resolved",
+                interner.lookup(fqn.module.0),
+                interner.lookup(fqn.name.0),
+            )
+        }
+        hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
+        hir_ty::TyDiagnosticKind::MutableTy => "types cannot be mutable".to_string(),
     }
 }
 

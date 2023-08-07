@@ -13,7 +13,7 @@ main :: () -> {
     };
 };
 
-build_array :: () -> [6]i32 {
+build_array :: () -> [6] i32 {
     my_array : [6] i32 = [] i32 { 4, 8, 15, 16, 23, 42 };
 
     my_array

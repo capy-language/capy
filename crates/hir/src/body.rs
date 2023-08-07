@@ -5,7 +5,7 @@ use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
-use text_size::{TextRange, TextSize};
+use text_size::TextRange;
 
 use crate::{
     nameres::{Path, PathWithRange},
@@ -52,6 +52,7 @@ pub enum Expr {
         op: UnaryOp,
     },
     Array {
+        size: Option<u64>,
         items: Vec<Idx<Expr>>,
         ty: TyWithRange,
     },
@@ -81,11 +82,10 @@ pub enum Expr {
         path: PathWithRange,
         args: Vec<Idx<Expr>>,
     },
-    Ty {
-        ty: Idx<TyWithRange>,
-    },
-    Distinct {
-        uid: u32,
+    /// either a primitive type (such as `i32`, 'bool', etc.), or an array type, or a pointer to a primitive type, or a distinct type
+    ///
+    /// references and pointer types have no difference to each other at this stage of compilation
+    PrimitiveTy {
         ty: Idx<TyWithRange>,
     },
 }
@@ -160,13 +160,29 @@ pub struct LoweringDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
-    UndefinedLocal { name: Key },
-    UndefinedModule { name: Key },
+    UndefinedLocal {
+        name: Key,
+    },
+    UndefinedModule {
+        name: Key,
+    },
     MutableGlobal,
-    SetImmutable { name: Key },
-    MismatchedArgCount { name: Key, expected: u32, got: u32 },
-    CalledNonLambda { name: Key },
+    SetImmutable {
+        name: Key,
+    },
+    MismatchedArgCount {
+        name: Key,
+        found: u32,
+        expected: u32,
+    },
+    CalledNonLambda {
+        name: Key,
+    },
     ArrayMissingBody,
+    ArraySizeMismatch {
+        found: u32,
+        expected: u32,
+    },
     TyParseError(TyParseError),
     InvalidEscape,
 }
@@ -262,6 +278,7 @@ impl<'a> Ctx<'a> {
             self.twr_arena,
             self.interner,
             self.tree,
+            false,
         ) {
             Ok(ty) => ty,
             Err(why) => {
@@ -446,6 +463,39 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
+        match TyWithRange::parse(
+            ref_expr.expr(self.tree),
+            self.uid_gen,
+            self.twr_arena,
+            self.interner,
+            self.tree,
+            true,
+        ) {
+            Ok(sub_ty) => {
+                return Expr::PrimitiveTy {
+                    ty: {
+                        let sub_ty = self.twr_arena.alloc(sub_ty);
+                        self.twr_arena.alloc(TyWithRange::Pointer {
+                            sub_ty,
+                            range: ref_expr.range(self.tree),
+                        })
+                    },
+                }
+            }
+            Err(
+                TyParseError::NonPrimitive | TyParseError::NotATy | TyParseError::ArrayHasBody(_),
+            ) => {}
+            Err(ty_parse_error) => {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::TyParseError(ty_parse_error),
+                    range: ref_expr.range(self.tree),
+                });
+                return Expr::PrimitiveTy {
+                    ty: self.twr_arena.alloc(TyWithRange::Unknown),
+                };
+            }
+        }
+
         let expr = self.lower_expr(ref_expr.expr(self.tree));
 
         Expr::Ref { expr }
@@ -458,10 +508,27 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_distinct(&mut self, distinct: ast::Distinct) -> Expr {
-        let ty = self.lower_ty(distinct.ty(self.tree));
+        let ty = match TyWithRange::parse(
+            Some(ast::Expr::Distinct(distinct)),
+            self.uid_gen,
+            self.twr_arena,
+            self.interner,
+            self.tree,
+            false,
+        ) {
+            Ok(ty) => ty,
+            Err(why) => {
+                let range = distinct.range(self.tree);
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::TyParseError(why),
+                    range,
+                });
 
-        Expr::Distinct {
-            uid: self.uid_gen.generate_unique_id(),
+                TyWithRange::Unknown
+            }
+        };
+
+        Expr::PrimitiveTy {
             ty: self.twr_arena.alloc(ty),
         }
     }
@@ -503,32 +570,71 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
-        let ty = self.lower_ty(array_expr.ty(self.tree));
-
-        let body = match array_expr.body(self.tree) {
-            Some(body) => body,
+        let items = match array_expr.body(self.tree) {
+            Some(body) => body
+                .items(self.tree)
+                .map(|item| self.lower_expr(item.value(self.tree)))
+                .collect::<Vec<_>>(),
             None => {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ArrayMissingBody,
-                    range: TextRange::new(
-                        array_expr.range(self.tree).end(),
-                        array_expr
-                            .range(self.tree)
-                            .end()
-                            .checked_add(TextSize::from(1))
-                            .unwrap(),
-                    ),
-                });
-                return Expr::Missing;
+                // if the array doesn't have a body, parse it as a type
+
+                let ty = match TyWithRange::parse(
+                    Some(ast::Expr::Array(array_expr)),
+                    self.uid_gen,
+                    self.twr_arena,
+                    self.interner,
+                    self.tree,
+                    false,
+                ) {
+                    Ok(ty) => ty,
+                    Err(why) => {
+                        let range = array_expr.range(self.tree);
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::TyParseError(why),
+                            range,
+                        });
+
+                        return Expr::Missing;
+                    }
+                };
+
+                return Expr::PrimitiveTy {
+                    ty: self.twr_arena.alloc(ty),
+                };
             }
         };
 
-        let items = body
-            .items(self.tree)
-            .map(|item| self.lower_expr(item.value(self.tree)))
-            .collect();
+        let ty = self.lower_ty(array_expr.ty(self.tree));
 
-        Expr::Array { items, ty }
+        let size = array_expr
+            .size(self.tree)
+            .and_then(|size| size.size(self.tree))
+            .map(|size| self.lower_expr_raw(size))
+            .and_then(|size| match size {
+                Expr::IntLiteral(size) => {
+                    if size as usize != items.len() {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::ArraySizeMismatch {
+                                found: items.len() as u32,
+                                expected: size as u32,
+                            },
+                            range: array_expr.body(self.tree).unwrap().range(self.tree),
+                        });
+                    }
+                    Some(size)
+                }
+                _ => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::TyParseError(
+                            TyParseError::ArraySizeNotConst(TextRange::default()),
+                        ),
+                        range: array_expr.size(self.tree).unwrap().range(self.tree),
+                    });
+                    None
+                }
+            });
+
+        Expr::Array { size, items, ty }
     }
 
     fn lower_block(&mut self, block: ast::Block) -> Expr {
@@ -623,7 +729,6 @@ impl<'a> Ctx<'a> {
                             return lower(self, call, function, path, function_name_token);
                         }
                         Definition::Global(_) => todo!(),
-                        Definition::NamedTy(_) => todo!(),
                     }
                 }
                 Err(GetDefinitionError::UnknownModule) => {
@@ -713,19 +818,6 @@ impl<'a> Ctx<'a> {
                         .insert(ident, Symbol::Global(path.path()));
                     return Expr::Global(path);
                 }
-                Definition::NamedTy(ty) => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::CalledNonLambda { name: name.0 },
-                        range: ident.range(self.tree),
-                    });
-
-                    self.bodies
-                        .symbol_map
-                        .insert(ident, Symbol::Global(path.path()));
-                    return Expr::Ty {
-                        ty: self.twr_arena.alloc(*ty),
-                    };
-                }
             }
         }
 
@@ -761,7 +853,7 @@ impl<'a> Ctx<'a> {
                     kind: LoweringDiagnosticKind::MismatchedArgCount {
                         name,
                         expected,
-                        got,
+                        found: got,
                     },
                     range: ident.range(ctx.tree),
                 });
@@ -909,7 +1001,7 @@ impl<'a> Ctx<'a> {
                 .symbol_map
                 .insert(ident, Symbol::PrimitiveTy(ty));
 
-            return Expr::Ty { ty };
+            return Expr::PrimitiveTy { ty };
         }
 
         self.diagnostics.push(LoweringDiagnostic {
@@ -1098,6 +1190,7 @@ impl Bodies {
         module_name: &str,
         twr_arena: &Arena<TyWithRange>,
         interner: &Interner,
+        show_expr_idx: bool,
     ) -> String {
         let mut s = String::new();
 
@@ -1110,7 +1203,15 @@ impl Bodies {
                 module_name,
                 interner.lookup(name.0)
             ));
-            write_expr(*expr_id, self, &mut s, twr_arena, interner, 0);
+            write_expr(
+                *expr_id,
+                show_expr_idx,
+                self,
+                &mut s,
+                twr_arena,
+                interner,
+                0,
+            );
             s.push(';');
         }
 
@@ -1123,7 +1224,15 @@ impl Bodies {
                 module_name,
                 interner.lookup(name.0)
             ));
-            write_expr(*expr_id, self, &mut s, twr_arena, interner, 0);
+            write_expr(
+                *expr_id,
+                show_expr_idx,
+                self,
+                &mut s,
+                twr_arena,
+                interner,
+                0,
+            );
             s.push(';');
         }
 
@@ -1147,14 +1256,19 @@ impl Bodies {
         return s.trim().to_string();
 
         fn write_expr(
-            id: Idx<Expr>,
+            idx: Idx<Expr>,
+            show_idx: bool,
             bodies: &Bodies,
             s: &mut String,
             ty_arena: &Arena<TyWithRange>,
             interner: &Interner,
             mut indentation: usize,
         ) {
-            match &bodies[id] {
+            if show_idx {
+                s.push_str("\x1B[90m(\x1B[0m")
+            }
+
+            match &bodies[idx] {
                 Expr::Missing => s.push_str("<missing>"),
 
                 Expr::IntLiteral(n) => s.push_str(&format!("{}", n)),
@@ -1163,14 +1277,19 @@ impl Bodies {
 
                 Expr::StringLiteral(content) => s.push_str(&format!("{content:?}")),
 
-                Expr::Array { items, ty } => {
-                    s.push_str("[]");
+                Expr::Array { size, items, ty } => {
+                    s.push('[');
+                    if let Some(size) = size {
+                        s.push_str(&size.to_string());
+                    }
+                    s.push(']');
                     s.push_str(ty.display(ty_arena, interner).as_str());
+
                     s.push('{');
 
                     for (idx, item) in items.iter().enumerate() {
                         s.push(' ');
-                        write_expr(*item, bodies, s, ty_arena, interner, indentation);
+                        write_expr(*item, show_idx, bodies, s, ty_arena, interner, indentation);
                         if idx != items.len() - 1 {
                             s.push(',');
                         }
@@ -1180,14 +1299,14 @@ impl Bodies {
                 }
 
                 Expr::Index { array, index } => {
-                    write_expr(*array, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*array, show_idx, bodies, s, ty_arena, interner, indentation);
                     s.push_str("[ ");
-                    write_expr(*index, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*index, show_idx, bodies, s, ty_arena, interner, indentation);
                     s.push_str(" ]");
                 }
 
                 Expr::Cast { expr, ty } => {
-                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
 
                     s.push_str(" as ");
 
@@ -1197,17 +1316,25 @@ impl Bodies {
                 Expr::Ref { expr } => {
                     s.push_str("^");
 
-                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Deref { pointer } => {
-                    write_expr(*pointer, bodies, s, ty_arena, interner, indentation);
+                    write_expr(
+                        *pointer,
+                        show_idx,
+                        bodies,
+                        s,
+                        ty_arena,
+                        interner,
+                        indentation,
+                    );
 
                     s.push_str("^");
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(*lhs, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*lhs, show_idx, bodies, s, ty_arena, interner, indentation);
 
                     s.push(' ');
 
@@ -1228,7 +1355,7 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(*rhs, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*rhs, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Unary { expr, op } => {
@@ -1238,7 +1365,7 @@ impl Bodies {
                         UnaryOp::Not => s.push('!'),
                     }
 
-                    write_expr(*expr, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Block {
@@ -1253,7 +1380,15 @@ impl Bodies {
                     tail_expr: Some(tail_expr),
                 } if stmts.is_empty() => {
                     s.push_str("{ ");
-                    write_expr(*tail_expr, bodies, s, ty_arena, interner, indentation + 4);
+                    write_expr(
+                        *tail_expr,
+                        show_idx,
+                        bodies,
+                        s,
+                        ty_arena,
+                        interner,
+                        indentation + 4,
+                    );
                     s.push_str(" }");
                 }
 
@@ -1264,13 +1399,21 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(stmt, bodies, s, ty_arena, interner, indentation);
+                        write_stmt(stmt, show_idx, bodies, s, ty_arena, interner, indentation);
                         s.push('\n');
                     }
 
                     if let Some(tail_expr) = tail_expr {
                         s.push_str(&" ".repeat(indentation));
-                        write_expr(*tail_expr, bodies, s, ty_arena, interner, indentation);
+                        write_expr(
+                            *tail_expr,
+                            show_idx,
+                            bodies,
+                            s,
+                            ty_arena,
+                            interner,
+                            indentation,
+                        );
                         s.push('\n');
                     }
 
@@ -1286,24 +1429,48 @@ impl Bodies {
                     else_branch,
                 } => {
                     s.push_str("if ");
-                    write_expr(*condition, bodies, s, ty_arena, interner, indentation);
+                    write_expr(
+                        *condition,
+                        show_idx,
+                        bodies,
+                        s,
+                        ty_arena,
+                        interner,
+                        indentation,
+                    );
                     s.push(' ');
-                    write_expr(*body, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*body, show_idx, bodies, s, ty_arena, interner, indentation);
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
-                        write_expr(*else_branch, bodies, s, ty_arena, interner, indentation);
+                        write_expr(
+                            *else_branch,
+                            show_idx,
+                            bodies,
+                            s,
+                            ty_arena,
+                            interner,
+                            indentation,
+                        );
                     }
                 }
 
                 Expr::While { condition, body } => {
                     if let Some(condition) = condition {
                         s.push_str("while ");
-                        write_expr(*condition, bodies, s, ty_arena, interner, indentation);
+                        write_expr(
+                            *condition,
+                            show_idx,
+                            bodies,
+                            s,
+                            ty_arena,
+                            interner,
+                            indentation,
+                        );
                         s.push(' ');
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(*body, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*body, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
@@ -1328,7 +1495,7 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(*arg, bodies, s, ty_arena, interner, indentation);
+                        write_expr(*arg, show_idx, bodies, s, ty_arena, interner, indentation);
                     }
                     s.push_str(")");
                 }
@@ -1342,34 +1509,43 @@ impl Bodies {
                     )),
                 },
 
-                Expr::Ty { ty } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
+                Expr::PrimitiveTy { ty } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
+            }
 
-                Expr::Distinct { uid, ty } => {
-                    s.push_str("distinct'");
-                    s.push_str(&uid.to_string());
-                    s.push(' ');
-                    s.push_str(&ty_arena[*ty].display(ty_arena, interner));
-                }
+            if show_idx {
+                s.push_str("\x1B[90m #");
+                s.push_str(&idx.into_raw().to_string());
+                s.push_str(")\x1B[0m")
             }
         }
 
         fn write_stmt(
-            id: Idx<Stmt>,
+            expr: Idx<Stmt>,
+            show_idx: bool,
             bodies: &Bodies,
             s: &mut String,
             ty_arena: &Arena<TyWithRange>,
             interner: &Interner,
             indentation: usize,
         ) {
-            match &bodies[id] {
+            match &bodies[expr] {
                 Stmt::Expr(expr_id) => {
-                    write_expr(*expr_id, bodies, s, ty_arena, interner, indentation);
+                    write_expr(
+                        *expr_id,
+                        show_idx,
+                        bodies,
+                        s,
+                        ty_arena,
+                        interner,
+                        indentation,
+                    );
                     s.push(';');
                 }
                 Stmt::LocalDef(local_def_id) => {
                     s.push_str(&format!("l{} := ", local_def_id.into_raw()));
                     write_expr(
                         bodies[*local_def_id].value,
+                        show_idx,
                         bodies,
                         s,
                         ty_arena,
@@ -1387,6 +1563,7 @@ impl Bodies {
                     ));
                     write_expr(
                         bodies[*local_set_id].value,
+                        show_idx,
                         bodies,
                         s,
                         ty_arena,

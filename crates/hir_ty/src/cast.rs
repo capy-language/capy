@@ -164,12 +164,26 @@ pub(crate) fn can_fit(
     }
 }
 
-pub(crate) fn primitive_castable(from: ResolvedTy, to: ResolvedTy) -> bool {
+pub(crate) fn primitive_castable(
+    resolved_arena: &Arena<ResolvedTy>,
+    from: ResolvedTy,
+    to: ResolvedTy,
+) -> bool {
+    if can_fit(resolved_arena, from, to) {
+        return true;
+    }
+
     match (from, to) {
         (
             ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
             ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
         ) => true,
+        (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
+            primitive_castable(resolved_arena, resolved_arena[from], resolved_arena[to])
+        }
+        (ResolvedTy::Distinct { ty: from, .. }, to) => {
+            primitive_castable(resolved_arena, resolved_arena[from], to)
+        }
         _ => false,
     }
 }
@@ -180,8 +194,6 @@ pub(crate) fn has_semantics_of(
     found: ResolvedTy,
     expected: ResolvedTy,
 ) -> bool {
-    println!("{:?} has semantics of {:?}", found, expected);
-
     match (found, expected) {
         (ResolvedTy::Distinct { ty, .. }, ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
             if has_semantics_of(resolved_arena, resolved_arena[ty], expected) {

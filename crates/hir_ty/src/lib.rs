@@ -1,7 +1,8 @@
 mod cast;
 mod ctx;
 
-use ctx::InferenceCtx;
+use std::collections::HashMap;
+
 use hir::TyWithRange;
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
@@ -17,6 +18,7 @@ pub struct InferenceResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum ResolvedTy {
+    NotYetResolved,
     Unknown,
     /// a bit-width of u32::MAX represents an isize
     /// a bit-width of 0 represents ANY signed integer type
@@ -27,7 +29,7 @@ pub enum ResolvedTy {
     Bool,
     String,
     Array {
-        size: u32,
+        size: u64,
         sub_ty: Idx<ResolvedTy>,
     },
     Pointer {
@@ -46,6 +48,98 @@ pub enum ResolvedTy {
 impl ResolvedTy {
     pub fn to_type_id(&self) -> u64 {
         0
+    }
+
+    /// A true equality check
+    pub fn is_equal_to(self, other: Self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        if self == other {
+            return true;
+        }
+
+        match (self, other) {
+            (
+                ResolvedTy::Array {
+                    size: first_size,
+                    sub_ty: first_sub_ty,
+                },
+                ResolvedTy::Array {
+                    size: second_size,
+                    sub_ty: second_sub_ty,
+                    ..
+                },
+            ) => {
+                first_size == second_size
+                    && resolved_arena[first_sub_ty]
+                        .is_equal_to(resolved_arena[second_sub_ty], resolved_arena)
+            }
+            (ResolvedTy::Pointer { sub_ty: first }, ResolvedTy::Pointer { sub_ty: second }) => {
+                resolved_arena[first].is_equal_to(resolved_arena[second], resolved_arena)
+            }
+            (ResolvedTy::Distinct { uid: first, .. }, ResolvedTy::Distinct { uid: second, .. }) => {
+                first == second
+            }
+            _ => false,
+        }
+    }
+
+    /// an equality check that ignores distinct types.
+    /// All other types must be exactly equal (i32 == i32, i32 != i64)
+    pub fn is_functionally_equivalent_to(
+        self,
+        other: Self,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> bool {
+        if self == other {
+            return true;
+        }
+
+        match (self, other) {
+            (
+                ResolvedTy::Array {
+                    size: first_size,
+                    sub_ty: first_sub_ty,
+                },
+                ResolvedTy::Array {
+                    size: second_size,
+                    sub_ty: second_sub_ty,
+                    ..
+                },
+            ) => {
+                first_size == second_size
+                    && resolved_arena[first_sub_ty].is_functionally_equivalent_to(
+                        resolved_arena[second_sub_ty],
+                        resolved_arena,
+                    )
+            }
+            (ResolvedTy::Pointer { sub_ty: first }, ResolvedTy::Pointer { sub_ty: second }) => {
+                resolved_arena[first]
+                    .is_functionally_equivalent_to(resolved_arena[second], resolved_arena)
+            }
+            (ResolvedTy::Distinct { ty: first, .. }, ResolvedTy::Distinct { ty: second, .. }) => {
+                resolved_arena[first]
+                    .is_functionally_equivalent_to(resolved_arena[second], resolved_arena)
+            }
+            (ResolvedTy::Distinct { ty: distinct, .. }, other)
+            | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
+                println!("  {:?} as {:?}", other, resolved_arena[distinct]);
+                resolved_arena[distinct].is_functionally_equivalent_to(other, resolved_arena)
+            }
+            _ => false,
+        }
+    }
+
+    /// checks if `self` is an array, and returns the size and subtype if so
+    pub fn has_array_semantics(
+        self,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> Option<(u64, ResolvedTy)> {
+        match self {
+            ResolvedTy::Array { size, sub_ty } => Some((size, resolved_arena[sub_ty])),
+            ResolvedTy::Distinct { ty, .. } => {
+                resolved_arena[ty].has_array_semantics(resolved_arena)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -134,6 +228,11 @@ pub enum TyDiagnosticKind {
     IndexMismatch {
         found: ResolvedTy,
     },
+    IndexOutOfBounds {
+        index: u64,
+        actual_size: u64,
+        array_ty: ResolvedTy,
+    },
     DerefMismatch {
         found: ResolvedTy,
     },
@@ -143,261 +242,352 @@ pub enum TyDiagnosticKind {
     Undefined {
         name: Key,
     },
+    NotYetResolved {
+        fqn: hir::Fqn,
+    },
+    ParamNotATy,
+    MutableTy,
 }
 
-pub fn infer_all(
-    bodies: &hir::Bodies,
-    module: hir::Name,
-    world_index: &hir::WorldIndex,
-    twr_arena: &Arena<TyWithRange>,
-    resolved_arena: &mut Arena<ResolvedTy>,
-) -> (InferenceResult, Vec<TyDiagnostic>) {
-    let index = world_index
-        .get_module(module)
-        .expect("you must add this module to the world index");
-    let mut expr_types = ArenaMap::default();
-    let mut local_types = ArenaMap::default();
-    let mut diagnostics = Vec::new();
-    let mut signatures = FxHashMap::default();
+pub struct InferenceCtx<'a> {
+    current_module: Option<hir::Name>,
+    bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+    world_index: &'a hir::WorldIndex,
+    twr_arena: &'a Arena<TyWithRange>,
+    resolved_arena: &'a mut Arena<ResolvedTy>,
+    expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
+    param_tys: Option<Vec<ResolvedTy>>,
+    local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
+    signatures: FxHashMap<hir::Fqn, Signature>,
+    diagnostics: Vec<TyDiagnostic>,
+}
 
-    for (name, global) in index.globals() {
-        let global_type = signatures
-            .entry(hir::Fqn { module, name })
-            .or_insert(get_global_signature(
-                global,
-                module,
-                world_index,
-                twr_arena,
-                resolved_arena,
-                &mut diagnostics,
-            ))
-            .as_global()
-            .unwrap()
-            .clone();
-
-        InferenceCtx {
+impl<'a> InferenceCtx<'a> {
+    pub fn new(
+        bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+        world_index: &'a hir::WorldIndex,
+        twr_arena: &'a Arena<TyWithRange>,
+        resolved_arena: &'a mut Arena<ResolvedTy>,
+    ) -> InferenceCtx<'a> {
+        Self {
+            current_module: None,
+            bodies_map,
+            world_index,
             twr_arena,
             resolved_arena,
-            expr_tys: &mut expr_types,
-            local_tys: &mut local_types,
-            param_tys: &[],
-            bodies,
-            module,
-            world_index,
-            diagnostics: &mut diagnostics,
-            signatures: &mut signatures,
+            expr_tys: ArenaMap::default(),
+            param_tys: None,
+            local_tys: ArenaMap::default(),
+            diagnostics: Vec::new(),
+            signatures: FxHashMap::default(),
         }
-        .finish(bodies.global(name), global_type.ty);
     }
 
-    for (name, function) in index.functions() {
-        let function_signature = signatures
-            .entry(hir::Fqn { module, name })
-            .or_insert_with(|| {
-                get_fn_signature(
-                    function,
-                    module,
-                    world_index,
-                    twr_arena,
-                    resolved_arena,
-                    &mut diagnostics,
-                )
-            })
-            .as_function()
-            .cloned()
-            .unwrap();
+    pub fn finish(mut self, module: hir::Name) -> (InferenceResult, Vec<TyDiagnostic>) {
+        let index = self
+            .world_index
+            .get_module(module)
+            .expect("module must be part of the world index");
 
-        InferenceCtx {
-            twr_arena,
-            resolved_arena,
-            expr_tys: &mut expr_types,
-            local_tys: &mut local_types,
-            param_tys: &function_signature.param_tys,
-            bodies,
-            world_index,
-            module,
-            diagnostics: &mut diagnostics,
-            signatures: &mut signatures,
-        }
-        .finish(bodies.function_body(name), function_signature.return_ty);
-    }
+        for (name, global) in index.globals() {
+            let fqn = hir::Fqn { module, name };
 
-    let mut result = InferenceResult {
-        signatures,
-        expr_tys: expr_types,
-        local_tys: local_types,
-    };
-    result.shrink_to_fit();
-
-    (result, diagnostics)
-}
-
-fn get_global_signature(
-    global: &hir::Global,
-    module: hir::Name,
-    world_index: &hir::WorldIndex,
-    twr_arena: &Arena<TyWithRange>,
-    resolved_arena: &mut Arena<ResolvedTy>,
-    diagnostics: &mut Vec<TyDiagnostic>,
-) -> Signature {
-    Signature::Global(GlobalSignature {
-        ty: resolve_ty(
-            global.ty.clone(),
-            module,
-            world_index,
-            twr_arena,
-            resolved_arena,
-            diagnostics,
-        ),
-    })
-}
-
-fn get_fn_signature(
-    function: &hir::Function,
-    module: hir::Name,
-    world_index: &hir::WorldIndex,
-    twr_arena: &Arena<TyWithRange>,
-    resolved_arena: &mut Arena<ResolvedTy>,
-    diagnostics: &mut Vec<TyDiagnostic>,
-) -> Signature {
-    let return_ty = resolve_ty(
-        function.return_ty.clone(),
-        module,
-        world_index,
-        twr_arena,
-        resolved_arena,
-        diagnostics,
-    );
-
-    let param_tys: Vec<_> = function
-        .params
-        .iter()
-        .map(|param| {
-            resolve_ty(
-                param.ty.clone(),
-                module,
-                world_index,
-                twr_arena,
-                resolved_arena,
-                diagnostics,
-            )
-        })
-        .collect();
-
-    Signature::Function(FunctionSignature {
-        param_tys,
-        return_ty,
-    })
-}
-
-fn resolve_ty(
-    ty: hir::TyWithRange,
-    module: hir::Name,
-    world_index: &hir::WorldIndex,
-    twr_arena: &Arena<TyWithRange>,
-    resolved_arena: &mut Arena<ResolvedTy>,
-    diagnostics: &mut Vec<TyDiagnostic>,
-) -> ResolvedTy {
-    match ty {
-        hir::TyWithRange::Unknown => ResolvedTy::Unknown,
-        hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width),
-        hir::TyWithRange::UInt { bit_width, .. } => ResolvedTy::UInt(bit_width),
-        hir::TyWithRange::Bool { .. } => ResolvedTy::Bool,
-        hir::TyWithRange::String { .. } => ResolvedTy::String,
-        hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
-            size,
-            sub_ty: {
-                let ty = resolve_ty(
-                    twr_arena[sub_ty],
-                    module,
-                    world_index,
-                    twr_arena,
-                    resolved_arena,
-                    diagnostics,
-                );
-                resolved_arena.alloc(ty)
-            },
-        },
-        hir::TyWithRange::Pointer { sub_ty, .. } => ResolvedTy::Pointer {
-            sub_ty: {
-                let ty = resolve_ty(
-                    twr_arena[sub_ty],
-                    module,
-                    world_index,
-                    twr_arena,
-                    resolved_arena,
-                    diagnostics,
-                );
-                resolved_arena.alloc(ty)
-            },
-        },
-        hir::TyWithRange::Distinct { uid, ty } => ResolvedTy::Distinct {
-            fqn: None,
-            uid,
-            ty: {
-                let ty = resolve_ty(
-                    twr_arena[ty],
-                    module,
-                    world_index,
-                    twr_arena,
-                    resolved_arena,
-                    diagnostics,
-                );
-                resolved_arena.alloc(ty)
-            },
-        },
-        hir::TyWithRange::Type { .. } => ResolvedTy::Type,
-        hir::TyWithRange::Named { path } => {
-            let (fqn, range) = match path {
-                hir::PathWithRange::ThisModule { name, range } => {
-                    (hir::Fqn { module, name }, range)
-                }
-                hir::PathWithRange::OtherModule {
-                    fqn, name_range, ..
-                } => (fqn, name_range),
-            };
-
-            match world_index.get_definition(fqn) {
-                Ok(definition) => match definition {
-                    hir::Definition::NamedTy(ty) => {
-                        let mut ty = resolve_ty(
-                            *ty,
-                            module,
-                            world_index,
-                            twr_arena,
-                            resolved_arena,
-                            diagnostics,
-                        );
-
-                        match ty {
-                            ResolvedTy::Distinct {
-                                fqn: distinct_fqn,
-                                uid,
-                                ty: distinct_ty,
-                            } if distinct_fqn == None => {
-                                ty = ResolvedTy::Distinct {
-                                    fqn: Some(fqn),
-                                    uid,
-                                    ty: distinct_ty,
-                                };
-                            }
-                            _ => {}
-                        }
-
-                        ty
-                    }
-                    _ => todo!(),
-                },
-                Err(_) => {
-                    diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::Undefined { name: fqn.name.0 },
-                        range,
-                    });
-                    ResolvedTy::Unknown
-                }
+            if !self.signatures.contains_key(&fqn) {
+                let global_sig = self.generate_global_signature(global, fqn);
+                self.signatures.insert(fqn, global_sig);
             }
         }
-        hir::TyWithRange::Void { .. } => ResolvedTy::Void,
+
+        for (name, function) in index.functions() {
+            let fqn = hir::Fqn { module, name };
+
+            if !self.signatures.contains_key(&fqn) {
+                let fn_sig = self.generate_function_signature(function, fqn);
+                self.signatures.insert(fqn, fn_sig);
+            }
+        }
+
+        let mut result = InferenceResult {
+            signatures: self.signatures,
+            expr_tys: self.expr_tys,
+            local_tys: self.local_tys,
+        };
+        result.shrink_to_fit();
+
+        (result, self.diagnostics)
+    }
+
+    fn singleton_global_signature(
+        &mut self,
+        global: &hir::Global,
+        fqn: hir::Fqn,
+    ) -> GlobalSignature {
+        if let Some(sig) = self.signatures.get(&fqn) {
+            return sig.as_global().unwrap().clone();
+        }
+
+        let sig = self.generate_global_signature(global, fqn);
+        self.signatures.insert(fqn, sig);
+
+        self.signatures[&fqn].as_global().unwrap().clone()
+    }
+
+    fn generate_global_signature(&mut self, global: &hir::Global, fqn: hir::Fqn) -> Signature {
+        let old_module = self.current_module;
+        self.current_module = Some(fqn.module);
+        // if the global has a type annotation (my_global : string : "hello"),
+        // we must treat it differently than one that does not (my_global :: "hello")
+        let sig = match global.ty {
+            TyWithRange::Unknown => {
+                self.signatures.insert(
+                    fqn,
+                    Signature::Global(GlobalSignature {
+                        ty: ResolvedTy::NotYetResolved,
+                    }),
+                );
+
+                let ty =
+                    self.finish_body_unknown(self.bodies_map[&fqn.module].global(fqn.name), None);
+
+                Signature::Global(GlobalSignature { ty })
+            }
+            ty_annotation => {
+                let sig = Signature::Global(GlobalSignature {
+                    ty: self.resolve_ty(ty_annotation),
+                });
+
+                self.signatures.insert(fqn, sig.clone());
+
+                self.finish_body_known(
+                    self.bodies_map[&fqn.module].global(fqn.name),
+                    None,
+                    sig.as_global().unwrap().ty,
+                );
+
+                sig
+            }
+        };
+
+        self.current_module = old_module;
+
+        sig
+    }
+
+    fn singleton_fn_signature(
+        &mut self,
+        function: &hir::Function,
+        fqn: hir::Fqn,
+    ) -> FunctionSignature {
+        if let Some(sig) = self.signatures.get(&fqn) {
+            return sig.as_function().unwrap().clone();
+        }
+
+        let sig = self.generate_function_signature(function, fqn);
+
+        sig.as_function().unwrap().clone()
+    }
+
+    fn generate_function_signature(
+        &mut self,
+        function: &hir::Function,
+        fqn: hir::Fqn,
+    ) -> Signature {
+        let old_module = self.current_module;
+        self.current_module = Some(fqn.module);
+
+        let return_ty = self.resolve_ty(function.return_ty.clone());
+
+        let param_tys: Vec<_> = function
+            .params
+            .iter()
+            .map(|param| self.resolve_ty(param.ty.clone()))
+            .collect();
+
+        let sig = Signature::Function(FunctionSignature {
+            param_tys,
+            return_ty,
+        });
+
+        self.signatures.insert(fqn, sig.clone());
+
+        let fn_sig = sig.as_function().unwrap();
+        self.finish_body_known(
+            self.bodies_map[&fqn.module].function_body(fqn.name),
+            Some(fn_sig.param_tys.clone()),
+            fn_sig.return_ty,
+        );
+
+        self.current_module = old_module;
+
+        sig
+    }
+
+    fn path_with_range_to_ty(&mut self, path: hir::PathWithRange) -> ResolvedTy {
+        let (fqn, range) = match path {
+            hir::PathWithRange::ThisModule { name, range } => (
+                hir::Fqn {
+                    module: self.current_module.expect("there is no current module"),
+                    name,
+                },
+                range,
+            ),
+            hir::PathWithRange::OtherModule {
+                fqn, name_range, ..
+            } => (fqn, name_range),
+        };
+
+        match self.world_index.get_definition(fqn) {
+            Ok(definition) => match definition {
+                hir::Definition::Global(global) => {
+                    let global_ty = self.singleton_global_signature(global, fqn).ty;
+
+                    if global_ty == ResolvedTy::Unknown {
+                        return ResolvedTy::Unknown;
+                    }
+
+                    if global_ty != ResolvedTy::Type {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::Mismatch {
+                                expected: ResolvedTy::Type,
+                                found: global_ty,
+                            },
+                            range,
+                        });
+                        return ResolvedTy::Unknown;
+                    }
+
+                    let global_body = self.bodies_map[&fqn.module].global(fqn.name);
+
+                    let actual_ty = self.parse_expr_to_ty(global_body);
+
+                    // parse the global body into a type
+                    //match global_body {}
+
+                    // give distinct types a name if they don't already have one
+
+                    match actual_ty {
+                        ResolvedTy::Distinct {
+                            fqn: distinct_fqn,
+                            uid,
+                            ty: distinct_ty,
+                        } if distinct_fqn == None => ResolvedTy::Distinct {
+                            fqn: Some(fqn),
+                            uid,
+                            ty: distinct_ty,
+                        },
+                        _ => actual_ty,
+                    }
+                }
+                _ => todo!(),
+            },
+            Err(_) => {
+                self.diagnostics.push(TyDiagnostic {
+                    kind: TyDiagnosticKind::Undefined { name: fqn.name.0 },
+                    range,
+                });
+                ResolvedTy::Unknown
+            }
+        }
+    }
+
+    fn parse_expr_to_ty(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
+        match &self.bodies_map[&self.current_module.unwrap()][expr] {
+            hir::Expr::Missing => ResolvedTy::Unknown,
+            hir::Expr::Ref { expr } => {
+                let sub_ty = self.parse_expr_to_ty(*expr);
+
+                ResolvedTy::Pointer {
+                    sub_ty: self.resolved_arena.alloc(sub_ty),
+                }
+            }
+            hir::Expr::Local(local_def) => {
+                let local_ty = self.local_tys[*local_def];
+
+                if local_ty == ResolvedTy::Unknown {
+                    return ResolvedTy::Unknown;
+                }
+
+                if local_ty != ResolvedTy::Type {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::Type,
+                            found: self.local_tys[*local_def],
+                        },
+                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    });
+
+                    return ResolvedTy::Unknown;
+                }
+
+                let local_def = &self.bodies_map[&self.current_module.unwrap()][*local_def];
+
+                if local_def.mutable {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::MutableTy,
+                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    });
+
+                    return ResolvedTy::Unknown;
+                }
+
+                self.parse_expr_to_ty(local_def.value)
+            }
+            hir::Expr::Global(path) => self.path_with_range_to_ty(*path),
+            hir::Expr::Param { .. } => {
+                self.diagnostics.push(TyDiagnostic {
+                    kind: TyDiagnosticKind::ParamNotATy,
+                    range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                });
+
+                ResolvedTy::Unknown
+            }
+            hir::Expr::PrimitiveTy { ty } => self.resolve_ty(self.twr_arena[*ty]),
+            _ => {
+                self.diagnostics.push(TyDiagnostic {
+                    kind: TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Type,
+                        found: self.expr_tys[expr],
+                    },
+                    range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                });
+
+                ResolvedTy::Unknown
+            }
+        }
+    }
+
+    fn resolve_ty(&mut self, ty: hir::TyWithRange) -> ResolvedTy {
+        match ty {
+            hir::TyWithRange::Unknown => ResolvedTy::Unknown,
+            hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width),
+            hir::TyWithRange::UInt { bit_width, .. } => ResolvedTy::UInt(bit_width),
+            hir::TyWithRange::Bool { .. } => ResolvedTy::Bool,
+            hir::TyWithRange::String { .. } => ResolvedTy::String,
+            hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
+                size,
+                sub_ty: {
+                    let ty = self.resolve_ty(self.twr_arena[sub_ty]);
+                    self.resolved_arena.alloc(ty)
+                },
+            },
+            hir::TyWithRange::Pointer { sub_ty, .. } => ResolvedTy::Pointer {
+                sub_ty: {
+                    let ty = self.resolve_ty(self.twr_arena[sub_ty]);
+                    self.resolved_arena.alloc(ty)
+                },
+            },
+            hir::TyWithRange::Distinct { uid, ty } => ResolvedTy::Distinct {
+                fqn: None,
+                uid,
+                ty: {
+                    let ty = self.resolve_ty(self.twr_arena[ty]);
+                    self.resolved_arena.alloc(ty)
+                },
+            },
+            hir::TyWithRange::Type { .. } => ResolvedTy::Type,
+            hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path),
+            hir::TyWithRange::Void { .. } => ResolvedTy::Void,
+        }
     }
 }
 
@@ -472,6 +662,7 @@ impl InferenceResult {
 impl ResolvedTy {
     pub fn display(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
         match self {
+            Self::NotYetResolved => "!".to_string(),
             Self::Unknown => "<unknown>".to_string(),
             Self::IInt(bit_width) => match *bit_width {
                 u32::MAX => "isize".to_string(),
@@ -543,6 +734,7 @@ mod tests {
 
         let mut uid_gen = UIDGenerator::new();
         let mut twr_arena = Arena::new();
+        let mut bodies_map = FxHashMap::default();
 
         for (name, text) in &modules {
             if *name == "main" {
@@ -554,7 +746,20 @@ mod tests {
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
             let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-            world_index.add_module(hir::Name(interner.intern(name)), index);
+            let module = hir::Name(interner.intern(name));
+
+            world_index.add_module(module, index);
+
+            let (bodies, _) = hir::lower(
+                root,
+                &tree,
+                module,
+                &world_index,
+                &mut uid_gen,
+                &mut twr_arena,
+                &mut interner,
+            );
+            bodies_map.insert(module, bodies);
         }
 
         let text = &modules["main"];
@@ -574,16 +779,13 @@ mod tests {
             &mut twr_arena,
             &mut interner,
         );
+        bodies_map.insert(module, bodies);
 
         let mut resolved_arena = Arena::new();
 
-        let (inference_result, actual_diagnostics) = infer_all(
-            &bodies,
-            module,
-            &world_index,
-            &twr_arena,
-            &mut resolved_arena,
-        );
+        let (inference_result, actual_diagnostics) =
+            InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena)
+                .finish(module);
 
         expect.assert_eq(&inference_result.debug(&resolved_arena, &interner));
 
@@ -835,6 +1037,148 @@ mod tests {
                 l2 : usize
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn array() {
+        check(
+            r#"
+                main :: () -> {
+                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : [6]i32
+                7 : void
+                l0 : [6]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_size() {
+        check(
+            r#"
+                main :: () -> {
+                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : [6]i32
+                7 : void
+                l0 : [6]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_incorrect_size() {
+        check(
+            r#"
+                main :: () -> {
+                    my_array := [7] i32 { 4, 8, 15, 16, 23, 42 };
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : [7]i32
+                7 : void
+                l0 : [7]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn index() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+
+                    my_array[2]
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> i32
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : [6]i32
+                7 : [6]i32
+                8 : {uint}
+                9 : i32
+                10 : i32
+                l0 : [6]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn index_too_large() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+
+                    my_array[1000]
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> i32
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : [6]i32
+                7 : [6]i32
+                8 : {uint}
+                9 : i32
+                10 : i32
+                l0 : [6]i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IndexOutOfBounds {
+                        index: 1000,
+                        actual_size: 6,
+                        array_ty: ResolvedTy::Array {
+                            size: 6,
+                            sub_ty: Idx::from_raw(RawIdx::from(0)),
+                        },
+                    },
+                    123..137,
+                )]
+            },
         );
     }
 
@@ -1675,6 +2019,8 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> i32
+                main.imaginary : type
+                0 : type
                 1 : main.imaginary
                 2 : main.imaginary
                 3 : main.imaginary
@@ -1713,6 +2059,8 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> main.imaginary
+                main.imaginary : type
+                0 : type
                 1 : main.imaginary
                 2 : main.imaginary
                 3 : main.imaginary
@@ -1738,6 +2086,8 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> main.imaginary
+                main.imaginary : type
+                0 : type
                 1 : main.imaginary
                 2 : main.imaginary
                 3 : main.imaginary
@@ -1764,6 +2114,8 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> main.imaginary
+                main.imaginary : type
+                0 : type
                 1 : main.imaginary
                 2 : i32
                 3 : main.imaginary
@@ -1809,6 +2161,10 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> main.imaginary
+                main.extra_imaginary : type
+                main.imaginary : type
+                0 : type
+                1 : type
                 2 : main.imaginary
                 3 : main.extra_imaginary
                 4 : main.imaginary
@@ -1840,6 +2196,140 @@ mod tests {
                         },
                     },
                     253..258,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn distinct_pointers() {
+        check(
+            r#"
+                something_far_away :: distinct ^i32;
+
+                main :: () -> i32 {
+                    i : something_far_away = ^1;
+
+                    {i as ^i32}^
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> i32
+                main.something_far_away : type
+                0 : type
+                1 : {uint}
+                2 : main.something_far_away
+                3 : main.something_far_away
+                4 : ^i32
+                5 : ^i32
+                6 : i32
+                7 : i32
+                l0 : main.something_far_away
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn distinct_pointers_to_distinct_tys() {
+        check(
+            r#"
+                imaginary :: distinct i32;
+                imaginary_far_away :: distinct ^imaginary;
+
+                main :: () -> imaginary {
+                    i : imaginary = 1;
+
+                    x : imaginary_far_away = ^i;
+
+                    {x as ^imaginary}^
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> main.imaginary
+                main.imaginary_far_away : type
+                main.imaginary : type
+                0 : type
+                1 : type
+                2 : main.imaginary
+                3 : main.imaginary
+                4 : main.imaginary_far_away
+                5 : main.imaginary_far_away
+                6 : ^main.imaginary
+                7 : ^main.imaginary
+                8 : main.imaginary
+                9 : main.imaginary
+                l0 : main.imaginary
+                l1 : main.imaginary_far_away
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn distinct_arrays() {
+        check(
+            r#"
+                Vector3 :: distinct [3] i32;
+
+                main :: () -> {
+                    my_point : Vector3 = [] i32 { 4, 8, 15 };
+
+                    x := my_point[0];
+                    y := my_point[1];
+                    z := my_point[2];
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                main.Vector3 : type
+                0 : type
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : [3]i32
+                5 : main.Vector3
+                6 : {uint}
+                7 : i32
+                8 : main.Vector3
+                9 : {uint}
+                10 : i32
+                11 : main.Vector3
+                12 : {uint}
+                13 : i32
+                14 : void
+                l0 : main.Vector3
+                l1 : i32
+                l2 : i32
+                l3 : i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn recursive_definition() {
+        check(
+            r#"
+                foo :: bar;
+
+                bar :: foo;
+            "#,
+            expect![[r#"
+                main.bar : <unknown>
+                main.foo : <unknown>
+                0 : <unknown>
+                1 : <unknown>
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        fqn: hir::Fqn {
+                            module: hir::Name(interner.intern("main")),
+                            name: hir::Name(interner.intern("foo")),
+                        },
+                    },
+                    53..56,
                 )]
             },
         );

@@ -49,6 +49,8 @@ pub enum TyParseError {
     ArrayHasBody(TextRange),
     NotATy,
     NonGlobalTy,
+    /// only returned if primitives are specifically asked for
+    NonPrimitive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,7 +73,7 @@ pub enum TyWithRange {
         range: TextRange,
     },
     Array {
-        size: u32,
+        size: u64,
         sub_ty: Idx<TyWithRange>,
         range: TextRange,
     },
@@ -123,6 +125,7 @@ impl TyWithRange {
         twr_arena: &mut Arena<TyWithRange>,
         interner: &mut Interner,
         tree: &SyntaxTree,
+        primitives_only: bool,
     ) -> Result<Self, TyParseError> {
         let ty = match ty {
             Some(ty) => ty,
@@ -131,12 +134,16 @@ impl TyWithRange {
 
         match ty {
             ast::Expr::Array(array_ty) => {
+                if let Some(body) = array_ty.body(tree) {
+                    return Err(TyParseError::ArrayHasBody(body.range(tree)));
+                }
+
                 let size = match array_ty.size(tree) {
                     Some(size) => match size.size(tree) {
                         Some(ast::Expr::IntLiteral(int_literal)) => {
                             match int_literal
                                 .value(tree)
-                                .and_then(|int| int.text(tree).parse::<u32>().ok())
+                                .and_then(|int| int.text(tree).parse::<u64>().ok())
                             {
                                 Some(size) => size,
                                 None => {
@@ -158,19 +165,24 @@ impl TyWithRange {
                     twr_arena,
                     interner,
                     tree,
+                    primitives_only,
                 )?;
-                if let Some(body) = array_ty.body(tree) {
-                    return Err(TyParseError::ArrayHasBody(body.range(tree)));
-                }
 
                 Ok(TyWithRange::Array {
-                    size: size as u32,
+                    size,
                     sub_ty: twr_arena.alloc(sub_ty),
                     range: array_ty.range(tree),
                 })
             }
             ast::Expr::Ref(ref_expr) => {
-                let sub_ty = Self::parse(ref_expr.expr(tree), uid_gen, twr_arena, interner, tree)?;
+                let sub_ty = Self::parse(
+                    ref_expr.expr(tree),
+                    uid_gen,
+                    twr_arena,
+                    interner,
+                    tree,
+                    primitives_only,
+                )?;
 
                 Ok(TyWithRange::Pointer {
                     sub_ty: twr_arena.alloc(sub_ty),
@@ -189,6 +201,10 @@ impl TyWithRange {
                 };
 
                 if let Some(var_name_token) = path.nested_name(tree) {
+                    if primitives_only {
+                        return Err(TyParseError::NonPrimitive);
+                    }
+
                     let module_name_token = ident;
 
                     let module_name = interner.intern(module_name_token.text(tree));
@@ -210,14 +226,21 @@ impl TyWithRange {
                     let key = interner.intern(ident.text(tree));
                     let range = ident.range(tree);
 
-                    Ok(
-                        Self::from_key(key, range).unwrap_or_else(|| TyWithRange::Named {
-                            path: PathWithRange::ThisModule {
-                                name: Name(key),
-                                range,
-                            },
-                        }),
-                    )
+                    match Self::from_key(key, range) {
+                        Some(primitive) => Ok(primitive),
+                        None => {
+                            if primitives_only {
+                                Err(TyParseError::NonPrimitive)
+                            } else {
+                                Ok(TyWithRange::Named {
+                                    path: PathWithRange::ThisModule {
+                                        name: Name(key),
+                                        range,
+                                    },
+                                })
+                            }
+                        }
+                    }
                 }
             }
             ast::Expr::Distinct(distinct) => {
@@ -227,6 +250,7 @@ impl TyWithRange {
                     twr_arena,
                     interner,
                     tree,
+                    primitives_only,
                 )?;
 
                 Ok(TyWithRange::Distinct {

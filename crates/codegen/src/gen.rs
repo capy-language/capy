@@ -162,8 +162,14 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 exit(1)
             });
 
+        let global_ty = signature.ty.to_comp_type(&self);
+
+        if global_ty.is_void_type() {
+            return;
+        }
+
         let global = self.module.add_global(
-            signature.ty.to_comp_type(&self).into_basic_type(),
+            global_ty.into_basic_type(),
             None,
             &fqn.to_mangled_name(self.interner),
         );
@@ -377,9 +383,13 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 expr: inner_expr, ..
             } => {
                 let inner = self.compile_expr(module, inner_expr);
+                let cast_from = &self.types_map[&module][inner_expr];
                 let cast_to = &self.types_map[&module][expr];
+
+                println!("{:?} as {:?}", cast_from, cast_to);
+
                 // check if casting is irrelevant
-                if self.types_map[&module][inner_expr] == self.types_map[&module][expr] {
+                if cast_from.is_functionally_equivalent_to(*cast_to, self.resolved_arena) {
                     println!("irrelevant");
                     inner
                 } else if let Some(inner) = inner {
@@ -409,7 +419,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
             }
             hir::Expr::Deref { pointer } => {
                 let inner = self
-                    .compile_expr(module, pointer) // todo: possibly have to do this w/ no deref args
+                    .compile_expr(module, pointer)
                     .unwrap()
                     .into_pointer_value();
 
@@ -594,8 +604,14 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 let global = match self.globals.get(&fqn) {
                     Some(global) => global.clone(),
                     None => {
+                        // todo: fix recursive definition stack overflow
+                        // a : i32 : b;
+                        // b : i32 : a;
                         self.compile_global(fqn);
-                        self.globals.get(&fqn).unwrap().clone()
+                        match self.globals.get(&fqn) {
+                            Some(global) => *global,
+                            None => return None,
+                        }
                     }
                 };
 
@@ -739,8 +755,7 @@ impl<'a, 'ctx> CodeGen<'a, 'ctx> {
                 .unwrap() // parameters have been checked earlier
                 .map(|real_idx| self.function_stack.last().unwrap().get_nth_param(real_idx))
                 .flatten(),
-            hir::Expr::Ty { .. } => None,
-            hir::Expr::Distinct { .. } => None,
+            hir::Expr::PrimitiveTy { .. } => None,
         }
     }
 }

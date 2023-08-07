@@ -1,4 +1,4 @@
-to_print : string : "Hello, World!\n";
+to_print :: "Hello, World!\n";
 
 main :: () -> i32 {
     // prints "Hello, World!" to the screen

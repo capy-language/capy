@@ -14,7 +14,7 @@ int_to_string :: (n: i32) -> string {
         true
     } else {
         false
-    }
+    };
     loop {
         remainder := n % 10;
         n = n / 10;

@@ -1,7 +1,8 @@
+// make sure to include io.capy
 
-target : i32 : 28;
-repeat : i32 : 5;
-answer : i32 : 317811;
+target :: 28;
+repeat :: 5;
+answer :: 317811;
 
 fib :: (n: i32) -> i32 {
     if n <= 1 {

@@ -139,6 +139,7 @@ impl SourceFile {
                 interner.lookup(self.module.0),
                 &self.twr_arena.borrow(),
                 &interner,
+                self.verbose >= 2,
             );
             println!("{}", debug);
         }
@@ -152,16 +153,13 @@ impl SourceFile {
     }
 
     pub(crate) fn build_tys(&mut self) {
-        let (inference, ty_diagnostics) = hir_ty::infer_all(
-            self.bodies_map
-                .borrow()
-                .get(&self.module)
-                .expect("this module should've been compiled"),
-            self.module,
+        let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
+            &self.bodies_map.borrow(),
             &self.world_index.borrow(),
             &self.twr_arena.borrow(),
             &mut self.resolved_arena.borrow_mut(),
-        );
+        )
+        .finish(self.module);
         if self.verbose >= 2 {
             let debug = inference.debug(&self.resolved_arena.borrow(), &self.interner.borrow());
             println!("{}", debug);
