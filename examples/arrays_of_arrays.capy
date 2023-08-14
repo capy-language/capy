@@ -1,0 +1,56 @@
+
+global :: [][3][3] u32 {
+        [][3] u32 { [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 } },
+        [][3] u32 { [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 } },
+        [][3] u32 { [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 }, [] u32 { 123, 456, 789 } }
+    };
+
+make_array :: (x: u32, y: u32, z: u32) -> [3][3][3] u32 {
+    [][3][3] u32 {
+        [][3] u32 { [] u32 { x, y, z }, [] u32 { x, y, z }, [] u32 { x, y, z } },
+        [][3] u32 { [] u32 { x, y, z }, [] u32 { x, y, z }, [] u32 { x, y, z } },
+        [][3] u32 { [] u32 { x, y, z }, [] u32 { x, y, z }, [] u32 { x, y, z } }
+    }
+};
+
+// prints out an array on the stack, and one in global memory
+main :: () -> usize {
+    my_array := make_array(2, 4, 6);
+
+    // the stack memory of the above array isn't cleared, even if the old stack is overwritten by new function calls
+    make_array(8, 10, 12);
+
+    x : usize = 0;
+    while x < 3 {
+        y : usize = 0;
+        while y < 3 {
+            z : usize = 0;
+            while z < 3 {
+                printf("my_array[%i][%i][%i] = %i\n", x as i32, y as i32, z as i32, my_array[x][y][z]);
+                z = z + 1;
+            };
+            y = y + 1;
+        };
+        x = x + 1;
+    };
+
+    printf("\n", 0, 0, 0, 0);
+
+        x : usize = 0;
+    while x < 3 {
+        y : usize = 0;
+        while y < 3 {
+            z : usize = 0;
+            while z < 3 {
+                printf("global[%i][%i][%i] = %i\n", x as i32, y as i32, z as i32, global[x][y][z]);
+                z = z + 1;
+            };
+            y = y + 1;
+        };
+        x = x + 1;
+    };
+
+    0
+};
+
+printf :: (str: string, n1: i32, n2: i32, n3: i32, n4: u32) -> extern;

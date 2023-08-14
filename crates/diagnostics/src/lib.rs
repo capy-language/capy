@@ -376,9 +376,9 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
 fn lower_ty_parse_error(d: &TyParseError) -> String {
     match d {
         TyParseError::ArrayMissingSize => "array is missing an explicit size".to_string(),
-        TyParseError::ArraySizeNotConst(_) => "array size must be a constant integer".to_string(),
-        TyParseError::ArraySizeOutOfBounds(_) => "integer literal out of range".to_string(),
-        TyParseError::ArrayHasBody(_) => "array type cannot have a body".to_string(),
+        TyParseError::ArraySizeNotConst => "array size must be a constant integer".to_string(),
+        TyParseError::ArraySizeOutOfBounds => "integer literal out of range".to_string(),
+        TyParseError::ArrayHasBody => "array type cannot have a body".to_string(),
         TyParseError::NotATy => "expression cannot be converted into a type".to_string(),
         TyParseError::NonGlobalTy => "tried to use a non-global variable as a type".to_string(),
         TyParseError::NonPrimitive => unreachable!(),
@@ -486,6 +486,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::While => "`while`",
         TokenKind::Loop => "`loop`",
         TokenKind::Distinct => "`distinct`",
+        TokenKind::Extern => "`extern`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Quote => "`\"`",

@@ -41,9 +41,9 @@ impl UIDGenerator {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TyParseError {
     ArrayMissingSize,
-    ArraySizeNotConst(TextRange),
-    ArraySizeOutOfBounds(TextRange),
-    ArrayHasBody(TextRange),
+    ArraySizeNotConst,
+    ArraySizeOutOfBounds,
+    ArrayHasBody,
     NotATy,
     NonGlobalTy,
     /// only returned if primitives are specifically asked for
@@ -123,7 +123,7 @@ impl TyWithRange {
         interner: &mut Interner,
         tree: &SyntaxTree,
         primitives_only: bool,
-    ) -> Result<Self, TyParseError> {
+    ) -> Result<Self, (TyParseError, TextRange)> {
         let ty = match ty {
             Some(ty) => ty,
             None => return Ok(TyWithRange::Unknown),
@@ -132,28 +132,29 @@ impl TyWithRange {
         match ty {
             ast::Expr::Array(array_ty) => {
                 if let Some(body) = array_ty.body(tree) {
-                    return Err(TyParseError::ArrayHasBody(body.range(tree)));
+                    return Err((TyParseError::ArrayHasBody, body.range(tree)));
                 }
 
-                let size = match array_ty.size(tree) {
-                    Some(size) => match size.size(tree) {
-                        Some(ast::Expr::IntLiteral(int_literal)) => {
-                            match int_literal
-                                .value(tree)
-                                .and_then(|int| int.text(tree).parse::<u64>().ok())
-                            {
-                                Some(size) => size,
-                                None => {
-                                    return Err(TyParseError::ArraySizeOutOfBounds(
-                                        size.range(tree),
-                                    ))
-                                }
+                let brackets = array_ty.size(tree).unwrap();
+
+                let size = match brackets.size(tree) {
+                    Some(ast::Expr::IntLiteral(int_literal)) => {
+                        match int_literal
+                            .value(tree)
+                            .and_then(|int| int.text(tree).parse::<u64>().ok())
+                        {
+                            Some(size) => size,
+                            None => {
+                                return Err((
+                                    TyParseError::ArraySizeOutOfBounds,
+                                    int_literal.range(tree),
+                                ))
                             }
                         }
-                        _ => return Err(TyParseError::ArraySizeNotConst(size.range(tree))),
-                    },
+                    }
+                    Some(_) => return Err((TyParseError::ArraySizeNotConst, brackets.range(tree))),
                     None => {
-                        return Err(TyParseError::ArrayMissingSize);
+                        return Err((TyParseError::ArrayMissingSize, brackets.range(tree)));
                     }
                 };
                 let sub_ty = Self::parse(
@@ -199,7 +200,7 @@ impl TyWithRange {
 
                 if let Some(var_name_token) = path.nested_name(tree) {
                     if primitives_only {
-                        return Err(TyParseError::NonPrimitive);
+                        return Err((TyParseError::NonPrimitive, var_ref.range(tree)));
                     }
 
                     let module_name_token = ident;
@@ -227,7 +228,7 @@ impl TyWithRange {
                         Some(primitive) => Ok(primitive),
                         None => {
                             if primitives_only {
-                                Err(TyParseError::NonPrimitive)
+                                Err((TyParseError::NonPrimitive, var_ref.range(tree)))
                             } else {
                                 Ok(TyWithRange::Named {
                                     path: PathWithRange::ThisModule {
@@ -255,7 +256,7 @@ impl TyWithRange {
                     ty: twr_arena.alloc(ty),
                 })
             }
-            _ => Err(TyParseError::NotATy),
+            _ => Err((TyParseError::NotATy, ty.range(tree))),
         }
     }
 

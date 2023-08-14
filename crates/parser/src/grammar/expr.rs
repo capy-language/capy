@@ -1,9 +1,6 @@
 use syntax::TokenKind;
 
-use crate::{
-    grammar::{path::parse_path, ty::parse_ty},
-    token_set::TokenSet,
-};
+use crate::{grammar::path::parse_path, token_set::TokenSet};
 
 use super::*;
 
@@ -17,12 +14,24 @@ pub(super) fn parse_expr(
     parse_expr_bp(p, 0, TokenSet::NONE, expected_syntax_name)
 }
 
+#[allow(unused)]
 pub(super) fn parse_expr_with_recovery_set(
     p: &mut Parser,
     expected_syntax_name: &'static str,
     recovery_set: TokenSet,
 ) -> Option<CompletedMarker> {
     parse_expr_bp(p, 0, recovery_set, expected_syntax_name)
+}
+
+pub(super) fn parse_ty(
+    p: &mut Parser,
+    expected_syntax_name: &'static str,
+    recovery_set: TokenSet,
+) -> Option<CompletedMarker> {
+    parse_lhs(p, recovery_set, expected_syntax_name).map(|expr| {
+        let m = expr.precede(p);
+        m.complete(p, NodeKind::Ty)
+    })
 }
 
 // bp stands for binding power
@@ -59,7 +68,7 @@ fn parse_expr_bp(
                 let cast = lhs.precede(p);
                 p.bump();
 
-                ty::parse_ty(p, "cast type", recovery_set);
+                parse_ty(p, "cast type", recovery_set);
 
                 lhs = cast.complete(p, NodeKind::CastExpr);
             }
@@ -323,6 +332,8 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     if p.at(TokenKind::LBrace) {
         parse_block(p, recovery_set);
+    } else if p.at(TokenKind::Extern) {
+        p.bump();
     } else {
         let _guard = p.expected_syntax_name("lambda body");
         p.error();
@@ -411,13 +422,13 @@ fn parse_block(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 fn parse_array(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     assert!(p.at(TokenKind::LBrack));
 
-    let m = p.start();
+    let array = p.start();
+
+    let size = p.start();
     p.bump();
 
     if !p.at(TokenKind::RBrack) {
-        let size = p.start();
         parse_expr(p, "array size");
-        size.complete(p, NodeKind::ArraySize);
     }
 
     p.expect_with_recovery_set(
@@ -425,7 +436,13 @@ fn parse_array(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         recovery_set.union(TokenSet::new([TokenKind::LBrace])),
     );
 
-    ty::parse_ty(p, "array type", recovery_set);
+    size.complete(p, NodeKind::ArraySize);
+
+    parse_ty(
+        p,
+        "array type",
+        recovery_set.union(TokenSet::new([TokenKind::LBrace])),
+    );
 
     if !recovery_set.contains(TokenKind::LBrace) && p.at(TokenKind::LBrace) {
         let body = p.start();
@@ -451,5 +468,5 @@ fn parse_array(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     // println!("done {:?} {:?}", p.peek(), p.peek_range());
 
-    m.complete(p, NodeKind::Array)
+    array.complete(p, NodeKind::Array)
 }

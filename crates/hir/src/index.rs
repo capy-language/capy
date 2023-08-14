@@ -84,6 +84,7 @@ pub enum Definition {
 pub struct Function {
     pub params: Vec<Param>,
     pub return_ty: TyWithRange,
+    pub is_extern: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,8 +162,7 @@ impl Ctx<'_> {
             false,
         ) {
             Ok(ty) => ty,
-            Err(why) => {
-                let range = ty.unwrap().range(self.tree);
+            Err((why, range)) => {
                 self.diagnostics.push(IndexingDiagnostic {
                     kind: IndexingDiagnosticKind::TyParseError(why),
                     range,
@@ -256,6 +256,7 @@ impl Ctx<'_> {
             definition: Definition::Function(Function {
                 params,
                 return_ty: return_type,
+                is_extern: lambda.r#extern(self.tree).is_some(),
             }),
             name,
             name_token,

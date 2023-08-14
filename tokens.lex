@@ -5,6 +5,7 @@ Else = 'else'
 While = 'while'
 Loop = 'loop'
 Distinct = 'distinct'
+Extern = 'extern'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
 Int = /[0-9]+/
 Bool = /true|false/

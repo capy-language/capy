@@ -1,7 +1,6 @@
 mod expr;
 mod path;
 mod stmt;
-mod ty;
 
 use syntax::{NodeKind, TokenKind};
 

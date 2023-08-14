@@ -281,8 +281,7 @@ impl<'a> Ctx<'a> {
             false,
         ) {
             Ok(ty) => ty,
-            Err(why) => {
-                let range = ty.unwrap().range(self.tree);
+            Err((why, range)) => {
                 self.diagnostics.push(LoweringDiagnostic {
                     kind: LoweringDiagnosticKind::TyParseError(why),
                     range,
@@ -317,6 +316,11 @@ impl<'a> Ctx<'a> {
             Some(ident) => Name(self.interner.intern(ident.text(self.tree))),
             None => return,
         };
+
+        // if this is an external function, there are no expr's to lower
+        if lambda.r#extern(self.tree).is_some() {
+            return;
+        }
 
         // if we’ve already seen a function with this name,
         // we ignore all other functions with that name
@@ -482,13 +486,14 @@ impl<'a> Ctx<'a> {
                     },
                 }
             }
-            Err(
-                TyParseError::NonPrimitive | TyParseError::NotATy | TyParseError::ArrayHasBody(_),
-            ) => {}
-            Err(ty_parse_error) => {
+            Err((
+                TyParseError::NonPrimitive | TyParseError::NotATy | TyParseError::ArrayHasBody,
+                _,
+            )) => {}
+            Err((why, range)) => {
                 self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::TyParseError(ty_parse_error),
-                    range: ref_expr.range(self.tree),
+                    kind: LoweringDiagnosticKind::TyParseError(why),
+                    range,
                 });
                 return Expr::PrimitiveTy {
                     ty: self.twr_arena.alloc(TyWithRange::Unknown),
@@ -517,8 +522,7 @@ impl<'a> Ctx<'a> {
             false,
         ) {
             Ok(ty) => ty,
-            Err(why) => {
-                let range = distinct.range(self.tree);
+            Err((why, range)) => {
                 self.diagnostics.push(LoweringDiagnostic {
                     kind: LoweringDiagnosticKind::TyParseError(why),
                     range,
@@ -587,8 +591,7 @@ impl<'a> Ctx<'a> {
                     false,
                 ) {
                     Ok(ty) => ty,
-                    Err(why) => {
-                        let range = array_expr.range(self.tree);
+                    Err((why, range)) => {
                         self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::TyParseError(why),
                             range,
@@ -625,9 +628,7 @@ impl<'a> Ctx<'a> {
                 }
                 _ => {
                     self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::TyParseError(
-                            TyParseError::ArraySizeNotConst(TextRange::default()),
-                        ),
+                        kind: LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
                         range: array_expr.size(self.tree).unwrap().range(self.tree),
                     });
                     None
@@ -1070,6 +1071,7 @@ impl<'a> Ctx<'a> {
                         'n' => text.push('\n'),
                         'r' => text.push('\r'),
                         't' => text.push('\t'),
+                        '0' => text.push('\0'),
                         _ => self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::InvalidEscape,
                             range: escape.range(self.tree),
@@ -1130,7 +1132,7 @@ impl Bodies {
         &self.other_module_references
     }
 
-    // todo: check if this is used
+    // todo: use this in a LSP
     pub fn symbol(&self, ident: ast::Ident) -> Option<Symbol> {
         self.symbol_map.get(&ident).copied()
     }
@@ -1242,7 +1244,13 @@ impl Bodies {
 
         if !self.other_module_references.is_empty() {
             let mut other_module_references: Vec<_> = self.other_module_references.iter().collect();
-            other_module_references.sort_unstable();
+            other_module_references.sort_by_key(|fqn| {
+                format!(
+                    "{}.{}",
+                    interner.lookup(fqn.module.0),
+                    interner.lookup(fqn.name.0),
+                )
+            });
 
             s.push_str(&format!(
                 "\nReferences to other modules in {}:",
@@ -1383,17 +1391,35 @@ impl Bodies {
                     stmts,
                     tail_expr: Some(tail_expr),
                 } if stmts.is_empty() => {
-                    s.push_str("{ ");
+                    let mut inner = String::new();
                     write_expr(
                         *tail_expr,
                         show_idx,
                         bodies,
-                        s,
+                        &mut inner,
                         ty_arena,
                         interner,
                         indentation + 4,
                     );
-                    s.push_str(" }");
+
+                    if inner.len() > 60 {
+                        s.push_str("{\n");
+                        s.push_str(&" ".repeat(indentation + 4));
+                    } else {
+                        s.push_str("{ ");
+                    }
+
+                    s.push_str(&inner);
+
+                    if inner.len() > 60 {
+                        s.push('\n');
+
+                        s.push_str(&" ".repeat(indentation));
+
+                        s.push('}');
+                    } else {
+                        s.push_str(" }");
+                    }
                 }
 
                 Expr::Block { stmts, tail_expr } => {

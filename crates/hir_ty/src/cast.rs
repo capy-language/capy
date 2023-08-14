@@ -42,10 +42,10 @@ pub(crate) fn max_cast(
             if signed_bit_width > unsigned_bit_width {
                 Some(ResolvedTy::IInt(signed_bit_width))
             } else {
-                println!(
-                    "{:?} does not fit into {:?}",
-                    unsigned_bit_width, signed_bit_width
-                );
+                // println!(
+                //     "{:?} does not fit into {:?}",
+                //     unsigned_bit_width, signed_bit_width
+                // );
                 None
             }
         }

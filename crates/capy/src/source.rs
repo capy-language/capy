@@ -12,7 +12,7 @@ use std::path::Path;
 
 pub(crate) struct SourceFile {
     pub(crate) file_name: String,
-    contents: String,
+    pub(crate) contents: String,
     pub(crate) module: Name,
     parse: Parse,
     root: Root,
@@ -22,7 +22,6 @@ pub(crate) struct SourceFile {
     resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
     interner: Rc<RefCell<Interner>>,
     bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
-    tys_map: Rc<RefCell<FxHashMap<hir::Name, hir_ty::InferenceResult>>>,
     world_index: Rc<RefCell<hir::WorldIndex>>,
     verbose: u8,
 }
@@ -37,7 +36,6 @@ impl SourceFile {
         resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
         interner: Rc<RefCell<Interner>>,
         bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
-        tys_map: Rc<RefCell<FxHashMap<hir::Name, hir_ty::InferenceResult>>>,
         world_index: Rc<RefCell<hir::WorldIndex>>,
         verbose: u8,
     ) -> SourceFile {
@@ -94,7 +92,6 @@ impl SourceFile {
             resolved_arena,
             interner,
             bodies_map,
-            tys_map,
             world_index,
             verbose,
         };
@@ -150,30 +147,6 @@ impl SourceFile {
                 .iter()
                 .cloned()
                 .map(diagnostics::Diagnostic::from_lowering),
-        );
-    }
-
-    pub(crate) fn build_tys(&mut self) {
-        let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
-            &self.bodies_map.borrow(),
-            &self.world_index.borrow(),
-            &self.twr_arena.borrow(),
-            &mut self.resolved_arena.borrow_mut(),
-        )
-        .finish(self.module);
-        if self.verbose >= 2 {
-            let debug = inference.debug(&self.resolved_arena.borrow(), &self.interner.borrow());
-            println!("{}", debug);
-            if !debug.is_empty() {
-                println!();
-            }
-        }
-        self.tys_map.borrow_mut().insert(self.module, inference);
-        self.diagnostics.extend(
-            ty_diagnostics
-                .iter()
-                .cloned()
-                .map(diagnostics::Diagnostic::from_ty),
         );
     }
 

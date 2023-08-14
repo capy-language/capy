@@ -1,4 +1,4 @@
-// make sure to include io.capy
+// include io.capy
 
 target :: 28;
 repeat :: 5;

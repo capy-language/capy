@@ -15,7 +15,6 @@ Root@0..8
                 Ident@4..7 "i32"
         Comma@7..8 ","
         Param@8..8
-          Ty@8..8
 error at 8: missing parameter name
 error at 8: missing Colon
 error at 8: missing parameter type

@@ -9,6 +9,15 @@ macro_rules! current_bodies {
     };
 }
 
+macro_rules! current_module {
+    ($self:ident) => {
+        $self
+            .modules
+            .get_mut(&$self.current_module.unwrap())
+            .unwrap()
+    };
+}
+
 impl InferenceCtx<'_> {
     pub(crate) fn finish_body_known(
         &mut self,
@@ -91,6 +100,16 @@ impl InferenceCtx<'_> {
         }
     }
 
+    fn get_ptr_sub_ty(resolved_arena: &Arena<ResolvedTy>, ptr: ResolvedTy) -> ResolvedTy {
+        match ptr {
+            ResolvedTy::Pointer { sub_ty } => resolved_arena[sub_ty],
+            ResolvedTy::Distinct { ty, .. } => {
+                Self::get_ptr_sub_ty(resolved_arena, resolved_arena[ty])
+            }
+            other => panic!("did not expect to find {:?}", other),
+        }
+    }
+
     /// recursively replaces weakly-typed expressions with strong types.
     ///
     /// ```text
@@ -101,18 +120,21 @@ impl InferenceCtx<'_> {
     /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
     fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: ResolvedTy) -> bool {
         // println!(
-        //     "should replace {} : {:?} with {:?}?",
-        //     expr.into_raw(),
-        //     self.expr_tys[expr],
+        //     "replace_weak_tys {:?} {:?}",
+        //     current_module!(self).expr_tys[expr],
         //     new_ty
         // );
-        if !Self::is_weak_type_replacable(self.resolved_arena, self.expr_tys[expr], new_ty) {
-            // println!("nah");
+        if !Self::is_weak_type_replacable(
+            self.resolved_arena,
+            current_module!(self).expr_tys[expr],
+            new_ty,
+        ) {
+            // println!("no");
             return false;
         }
-        // println!("yuh");
+        // println!("yeah");
 
-        self.expr_tys.insert(expr, new_ty);
+        current_module!(self).expr_tys.insert(expr, new_ty);
 
         match current_bodies!(self)[expr] {
             Expr::Block {
@@ -129,6 +151,14 @@ impl InferenceCtx<'_> {
                     self.replace_weak_tys(else_branch, new_ty);
                 }
             }
+            Expr::Deref { pointer } => {
+                let new_ty = self.resolved_arena.alloc(new_ty);
+                self.replace_weak_tys(pointer, ResolvedTy::Pointer { sub_ty: new_ty });
+            }
+            Expr::Ref { expr } => {
+                let sub_ty = Self::get_ptr_sub_ty(self.resolved_arena, new_ty);
+                self.replace_weak_tys(expr, sub_ty);
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.replace_weak_tys(lhs, new_ty);
                 self.replace_weak_tys(rhs, new_ty);
@@ -138,7 +168,7 @@ impl InferenceCtx<'_> {
             }
             Expr::Local(local_def) => {
                 if self.replace_weak_tys(current_bodies!(self)[local_def].value, new_ty) {
-                    self.local_tys.insert(local_def, new_ty);
+                    current_module!(self).local_tys.insert(local_def, new_ty);
                 }
             }
             _ => {}
@@ -162,16 +192,18 @@ impl InferenceCtx<'_> {
                 match &def_ty {
                     ResolvedTy::Unknown => {
                         // the definition does not have an annotation, so use the type of it's value
-                        self.local_tys.insert(*local_def, value_ty);
+                        current_module!(self).local_tys.insert(*local_def, value_ty);
                     }
                     def_ty => {
                         // the definition has an annotation, so the value should match
                         if self.expect_match(value_ty, *def_ty, def_body.value)
                             && self.replace_weak_tys(def_body.value, *def_ty)
                         {
-                            self.expr_tys.insert(def_body.value, *def_ty);
+                            current_module!(self)
+                                .expr_tys
+                                .insert(def_body.value, *def_ty);
                         }
-                        self.local_tys.insert(*local_def, *def_ty);
+                        current_module!(self).local_tys.insert(*local_def, *def_ty);
                     }
                 }
                 None
@@ -181,7 +213,7 @@ impl InferenceCtx<'_> {
                 let set_ty = self.infer_expr(set_body.value);
 
                 if let Some(local_def) = set_body.local_def {
-                    let def_ty = *self.local_tys.get(local_def).unwrap();
+                    let def_ty = *current_module!(self).local_tys.get(local_def).unwrap();
 
                     self.expect_match(set_ty, def_ty, set_body.value);
 
@@ -223,12 +255,12 @@ impl InferenceCtx<'_> {
             hir::Expr::Index { array, index } => {
                 let source_ty = self.infer_expr(*array);
 
-                if let Some((actual_size, array_sub_ty)) =
+                if source_ty == ResolvedTy::Unknown {
+                    ResolvedTy::Unknown
+                } else if let Some((actual_size, array_sub_ty)) =
                     source_ty.has_array_semantics(self.resolved_arena)
                 {
-                    if let hir::Expr::IntLiteral(index) =
-                        self.bodies_map[&self.current_module.unwrap()][*index]
-                    {
+                    if let hir::Expr::IntLiteral(index) = current_bodies!(self)[*index] {
                         if index >= actual_size {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::IndexOutOfBounds {
@@ -236,6 +268,7 @@ impl InferenceCtx<'_> {
                                     actual_size,
                                     array_ty: source_ty,
                                 },
+                                module: self.current_module.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
                             });
                         }
@@ -249,6 +282,7 @@ impl InferenceCtx<'_> {
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::IndexMismatch { found: source_ty },
+                        module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                     });
 
@@ -258,25 +292,30 @@ impl InferenceCtx<'_> {
             hir::Expr::Cast { expr: sub_expr, ty } => {
                 let expr_ty = self.infer_expr(*sub_expr);
 
-                match ty {
-                    TyWithRange::Unknown => expr_ty,
-                    _ => {
-                        let cast_ty = self.resolve_ty(*ty);
+                if expr_ty == ResolvedTy::Unknown {
+                    ResolvedTy::Unknown
+                } else {
+                    match ty {
+                        TyWithRange::Unknown => expr_ty,
+                        _ => {
+                            let cast_ty = self.resolve_ty(*ty);
 
-                        if !cast::primitive_castable(self.resolved_arena, expr_ty, cast_ty) {
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::Uncastable {
-                                    from: expr_ty,
-                                    to: cast_ty,
-                                },
-                                range: current_bodies!(self).range_for_expr(expr),
-                            });
+                            if !cast::primitive_castable(self.resolved_arena, expr_ty, cast_ty) {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::Uncastable {
+                                        from: expr_ty,
+                                        to: cast_ty,
+                                    },
+                                    module: self.current_module.unwrap(),
+                                    range: current_bodies!(self).range_for_expr(expr),
+                                });
+                            }
+
+                            // replacing the existing type with the casted type
+                            self.replace_weak_tys(*sub_expr, cast_ty);
+
+                            cast_ty
                         }
-
-                        // replacing the existing type with the casted type
-                        self.replace_weak_tys(*sub_expr, cast_ty);
-
-                        cast_ty
                     }
                 }
             }
@@ -299,6 +338,7 @@ impl InferenceCtx<'_> {
                     _ => {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::DerefMismatch { found: deref_ty },
+                            module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                         });
 
@@ -328,11 +368,11 @@ impl InferenceCtx<'_> {
                     }
                 };
 
-                if let Some(real_ty) = cast::max_cast(self.resolved_arena, lhs_ty, rhs_ty) {
+                if let Some(max_ty) = cast::max_cast(self.resolved_arena, lhs_ty, rhs_ty) {
                     if lhs_ty != ResolvedTy::Unknown
                         && rhs_ty != ResolvedTy::Unknown
                         && !can_perform.iter().any(|expected_ty| {
-                            cast::has_semantics_of(self.resolved_arena, real_ty, *expected_ty)
+                            cast::has_semantics_of(self.resolved_arena, max_ty, *expected_ty)
                         })
                     {
                         self.diagnostics.push(TyDiagnostic {
@@ -341,14 +381,19 @@ impl InferenceCtx<'_> {
                                 first: lhs_ty,
                                 second: rhs_ty,
                             },
+                            module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                         });
                     }
+
+                    self.replace_weak_tys(*lhs, max_ty);
+                    self.replace_weak_tys(*rhs, max_ty);
+
                     match op {
                         hir::BinaryOp::Add
                         | hir::BinaryOp::Sub
                         | hir::BinaryOp::Mul
-                        | hir::BinaryOp::Div => real_ty,
+                        | hir::BinaryOp::Div => max_ty,
                         _ => ResolvedTy::Bool,
                     }
                 } else {
@@ -358,6 +403,7 @@ impl InferenceCtx<'_> {
                             first: lhs_ty,
                             second: rhs_ty,
                         },
+                        module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                     });
                     default_ty
@@ -418,6 +464,7 @@ impl InferenceCtx<'_> {
                                 found: body_ty,
                                 expected: else_ty,
                             },
+                            module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                         });
 
@@ -427,6 +474,7 @@ impl InferenceCtx<'_> {
                     if !matches!(body_ty, ResolvedTy::Unknown | ResolvedTy::Void) {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::MissingElse { expected: body_ty },
+                            module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                         });
                     }
@@ -443,7 +491,7 @@ impl InferenceCtx<'_> {
 
                 ResolvedTy::Void
             }
-            hir::Expr::Local(local) => self.local_tys[*local],
+            hir::Expr::Local(local) => current_module!(self).local_tys[*local],
             hir::Expr::Param { idx } => self.param_tys.as_ref().unwrap()[*idx as usize],
             hir::Expr::Call { path, args } => {
                 let fqn = match *path {
@@ -494,6 +542,7 @@ impl InferenceCtx<'_> {
                 if global_signature.ty == ResolvedTy::NotYetResolved {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
+                        module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                     });
 
@@ -505,7 +554,7 @@ impl InferenceCtx<'_> {
             hir::Expr::PrimitiveTy { .. } => ResolvedTy::Type,
         };
 
-        self.expr_tys.insert(expr, ty);
+        current_module!(self).expr_tys.insert(expr, ty);
 
         ty
     }
@@ -516,14 +565,16 @@ impl InferenceCtx<'_> {
         expected: ResolvedTy,
         expr: Idx<hir::Expr>,
     ) -> bool {
-        // todo: find out what this does
+        // if the expression we're checking against is an
+        // int literal (which can be inferred into any int type),
+        // then we can just quickly set it's type here
         if let (
             hir::Expr::IntLiteral(_),
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width),
         ) = (&current_bodies!(self)[expr], expected)
         {
             if bit_width != u32::MAX {
-                self.expr_tys[expr] = expected;
+                current_module!(self).expr_tys[expr] = expected;
             }
             return true;
         }
@@ -543,6 +594,7 @@ impl InferenceCtx<'_> {
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch { expected, found },
+                module: self.current_module.unwrap(),
                 range: current_bodies!(self).range_for_expr(expr),
             });
 

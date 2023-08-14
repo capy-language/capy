@@ -10,6 +10,11 @@ use text_size::TextRange;
 #[derive(Clone)]
 pub struct InferenceResult {
     signatures: FxHashMap<hir::Fqn, Signature>,
+    modules: FxHashMap<hir::Name, ModuleInference>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleInference {
     expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
     local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
 }
@@ -44,8 +49,35 @@ pub enum ResolvedTy {
 }
 
 impl ResolvedTy {
-    pub fn to_type_id(&self) -> u64 {
-        0
+    /// what it sounds like
+    pub fn is_array(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Array { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            _ => false,
+        }
+    }
+
+    /// what it sounds like
+    pub fn is_pointer(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Pointer { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_pointer(resolved_arena),
+            _ => false,
+        }
+    }
+
+    /// returns true if the type is void, or contains void, or is an empty array
+    pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Void => true,
+            ResolvedTy::Pointer { sub_ty } => resolved_arena[*sub_ty].is_empty(resolved_arena),
+            ResolvedTy::Array { size, sub_ty } => {
+                *size == 0 || resolved_arena[*sub_ty].is_empty(resolved_arena)
+            }
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_empty(resolved_arena),
+            _ => false,
+        }
     }
 
     /// A true equality check
@@ -119,7 +151,7 @@ impl ResolvedTy {
             }
             (ResolvedTy::Distinct { ty: distinct, .. }, other)
             | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
-                println!("  {:?} as {:?}", other, resolved_arena[distinct]);
+                // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
                 resolved_arena[distinct].is_functionally_equivalent_to(other, resolved_arena)
             }
             _ => false,
@@ -149,7 +181,15 @@ impl std::ops::Index<hir::Fqn> for InferenceResult {
     }
 }
 
-impl std::ops::Index<Idx<hir::Expr>> for InferenceResult {
+impl std::ops::Index<hir::Name> for InferenceResult {
+    type Output = ModuleInference;
+
+    fn index(&self, module: hir::Name) -> &Self::Output {
+        &self.modules[&module]
+    }
+}
+
+impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
     type Output = ResolvedTy;
 
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
@@ -157,7 +197,7 @@ impl std::ops::Index<Idx<hir::Expr>> for InferenceResult {
     }
 }
 
-impl std::ops::Index<Idx<hir::LocalDef>> for InferenceResult {
+impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
     type Output = ResolvedTy;
 
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
@@ -191,6 +231,7 @@ impl Signature {
 pub struct FunctionSignature {
     pub return_ty: ResolvedTy,
     pub param_tys: Vec<ResolvedTy>,
+    pub is_extern: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +242,7 @@ pub struct GlobalSignature {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
+    pub module: hir::Name,
     pub range: TextRange,
 }
 
@@ -253,10 +295,9 @@ pub struct InferenceCtx<'a> {
     world_index: &'a hir::WorldIndex,
     twr_arena: &'a Arena<TyWithRange>,
     resolved_arena: &'a mut Arena<ResolvedTy>,
-    expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
     param_tys: Option<Vec<ResolvedTy>>,
-    local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
     signatures: FxHashMap<hir::Fqn, Signature>,
+    modules: FxHashMap<hir::Name, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
 }
 
@@ -273,44 +314,49 @@ impl<'a> InferenceCtx<'a> {
             world_index,
             twr_arena,
             resolved_arena,
-            expr_tys: ArenaMap::default(),
             param_tys: None,
-            local_tys: ArenaMap::default(),
             diagnostics: Vec::new(),
             signatures: FxHashMap::default(),
+            modules: FxHashMap::default(),
         }
     }
 
-    pub fn finish(mut self, module: hir::Name) -> (InferenceResult, Vec<TyDiagnostic>) {
-        let index = self
-            .world_index
-            .get_module(module)
-            .expect("module must be part of the world index");
-
-        for (name, global) in index.globals() {
-            let fqn = hir::Fqn { module, name };
-
-            #[allow(clippy::map_entry)]
-            if !self.signatures.contains_key(&fqn) {
-                let global_sig = self.generate_global_signature(global, fqn);
-                self.signatures.insert(fqn, global_sig);
-            }
+    pub fn finish(mut self) -> (InferenceResult, Vec<TyDiagnostic>) {
+        for (module, _) in self.world_index.get_all_modules() {
+            self.modules.insert(
+                module,
+                ModuleInference {
+                    expr_tys: ArenaMap::default(),
+                    local_tys: ArenaMap::default(),
+                },
+            );
         }
 
-        for (name, function) in index.functions() {
-            let fqn = hir::Fqn { module, name };
+        for (module, index) in self.world_index.get_all_modules() {
+            for (name, global) in index.globals() {
+                let fqn = hir::Fqn { module, name };
 
-            #[allow(clippy::map_entry)]
-            if !self.signatures.contains_key(&fqn) {
-                let fn_sig = self.generate_function_signature(function, fqn);
-                self.signatures.insert(fqn, fn_sig);
+                #[allow(clippy::map_entry)]
+                if !self.signatures.contains_key(&fqn) {
+                    let global_sig = self.generate_global_signature(global, fqn);
+                    self.signatures.insert(fqn, global_sig);
+                }
+            }
+
+            for (name, function) in index.functions() {
+                let fqn = hir::Fqn { module, name };
+
+                #[allow(clippy::map_entry)]
+                if !self.signatures.contains_key(&fqn) {
+                    let fn_sig = self.generate_function_signature(function, fqn);
+                    self.signatures.insert(fqn, fn_sig);
+                }
             }
         }
 
         let mut result = InferenceResult {
             signatures: self.signatures,
-            expr_tys: self.expr_tys,
-            local_tys: self.local_tys,
+            modules: self.modules,
         };
         result.shrink_to_fit();
 
@@ -406,16 +452,20 @@ impl<'a> InferenceCtx<'a> {
         let sig = Signature::Function(FunctionSignature {
             param_tys,
             return_ty,
+            is_extern: function.is_extern,
         });
 
         self.signatures.insert(fqn, sig.clone());
 
-        let fn_sig = sig.as_function().unwrap();
-        self.finish_body_known(
-            self.bodies_map[&fqn.module].function_body(fqn.name),
-            Some(fn_sig.param_tys.clone()),
-            fn_sig.return_ty,
-        );
+        if !function.is_extern {
+            let fn_sig = sig.as_function().unwrap();
+
+            self.finish_body_known(
+                self.bodies_map[&fqn.module].function_body(fqn.name),
+                Some(fn_sig.param_tys.clone()),
+                fn_sig.return_ty,
+            );
+        }
 
         self.current_module = old_module;
 
@@ -451,6 +501,7 @@ impl<'a> InferenceCtx<'a> {
                                 expected: ResolvedTy::Type,
                                 found: global_ty,
                             },
+                            module: self.current_module.unwrap(),
                             range,
                         });
                         return ResolvedTy::Unknown;
@@ -483,6 +534,7 @@ impl<'a> InferenceCtx<'a> {
             Err(_) => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Undefined { name: fqn.name.0 },
+                    module: self.current_module.unwrap(),
                     range,
                 });
                 ResolvedTy::Unknown
@@ -501,7 +553,7 @@ impl<'a> InferenceCtx<'a> {
                 }
             }
             hir::Expr::Local(local_def) => {
-                let local_ty = self.local_tys[*local_def];
+                let local_ty = self.modules[&self.current_module.unwrap()].local_tys[*local_def];
 
                 if local_ty == ResolvedTy::Unknown {
                     return ResolvedTy::Unknown;
@@ -511,8 +563,10 @@ impl<'a> InferenceCtx<'a> {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::Mismatch {
                             expected: ResolvedTy::Type,
-                            found: self.local_tys[*local_def],
+                            found: self.modules[&self.current_module.unwrap()].local_tys
+                                [*local_def],
                         },
+                        module: self.current_module.unwrap(),
                         range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
                     });
 
@@ -524,6 +578,7 @@ impl<'a> InferenceCtx<'a> {
                 if local_def.mutable {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::MutableTy,
+                        module: self.current_module.unwrap(),
                         range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
                     });
 
@@ -536,6 +591,7 @@ impl<'a> InferenceCtx<'a> {
             hir::Expr::Param { .. } => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::ParamNotATy,
+                    module: self.current_module.unwrap(),
                     range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
                 });
 
@@ -546,8 +602,9 @@ impl<'a> InferenceCtx<'a> {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
                         expected: ResolvedTy::Type,
-                        found: self.expr_tys[expr],
+                        found: self.modules[&self.current_module.unwrap()].expr_tys[expr],
                     },
+                    module: self.current_module.unwrap(),
                     range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
                 });
 
@@ -601,20 +658,41 @@ impl InferenceResult {
 }
 
 impl InferenceResult {
-    pub fn debug(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+    pub fn debug(
+        &self,
+        resolved_arena: &Arena<ResolvedTy>,
+        interner: &Interner,
+        fancy: bool,
+    ) -> String {
         let mut s = String::new();
 
-        for (name, signature) in &self.signatures {
+        let mut signatures = self.signatures.iter().collect::<Vec<_>>();
+
+        signatures.sort_by_key(|(fqn, _)| {
+            format!(
+                "{}.{}",
+                interner.lookup(fqn.module.0),
+                interner.lookup(fqn.name.0)
+            )
+        });
+
+        for (fqn, signature) in signatures {
             match signature {
                 Signature::Function(FunctionSignature {
                     return_ty,
                     param_tys,
+                    is_extern,
                 }) => {
                     s.push_str(&format!(
-                        "{}.{} : (",
-                        interner.lookup(name.module.0),
-                        interner.lookup(name.name.0)
+                        "{}.{} : ",
+                        interner.lookup(fqn.module.0),
+                        interner.lookup(fqn.name.0)
                     ));
+
+                    if *is_extern {
+                        s.push_str("extern ");
+                    }
+                    s.push('(');
                     for (idx, param_type) in param_tys.iter().enumerate() {
                         if idx != 0 {
                             s.push_str(", ");
@@ -631,28 +709,43 @@ impl InferenceResult {
                 Signature::Global(GlobalSignature { ty }) => {
                     s.push_str(&format!(
                         "{}.{} : ",
-                        interner.lookup(name.module.0),
-                        interner.lookup(name.name.0)
+                        interner.lookup(fqn.module.0),
+                        interner.lookup(fqn.name.0)
                     ));
                     s.push_str(&format!("{}\n", ty.display(resolved_arena, interner)));
                 }
             }
         }
 
-        for (expr_idx, ty) in self.expr_tys.iter() {
-            s.push_str(&format!(
-                "{} : {}\n",
-                expr_idx.into_raw(),
-                ty.display(resolved_arena, interner)
-            ));
-        }
+        let mut modules = self.modules.iter().collect::<Vec<_>>();
+        modules.sort_by_key(|(name, _)| interner.lookup(name.0));
 
-        for (local_def_idx, ty) in self.local_tys.iter() {
-            s.push_str(&format!(
-                "l{} : {}\n",
-                local_def_idx.into_raw(),
-                ty.display(resolved_arena, interner)
-            ));
+        for (name, module) in modules {
+            if fancy || self.modules.len() > 1 {
+                s.push_str(&format!("{}:\n", interner.lookup(name.0)));
+            }
+            for (expr_idx, ty) in module.expr_tys.iter() {
+                if fancy {
+                    s.push_str(&format!("  \x1B[90m#{}\x1B[0m", expr_idx.into_raw(),));
+                } else {
+                    if self.modules.len() > 1 {
+                        s.push_str("  ");
+                    }
+                    s.push_str(&format!("{}", expr_idx.into_raw(),));
+                }
+                s.push_str(&format!(" : {}\n", ty.display(resolved_arena, interner)));
+            }
+
+            for (local_def_idx, ty) in module.local_tys.iter() {
+                if fancy || self.modules.len() > 1 {
+                    s.push_str("  ");
+                }
+                s.push_str(&format!(
+                    "l{} : {}\n",
+                    local_def_idx.into_raw(),
+                    ty.display(resolved_arena, interner)
+                ));
+            }
         }
 
         s
@@ -784,15 +877,15 @@ mod tests {
         let mut resolved_arena = Arena::new();
 
         let (inference_result, actual_diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena)
-                .finish(module);
+            InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena).finish();
 
-        expect.assert_eq(&inference_result.debug(&resolved_arena, &interner));
+        expect.assert_eq(&inference_result.debug(&resolved_arena, &interner, false));
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
             .map(|(kind, range)| TyDiagnostic {
                 kind,
+                module,
                 range: TextRange::new(range.start.into(), range.end.into()),
             })
             .collect();
@@ -837,8 +930,8 @@ mod tests {
                 two :: () -> bar.baz {};
             "#,
             expect![[r#"
-                main.two : () -> <unknown>
                 main.one : () -> <unknown>
+                main.two : () -> <unknown>
                 0 : void
                 1 : void
             "#]],
@@ -919,7 +1012,7 @@ mod tests {
                 0 : u16
                 1 : u16
                 2 : u16
-                3 : {uint}
+                3 : u16
                 4 : u16
                 5 : u16
                 l0 : u16
@@ -1895,8 +1988,8 @@ mod tests {
                 id :: (n: i32) -> i32 { n };
             "#,
             expect![[r#"
-                main.main : () -> i32
                 main.id : (i32) -> i32
+                main.main : () -> i32
                 0 : i32
                 1 : i32
                 2 : i32
@@ -1959,9 +2052,13 @@ mod tests {
             expect![[r#"
                 greetings.informal : (i32) -> string
                 main.a : () -> string
-                0 : i32
-                1 : string
-                2 : string
+                greetings:
+                  0 : string
+                  1 : string
+                main:
+                  0 : i32
+                  1 : string
+                  2 : string
             "#]],
             |_| [],
         );
@@ -2018,8 +2115,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> i32
                 main.imaginary : type
+                main.main : () -> i32
                 0 : type
                 1 : main.imaginary
                 2 : main.imaginary
@@ -2058,8 +2155,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> main.imaginary
                 main.imaginary : type
+                main.main : () -> main.imaginary
                 0 : type
                 1 : main.imaginary
                 2 : main.imaginary
@@ -2085,8 +2182,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> main.imaginary
                 main.imaginary : type
+                main.main : () -> main.imaginary
                 0 : type
                 1 : main.imaginary
                 2 : main.imaginary
@@ -2113,8 +2210,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> main.imaginary
                 main.imaginary : type
+                main.main : () -> main.imaginary
                 0 : type
                 1 : main.imaginary
                 2 : i32
@@ -2160,9 +2257,9 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> main.imaginary
                 main.extra_imaginary : type
                 main.imaginary : type
+                main.main : () -> main.imaginary
                 0 : type
                 1 : type
                 2 : main.imaginary
@@ -2217,7 +2314,7 @@ mod tests {
                 main.main : () -> i32
                 main.something_far_away : type
                 0 : type
-                1 : {uint}
+                1 : i32
                 2 : main.something_far_away
                 3 : main.something_far_away
                 4 : ^i32
@@ -2246,9 +2343,9 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> main.imaginary
-                main.imaginary_far_away : type
                 main.imaginary : type
+                main.imaginary_far_away : type
+                main.main : () -> main.imaginary
                 0 : type
                 1 : type
                 2 : main.imaginary
@@ -2281,8 +2378,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
                 main.Vector3 : type
+                main.main : () -> void
                 0 : type
                 1 : i32
                 2 : i32
@@ -2302,6 +2399,28 @@ mod tests {
                 l1 : i32
                 l2 : i32
                 l3 : i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn ref_infer() {
+        check(
+            r#"
+                main :: () -> ^i32 {
+                    x := 42;
+
+                    ^x
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> ^i32
+                0 : i32
+                1 : i32
+                2 : ^i32
+                3 : ^i32
+                l0 : i32
             "#]],
             |_| [],
         );

@@ -193,6 +193,10 @@ impl Lambda {
     pub fn body(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
+
+    pub fn r#extern(self, tree: &SyntaxTree) -> Option<Extern> {
+        token(self, tree)
+    }
 }
 
 def_multi_node! {
@@ -679,6 +683,7 @@ impl AstToken for UnaryOp {
     }
 }
 
+def_ast_token!(Extern);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
 def_ast_token!(Hyphen);
@@ -1495,7 +1500,7 @@ mod tests {
 
     #[test]
     fn get_lambda_body() {
-        let (tree, root) = parse("() {};");
+        let (tree, root) = parse("() -> {};");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1513,5 +1518,23 @@ mod tests {
         };
 
         assert!(block.stmts(&tree).next().is_none());
+    }
+
+    #[test]
+    fn get_lambda_extern() {
+        let (tree, root) = parse("() -> extern;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let lambda = match expr {
+            Some(Expr::Lambda(lambda)) => lambda,
+            _ => unreachable!(),
+        };
+
+        assert!(lambda.body(&tree).is_none());
+        assert!(lambda.r#extern(&tree).is_some());
     }
 }

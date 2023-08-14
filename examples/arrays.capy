@@ -19,4 +19,4 @@ build_array :: () -> [6] i32 {
     my_array
 };
 
-printf :: (s: string, n1: i32) -> {};
+printf :: (s: string, n1: i32) -> extern;

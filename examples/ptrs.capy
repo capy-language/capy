@@ -14,6 +14,4 @@ take :: (ptr: ^i32) -> {
     printf("%x -> %i\n", ptr, ptr^);
 };
 
-printf :: (some_text: string, x: ^i32, y: i32) -> {
-    // libc defined
-};
+printf :: (some_text: string, x: ^i32, y: i32) -> extern;

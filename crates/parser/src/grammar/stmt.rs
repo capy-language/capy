@@ -1,6 +1,6 @@
 use syntax::TokenKind;
 
-use crate::{grammar::ty::parse_ty, token_set::TokenSet};
+use crate::token_set::TokenSet;
 
 use super::*;
 
@@ -61,7 +61,7 @@ pub(crate) fn parse_def(p: &mut Parser, allow_set: bool) -> CompletedMarker {
 
         let def_set = TokenSet::new([TokenKind::Equals, TokenKind::Colon]);
         if !p.at_set(def_set) {
-            parse_ty(p, "type annotation", def_set);
+            expr::parse_ty(p, "type annotation", def_set);
         }
 
         if p.at(TokenKind::Colon) {
@@ -74,7 +74,7 @@ pub(crate) fn parse_def(p: &mut Parser, allow_set: bool) -> CompletedMarker {
     } else {
         p.expect(TokenKind::Equals);
 
-        Def::Assignment
+        Def::Assignment // todo: parse assignments to expressions. e.g. my_var^ = 4; my_array[8] = 15;
     };
 
     expr::parse_expr(p, "value");

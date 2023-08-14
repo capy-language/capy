@@ -6,21 +6,22 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-interner = {path = "../interner"}
+interner = { path = "../interner" }
 la-arena = "0.2.0"
-hir = {path = "../hir"}
-hir_ty = {path = "../hir_ty"}
+hir = { path = "../hir" }
+hir_ty = { path = "../hir_ty" }
 rustc-hash = "1.1"
-
-[dependencies.inkwell]
-git = "https://github.com/TheDan64/inkwell"
-branch = "master"
-features = ["llvm14-0"]
+cranelift = "0.98.1"
+cranelift-module = "0.98.1"
+cranelift-jit = "0.98.1"
+cranelift-native = "0.98.1"
+cranelift-object = "0.98.1"
 
 [dev-dependencies]
-ast = {path = "../ast"}
+ast = { path = "../ast" }
 expect-test = "1.1"
-interner = {path = "../interner"}
-lexer = {path = "../lexer"}
-parser = {path = "../parser"}
-test-utils = {path = "../test-utils"}
+interner = { path = "../interner" }
+lexer = { path = "../lexer" }
+parser = { path = "../parser" }
+test-utils = { path = "../test-utils" }
+regex = "1.9.3"

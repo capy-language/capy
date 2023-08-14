@@ -20,6 +20,13 @@ impl WorldIndex {
         &self.0[&fqn.module].range_info[&fqn.name]
     }
 
+    pub fn get_all_modules(&self) -> Vec<(Name, &Index)> {
+        self.0
+            .iter()
+            .map(|(module, index)| (*module, index))
+            .collect()
+    }
+
     pub fn get_module(&self, module: Name) -> Option<&Index> {
         self.0.get(&module)
     }

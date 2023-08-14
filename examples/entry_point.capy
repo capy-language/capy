@@ -6,19 +6,15 @@ _start :: () -> {
     code := main();
     
     printf("main() returned with: %i\n", code);
-    // exit(505);
+    exit(505);
 };
 
-main :: () -> i32 {
+main :: () -> i64 {
     printf("Hello from Main!\n", 0);
 
     0
 };
 
-printf :: (str: string, i: i32) -> {
-    // libc defined
-};
+printf :: (str: string, i: i64) -> extern;
 
-exit :: (code: i32) -> {
-    // libc defined
-};
+exit :: (code: i32) -> extern;

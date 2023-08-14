@@ -5,6 +5,7 @@ use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
 use clap::{Parser, Subcommand};
 use hir::{UIDGenerator, WorldIndex};
 use la_arena::Arena;
+use line_index::LineIndex;
 use rustc_hash::FxHashMap;
 use std::fs;
 
@@ -46,6 +47,9 @@ enum BuildAction {
         #[arg(long, default_value = "main")]
         entry_point: String,
 
+        #[arg(long)]
+        jit: bool,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -64,10 +68,10 @@ macro_rules! get_build_config {
         match $action {
             BuildAction::Build {
                 $($property,)+
-            } => ($($property,)+ false),
+            } => ($($property,)+ CompilationConfig::Compile),
             BuildAction::Run {
-                $($property,)+
-            } => ($($property,)+ true)
+                $($property,)+ jit
+            } => ($($property,)+ if jit { CompilationConfig::Jit } else { CompilationConfig::Run })
         }
     };
 }
@@ -75,7 +79,7 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (files, entry_point, verbose, should_run) =
+    let (files, entry_point, verbose, config) =
         get_build_config!(config.action => files, entry_point, verbose);
 
     let files = files
@@ -89,13 +93,20 @@ fn main() -> io::Result<()> {
         })
         .collect();
 
-    compile_files(files, entry_point, should_run, verbose)
+    compile_files(files, entry_point, config, verbose)
+}
+
+#[derive(Copy, Clone, PartialEq)]
+enum CompilationConfig {
+    Compile,
+    Run,
+    Jit,
 }
 
 fn compile_files(
     files: Vec<(String, String)>,
     entry_point: String,
-    should_run: bool,
+    config: CompilationConfig,
     verbose: u8,
 ) -> io::Result<()> {
     println!("{ANSI_GREEN}Compiling{ANSI_RESET}  ...");
@@ -104,14 +115,18 @@ fn compile_files(
     let interner = Rc::new(RefCell::new(interner::Interner::default()));
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
-    let tys_map = Rc::new(RefCell::new(FxHashMap::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
     let twr_arena = Rc::new(RefCell::new(Arena::new()));
     let resolved_arena = Rc::new(RefCell::new(Arena::new()));
 
-    let mut source_files = Vec::new();
+    let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
+
+    let mut line_indexes = FxHashMap::default();
+    let mut source_files = FxHashMap::default();
+
+    let mut main_modules = Vec::new();
     for (file_name, contents) in files {
-        source_files.push(SourceFile::parse(
+        let source_file = SourceFile::parse(
             file_name.clone(),
             contents.clone(),
             uid_gen.clone(),
@@ -119,22 +134,21 @@ fn compile_files(
             resolved_arena.clone(),
             interner.clone(),
             bodies_map.clone(),
-            tys_map.clone(),
             world_index.clone(),
             verbose,
-        ));
+        );
+
+        if source_file.has_fn_of_name(main_fn) {
+            main_modules.push(source_file.module);
+        }
+
+        line_indexes.insert(source_file.module, LineIndex::new(&contents));
+        source_files.insert(source_file.module, source_file);
     }
     if verbose >= 1 {
         println!();
     }
 
-    let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
-
-    let main_modules = source_files
-        .iter()
-        .filter(|source| source.has_fn_of_name(main_fn))
-        .map(|source| (source.file_name.clone(), source.module))
-        .collect::<Vec<_>>();
     if main_modules.is_empty() {
         println!(
             "{ANSI_RED}error{ANSI_WHITE}: there is no `{}` function{ANSI_RESET}",
@@ -149,36 +163,103 @@ fn compile_files(
         std::process::exit(1);
     }
 
+    // parse the bodies of each file into hir::Expr's and hir::LocalDef's
+
     source_files
         .iter_mut()
-        .for_each(|source| source.build_bodies());
+        .for_each(|(_, source)| source.build_bodies());
     if verbose >= 1 {
         println!();
     }
 
-    source_files
-        .iter_mut()
-        .for_each(|source| source.build_tys());
+    // infer types
 
+    let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
+        &bodies_map.borrow(),
+        &world_index.borrow(),
+        &twr_arena.borrow(),
+        &mut resolved_arena.borrow_mut(),
+    )
+    .finish();
+    if verbose >= 2 {
+        let debug = inference.debug(&resolved_arena.borrow(), &interner.borrow(), true);
+        println!("{}", debug);
+        if !debug.is_empty() {
+            println!();
+        }
+    }
+
+    // print out errors and warnings
+
+    let has_errors =
+        !ty_diagnostics.is_empty() || source_files.iter().any(|(_, source)| source.has_errors());
     source_files
         .iter()
-        .for_each(|source| source.print_diagnostics());
-    if source_files.iter().any(|source| source.has_errors()) {
+        .for_each(|(_, source)| source.print_diagnostics());
+    for d in ty_diagnostics {
+        let line_index = &line_indexes[&d.module];
+        let source_file = &source_files[&d.module];
+
+        println!(
+            "{}",
+            diagnostics::Diagnostic::from_ty(d)
+                .display(
+                    &source_file.file_name,
+                    &source_file.contents,
+                    &resolved_arena.borrow(),
+                    &interner.borrow(),
+                    line_index,
+                )
+                .join("\n")
+        )
+    }
+
+    if has_errors {
         println!("\nnot compiling due to previous errors");
         exit(1);
     }
 
-    let (main_file_name, main_module) = main_modules.first().unwrap();
-
     let parse_finish = compilation_start.elapsed();
+
+    // frontend stuff is finally over
+    // now we can actually compile it
 
     println!(
         "{ANSI_GREEN}Finalizing{ANSI_RESET} (parsed in {:.2}s)",
         parse_finish.as_secs_f32()
     );
-    let interner = interner.borrow_mut();
-    match codegen::compile(
-        main_file_name,
+    let interner = interner.borrow();
+
+    let main_module = main_modules.first().unwrap();
+    if config == CompilationConfig::Jit {
+        let jit_fn = codegen::compile_jit(
+            verbose >= 1,
+            hir::Fqn {
+                module: *main_module,
+                name: main_fn,
+            },
+            &resolved_arena.borrow(),
+            &interner,
+            &bodies_map.borrow(),
+            &inference,
+        );
+
+        println!(
+            "{ANSI_GREEN}Finished{ANSI_RESET}   {} (JIT) in {:.2}s",
+            interner.lookup(main_module.0),
+            compilation_start.elapsed().as_secs_f32(),
+        );
+        println!(
+            "{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n",
+            interner.lookup(main_module.0)
+        );
+        let status = jit_fn(0, 0);
+        println!("\nProcess exited with {}", status);
+
+        return Ok(());
+    }
+
+    let bytes = match codegen::compile_obj(
         verbose >= 1,
         hir::Fqn {
             module: *main_module,
@@ -187,40 +268,45 @@ fn compile_files(
         &resolved_arena.borrow(),
         &interner,
         &bodies_map.borrow(),
-        &tys_map.borrow(),
-        &world_index.borrow(),
+        &inference,
     ) {
-        Ok(output) => {
-            let output_folder = env::current_dir().unwrap().join("out");
-            let file = output_folder.join(format!("{}.o", interner.lookup(main_module.0)));
-            fs::write(&file, output.as_slice()).unwrap_or_else(|why| {
-                println!("{}: {why}", file.display());
-                exit(1);
-            });
-
-            let exec = codegen::link_to_exec(&file);
-            let full_finish = compilation_start.elapsed();
-            println!(
-                "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
-                interner.lookup(main_module.0),
-                exec.display(),
-                full_finish.as_secs_f32(),
-            );
-
-            if !should_run {
-                return Ok(());
-            }
-            println!("{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n", exec.display());
-            match std::process::Command::new(exec).status() {
-                Ok(status) => {
-                    println!("\nProcess exited with {}", status);
-                }
-                Err(why) => {
-                    println!("\nProcess exited early: {}", why);
-                }
-            }
+        Ok(bytes) => bytes,
+        Err(why) => {
+            println!("Cranelift Error: {}", why);
+            return Ok(());
         }
-        Err(why) => println!("Error Compiling with LLVM: {why}"),
+    };
+
+    let output_folder = env::current_dir().unwrap().join("out");
+
+    let _ = fs::create_dir(&output_folder);
+
+    let file = output_folder.join(format!("{}.o", interner.lookup(main_module.0)));
+    fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
+        println!("{}: {why}", file.display());
+        exit(1);
+    });
+
+    let exec = codegen::link_to_exec(&file);
+    println!(
+        "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
+        interner.lookup(main_module.0),
+        exec.display(),
+        compilation_start.elapsed().as_secs_f32(),
+    );
+
+    if config == CompilationConfig::Compile {
+        return Ok(());
+    }
+
+    println!("{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n", exec.display());
+    match std::process::Command::new(exec).status() {
+        Ok(status) => {
+            println!("\nProcess exited with {}", status);
+        }
+        Err(why) => {
+            println!("\nProcess exited early: {}", why);
+        }
     }
 
     Ok(())

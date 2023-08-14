@@ -5,6 +5,4 @@ print :: (s: string) -> {
     printf(s, 0, 0);
 };
 
-printf :: (s: string, n1: i32, n2: i32) -> {
-    // libc defined
-};
+printf :: (s: string, n1: i32, n2: i32) -> extern;

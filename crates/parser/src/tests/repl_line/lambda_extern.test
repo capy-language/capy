@@ -1,0 +1,21 @@
+(x: i32) -> extern;
+===
+Root@0..19
+  ExprStmt@0..18
+    Lambda@0..18
+      ParamList@0..8
+        LParen@0..1 "("
+        Param@1..7
+          Ident@1..2 "x"
+          Colon@2..3 ":"
+          Whitespace@3..4 " "
+          Ty@4..7
+            VarRef@4..7
+              Path@4..7
+                Ident@4..7 "i32"
+        RParen@7..8 ")"
+      Whitespace@8..9 " "
+      Arrow@9..11 "->"
+      Whitespace@11..12 " "
+      Extern@12..18 "extern"
+  Semicolon@18..19 ";"

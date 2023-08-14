@@ -3,8 +3,9 @@
 Root@0..26
   ExprStmt@0..26
     Array@0..26
-      LBrack@0..1 "["
-      RBrack@1..2 "]"
+      ArraySize@0..2
+        LBrack@0..1 "["
+        RBrack@1..2 "]"
       Ty@2..8
         VarRef@2..8
           Path@2..8
