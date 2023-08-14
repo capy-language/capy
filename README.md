@@ -47,4 +47,5 @@ Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), this entir
 
 Big shout out to cranelift. Trying to get LLVM on windows was just way too much effort for me and you guys made all my dreams come true.
 Although you need to up your documentation game, because I mean c'mon man; I pretty much only had the [jit demo](https://github.com/bytecodealliance/cranelift-jit-demo/) to work with.
-If you want to use this repo to see how I've implemented higher-level features such as strings, arrays, etc., then it's all in `crates/codegen`.
+
+If anyone wants to use this repo to see how I've implemented higher-level features such as strings, arrays, etc., then it's all in `crates/codegen`.
