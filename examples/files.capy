@@ -1,0 +1,43 @@
+
+write_to_file :: (filename: string) -> {
+    my_file := fopen("hello.txt", "w");
+
+    fputs("Hello, World!", my_file);
+
+    fclose(my_file);
+};
+
+read_from_file :: (filename: string) -> {
+    my_file := fopen("hello.txt", "r");
+
+    buf := [20]u8 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    str := fgets(buf, 20, my_file);
+    printf("%s\n", str);
+
+    fclose(my_file);
+};
+
+main :: () -> {
+    puts("writing to hello.txt");
+    write_to_file("hello.txt");
+
+    puts("reading from hello.txt");
+    read_from_file("hello.txt");
+};
+
+puts :: (s: string) -> extern;
+printf :: (s: string, buf: string) -> extern;
+
+// fopen actually returns a pointer to a FILE struct,
+// but since Capy doesn't have structs, we can just treat the
+// return value as a usize, and everything still works
+fopen :: (filename: string, mode: string) -> usize extern;
+fclose :: (fp: usize) -> i32 extern;
+
+fputc :: (c: i8, fp: usize) -> i32 extern;
+fputs :: (s: string, fp: usize) -> i32 extern;
+
+fgetc :: (fp: usize) -> u8 extern;
+// buf is technically a char*, but since there is no way to
+// allocate stack memory other than with arrays, that's what we use
+fgets :: (buf: [20]u8, n: i32, fp: usize) -> string extern;

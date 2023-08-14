@@ -597,9 +597,10 @@ impl FunctionCompiler<'_> {
                 if matches!(signature.return_ty, ResolvedTy::Void) {
                     None
                 } else if signature.return_ty.is_array(self.resolved_arena) {
-                    // since the function is expected to return an array,
-                    // we have to allocate some memory for it in this function,
-                    // and give the callee the address so they can store it
+                    // since the callee is expected to return an array,
+                    // we have to allocate some memory for it in the caller
+
+                    // todo: doing this memcpy in the caller is technically undefined behavior
 
                     let array_size = signature
                         .return_ty

@@ -2,5 +2,7 @@
 target
 out
 c-tests
+examples/test.capy
 
+hello.txt
 Cargo.lock
