@@ -6,7 +6,7 @@ _start :: () -> {
     code := main();
     
     printf("main() returned with: %i\n", code);
-    exit(505);
+    exit(255);
 };
 
 main :: () -> i64 {
@@ -17,4 +17,4 @@ main :: () -> i64 {
 
 printf :: (str: string, i: i64) -> extern;
 
-exit :: (code: i32) -> extern;
+exit :: (code: u8) -> extern;

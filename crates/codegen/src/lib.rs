@@ -229,6 +229,8 @@ mod tests {
             .output()
             .expect(&format!("{} did not run successfully", exec.display()));
 
+        assert_eq!(output.status.code().unwrap(), expected_status);
+
         let re = Regex::new(r#"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><]"#).unwrap();
         let stdout = std::str::from_utf8(&output.stdout)
             .unwrap()
@@ -268,8 +270,6 @@ mod tests {
         let stdout = format!("{}\n", stdout);
 
         stdout_expect.assert_eq(&stdout);
-
-        assert_eq!(output.status.code().unwrap(), expected_status);
     }
 
     fn trim_indent(mut text: &str) -> String {
@@ -372,7 +372,7 @@ mod tests {
             main() returned with: 0
 
             "#]],
-            505,
+            255,
         )
     }
 
@@ -476,30 +476,32 @@ mod tests {
         )
     }
 
-    #[test]
-    fn ptrs() {
-        check(
-            "../../examples/ptrs.capy",
-            &[],
-            "main",
-            expect![[r#"
-            61fdb0 -> 42
-            
-            "#]],
-            0,
-        )
-    }
+    // the pointer tests won't be the same on all platforms
 
-    #[test]
-    fn ptrs_to_ptrs() {
-        check(
-            "../../examples/ptrs_to_ptrs.capy",
-            &[],
-            "main",
-            expect![[r#"
-            61fdd0 -> 61fdd8 -> 42
-            "#]],
-            0,
-        )
-    }
+    // #[test]
+    // fn ptrs() {
+    //     check(
+    //         "../../examples/ptrs.capy",
+    //         &[],
+    //         "main",
+    //         expect![[r#"
+    //         61fdb0 -> 42
+
+    //         "#]],
+    //         0,
+    //     )
+    // }
+
+    // #[test]
+    // fn ptrs_to_ptrs() {
+    //     check(
+    //         "../../examples/ptrs_to_ptrs.capy",
+    //         &[],
+    //         "main",
+    //         expect![[r#"
+    //         61fdd0 -> 61fdd8 -> 42
+    //         "#]],
+    //         0,
+    //     )
+    // }
 }
