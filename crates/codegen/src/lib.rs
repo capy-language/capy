@@ -476,32 +476,21 @@ mod tests {
         )
     }
 
-    // the pointer tests won't be the same on all platforms
+    #[test]
+    fn files() {
+        check(
+            "../../examples/files.capy",
+            &[],
+            "main",
+            expect![[r#"
+            writing to hello.txt
+            reading from hello.txt
+            Hello, World!
 
-    // #[test]
-    // fn ptrs() {
-    //     check(
-    //         "../../examples/ptrs.capy",
-    //         &[],
-    //         "main",
-    //         expect![[r#"
-    //         61fdb0 -> 42
+            "#]],
+            0,
+        )
+    }
 
-    //         "#]],
-    //         0,
-    //     )
-    // }
-
-    // #[test]
-    // fn ptrs_to_ptrs() {
-    //     check(
-    //         "../../examples/ptrs_to_ptrs.capy",
-    //         &[],
-    //         "main",
-    //         expect![[r#"
-    //         61fdd0 -> 61fdd8 -> 42
-    //         "#]],
-    //         0,
-    //     )
-    // }
+    // "ptrs.capy" and "ptrs_to_ptrs.capy" tests won't be the same on all platforms
 }
