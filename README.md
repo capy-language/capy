@@ -45,7 +45,7 @@ Currently, `gcc` must be installed for the compiler to work.
 
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), this entire codebase is largely ripped from [gingerbread](https://github.com/gingerbread-lang/gingerbread)/[eldiro](https://github.com/lunacookies/eldiro), although I added a lot more.
 
-Big shout out to cranelift. Trying to get LLVM on windows was just way too much effort for me and you guys made all my dreams come true.
+Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and you guys made all my dreams come true.
 Although you need to up your documentation game, because I mean c'mon man; I pretty much only had the [jit demo](https://github.com/bytecodealliance/cranelift-jit-demo/) to work with.
 
-If anyone wants to use this repo to see how I've implemented higher-level features such as strings, arrays, etc., then it's all in `crates/codegen`.
+If anyone wants to use this repo to see how I've implemented higher-level features such as strings, arrays, etc. in cranelift, then it's all in `crates/codegen`.
