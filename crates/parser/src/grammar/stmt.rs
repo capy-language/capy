@@ -4,8 +4,6 @@ use crate::token_set::TokenSet;
 
 use super::*;
 
-const DEF_QUALIFIERS: TokenSet = TokenSet::new([TokenKind::Equals, TokenKind::Colon]);
-
 /// this function would only be called in a REPL or code block
 pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
     while p.at(TokenKind::Semicolon) {
