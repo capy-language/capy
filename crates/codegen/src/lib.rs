@@ -3,6 +3,7 @@ mod functions;
 mod gen;
 mod mangle;
 
+use cranelift::prelude::isa::{self};
 use cranelift::prelude::{settings, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_object::object::write;
@@ -15,7 +16,9 @@ use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use std::mem;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{exit, Command};
+use std::str::FromStr;
+use target_lexicon::Triple;
 
 pub(crate) type CraneliftSignature = cranelift::prelude::Signature;
 pub(crate) type CapyFnSignature = hir_ty::FunctionSignature;
@@ -70,14 +73,27 @@ pub fn compile_obj(
     interner: &Interner,
     bodies_map: &FxHashMap<hir::Name, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
+    target: Option<&str>,
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
     // flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "true").unwrap();
 
-    let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-        panic!("host machine is not supported: {}", msg);
-    });
+    let isa_builder = if let Some(target) = target {
+        isa::lookup(Triple::from_str(target).unwrap_or_else(|msg| {
+            println!("invalid target: {}", msg);
+            exit(1);
+        }))
+        .unwrap_or_else(|msg| {
+            println!("invalid target: {}", msg);
+            exit(1);
+        })
+    } else {
+        cranelift_native::builder().unwrap_or_else(|msg| {
+            println!("host machine is not supported: {}", msg);
+            exit(1);
+        })
+    };
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
@@ -211,6 +227,7 @@ mod tests {
             &interner,
             &bodies_map,
             &inference_result,
+            None,
         )
         .unwrap();
 

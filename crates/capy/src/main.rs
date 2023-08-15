@@ -33,6 +33,10 @@ enum BuildAction {
         #[arg(long, default_value = "main")]
         entry_point: String,
 
+        /// The target to compile for. If supplied, no linking will be done
+        #[arg(long)]
+        target: Option<String>,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -47,6 +51,7 @@ enum BuildAction {
         #[arg(long, default_value = "main")]
         entry_point: String,
 
+        /// Whether or not to run by JIT instead of by compilation to an executable file
         #[arg(long)]
         jit: bool,
 
@@ -67,8 +72,8 @@ macro_rules! get_build_config {
     ) => {
         match $action {
             BuildAction::Build {
-                $($property,)+
-            } => ($($property,)+ CompilationConfig::Compile),
+                $($property,)+ target
+            } => ($($property,)+ CompilationConfig::Compile(target)),
             BuildAction::Run {
                 $($property,)+ jit
             } => ($($property,)+ if jit { CompilationConfig::Jit } else { CompilationConfig::Run })
@@ -96,9 +101,9 @@ fn main() -> io::Result<()> {
     compile_files(files, entry_point, config, verbose)
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum CompilationConfig {
-    Compile,
+    Compile(Option<String>),
     Run,
     Jit,
 }
@@ -269,6 +274,10 @@ fn compile_files(
         &interner,
         &bodies_map.borrow(),
         &inference,
+        match &config {
+            CompilationConfig::Compile(target) => target.as_deref(),
+            _ => None,
+        },
     ) {
         Ok(bytes) => bytes,
         Err(why) => {
@@ -287,6 +296,16 @@ fn compile_files(
         exit(1);
     });
 
+    if let CompilationConfig::Compile(Some(target)) = config {
+        println!(
+            "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
+            file.display(),
+            target,
+            compilation_start.elapsed().as_secs_f32(),
+        );
+        return Ok(());
+    }
+
     let exec = codegen::link_to_exec(&file);
     println!(
         "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
@@ -295,7 +314,7 @@ fn compile_files(
         compilation_start.elapsed().as_secs_f32(),
     );
 
-    if config == CompilationConfig::Compile {
+    if matches!(config, CompilationConfig::Compile(_)) {
         return Ok(());
     }
 

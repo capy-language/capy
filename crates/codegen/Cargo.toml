@@ -16,6 +16,7 @@ cranelift-module = "0.98.1"
 cranelift-jit = "0.98.1"
 cranelift-native = "0.98.1"
 cranelift-object = "0.98.1"
+target-lexicon = "0.12.11"
 
 [dev-dependencies]
 ast = { path = "../ast" }
