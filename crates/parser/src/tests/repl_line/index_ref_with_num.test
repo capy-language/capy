@@ -3,7 +3,7 @@ my_array[0]
 Root@0..11
   ExprStmt@0..11
     IndexExpr@0..11
-      IndexSource@0..8
+      Source@0..8
         VarRef@0..8
           Path@0..8
             Ident@0..8 "my_array"

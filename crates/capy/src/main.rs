@@ -154,20 +154,6 @@ fn compile_files(
         println!();
     }
 
-    if main_modules.is_empty() {
-        println!(
-            "{ANSI_RED}error{ANSI_WHITE}: there is no `{}` function{ANSI_RESET}",
-            interner.borrow().lookup(main_fn.0)
-        );
-        std::process::exit(1);
-    } else if main_modules.len() > 1 {
-        println!(
-            "{ANSI_RED}error{ANSI_WHITE}: there are multiple `{}` functions{ANSI_RESET}",
-            interner.borrow().lookup(main_fn.0)
-        );
-        std::process::exit(1);
-    }
-
     // parse the bodies of each file into hir::Expr's and hir::LocalDef's
 
     source_files
@@ -222,6 +208,20 @@ fn compile_files(
     if has_errors {
         println!("\nnot compiling due to previous errors");
         exit(1);
+    }
+
+    if main_modules.is_empty() {
+        println!(
+            "{ANSI_RED}error{ANSI_WHITE}: there is no `{}` function{ANSI_RESET}",
+            interner.borrow().lookup(main_fn.0)
+        );
+        std::process::exit(1);
+    } else if main_modules.len() > 1 {
+        println!(
+            "{ANSI_RED}error{ANSI_WHITE}: there are multiple `{}` functions{ANSI_RESET}",
+            interner.borrow().lookup(main_fn.0)
+        );
+        std::process::exit(1);
     }
 
     let parse_finish = compilation_start.elapsed();

@@ -50,7 +50,7 @@ fn parse_expr_bp(
         let mut at_as = p.at(TokenKind::As);
         while at_lbrack || at_caret || at_as {
             if at_lbrack {
-                let indexing_expr = lhs.precede(p).complete(p, NodeKind::IndexSource).precede(p);
+                let indexing_expr = lhs.precede(p).complete(p, NodeKind::Source).precede(p);
                 p.bump();
 
                 let real_index = p.start();

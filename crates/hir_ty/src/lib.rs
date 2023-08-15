@@ -1473,12 +1473,12 @@ mod tests {
     }
 
     #[test]
-    fn local_set() {
+    fn assign() {
         check(
             r#"
                 foo :: () -> {
                     a := "Hello";
-                    a = "World";
+                    a = "World"; // `a` on the left is an expression, and it's type is evaluated
                     a;
                 };
             "#,
@@ -1487,7 +1487,8 @@ mod tests {
                 0 : string
                 1 : string
                 2 : string
-                3 : void
+                3 : string
+                4 : void
                 l0 : string
             "#]],
             |_| [],

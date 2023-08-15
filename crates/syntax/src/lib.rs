@@ -30,9 +30,9 @@ pub enum NodeKind {
     ArraySize,
     ArrayBody,
     ArrayItem,
-    IndexExpr,   // the entire expression of indexing. e.g. `my_array[6]`
-    IndexSource, // the expr that is being indexed. `my_array` in `my_array[6]`
-    Index,       // the actual index. `6` in `my_array[6]`
+    IndexExpr, // the entire expression of indexing. e.g. `my_array[6]`
+    Index,     // the actual index. `6` in `my_array[6]`
+    Source,
     Distinct,
     Block,
     IfExpr,

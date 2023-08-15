@@ -263,8 +263,8 @@ impl VarDef {
 def_ast_node!(Assign);
 
 impl Assign {
-    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
-        token(self, tree)
+    pub fn source(self, tree: &SyntaxTree) -> Option<Source> {
+        node(self, tree)
     }
 
     pub fn equals(self, tree: &SyntaxTree) -> Option<Equals> {
@@ -487,7 +487,7 @@ impl ArrayItem {
 def_ast_node!(IndexExpr);
 
 impl IndexExpr {
-    pub fn array(self, tree: &SyntaxTree) -> Option<IndexSource> {
+    pub fn array(self, tree: &SyntaxTree) -> Option<Source> {
         node(self, tree)
     }
 
@@ -496,17 +496,17 @@ impl IndexExpr {
     }
 }
 
-def_ast_node!(IndexSource);
+def_ast_node!(Index);
 
-impl IndexSource {
+impl Index {
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
 
-def_ast_node!(Index);
+def_ast_node!(Source);
 
-impl Index {
+impl Source {
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
@@ -932,29 +932,32 @@ mod tests {
     }
 
     #[test]
-    fn get_name_of_var_set() {
+    fn get_expr_of_assign() {
         let (tree, root) = parse("foo = 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_set = match statement {
+        let assign = match statement {
             Stmt::Assign(var_set) => var_set,
             _ => unreachable!(),
         };
 
-        assert_eq!(var_set.name(&tree).unwrap().text(&tree), "foo");
+        assert!(matches!(
+            assign.source(&tree).unwrap().value(&tree),
+            Some(Expr::VarRef(_))
+        ));
     }
 
     #[test]
-    fn get_value_of_var_set() {
+    fn get_value_of_assign() {
         let (tree, root) = parse("bar = 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
-        let var_set = match statement {
-            Stmt::Assign(var_set) => var_set,
+        let assign = match statement {
+            Stmt::Assign(assign) => assign,
             _ => unreachable!(),
         };
 
-        assert!(matches!(var_set.value(&tree), Some(Expr::IntLiteral(_))));
+        assert!(matches!(assign.value(&tree), Some(Expr::IntLiteral(_))));
     }
 
     #[test]

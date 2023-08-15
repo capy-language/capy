@@ -15,7 +15,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
             p.bump();
             continue;
         }
-        stmt::parse_def(p, false);
+        stmt::parse_def(p);
         p.expect_with_no_skip(TokenKind::Semicolon);
     }
 

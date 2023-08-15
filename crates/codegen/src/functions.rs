@@ -43,7 +43,7 @@ pub(crate) struct FunctionCompiler<'a> {
 
     // variables
     pub(crate) var_id_gen: UIDGenerator,
-    pub(crate) locals: FxHashMap<Idx<LocalDef>, Variable>,
+    pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
     pub(crate) params: FxHashMap<u64, Variable>,
 }
 
@@ -259,27 +259,40 @@ impl FunctionCompiler<'_> {
                     .unwrap();
 
                 // todo: defs should be on the stack
-                let var = Variable::new(self.var_id_gen.generate_unique_id() as usize);
+                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: ty.bytes(),
+                });
 
-                self.locals.insert(local_def, var);
-                self.builder.declare_var(var, ty);
+                self.builder.ins().stack_store(value, stack_slot, 0);
 
-                self.builder.def_var(var, value);
+                let stack_slot_addr = self.builder.ins().stack_addr(
+                    self.module.target_config().pointer_type(),
+                    stack_slot,
+                    0,
+                );
+
+                self.locals.insert(local_def, stack_slot_addr);
             }
-            hir::Stmt::LocalSet(local_set) => {
-                let value = self.bodies_map[&self.fqn.module][local_set].value;
-                let value = if let Some(val) = self.compile_expr(value) {
+            hir::Stmt::Assign(assign) => {
+                let assign_body = &self.bodies_map[&self.fqn.module][assign];
+
+                let source =
+                    if let Some(val) = self.compile_expr_with_args(assign_body.source, true) {
+                        val
+                    } else {
+                        return;
+                    };
+
+                let value = if let Some(val) = self.compile_expr(assign_body.value) {
                     val
                 } else {
                     return;
                 };
 
-                let local = self.bodies_map[&self.fqn.module][local_set]
-                    .local_def
-                    .unwrap();
-                let local = self.locals.get(&local).unwrap();
-
-                self.builder.def_var(*local, value);
+                self.builder
+                    .ins()
+                    .store(MemFlags::trusted(), value, source, 0);
             }
         }
     }
@@ -337,7 +350,7 @@ impl FunctionCompiler<'_> {
         self.compile_expr_with_args(expr, false)
     }
 
-    fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, _no_deref: bool) -> Option<Value> {
+    fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
         match self.bodies_map[&self.fqn.module][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => Some(
@@ -424,7 +437,7 @@ impl FunctionCompiler<'_> {
 
                 let proper_addr = self.builder.ins().iadd(array, proper_index);
 
-                if element_ty.is_array(self.resolved_arena) {
+                if no_load || element_ty.is_array(self.resolved_arena) {
                     Some(proper_addr)
                 } else {
                     Some(
@@ -478,32 +491,45 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Ref { expr } => {
-                let inner_size = self.tys[self.fqn.module][expr]
-                    .get_size_in_bytes(self.module, self.resolved_arena);
+                // references to locals or globals should return the actual memory address of the local or global
+                if matches!(
+                    self.bodies_map[&self.fqn.module][expr],
+                    hir::Expr::Local(_) | hir::Expr::Global(_)
+                ) {
+                    self.compile_expr_with_args(expr, true)
+                } else {
+                    let inner_size = self.tys[self.fqn.module][expr]
+                        .get_size_in_bytes(self.module, self.resolved_arena);
 
-                // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
+                    // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
 
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: inner_size,
-                });
+                    let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: inner_size,
+                    });
 
-                let expr = self.compile_expr(expr).unwrap();
+                    let expr = self.compile_expr(expr).unwrap();
 
-                self.builder.ins().stack_store(expr, stack_slot, 0);
+                    self.builder.ins().stack_store(expr, stack_slot, 0);
 
-                Some(self.builder.ins().stack_addr(
-                    self.module.target_config().pointer_type(),
-                    stack_slot,
-                    0,
-                ))
+                    Some(self.builder.ins().stack_addr(
+                        self.module.target_config().pointer_type(),
+                        stack_slot,
+                        0,
+                    ))
+                }
             }
             hir::Expr::Deref { pointer } => {
-                let self_ty = self.tys[self.fqn.module][expr]
-                    .to_comp_type(self.module, self.resolved_arena)
-                    .into_real_type()
-                    .unwrap();
-                let pointer = self.compile_expr(pointer)?;
+                let self_ty = if no_load {
+                    self.module.target_config().pointer_type()
+                } else {
+                    self.tys[self.fqn.module][expr]
+                        .to_comp_type(self.module, self.resolved_arena)
+                        .into_real_type()
+                        .unwrap()
+                };
+
+                let pointer = self.compile_expr_with_args(pointer, no_load)?;
 
                 Some(
                     self.builder
@@ -680,7 +706,7 @@ impl FunctionCompiler<'_> {
                 }
 
                 if let Some(val) = tail_expr {
-                    self.compile_expr_with_args(val, _no_deref)
+                    self.compile_expr_with_args(val, no_load)
                 } else {
                     None
                 }
@@ -784,10 +810,20 @@ impl FunctionCompiler<'_> {
 
                 None
             }
-            hir::Expr::Local(local_def) => self
-                .locals
-                .get(&local_def)
-                .map(|var| self.builder.use_var(*var)),
+            hir::Expr::Local(local_def) => {
+                let ptr = *self.locals.get(&local_def)?;
+
+                if no_load {
+                    Some(ptr)
+                } else {
+                    let ty = self.tys[self.fqn.module][local_def]
+                        .to_comp_type(self.module, self.resolved_arena)
+                        .into_real_type()
+                        .unwrap();
+
+                    Some(self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
+                }
+            }
             hir::Expr::Param { idx } => self
                 .params
                 .get(&(idx as u64))

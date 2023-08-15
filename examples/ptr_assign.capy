@@ -1,0 +1,26 @@
+
+main :: () -> {
+    x := 5;
+    y := ^x;
+
+    printf("x = %i\n", x);
+
+    y^ = 25;
+
+    printf("x = %i\n\n", x);
+
+    x := [] i32 { 1, 2, 3 };
+    y := ^x;
+
+    printf("x = { %i, ", x[0]);
+    printf("%i, ", x[1]);
+    printf("%i }\n", x[2]);
+
+    y^[1] = 42;
+
+    printf("x = { %i, ", x[0]);
+    printf("%i, ", x[1]);
+    printf("%i }\n", x[2]);
+};
+
+printf :: (str: string, n: i32) -> extern;

@@ -208,24 +208,21 @@ impl InferenceCtx<'_> {
                 }
                 None
             }
-            hir::Stmt::LocalSet(local_set) => {
-                let set_body = &current_bodies!(self)[*local_set];
-                let set_ty = self.infer_expr(set_body.value);
+            hir::Stmt::Assign(assign) => {
+                let assign_body = &current_bodies!(self)[*assign];
+                let source_ty = self.infer_expr(assign_body.source);
+                let value_ty = self.infer_expr(assign_body.value);
 
-                if let Some(local_def) = set_body.local_def {
-                    let def_ty = *current_module!(self).local_tys.get(local_def).unwrap();
+                self.expect_match(value_ty, source_ty, assign_body.value);
 
-                    self.expect_match(set_ty, def_ty, set_body.value);
-
-                    if matches!(
-                        (&def_ty, &set_ty),
-                        (
-                            ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
-                            ResolvedTy::IInt(0) | ResolvedTy::UInt(0)
-                        )
-                    ) {
-                        self.replace_weak_tys(set_body.value, def_ty);
-                    }
+                if matches!(
+                    (&source_ty, &value_ty),
+                    (
+                        ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
+                        ResolvedTy::IInt(0) | ResolvedTy::UInt(0)
+                    )
+                ) {
+                    self.replace_weak_tys(assign_body.value, source_ty);
                 }
 
                 None

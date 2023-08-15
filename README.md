@@ -1,4 +1,4 @@
-# Capy
+# The Capy Programming Language
 
 A cool programming language, largely inspired by Jai, Odin, and Zig. Compile-time evaluation coming soon.
 

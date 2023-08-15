@@ -248,7 +248,7 @@ mod tests {
 
         assert_eq!(output.status.code().unwrap(), expected_status);
 
-        let re = Regex::new(r#"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><]"#).unwrap();
+        let re = Regex::new(r#"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><{}]"#).unwrap();
         let stdout = std::str::from_utf8(&output.stdout)
             .unwrap()
             .replace("\r", "");
@@ -503,6 +503,24 @@ mod tests {
             writing to hello.txt
             reading from hello.txt
             Hello, World!
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn ptr_assign() {
+        check(
+            "../../examples/ptr_assign.capy",
+            &[],
+            "main",
+            expect![[r#"
+            x = 5
+            x = 25
+
+            x = { 1, 2, 3 }
+            x = { 1, 42, 3 }
 
             "#]],
             0,

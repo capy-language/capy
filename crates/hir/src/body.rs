@@ -16,7 +16,7 @@ use crate::{
 #[derive(Clone)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
-    local_sets: Arena<LocalSet>,
+    assigns: Arena<Assign>,
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
@@ -94,7 +94,7 @@ pub enum Expr {
 pub enum Stmt {
     Expr(Idx<Expr>),
     LocalDef(Idx<LocalDef>),
-    LocalSet(Idx<LocalSet>),
+    Assign(Idx<Assign>),
 }
 
 #[derive(Clone)]
@@ -106,8 +106,8 @@ pub struct LocalDef {
 }
 
 #[derive(Clone)]
-pub struct LocalSet {
-    pub local_def: Option<Idx<LocalDef>>,
+pub struct Assign {
+    pub source: Idx<Expr>,
     pub value: Idx<Expr>,
     pub ast: ast::Assign,
 }
@@ -250,7 +250,7 @@ impl<'a> Ctx<'a> {
         Self {
             bodies: Bodies {
                 local_defs: Arena::new(),
-                local_sets: Arena::new(),
+                assigns: Arena::new(),
                 stmts: Arena::new(),
                 exprs: Arena::new(),
                 expr_ranges: ArenaMap::default(),
@@ -376,49 +376,58 @@ impl<'a> Ctx<'a> {
         Stmt::LocalDef(id)
     }
 
-    fn lower_assignment(&mut self, local_set: ast::Assign) -> Stmt {
-        let name = self
-            .interner
-            .intern(local_set.name(self.tree).unwrap().text(self.tree));
+    fn lower_assignment(&mut self, assign: ast::Assign) -> Stmt {
+        let source = self.lower_expr(assign.source(self.tree).unwrap().value(self.tree));
+        let value = self.lower_expr(assign.value(self.tree));
 
-        let local_def = self.look_up_in_current_scope(name);
-        if local_def.is_none() {
-            if self
-                .world_index
-                .get_definition(Fqn {
-                    module: self.module,
-                    name: Name(name),
-                })
-                .is_ok()
-                || self.params.contains_key(&name)
-            {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::SetImmutable { name },
-                    range: local_set.range(self.tree),
-                })
-            } else {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::UndefinedLocal { name },
-                    range: local_set.name(self.tree).unwrap().range(self.tree),
-                })
-            }
-        } else if !self.bodies.local_defs[local_def.unwrap()].mutable {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::SetImmutable { name },
-                range: local_set.range(self.tree),
-            })
-        }
-
-        let value = self.lower_expr(local_set.value(self.tree));
-
-        let id = self.bodies.local_sets.alloc(LocalSet {
-            local_def,
+        let id = self.bodies.assigns.alloc(Assign {
+            source,
             value,
-            ast: local_set,
+            ast: assign,
         });
 
-        Stmt::LocalSet(id)
+        Stmt::Assign(id)
     }
+
+    // fn lower_local_assignment(&mut self, assign: ast::Assign, name: Key) -> Stmt {
+    //     let local_def = self.look_up_in_current_scope(name);
+    //     if local_def.is_none() {
+    //         if self
+    //             .world_index
+    //             .get_definition(Fqn {
+    //                 module: self.module,
+    //                 name: Name(name),
+    //             })
+    //             .is_ok()
+    //             || self.params.contains_key(&name)
+    //         {
+    //             self.diagnostics.push(LoweringDiagnostic {
+    //                 kind: LoweringDiagnosticKind::SetImmutable { name },
+    //                 range: assign.range(self.tree),
+    //             })
+    //         } else {
+    //             self.diagnostics.push(LoweringDiagnostic {
+    //                 kind: LoweringDiagnosticKind::UndefinedLocal { name },
+    //                 range: assign.source(self.tree).unwrap().range(self.tree),
+    //             })
+    //         }
+    //     } else if !self.bodies.local_defs[local_def.unwrap()].mutable {
+    //         self.diagnostics.push(LoweringDiagnostic {
+    //             kind: LoweringDiagnosticKind::SetImmutable { name },
+    //             range: assign.range(self.tree),
+    //         })
+    //     }
+
+    //     let value = self.lower_expr(assign.value(self.tree));
+
+    //     let id = self.bodies.local_sets.alloc(LocalSet {
+    //         source: local_def,
+    //         value,
+    //         ast: assign,
+    //     });
+
+    //     Stmt::LocalSet(id)
+    // }
 
     fn lower_expr(&mut self, expr: Option<ast::Expr>) -> Idx<Expr> {
         let expr_ast = match expr {
@@ -1166,11 +1175,11 @@ impl std::ops::Index<Idx<LocalDef>> for Bodies {
     }
 }
 
-impl std::ops::Index<Idx<LocalSet>> for Bodies {
-    type Output = LocalSet;
+impl std::ops::Index<Idx<Assign>> for Bodies {
+    type Output = Assign;
 
-    fn index(&self, id: Idx<LocalSet>) -> &Self::Output {
-        &self.local_sets[id]
+    fn index(&self, id: Idx<Assign>) -> &Self::Output {
+        &self.assigns[id]
     }
 }
 
@@ -1568,13 +1577,17 @@ impl Bodies {
                     );
                     s.push(';');
                 }
-                Stmt::LocalSet(local_set_id) => {
-                    s.push_str(&format!(
-                        "l{} = ",
-                        bodies[*local_set_id]
-                            .local_def
-                            .map_or("<unknown>".to_string(), |id| id.into_raw().to_string())
-                    ));
+                Stmt::Assign(local_set_id) => {
+                    write_expr(
+                        bodies[*local_set_id].source,
+                        show_idx,
+                        bodies,
+                        s,
+                        ty_arena,
+                        interner,
+                        indentation,
+                    );
+                    s.push_str(" = ");
                     write_expr(
                         bodies[*local_set_id].value,
                         show_idx,
