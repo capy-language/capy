@@ -175,7 +175,7 @@ impl ToCraneliftSignature for CapyFnSignature {
 
         let mut new_idx_to_old_idx = FxHashMap::default();
 
-        let param_types = self
+        let mut param_types = self
             .param_tys
             .iter()
             .enumerate()
@@ -197,12 +197,12 @@ impl ToCraneliftSignature for CapyFnSignature {
             })
             .collect::<Vec<_>>();
 
-        // if self.return_ty.is_array(resolved_arena) {
-        //     // if the function is expected to return an array,
-        //     // the caller function must supply a memory address
-        //     // to store the returned array
-        //     param_types.push(AbiParam::new(module.target_config().pointer_type()));
-        // }
+        if self.return_ty.is_array(resolved_arena) {
+            // if the callee is expected to return an array,
+            // the caller function must supply a memory address
+            // to store it in
+            param_types.push(AbiParam::new(module.target_config().pointer_type()));
+        }
 
         (
             CraneliftSignature {

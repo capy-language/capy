@@ -58,6 +58,8 @@ impl FunctionCompiler<'_> {
         self.builder.switch_to_block(entry_block);
         self.builder.seal_block(entry_block);
 
+        let mut dest_param = None;
+
         for (idx, param) in self.signature.params.iter().enumerate() {
             let param_ty = param.value_type;
 
@@ -65,7 +67,13 @@ impl FunctionCompiler<'_> {
 
             let var = Variable::new(self.var_id_gen.generate_unique_id() as usize);
 
-            self.params.insert(new_idx_to_old_idx[&(idx as u64)], var);
+            if new_idx_to_old_idx.contains_key(&(idx as u64)) {
+                self.params.insert(new_idx_to_old_idx[&(idx as u64)], var);
+            } else {
+                let old_dest_param = dest_param.replace(var);
+                assert!(old_dest_param.is_none());
+            }
+
             self.builder.declare_var(var, param_ty);
 
             self.builder.def_var(var, value);
@@ -75,7 +83,20 @@ impl FunctionCompiler<'_> {
 
         match self.compile_expr(hir_body) {
             Some(body) => {
-                if let Some(return_int_ty) = return_ty
+                if return_ty.is_array(self.resolved_arena) {
+                    let dest = self.builder.use_var(dest_param.unwrap());
+
+                    let array_size = return_ty.get_size_in_bytes(self.module, self.resolved_arena);
+                    let array_size = self.builder.ins().iconst(
+                        self.module.target_config().pointer_type(),
+                        array_size as i64,
+                    );
+
+                    self.builder
+                        .call_memcpy(self.module.target_config(), dest, body, array_size);
+
+                    self.builder.ins().return_(&[dest])
+                } else if let Some(return_int_ty) = return_ty
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_int_type()
                 {
@@ -579,7 +600,7 @@ impl FunctionCompiler<'_> {
                 let func = self.get_func_id(fqn);
                 let local_func = self.module.declare_func_in_func(func, self.builder.func);
 
-                let arg_values = args
+                let mut arg_values = args
                     .iter()
                     .filter_map(|arg| match self.tys[self.fqn.module][*arg] {
                         hir_ty::ResolvedTy::Unknown => todo!(),
@@ -592,16 +613,7 @@ impl FunctionCompiler<'_> {
                     panic!("tried to compile non-function as function");
                 });
 
-                let call = self.builder.ins().call(local_func, &arg_values);
-
-                if matches!(signature.return_ty, ResolvedTy::Void) {
-                    None
-                } else if signature.return_ty.is_array(self.resolved_arena) {
-                    // since the callee is expected to return an array,
-                    // we have to allocate some memory for it in the caller
-
-                    // todo: doing this memcpy in the caller is technically undefined behavior
-
+                if signature.return_ty.is_array(self.resolved_arena) {
                     let array_size = signature
                         .return_ty
                         .get_size_in_bytes(self.module, self.resolved_arena);
@@ -616,20 +628,13 @@ impl FunctionCompiler<'_> {
                         0,
                     );
 
-                    let call_return_value = self.builder.inst_results(call)[0];
-                    let array_size = self.builder.ins().iconst(
-                        self.module.target_config().pointer_type(),
-                        array_size as i64,
-                    );
+                    arg_values.push(stack_slot_addr);
+                }
 
-                    self.builder.call_memcpy(
-                        self.module.target_config(),
-                        stack_slot_addr,
-                        call_return_value,
-                        array_size,
-                    );
+                let call = self.builder.ins().call(local_func, &arg_values);
 
-                    Some(stack_slot_addr)
+                if signature.return_ty.is_empty(self.resolved_arena) {
+                    None
                 } else {
                     Some(self.builder.inst_results(call)[0])
                 }
