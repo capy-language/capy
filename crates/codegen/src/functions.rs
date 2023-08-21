@@ -237,7 +237,6 @@ impl FunctionCompiler<'_> {
             hir::Stmt::Expr(expr) => {
                 match self.tys[self.fqn.module][expr] {
                     hir_ty::ResolvedTy::Unknown => unreachable!(),
-                    hir_ty::ResolvedTy::Named(_) => todo!(),
                     _ => {
                         self.compile_expr(expr);
                     }
@@ -630,7 +629,6 @@ impl FunctionCompiler<'_> {
                     .iter()
                     .filter_map(|arg| match self.tys[self.fqn.module][*arg] {
                         hir_ty::ResolvedTy::Unknown => todo!(),
-                        hir_ty::ResolvedTy::Named(_) => todo!(),
                         _ => self.compile_expr(*arg), // filter_map removes the void values
                     })
                     .collect::<Vec<_>>();

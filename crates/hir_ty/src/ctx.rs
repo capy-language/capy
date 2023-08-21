@@ -236,7 +236,7 @@ impl InferenceCtx<'_> {
                 self.get_mutability(local_def.value, derefs)
             }
             Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
-            Expr::Global(_) | Expr::Param { .. } | _ => {
+            _ => {
                 ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
             }
         }

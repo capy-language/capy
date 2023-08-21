@@ -45,7 +45,6 @@ pub enum ResolvedTy {
         ty: Idx<ResolvedTy>,
     },
     Type,
-    Named(hir::Fqn),
     Void,
 }
 
@@ -847,13 +846,6 @@ impl ResolvedTy {
                 ),
             },
             Self::Type => "type".to_string(),
-            Self::Named(fqn) => {
-                format!(
-                    "{}.{}",
-                    interner.lookup(fqn.module.0),
-                    interner.lookup(fqn.name.0)
-                )
-            }
             Self::Void => "void".to_string(),
         }
     }

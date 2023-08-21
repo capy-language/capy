@@ -151,7 +151,6 @@ impl ToCompType for ResolvedTy {
                 resolved_arena[*ty].to_comp_type(module, resolved_arena)
             }
             hir_ty::ResolvedTy::Type => CompType::Void,
-            hir_ty::ResolvedTy::Named(_) => todo!(),
             hir_ty::ResolvedTy::Void => CompType::Void,
         }
     }
@@ -243,7 +242,6 @@ impl ToCompSize for ResolvedTy {
                 resolved_arena[*ty].get_size_in_bytes(module, resolved_arena)
             }
             ResolvedTy::Type => 0,
-            ResolvedTy::Named(_) => todo!(),
             ResolvedTy::Void => 0,
         }
     }

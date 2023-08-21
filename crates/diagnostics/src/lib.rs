@@ -92,7 +92,7 @@ impl Diagnostic {
                 "{}help{}: {}",
                 ANSI_CYAN,
                 ANSI_WHITE,
-                help.message(resolved_arena, interner)
+                help.message()
             ));
 
             let range = help.range();
@@ -154,9 +154,7 @@ impl Diagnostic {
             Repr::Validation(ValidationDiagnostic { .. }) => None,
             Repr::Indexing(IndexingDiagnostic { .. }) => None,
             Repr::Lowering(LoweringDiagnostic { .. }) => None,
-            Repr::Ty(TyDiagnostic { help, .. }) => {
-                help.as_ref().map(|help| HelpDiagnostic::Ty(&help))
-            }
+            Repr::Ty(TyDiagnostic { help, .. }) => help.as_ref().map(HelpDiagnostic::Ty),
         }
     }
 }
@@ -172,7 +170,7 @@ impl HelpDiagnostic<'_> {
         }
     }
 
-    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+    pub fn message(&self) -> String {
         match &self {
             HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d),
         }
