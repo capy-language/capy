@@ -36,6 +36,7 @@ pub enum ResolvedTy {
         sub_ty: Idx<ResolvedTy>,
     },
     Pointer {
+        mutable: bool,
         sub_ty: Idx<ResolvedTy>,
     },
     Distinct {
@@ -71,7 +72,7 @@ impl ResolvedTy {
     pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
         match self {
             ResolvedTy::Void => true,
-            ResolvedTy::Pointer { sub_ty } => resolved_arena[*sub_ty].is_empty(resolved_arena),
+            ResolvedTy::Pointer { sub_ty, .. } => resolved_arena[*sub_ty].is_empty(resolved_arena),
             ResolvedTy::Array { size, sub_ty } => {
                 *size == 0 || resolved_arena[*sub_ty].is_empty(resolved_arena)
             }
@@ -102,8 +103,19 @@ impl ResolvedTy {
                     && resolved_arena[first_sub_ty]
                         .is_equal_to(resolved_arena[second_sub_ty], resolved_arena)
             }
-            (ResolvedTy::Pointer { sub_ty: first }, ResolvedTy::Pointer { sub_ty: second }) => {
-                resolved_arena[first].is_equal_to(resolved_arena[second], resolved_arena)
+            (
+                ResolvedTy::Pointer {
+                    mutable: first_mutable,
+                    sub_ty: first_sub_ty,
+                },
+                ResolvedTy::Pointer {
+                    mutable: second_mutable,
+                    sub_ty: second_sub_ty,
+                },
+            ) => {
+                first_mutable == second_mutable
+                    && resolved_arena[first_sub_ty]
+                        .is_equal_to(resolved_arena[second_sub_ty], resolved_arena)
             }
             (ResolvedTy::Distinct { uid: first, .. }, ResolvedTy::Distinct { uid: second, .. }) => {
                 first == second
@@ -141,9 +153,21 @@ impl ResolvedTy {
                         resolved_arena,
                     )
             }
-            (ResolvedTy::Pointer { sub_ty: first }, ResolvedTy::Pointer { sub_ty: second }) => {
-                resolved_arena[first]
-                    .is_functionally_equivalent_to(resolved_arena[second], resolved_arena)
+            (
+                ResolvedTy::Pointer {
+                    mutable: first_mutable,
+                    sub_ty: first_sub_ty,
+                },
+                ResolvedTy::Pointer {
+                    mutable: second_mutable,
+                    sub_ty: second_sub_ty,
+                },
+            ) => {
+                first_mutable == second_mutable
+                    && resolved_arena[first_sub_ty].is_functionally_equivalent_to(
+                        resolved_arena[second_sub_ty],
+                        resolved_arena,
+                    )
             }
             (ResolvedTy::Distinct { ty: first, .. }, ResolvedTy::Distinct { ty: second, .. }) => {
                 resolved_arena[first]
@@ -244,6 +268,7 @@ pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
     pub module: hir::Name,
     pub range: TextRange,
+    pub help: Option<TyDiagnosticHelp>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +304,10 @@ pub enum TyDiagnosticKind {
     MissingElse {
         expected: ResolvedTy,
     },
+    MutateBinding,
+    MutateImmutableRef,
+    CannotMutate,
+    MutableRefToImmutableData,
     Undefined {
         name: Key,
     },
@@ -287,6 +316,19 @@ pub enum TyDiagnosticKind {
     },
     ParamNotATy,
     MutableTy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TyDiagnosticHelp {
+    pub kind: TyDiagnosticHelpKind,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TyDiagnosticHelpKind {
+    FoundToBeImmutable,
+    ImmutableBinding,
+    ImmutableRef,
 }
 
 pub struct InferenceCtx<'a> {
@@ -503,6 +545,7 @@ impl<'a> InferenceCtx<'a> {
                             },
                             module: self.current_module.unwrap(),
                             range,
+                            help: None,
                         });
                         return ResolvedTy::Unknown;
                     }
@@ -536,6 +579,7 @@ impl<'a> InferenceCtx<'a> {
                     kind: TyDiagnosticKind::Undefined { name: fqn.name.0 },
                     module: self.current_module.unwrap(),
                     range,
+                    help: None,
                 });
                 ResolvedTy::Unknown
             }
@@ -545,10 +589,11 @@ impl<'a> InferenceCtx<'a> {
     fn parse_expr_to_ty(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
         match &self.bodies_map[&self.current_module.unwrap()][expr] {
             hir::Expr::Missing => ResolvedTy::Unknown,
-            hir::Expr::Ref { expr } => {
+            hir::Expr::Ref { mutable, expr } => {
                 let sub_ty = self.parse_expr_to_ty(*expr);
 
                 ResolvedTy::Pointer {
+                    mutable: *mutable,
                     sub_ty: self.resolved_arena.alloc(sub_ty),
                 }
             }
@@ -568,6 +613,7 @@ impl<'a> InferenceCtx<'a> {
                         },
                         module: self.current_module.unwrap(),
                         range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                        help: None,
                     });
 
                     return ResolvedTy::Unknown;
@@ -580,6 +626,7 @@ impl<'a> InferenceCtx<'a> {
                         kind: TyDiagnosticKind::MutableTy,
                         module: self.current_module.unwrap(),
                         range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                        help: None,
                     });
 
                     return ResolvedTy::Unknown;
@@ -593,6 +640,7 @@ impl<'a> InferenceCtx<'a> {
                     kind: TyDiagnosticKind::ParamNotATy,
                     module: self.current_module.unwrap(),
                     range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    help: None,
                 });
 
                 ResolvedTy::Unknown
@@ -606,6 +654,7 @@ impl<'a> InferenceCtx<'a> {
                     },
                     module: self.current_module.unwrap(),
                     range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    help: None,
                 });
 
                 ResolvedTy::Unknown
@@ -627,7 +676,10 @@ impl<'a> InferenceCtx<'a> {
                     self.resolved_arena.alloc(ty)
                 },
             },
-            hir::TyWithRange::Pointer { sub_ty, .. } => ResolvedTy::Pointer {
+            hir::TyWithRange::Pointer {
+                mutable, sub_ty, ..
+            } => ResolvedTy::Pointer {
+                mutable,
                 sub_ty: {
                     let ty = self.resolve_ty(self.twr_arena[sub_ty]);
                     self.resolved_arena.alloc(ty)
@@ -775,9 +827,10 @@ impl ResolvedTy {
                     resolved_arena[*sub_ty].display(resolved_arena, interner)
                 )
             }
-            Self::Pointer { sub_ty } => {
+            Self::Pointer { mutable, sub_ty } => {
                 format!(
-                    "^{}",
+                    "^{}{}",
+                    if *mutable { "mut " } else { "" },
                     resolved_arena[*sub_ty].display(resolved_arena, interner)
                 )
             }
@@ -819,7 +872,13 @@ mod tests {
     fn check<const N: usize>(
         input: &str,
         expect: Expect,
-        expected_diagnostics: impl Fn(&mut Interner) -> [(TyDiagnosticKind, std::ops::Range<u32>); N],
+        expected_diagnostics: impl Fn(
+            &mut Interner,
+        ) -> [(
+            TyDiagnosticKind,
+            std::ops::Range<u32>,
+            Option<(TyDiagnosticHelpKind, std::ops::Range<u32>)>,
+        ); N],
     ) {
         let modules = test_utils::split_multi_module_test_data(input);
         let mut interner = Interner::default();
@@ -883,10 +942,14 @@ mod tests {
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
-            .map(|(kind, range)| TyDiagnostic {
+            .map(|(kind, range, help)| TyDiagnostic {
                 kind,
                 module,
                 range: TextRange::new(range.start.into(), range.end.into()),
+                help: help.map(|(kind, range)| TyDiagnosticHelp {
+                    kind,
+                    range: TextRange::new(range.start.into(), range.end.into()),
+                }),
             })
             .collect();
 
@@ -942,12 +1005,14 @@ mod tests {
                             name: i.intern("baz"),
                         },
                         71..74,
+                        None,
                     ),
                     (
                         TyDiagnosticKind::Undefined {
                             name: i.intern("foo"),
                         },
                         30..33,
+                        None,
                     ),
                 ]
             },
@@ -1048,6 +1113,7 @@ mod tests {
                         second: ResolvedTy::IInt(0),
                     },
                     93..102,
+                    None,
                 )]
             },
         );
@@ -1104,6 +1170,7 @@ mod tests {
                         to: ResolvedTy::UInt(u32::MAX),
                     },
                     108..121,
+                    None,
                 )]
             },
         );
@@ -1270,6 +1337,7 @@ mod tests {
                         },
                     },
                     123..137,
+                    None,
                 )]
             },
         );
@@ -1407,6 +1475,7 @@ mod tests {
                         found: ResolvedTy::IInt(0),
                     },
                     300..303,
+                    None,
                 )]
             },
         );
@@ -1544,6 +1613,7 @@ mod tests {
                         found: ResolvedTy::UInt(16),
                     },
                     102..105,
+                    None,
                 )]
             },
         );
@@ -1599,6 +1669,7 @@ mod tests {
                         found: ResolvedTy::IInt(8),
                     },
                     103..108,
+                    None,
                 )]
             },
         );
@@ -1630,6 +1701,7 @@ mod tests {
                         found: ResolvedTy::IInt(16),
                     },
                     104..108,
+                    None,
                 )]
             },
         );
@@ -1661,6 +1733,7 @@ mod tests {
                         found: ResolvedTy::IInt(16),
                     },
                     102..105,
+                    None,
                 )]
             },
         );
@@ -1687,6 +1760,7 @@ mod tests {
                         second: ResolvedTy::UInt(0),
                     },
                     36..45,
+                    None,
                 )]
             },
         );
@@ -1747,6 +1821,7 @@ mod tests {
                         second: ResolvedTy::UInt(0),
                     },
                     35..43,
+                    None,
                 )]
             },
         );
@@ -1773,6 +1848,7 @@ mod tests {
                         second: ResolvedTy::String,
                     },
                     35..53,
+                    None,
                 )]
             },
         );
@@ -1881,6 +1957,7 @@ mod tests {
                         found: ResolvedTy::IInt(0),
                     },
                     35..37,
+                    None,
                 )]
             },
         );
@@ -1939,6 +2016,7 @@ mod tests {
                         found: ResolvedTy::UInt(0),
                     },
                     37..39,
+                    None,
                 )]
             },
         );
@@ -2028,6 +2106,7 @@ mod tests {
                             found: ResolvedTy::Void,
                         },
                         46..48,
+                        None,
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
@@ -2035,6 +2114,7 @@ mod tests {
                             found: ResolvedTy::String,
                         },
                         50..53,
+                        None,
                     ),
                 ]
             },
@@ -2098,6 +2178,7 @@ mod tests {
                         found: ResolvedTy::String,
                     },
                     126..131,
+                    None,
                 )]
             },
         );
@@ -2138,6 +2219,7 @@ mod tests {
                         },
                     },
                     147..148,
+                    None,
                 )]
             },
         );
@@ -2238,6 +2320,7 @@ mod tests {
                         second: ResolvedTy::IInt(32),
                     },
                     186..191,
+                    None,
                 )]
             },
         );
@@ -2294,6 +2377,7 @@ mod tests {
                         },
                     },
                     253..258,
+                    None,
                 )]
             },
         );
@@ -2447,6 +2531,192 @@ mod tests {
                         path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
                     },
                     53..56,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_var() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+
+                    foo = 42;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : void
+                l0 : {uint}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn assign_binding() {
+        check(
+            r#"
+                main :: () -> {
+                    foo :: 5;
+
+                    foo = 42;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : void
+                l0 : {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    84..92,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 53..61)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_non_mut_ptr_to_var() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+                    bar :: ^foo; 
+
+                    bar^ = 42;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : ^{uint}
+                3 : ^{uint}
+                4 : {uint}
+                5 : {uint}
+                6 : void
+                l0 : {uint}
+                l1 : ^{uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    118..127,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 90..94)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_mut_ptr_to_var() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+                    bar :: ^mut foo; 
+
+                    bar^ = 42;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : ^mut {uint}
+                3 : ^mut {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : void
+                l0 : {uint}
+                l1 : ^mut {uint}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn assign_to_immutable_expr() {
+        check(
+            r#"
+                main :: () -> {
+                    2 + 2 = 5;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : void
+            "#]],
+            |_| [(TyDiagnosticKind::CannotMutate, 53..58, None)],
+        );
+    }
+
+    #[test]
+    fn assign_to_mut_ref_expr() {
+        check(
+            r#"
+                main :: () -> {
+                    {^mut 2}^ = 5;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : ^mut {uint}
+                2 : ^mut {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    54..60,
+                    Some((TyDiagnosticHelpKind::FoundToBeImmutable, 59..60)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mut_ptr_to_binding() {
+        check(
+            r#"
+                main :: () -> {
+                    foo :: 5;
+                    bar :: ^mut foo; 
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : ^mut {uint}
+                3 : void
+                l0 : {uint}
+                l1 : ^mut {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    90..98,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 53..61)),
                 )]
             },
         );

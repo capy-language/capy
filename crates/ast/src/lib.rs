@@ -367,6 +367,10 @@ impl CastExpr {
 def_ast_node!(RefExpr);
 
 impl RefExpr {
+    pub fn mutable(self, tree: &SyntaxTree) -> Option<Mut> {
+        token(self, tree)
+    }
+
     pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
@@ -683,6 +687,7 @@ impl AstToken for UnaryOp {
     }
 }
 
+def_ast_token!(Mut);
 def_ast_token!(Extern);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
@@ -1142,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn get_name_of_ref() {
+    fn get_name_of_var_ref() {
         let (tree, root) = parse("idx;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
@@ -1177,6 +1182,56 @@ mod tests {
 
         assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "print");
         assert!(path.nested_name(&tree).is_none());
+    }
+
+    #[test]
+    fn get_expr_of_ref() {
+        let (tree, root) = parse("^foo;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let ref_expr = match expr {
+            Some(Expr::Ref(ref_expr)) => ref_expr,
+            _ => unreachable!(),
+        };
+
+        let var_ref = match ref_expr.expr(&tree) {
+            Some(Expr::VarRef(ref_expr)) => ref_expr,
+            _ => unreachable!(),
+        };
+        let path = var_ref.name(&tree).unwrap();
+
+        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "foo");
+        assert!(path.nested_name(&tree).is_none());
+        assert!(ref_expr.mutable(&tree).is_none());
+    }
+
+    #[test]
+    fn get_mut_of_ref() {
+        let (tree, root) = parse("^mut foo;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let ref_expr = match expr {
+            Some(Expr::Ref(ref_expr)) => ref_expr,
+            _ => unreachable!(),
+        };
+
+        let var_ref = match ref_expr.expr(&tree) {
+            Some(Expr::VarRef(ref_expr)) => ref_expr,
+            _ => unreachable!(),
+        };
+        let path = var_ref.name(&tree).unwrap();
+
+        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "foo");
+        assert!(path.nested_name(&tree).is_none());
+        assert!(ref_expr.mutable(&tree).is_some());
     }
 
     #[test]

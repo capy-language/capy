@@ -125,15 +125,24 @@ pub(crate) fn can_fit(
             expected_bit_width == 0 || found_bit_width < expected_bit_width
         }
         (
-            ResolvedTy::Pointer { sub_ty: found_ty },
             ResolvedTy::Pointer {
+                mutable: found_mutable,
+                sub_ty: found_ty,
+            },
+            ResolvedTy::Pointer {
+                mutable: expected_mutable,
                 sub_ty: expected_ty,
             },
-        ) => can_fit(
-            resolved_arena,
-            resolved_arena[found_ty],
-            resolved_arena[expected_ty],
-        ),
+        ) => {
+            matches!(
+                (found_mutable, expected_mutable),
+                (true, _) | (false, false)
+            ) && can_fit(
+                resolved_arena,
+                resolved_arena[found_ty],
+                resolved_arena[expected_ty],
+            )
+        }
         (
             ResolvedTy::Array {
                 sub_ty: found_ty,

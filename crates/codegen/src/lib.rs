@@ -141,6 +141,7 @@ pub fn link_to_exec(path: &PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use core::panic;
     use std::{env, fs, path::Path};
 
     use ast::AstNode;
@@ -172,15 +173,21 @@ mod tests {
             let text = &fs::read_to_string(file).unwrap();
 
             let tokens = lexer::lex(text);
-            let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
+            let parse = parser::parse_source_file(&tokens, text);
+            assert_eq!(parse.errors(), &[]);
+
+            let tree = parse.into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
-            let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+            let (index, diagnostics) =
+                hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+
+            assert_eq!(diagnostics, vec![]);
 
             let module = hir::Name(interner.intern(module_name));
 
             world_index.add_module(module, index);
 
-            let (bodies, _) = hir::lower(
+            let (bodies, diagnostics) = hir::lower(
                 root,
                 &tree,
                 module,
@@ -189,6 +196,8 @@ mod tests {
                 &mut twr_arena,
                 &mut interner,
             );
+            assert_eq!(diagnostics, vec![]);
+
             bodies_map.insert(module, bodies);
         }
 
@@ -196,12 +205,18 @@ mod tests {
         let text = &fs::read_to_string(main_file).unwrap();
         let module = hir::Name(interner.intern(main_name));
         let tokens = lexer::lex(text);
-        let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
+        let parse = parser::parse_source_file(&tokens, text);
+        assert_eq!(parse.errors(), &[]);
+
+        let tree = parse.into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+        let (index, diagnostics) =
+            hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+
+        assert_eq!(diagnostics, vec![]);
         world_index.add_module(module, index);
 
-        let (bodies, _) = hir::lower(
+        let (bodies, diagnostics) = hir::lower(
             root,
             &tree,
             module,
@@ -210,12 +225,14 @@ mod tests {
             &mut twr_arena,
             &mut interner,
         );
+        assert_eq!(diagnostics, vec![]);
         bodies_map.insert(module, bodies);
 
         let mut resolved_arena = Arena::new();
 
-        let (inference_result, _) =
+        let (inference_result, diagnostics) =
             InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena).finish();
+        assert_eq!(diagnostics, vec![]);
 
         let bytes = compile_obj(
             true,

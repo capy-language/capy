@@ -1,7 +1,11 @@
 use hir::{Expr, TyWithRange};
 use la_arena::{Arena, Idx};
+use text_size::TextRange;
 
-use crate::{cast, InferenceCtx, ResolvedTy, TyDiagnostic, TyDiagnosticKind};
+use crate::{
+    cast, InferenceCtx, ResolvedTy, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
+    TyDiagnosticKind,
+};
 
 macro_rules! current_bodies {
     ($self:ident) => {
@@ -16,6 +20,13 @@ macro_rules! current_module {
             .get_mut(&$self.current_module.unwrap())
             .unwrap()
     };
+}
+
+enum ExprMutability {
+    Mutable,
+    ImmutableBinding(TextRange),
+    ImmutableRef(TextRange),
+    CannotMutate(TextRange),
 }
 
 impl InferenceCtx<'_> {
@@ -77,16 +88,23 @@ impl InferenceCtx<'_> {
             }
             (
                 ResolvedTy::Pointer {
+                    mutable: found_mutable,
                     sub_ty: found_sub_ty,
                 },
                 ResolvedTy::Pointer {
+                    mutable: expected_mutable,
                     sub_ty: expected_sub_ty,
                 },
-            ) => Self::is_weak_type_replacable(
-                resolved_arena,
-                resolved_arena[found_sub_ty],
-                resolved_arena[expected_sub_ty],
-            ),
+            ) => {
+                matches!(
+                    (found_mutable, expected_mutable),
+                    (true, _) | (false, false)
+                ) && Self::is_weak_type_replacable(
+                    resolved_arena,
+                    resolved_arena[found_sub_ty],
+                    resolved_arena[expected_sub_ty],
+                )
+            }
             (
                 ResolvedTy::Distinct { uid: found_uid, .. },
                 ResolvedTy::Distinct {
@@ -102,7 +120,7 @@ impl InferenceCtx<'_> {
 
     fn get_ptr_sub_ty(resolved_arena: &Arena<ResolvedTy>, ptr: ResolvedTy) -> ResolvedTy {
         match ptr {
-            ResolvedTy::Pointer { sub_ty } => resolved_arena[sub_ty],
+            ResolvedTy::Pointer { sub_ty, .. } => resolved_arena[sub_ty],
             ResolvedTy::Distinct { ty, .. } => {
                 Self::get_ptr_sub_ty(resolved_arena, resolved_arena[ty])
             }
@@ -119,16 +137,14 @@ impl InferenceCtx<'_> {
     ///
     /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
     fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: ResolvedTy) -> bool {
+        let found_ty = current_module!(self).expr_tys[expr];
+
         // println!(
         //     "replace_weak_tys {:?} {:?}",
-        //     current_module!(self).expr_tys[expr],
+        //     found_ty,
         //     new_ty
         // );
-        if !Self::is_weak_type_replacable(
-            self.resolved_arena,
-            current_module!(self).expr_tys[expr],
-            new_ty,
-        ) {
+        if !Self::is_weak_type_replacable(self.resolved_arena, found_ty, new_ty) {
             // println!("no");
             return false;
         }
@@ -152,10 +168,22 @@ impl InferenceCtx<'_> {
                 }
             }
             Expr::Deref { pointer } => {
-                let new_ty = self.resolved_arena.alloc(new_ty);
-                self.replace_weak_tys(pointer, ResolvedTy::Pointer { sub_ty: new_ty });
+                fn get_mutable(ty: ResolvedTy, resolved_arena: &Arena<ResolvedTy>) -> bool {
+                    match ty {
+                        ResolvedTy::Pointer { mutable, .. } => mutable,
+                        ResolvedTy::Distinct { ty, .. } => {
+                            get_mutable(resolved_arena[ty], resolved_arena)
+                        }
+                        _ => false, // if we aren't dereferencing a pointer, there has been an error
+                    }
+                }
+
+                let mutable = get_mutable(found_ty, self.resolved_arena);
+
+                let sub_ty = self.resolved_arena.alloc(new_ty);
+                self.replace_weak_tys(pointer, ResolvedTy::Pointer { mutable, sub_ty });
             }
-            Expr::Ref { expr } => {
+            Expr::Ref { expr, .. } => {
                 let sub_ty = Self::get_ptr_sub_ty(self.resolved_arena, new_ty);
                 self.replace_weak_tys(expr, sub_ty);
             }
@@ -175,6 +203,43 @@ impl InferenceCtx<'_> {
         }
 
         true
+    }
+
+    /// `derefs` allows certain expressions to be mutable
+    /// only if they are being mutated through a deref or index
+    fn get_mutability(&self, expr: Idx<Expr>, derefs: i32) -> ExprMutability {
+        match &current_bodies!(self)[expr] {
+            Expr::Array { .. } => ExprMutability::Mutable,
+            Expr::Ref { mutable, .. } => {
+                if *mutable && derefs > 0 {
+                    ExprMutability::Mutable
+                } else {
+                    ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                }
+            }
+            Expr::Deref { pointer } => self.get_mutability(*pointer, derefs + 1),
+            Expr::Index { array, .. } => self.get_mutability(*array, derefs + 1),
+            Expr::Block {
+                tail_expr: Some(tail_expr),
+                ..
+            } => self.get_mutability(*tail_expr, derefs),
+            Expr::Local(local_def) if derefs == 0 => {
+                if current_bodies!(self)[*local_def].mutable {
+                    ExprMutability::Mutable
+                } else {
+                    ExprMutability::ImmutableBinding(current_bodies!(self)[*local_def].range)
+                }
+            }
+            Expr::Local(local_def) if derefs > 0 => {
+                let local_def = &current_bodies!(self)[*local_def];
+
+                self.get_mutability(local_def.value, derefs)
+            }
+            Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
+            Expr::Global(_) | Expr::Param { .. } | _ => {
+                ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
+            }
+        }
     }
 
     fn infer_stmt(&mut self, stmt: Idx<hir::Stmt>) -> Option<ResolvedTy> {
@@ -210,6 +275,45 @@ impl InferenceCtx<'_> {
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &current_bodies!(self)[*assign];
+
+                match &current_bodies!(self)[assign_body.source] {
+                    Expr::Missing => {}
+                    Expr::Deref { .. } | Expr::Index { .. } | Expr::Local(_) => {
+                        let help = match self.get_mutability(assign_body.source, 0) {
+                            ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::FoundToBeImmutable,
+                                range,
+                            }),
+                            ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableBinding,
+                                range,
+                            }),
+                            ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableRef,
+                                range,
+                            }),
+                            ExprMutability::Mutable => None,
+                        };
+
+                        if help.is_some() {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::CannotMutate,
+                                module: self.current_module.unwrap(),
+                                range: assign_body.range,
+                                help,
+                            })
+                        }
+                    }
+                    // Expr::Global(_) => {}, assignment to globals isn't allowed
+                    // Expr::Param { idx } => {}, assignment to parameters isn't allowed
+                    _ => self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::CannotMutate,
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(assign_body.source),
+                        help: None, // todo: maybe change this
+                    }),
+                }
+
                 let source_ty = self.infer_expr(assign_body.source);
                 let value_ty = self.infer_expr(assign_body.value);
 
@@ -267,6 +371,7 @@ impl InferenceCtx<'_> {
                                 },
                                 module: self.current_module.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
+                                help: None,
                             });
                         }
                     }
@@ -281,6 +386,7 @@ impl InferenceCtx<'_> {
                         kind: TyDiagnosticKind::IndexMismatch { found: source_ty },
                         module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
                     });
 
                     ResolvedTy::Unknown
@@ -305,6 +411,7 @@ impl InferenceCtx<'_> {
                                     },
                                     module: self.current_module.unwrap(),
                                     range: current_bodies!(self).range_for_expr(expr),
+                                    help: None,
                                 });
                             }
 
@@ -316,13 +423,44 @@ impl InferenceCtx<'_> {
                     }
                 }
             }
-            hir::Expr::Ref { expr: sub_expr } => {
+            hir::Expr::Ref {
+                mutable,
+                expr: sub_expr,
+            } => {
+                if *mutable {
+                    let help = match self.get_mutability(*sub_expr, 0) {
+                        ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
+                            kind: TyDiagnosticHelpKind::FoundToBeImmutable,
+                            range,
+                        }),
+                        ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
+                            kind: TyDiagnosticHelpKind::ImmutableBinding,
+                            range,
+                        }),
+                        ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
+                            kind: TyDiagnosticHelpKind::ImmutableRef,
+                            range,
+                        }),
+                        ExprMutability::Mutable => None,
+                    };
+
+                    if help.is_some() {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::MutableRefToImmutableData,
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help,
+                        })
+                    }
+                }
+
                 let sub_ty = self.infer_expr(*sub_expr);
 
                 if matches!(sub_ty, ResolvedTy::Type) {
                     ResolvedTy::Type
                 } else {
                     ResolvedTy::Pointer {
+                        mutable: *mutable,
                         sub_ty: self.resolved_arena.alloc(sub_ty),
                     }
                 }
@@ -331,12 +469,13 @@ impl InferenceCtx<'_> {
                 let deref_ty = self.infer_expr(*pointer);
 
                 match deref_ty {
-                    ResolvedTy::Pointer { sub_ty } => self.resolved_arena[sub_ty],
+                    ResolvedTy::Pointer { sub_ty, .. } => self.resolved_arena[sub_ty],
                     _ => {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::DerefMismatch { found: deref_ty },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
                         });
 
                         ResolvedTy::Unknown
@@ -380,6 +519,7 @@ impl InferenceCtx<'_> {
                             },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
                         });
                     }
 
@@ -402,6 +542,7 @@ impl InferenceCtx<'_> {
                         },
                         module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
                     });
                     default_ty
                 }
@@ -463,6 +604,7 @@ impl InferenceCtx<'_> {
                             },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
                         });
 
                         body_ty
@@ -473,6 +615,7 @@ impl InferenceCtx<'_> {
                             kind: TyDiagnosticKind::MissingElse { expected: body_ty },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
                         });
                     }
 
@@ -541,6 +684,7 @@ impl InferenceCtx<'_> {
                         kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
                         module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
                     });
 
                     ResolvedTy::Unknown
@@ -593,6 +737,7 @@ impl InferenceCtx<'_> {
                 kind: TyDiagnosticKind::Mismatch { expected, found },
                 module: self.current_module.unwrap(),
                 range: current_bodies!(self).range_for_expr(expr),
+                help: None,
             });
 
             false

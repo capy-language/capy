@@ -490,7 +490,7 @@ impl FunctionCompiler<'_> {
                     })
                 }
             }
-            hir::Expr::Ref { expr } => {
+            hir::Expr::Ref { expr, .. } => {
                 // references to locals or globals should return the actual memory address of the local or global
                 if matches!(
                     self.bodies_map[&self.fqn.module][expr],

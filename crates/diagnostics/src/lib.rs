@@ -5,7 +5,7 @@ use hir::{
     IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind,
     TyParseError,
 };
-use hir_ty::{ResolvedTy, TyDiagnostic};
+use hir_ty::{ResolvedTy, TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use la_arena::Arena;
 use line_index::{ColNr, LineIndex, LineNr};
@@ -69,6 +69,7 @@ impl Diagnostic {
         const ANSI_YELLOW: &str = "\x1B[1;93m";
         const ANSI_RED: &str = "\x1B[1;91m";
         const ANSI_WHITE: &str = "\x1B[1;97m";
+        const ANSI_CYAN: &str = "\x1B[1;96m";
 
         let severity = match self.severity() {
             Severity::Warning => format!("{}warning", ANSI_YELLOW),
@@ -85,6 +86,27 @@ impl Diagnostic {
         input_snippet(
             filename, input, start_line, start_col, end_line, end_col, range, &mut lines,
         );
+
+        if let Some(help) = self.help() {
+            lines.push(format!(
+                "{}help{}: {}",
+                ANSI_CYAN,
+                ANSI_WHITE,
+                help.message(resolved_arena, interner)
+            ));
+
+            let range = help.range();
+
+            let (start_line, start_col) = line_index.line_col(range.start());
+
+            // we subtract 1 since end_line_column is inclusive,
+            // unlike TextRange which is always exclusive
+            let (end_line, end_col) = line_index.line_col(range.end() - TextSize::from(1));
+
+            input_snippet(
+                filename, input, start_line, start_col, end_line, end_col, range, &mut lines,
+            );
+        }
 
         lines
     }
@@ -123,6 +145,36 @@ impl Diagnostic {
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
             Repr::Ty(d) => ty_diagnostic_message(d, resolved_arena, interner),
+        }
+    }
+
+    pub fn help(&self) -> Option<HelpDiagnostic> {
+        match &self.0 {
+            Repr::Syntax(SyntaxError { .. }) => None,
+            Repr::Validation(ValidationDiagnostic { .. }) => None,
+            Repr::Indexing(IndexingDiagnostic { .. }) => None,
+            Repr::Lowering(LoweringDiagnostic { .. }) => None,
+            Repr::Ty(TyDiagnostic { help, .. }) => {
+                help.as_ref().map(|help| HelpDiagnostic::Ty(&help))
+            }
+        }
+    }
+}
+
+pub enum HelpDiagnostic<'a> {
+    Ty(&'a TyDiagnosticHelp),
+}
+
+impl HelpDiagnostic<'_> {
+    pub fn range(&self) -> TextRange {
+        match self {
+            HelpDiagnostic::Ty(d) => d.range,
+        }
+    }
+
+    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+        match &self {
+            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d),
         }
     }
 }
@@ -343,9 +395,6 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             format!("undefined module `{}`", interner.lookup(*name))
         }
         LoweringDiagnosticKind::MutableGlobal => "globals cannot be mutable".to_string(),
-        LoweringDiagnosticKind::SetImmutable { name } => {
-            format!("`{}` is an immutable variable", interner.lookup(*name))
-        }
         LoweringDiagnosticKind::MismatchedArgCount {
             name,
             expected,
@@ -474,6 +523,28 @@ fn ty_diagnostic_message(
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
         hir_ty::TyDiagnosticKind::MutableTy => "types cannot be mutable".to_string(),
+        hir_ty::TyDiagnosticKind::MutateBinding => "cannot mutate a `::` binding".to_string(),
+        hir_ty::TyDiagnosticKind::MutateImmutableRef => {
+            "cannot mutate an immutable reference. consider changing it to `^mut`".to_string()
+        }
+        hir_ty::TyDiagnosticKind::CannotMutate => "cannot mutate immutable data".to_string(),
+        hir_ty::TyDiagnosticKind::MutableRefToImmutableData => {
+            "cannot get a `^mut` to immutable data".to_string()
+        }
+    }
+}
+
+fn ty_diagnostic_help_message(d: &TyDiagnosticHelp) -> String {
+    match &d.kind {
+        hir_ty::TyDiagnosticHelpKind::FoundToBeImmutable => {
+            "this is found to be immutable".to_string()
+        }
+        hir_ty::TyDiagnosticHelpKind::ImmutableBinding => {
+            "`::` bindings are immutable. consider changing it to `:=`".to_string()
+        }
+        hir_ty::TyDiagnosticHelpKind::ImmutableRef => {
+            "this is an immutable reference. consider changing it to `^mut`".to_string()
+        }
     }
 }
 
@@ -485,6 +556,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Else => "`else`",
         TokenKind::While => "`while`",
         TokenKind::Loop => "`loop`",
+        TokenKind::Mut => "`mut`",
         TokenKind::Distinct => "`distinct`",
         TokenKind::Extern => "`extern`",
         TokenKind::Bool => "boolean",

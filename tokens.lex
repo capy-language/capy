@@ -5,6 +5,8 @@ Else = 'else'
 While = 'while'
 Loop = 'loop'
 Distinct = 'distinct'
+// hello
+Mut = 'mut'
 Extern = 'extern'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
 Int = /[0-9]+/

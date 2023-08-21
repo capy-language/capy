@@ -34,7 +34,12 @@ capy run <file1.capy> <file2.capy> ...
 
 You can replace `run` with `build` to output only the final executable.
 
-## Extra Notes
+## Limitations
+
+If you want to use libc functions, define them with `extern` as above.
+Varargs do not work, but this can be worked around,
+e.g. by explicity defining `printf` to take 3 arguments.
+This is done numerous times in the `examples` folder.
 
 You have to manually include all the files your code references in the `capy` command, although this might change in the future.
 Frankly, a lot of this might change in the future.

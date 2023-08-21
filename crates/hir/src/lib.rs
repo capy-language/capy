@@ -75,6 +75,7 @@ pub enum TyWithRange {
         range: TextRange,
     },
     Pointer {
+        mutable: bool,
         sub_ty: Idx<TyWithRange>,
         range: TextRange,
     },
@@ -183,6 +184,7 @@ impl TyWithRange {
                 )?;
 
                 Ok(TyWithRange::Pointer {
+                    mutable: ref_expr.mutable(tree).is_some(),
                     sub_ty: twr_arena.alloc(sub_ty),
                     range: ref_expr.range(tree),
                 })

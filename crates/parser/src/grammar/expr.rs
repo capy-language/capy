@@ -198,6 +198,10 @@ fn parse_ref(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     let m = p.start();
     p.bump();
 
+    if p.at(TokenKind::Mut) {
+        p.bump();
+    }
+
     parse_expr_bp(p, 14, recovery_set, "operand");
 
     m.complete(p, NodeKind::RefExpr)

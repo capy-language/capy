@@ -37,6 +37,7 @@ pub enum Expr {
         ty: TyWithRange,
     },
     Ref {
+        mutable: bool,
         expr: Idx<Expr>,
     },
     Deref {
@@ -103,12 +104,14 @@ pub struct LocalDef {
     pub ty: TyWithRange,
     pub value: Idx<Expr>,
     pub ast: ast::Define,
+    pub range: TextRange,
 }
 
 #[derive(Clone)]
 pub struct Assign {
     pub source: Idx<Expr>,
     pub value: Idx<Expr>,
+    pub range: TextRange,
     pub ast: ast::Assign,
 }
 
@@ -167,9 +170,6 @@ pub enum LoweringDiagnosticKind {
         name: Key,
     },
     MutableGlobal,
-    SetImmutable {
-        name: Key,
-    },
     MismatchedArgCount {
         name: Key,
         found: u32,
@@ -366,6 +366,7 @@ impl<'a> Ctx<'a> {
             ty,
             value,
             ast: local_def,
+            range: local_def.range(self.tree),
         });
 
         if let Some(ident) = local_def.name(self.tree) {
@@ -383,6 +384,7 @@ impl<'a> Ctx<'a> {
         let id = self.bodies.assigns.alloc(Assign {
             source,
             value,
+            range: assign.range(self.tree),
             ast: assign,
         });
 
@@ -489,6 +491,7 @@ impl<'a> Ctx<'a> {
                     ty: {
                         let sub_ty = self.twr_arena.alloc(sub_ty);
                         self.twr_arena.alloc(TyWithRange::Pointer {
+                            mutable: ref_expr.mutable(self.tree).is_some(),
                             sub_ty,
                             range: ref_expr.range(self.tree),
                         })
@@ -512,7 +515,10 @@ impl<'a> Ctx<'a> {
 
         let expr = self.lower_expr(ref_expr.expr(self.tree));
 
-        Expr::Ref { expr }
+        Expr::Ref {
+            mutable: ref_expr.mutable(self.tree).is_some(),
+            expr,
+        }
     }
 
     fn lower_deref_expr(&mut self, deref_expr: ast::DerefExpr) -> Expr {
@@ -1334,8 +1340,12 @@ impl Bodies {
                     s.push_str(ty.display(ty_arena, interner).as_str());
                 }
 
-                Expr::Ref { expr } => {
+                Expr::Ref { mutable, expr } => {
                     s.push('^');
+
+                    if *mutable {
+                        s.push_str("mut ");
+                    }
 
                     write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
                 }
