@@ -2,31 +2,53 @@ use std::mem;
 
 pub struct Interner(lasso::Rodeo);
 
-impl Default for Interner {
-    fn default() -> Self {
-        let mut interner = Self(lasso::Rodeo::default());
-        interner.intern("void");
-        interner.intern("isize");
-        interner.intern("i128");
-        interner.intern("i64");
-        interner.intern("i32");
-        interner.intern("i16");
-        interner.intern("i8");
-        interner.intern("usize");
-        interner.intern("u128");
-        interner.intern("u64");
-        interner.intern("u32");
-        interner.intern("u16");
-        interner.intern("u8");
-        interner.intern("bool");
-        interner.intern("string");
-        interner.intern("type");
-        interner
-    }
+macro_rules! impl_interner {
+    ($($keyword:ident => $text:expr,)*) => {
+        impl Default for Interner {
+            fn default() -> Self {
+                let mut interner = Self(lasso::Rodeo::default());
+                $(interner.intern($text);)*
+                interner
+            }
+        }
+
+        impl Key {
+            impl_interner!(@step 1u32, $($keyword,)*);
+        }
+    };
+    (@step $idx:expr, $head:ident, $($tail:ident,)*) => {
+        pub fn $head() -> Self {
+            Self::from_raw($idx)
+        }
+
+        impl_interner!(@step ($idx + 1u32), $($tail,)*);
+    };
+    (@step $_idx:expr,) => {};
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(lasso::Spur);
+
+impl_interner! {
+    void => "void",
+    isize => "isize",
+    i128 => "i128",
+    i64 => "i64",
+    i32 => "i32",
+    i16 => "i16",
+    i8 => "i8",
+    usize => "usize",
+    u128 => "u128",
+    u64 => "u64",
+    u32 => "u32",
+    u16 => "u16",
+    u8 => "u8",
+    f64 => "f64",
+    f32 => "f32",
+    bool => "bool",
+    string => "string",
+    r#type => "type",
+}
 
 impl Interner {
     pub fn intern(&mut self, s: &str) -> Key {
@@ -39,70 +61,6 @@ impl Interner {
 }
 
 impl Key {
-    pub fn void() -> Self {
-        Self::from_raw(1)
-    }
-
-    pub fn isize() -> Self {
-        Self::from_raw(2)
-    }
-
-    pub fn i128() -> Self {
-        Self::from_raw(3)
-    }
-
-    pub fn i64() -> Self {
-        Self::from_raw(4)
-    }
-
-    pub fn i32() -> Self {
-        Self::from_raw(5)
-    }
-
-    pub fn i16() -> Self {
-        Self::from_raw(6)
-    }
-
-    pub fn i8() -> Self {
-        Self::from_raw(7)
-    }
-
-    pub fn usize() -> Self {
-        Self::from_raw(8)
-    }
-
-    pub fn u128() -> Self {
-        Self::from_raw(9)
-    }
-
-    pub fn u64() -> Self {
-        Self::from_raw(10)
-    }
-
-    pub fn u32() -> Self {
-        Self::from_raw(11)
-    }
-
-    pub fn u16() -> Self {
-        Self::from_raw(12)
-    }
-
-    pub fn u8() -> Self {
-        Self::from_raw(13)
-    }
-
-    pub fn bool() -> Self {
-        Self::from_raw(14)
-    }
-
-    pub fn string() -> Self {
-        Self::from_raw(15)
-    }
-
-    pub fn r#type() -> Self {
-        Self::from_raw(16)
-    }
-
     pub fn from_raw(raw: u32) -> Self {
         unsafe { Self(mem::transmute(raw)) }
     }

@@ -2,6 +2,89 @@ use la_arena::Arena;
 
 use crate::ResolvedTy;
 
+pub(crate) struct BinaryOutputTy {
+    pub(crate) max_ty: ResolvedTy,
+    pub(crate) final_output_ty: ResolvedTy,
+}
+
+pub(crate) trait TypedBinaryOp {
+    fn can_perform(&self, resolved_arena: &Arena<ResolvedTy>, ty: ResolvedTy) -> bool;
+
+    fn get_possible_output_ty(
+        &self,
+        resolved_arena: &Arena<ResolvedTy>,
+        first: ResolvedTy,
+        second: ResolvedTy,
+    ) -> Option<BinaryOutputTy>;
+
+    fn default_ty(&self) -> ResolvedTy;
+}
+
+impl TypedBinaryOp for hir::BinaryOp {
+    /// should check with `can_perform` before actually using the type emitted from this function
+    fn get_possible_output_ty(
+        &self,
+        resolved_arena: &Arena<ResolvedTy>,
+        first: ResolvedTy,
+        second: ResolvedTy,
+    ) -> Option<BinaryOutputTy> {
+        max_cast(resolved_arena, first, second).map(|max_ty| BinaryOutputTy {
+            max_ty,
+            final_output_ty: match self {
+                hir::BinaryOp::Add
+                | hir::BinaryOp::Sub
+                | hir::BinaryOp::Mul
+                | hir::BinaryOp::Div
+                | hir::BinaryOp::Mod => max_ty,
+                hir::BinaryOp::Lt
+                | hir::BinaryOp::Gt
+                | hir::BinaryOp::Le
+                | hir::BinaryOp::Ge
+                | hir::BinaryOp::Eq
+                | hir::BinaryOp::Ne
+                | hir::BinaryOp::And
+                | hir::BinaryOp::Or => ResolvedTy::Bool,
+            },
+        })
+    }
+
+    fn can_perform(&self, resolved_arena: &Arena<ResolvedTy>, found: ResolvedTy) -> bool {
+        let expected: &[ResolvedTy] = match self {
+            hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+            }
+            hir::BinaryOp::Mod => &[ResolvedTy::IInt(0)],
+            hir::BinaryOp::Lt
+            | hir::BinaryOp::Gt
+            | hir::BinaryOp::Le
+            | hir::BinaryOp::Ge
+            | hir::BinaryOp::Eq
+            | hir::BinaryOp::Ne => &[ResolvedTy::IInt(0)],
+            hir::BinaryOp::And | hir::BinaryOp::Or => &[ResolvedTy::Bool],
+        };
+
+        expected
+            .iter()
+            .any(|expected| has_semantics_of(resolved_arena, found, *expected))
+    }
+
+    fn default_ty(&self) -> ResolvedTy {
+        match self {
+            hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+                ResolvedTy::IInt(0)
+            }
+            hir::BinaryOp::Mod => ResolvedTy::IInt(0),
+            hir::BinaryOp::Lt
+            | hir::BinaryOp::Gt
+            | hir::BinaryOp::Le
+            | hir::BinaryOp::Ge
+            | hir::BinaryOp::Eq
+            | hir::BinaryOp::Ne => ResolvedTy::Bool,
+            hir::BinaryOp::And | hir::BinaryOp::Or => ResolvedTy::Bool,
+        }
+    }
+}
+
 /// automagically converts two types into the type that can represent both.
 ///
 /// this function accepts unknown types.
@@ -48,6 +131,32 @@ pub(crate) fn max_cast(
                 // );
                 None
             }
+        }
+        (ResolvedTy::IInt(0) | ResolvedTy::UInt(0), ResolvedTy::Float(float_bit_width))
+        | (ResolvedTy::Float(float_bit_width), ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
+            Some(ResolvedTy::Float(float_bit_width))
+        }
+        (
+            ResolvedTy::IInt(int_bit_width) | ResolvedTy::UInt(int_bit_width),
+            ResolvedTy::Float(float_bit_width),
+        )
+        | (
+            ResolvedTy::Float(float_bit_width),
+            ResolvedTy::IInt(int_bit_width) | ResolvedTy::UInt(int_bit_width),
+        ) => {
+            if int_bit_width < 64 && float_bit_width == 0 {
+                // the int bit width must be smaller than the final float which can only go up to 64 bits,
+                // the int bit width is doubled, to go up to the next largest bit width, and then maxed
+                // with 32 to ensure that we don't accidentally create an f16 type.
+                Some(ResolvedTy::Float((int_bit_width * 2).max(32)))
+            } else if int_bit_width < float_bit_width {
+                Some(ResolvedTy::Float(float_bit_width))
+            } else {
+                None
+            }
+        }
+        (ResolvedTy::Float(first_bit_width), ResolvedTy::Float(second_bit_width)) => {
+            Some(ResolvedTy::Float(first_bit_width.max(second_bit_width)))
         }
         (
             ResolvedTy::Distinct {
@@ -99,6 +208,9 @@ pub(crate) fn max_cast(
 ///
 /// this function panics when given an unknown type
 ///
+/// an expected int typw with a bit width of `0` represents a "wildcard"
+/// and will match to any found int type
+///
 /// diagram stolen from vlang docs bc i liked it
 pub(crate) fn can_fit(
     resolved_arena: &Arena<ResolvedTy>,
@@ -123,6 +235,13 @@ pub(crate) fn can_fit(
         (ResolvedTy::IInt(_), ResolvedTy::UInt(_)) => false,
         (ResolvedTy::UInt(found_bit_width), ResolvedTy::IInt(expected_bit_width)) => {
             expected_bit_width == 0 || found_bit_width < expected_bit_width
+        }
+        (
+            ResolvedTy::IInt(found_bit_width) | ResolvedTy::UInt(found_bit_width),
+            ResolvedTy::Float(expected_bit_width),
+        ) => found_bit_width == 0 || found_bit_width < expected_bit_width,
+        (ResolvedTy::Float(found_bit_width), ResolvedTy::Float(expected_bit_width)) => {
+            expected_bit_width == 0 || found_bit_width <= expected_bit_width
         }
         (
             ResolvedTy::Pointer {
@@ -184,8 +303,8 @@ pub(crate) fn primitive_castable(
 
     match (from, to) {
         (
-            ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
-            ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
+            ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
+            ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
         ) => true,
         (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
             primitive_castable(resolved_arena, resolved_arena[from], resolved_arena[to])
@@ -228,9 +347,5 @@ pub(crate) fn has_semantics_of(
         _ => {}
     }
 
-    if can_fit(resolved_arena, found, expected) {
-        return true;
-    }
-
-    false
+    can_fit(resolved_arena, found, expected)
 }

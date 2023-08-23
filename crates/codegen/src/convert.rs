@@ -8,22 +8,50 @@ use crate::{CapyFnSignature, CraneliftSignature};
 
 #[derive(Clone, Copy)]
 pub(crate) enum CompType {
-    Int(IntType),
+    Number(NumberType),
     Pointer(types::Type),
     Void,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct IntType {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NumberType {
     pub(crate) ty: types::Type,
-    pub(crate) bit_width: u8,
+    pub(crate) float: bool,
     pub(crate) signed: bool,
+}
+
+impl NumberType {
+    pub(crate) fn bit_width(&self) -> u8 {
+        self.ty.bits() as u8
+    }
+
+    pub(crate) fn max(&self, other: NumberType) -> NumberType {
+        let max_bit_width = self.bit_width().max(other.bit_width());
+
+        let max_ty = match (self.float || other.float, max_bit_width) {
+            (true, 32) => types::F32,
+            (true, 64) => types::F64,
+            (true, _) => unreachable!(),
+            (false, 8) => types::I8,
+            (false, 16) => types::I16,
+            (false, 32) => types::I32,
+            (false, 64) => types::I64,
+            (false, 128) => types::I128,
+            (false, _) => unreachable!(),
+        };
+
+        NumberType {
+            ty: max_ty,
+            float: self.float || other.float,
+            signed: self.signed || other.signed,
+        }
+    }
 }
 
 impl CompType {
     #[allow(unused)]
-    pub(crate) fn is_int_type(&self) -> bool {
-        matches!(self, CompType::Int(_))
+    pub(crate) fn is_number_type(&self) -> bool {
+        matches!(self, CompType::Number(_))
     }
 
     pub(crate) fn is_pointer_type(&self) -> bool {
@@ -37,15 +65,15 @@ impl CompType {
 
     pub(crate) fn into_real_type(self) -> Option<types::Type> {
         match self {
-            CompType::Int(IntType { ty, .. }) => Some(ty),
+            CompType::Number(NumberType { ty, .. }) => Some(ty),
             CompType::Pointer(ty) => Some(ty),
             _ => None,
         }
     }
 
-    pub(crate) fn into_int_type(self) -> Option<IntType> {
+    pub(crate) fn into_number_type(self) -> Option<NumberType> {
         match self {
-            CompType::Int(int_ty) => Some(int_ty),
+            CompType::Number(number_ty) => Some(number_ty),
             _ => None,
         }
     }
@@ -59,85 +87,69 @@ impl ToCompType for ResolvedTy {
     fn to_comp_type(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> CompType {
         match self {
             hir_ty::ResolvedTy::NotYetResolved | hir_ty::ResolvedTy::Unknown => unreachable!(),
-            hir_ty::ResolvedTy::IInt(bit_width) => match *bit_width {
-                u32::MAX => CompType::Int(IntType {
-                    ty: module.target_config().pointer_type(),
-                    bit_width: module.target_config().pointer_width.bits(),
+            hir_ty::ResolvedTy::IInt(bit_width) | hir_ty::ResolvedTy::UInt(bit_width) => {
+                let signed = matches!(self, hir_ty::ResolvedTy::IInt(_));
+
+                match *bit_width {
+                    u32::MAX => CompType::Number(NumberType {
+                        ty: module.target_config().pointer_type(),
+                        float: false,
+                        signed,
+                    }),
+                    0 => CompType::Number(NumberType {
+                        ty: types::I32,
+                        float: false,
+                        signed,
+                    }),
+                    8 => CompType::Number(NumberType {
+                        ty: types::I8,
+                        float: false,
+                        signed,
+                    }),
+                    16 => CompType::Number(NumberType {
+                        ty: types::I16,
+                        float: false,
+                        signed,
+                    }),
+                    32 => CompType::Number(NumberType {
+                        ty: types::I32,
+                        float: false,
+                        signed,
+                    }),
+                    64 => CompType::Number(NumberType {
+                        ty: types::I64,
+                        float: false,
+                        signed,
+                    }),
+                    128 => CompType::Number(NumberType {
+                        ty: types::I128,
+                        float: false,
+                        signed,
+                    }),
+                    _ => unreachable!(),
+                }
+            }
+            hir_ty::ResolvedTy::Float(bit_width) => match bit_width {
+                0 => CompType::Number(NumberType {
+                    ty: types::F32,
+                    float: true,
                     signed: true,
                 }),
-                0 => CompType::Int(IntType {
-                    ty: types::I32,
-                    bit_width: 32,
+                32 => CompType::Number(NumberType {
+                    ty: types::F32,
+                    float: true,
                     signed: true,
                 }),
-                8 => CompType::Int(IntType {
-                    ty: types::I8,
-                    bit_width: 8,
-                    signed: true,
-                }),
-                16 => CompType::Int(IntType {
-                    ty: types::I16,
-                    bit_width: 16,
-                    signed: true,
-                }),
-                32 => CompType::Int(IntType {
-                    ty: types::I32,
-                    bit_width: 32,
-                    signed: true,
-                }),
-                64 => CompType::Int(IntType {
-                    ty: types::I64,
-                    bit_width: 64,
-                    signed: true,
-                }),
-                128 => CompType::Int(IntType {
-                    ty: types::I128,
-                    bit_width: 128,
+                64 => CompType::Number(NumberType {
+                    ty: types::F32,
+                    float: true,
                     signed: true,
                 }),
                 _ => unreachable!(),
             },
-            hir_ty::ResolvedTy::UInt(bit_width) => match *bit_width {
-                u32::MAX => CompType::Int(IntType {
-                    ty: module.target_config().pointer_type(),
-                    bit_width: module.target_config().pointer_width.bits(),
-                    signed: false,
-                }),
-                0 => CompType::Int(IntType {
-                    ty: types::I32,
-                    bit_width: 32,
-                    signed: false,
-                }),
-                8 => CompType::Int(IntType {
-                    ty: types::I8,
-                    bit_width: 8,
-                    signed: false,
-                }),
-                16 => CompType::Int(IntType {
-                    ty: types::I16,
-                    bit_width: 16,
-                    signed: false,
-                }),
-                32 => CompType::Int(IntType {
-                    ty: types::I32,
-                    bit_width: 32,
-                    signed: false,
-                }),
-                64 => CompType::Int(IntType {
-                    ty: types::I64,
-                    bit_width: 64,
-                    signed: false,
-                }),
-                128 => CompType::Int(IntType {
-                    ty: types::I128,
-                    bit_width: 128,
-                    signed: false,
-                }),
-                _ => unreachable!(),
-            },
-            hir_ty::ResolvedTy::Bool => CompType::Int(IntType {
+            hir_ty::ResolvedTy::Bool => CompType::Number(NumberType {
                 ty: types::I8,
-                bit_width: 8,
+                float: false,
                 signed: false,
             }),
             hir_ty::ResolvedTy::String => CompType::Pointer(module.target_config().pointer_type()),
@@ -232,7 +244,9 @@ impl ToCompSize for ResolvedTy {
             }
             ResolvedTy::IInt(0) | ResolvedTy::UInt(0) => 32 / 8,
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width) => bit_width / 8,
-            ResolvedTy::Bool => 8, // bools are a u8
+            ResolvedTy::Float(0) => 32 / 8,
+            ResolvedTy::Float(bit_width) => bit_width / 8,
+            ResolvedTy::Bool => 8, // bools are u8's
             ResolvedTy::String => module.target_config().pointer_bytes() as u32,
             ResolvedTy::Array { size, sub_ty } => {
                 resolved_arena[*sub_ty].get_size_in_bytes(module, resolved_arena) * *size as u32

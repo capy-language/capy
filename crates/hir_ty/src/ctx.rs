@@ -1,9 +1,13 @@
-use hir::{Expr, TyWithRange};
+use std::collections::HashSet;
+
+use hir::{Expr, LocalDef, TyWithRange};
 use la_arena::{Arena, Idx};
+use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    cast, InferenceCtx, ResolvedTy, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
+    cast::{self, TypedBinaryOp},
+    InferenceCtx, LocalUsage, ResolvedTy, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
     TyDiagnosticKind,
 };
 
@@ -51,24 +55,36 @@ impl InferenceCtx<'_> {
             None => self.param_tys.take(),
         };
 
-        let actual_type: ResolvedTy = self.infer_expr(body);
+        self.infer_expr(body);
+
+        let local_usages = self.local_usages.to_owned();
+        for (def, usages) in local_usages.iter() {
+            self.local_usages.get_mut(def).unwrap().clear();
+
+            println!("leftover l{} references", def.into_raw());
+            self.reinfer_usages(usages.clone());
+        }
+
+        let actual_ty = self.reinfer_expr(body);
 
         self.param_tys = old_param_tys;
 
-        actual_type
+        actual_ty
     }
 
-    fn is_weak_type_replacable(
-        resolved_arena: &Arena<ResolvedTy>,
-        found: ResolvedTy,
-        expected: ResolvedTy,
-    ) -> bool {
-        // println!("  is_weak_type_replacable({:?}, {:?})", found, expected);
+    fn is_weak_type_replaceable_by(&self, found: ResolvedTy, expected: ResolvedTy) -> bool {
+        // println!("  is_weak_type_replaceable({:?}, {:?})", found, expected);
         match (found, expected) {
-            (
-                ResolvedTy::IInt(0) | ResolvedTy::UInt(0),
-                ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
-            ) => true,
+            // weak signed to strong signed, or weak unsigned to strong unsigned
+            (ResolvedTy::IInt(0), ResolvedTy::IInt(bit_width))
+            | (ResolvedTy::UInt(0), ResolvedTy::UInt(bit_width)) => bit_width != 0,
+            // always accept a switch of sign
+            (ResolvedTy::IInt(0), ResolvedTy::UInt(_))
+            | (ResolvedTy::UInt(0), ResolvedTy::IInt(_)) => true,
+            // always accept a switch to float
+            (ResolvedTy::IInt(0) | ResolvedTy::UInt(0), ResolvedTy::Float(_)) => true,
+            // weak float to strong float
+            (ResolvedTy::Float(0), ResolvedTy::Float(bit_width)) => bit_width != 0,
             (
                 ResolvedTy::Array {
                     size: found_size,
@@ -80,10 +96,9 @@ impl InferenceCtx<'_> {
                 },
             ) => {
                 found_size == expected_size
-                    && Self::is_weak_type_replacable(
-                        resolved_arena,
-                        resolved_arena[found_sub_ty],
-                        resolved_arena[expected_sub_ty],
+                    && self.is_weak_type_replaceable_by(
+                        self.resolved_arena[found_sub_ty],
+                        self.resolved_arena[expected_sub_ty],
                     )
             }
             (
@@ -99,10 +114,9 @@ impl InferenceCtx<'_> {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && Self::is_weak_type_replacable(
-                    resolved_arena,
-                    resolved_arena[found_sub_ty],
-                    resolved_arena[expected_sub_ty],
+                ) && self.is_weak_type_replaceable_by(
+                    self.resolved_arena[found_sub_ty],
+                    self.resolved_arena[expected_sub_ty],
                 )
             }
             (
@@ -112,7 +126,7 @@ impl InferenceCtx<'_> {
                 },
             ) => found_uid == expected_uid,
             (found, ResolvedTy::Distinct { ty, .. }) => {
-                Self::is_weak_type_replacable(resolved_arena, found, resolved_arena[ty])
+                self.is_weak_type_replaceable_by(found, self.resolved_arena[ty])
             }
             _ => false,
         }
@@ -128,6 +142,43 @@ impl InferenceCtx<'_> {
         }
     }
 
+    fn reinfer_usages(&mut self, usages: FxHashSet<LocalUsage>) {
+        for usage in usages {
+            println!("  - usage {:?}", usage);
+            match usage {
+                LocalUsage::Def(user_local_def) => {
+                    let user_proper_ty = current_module!(self)[user_local_def];
+
+                    let user_local_body = &current_bodies!(self)[user_local_def];
+
+                    println!(
+                        "    old ty : {:?} = {:?}",
+                        user_proper_ty,
+                        current_module!(self)[user_local_body.value]
+                    );
+
+                    let user_local_ty = self.reinfer_expr(user_local_body.value);
+
+                    // if there is no type annotation on the user, then replace it's type
+                    if user_local_body.ty == TyWithRange::Unknown {
+                        current_module!(self)
+                            .local_tys
+                            .insert(user_local_def, user_local_ty);
+                    }
+                }
+                LocalUsage::Assign(assign) => {
+                    let assign_body = &current_bodies!(self)[assign];
+
+                    self.reinfer_expr(assign_body.source);
+                    self.reinfer_expr(assign_body.value);
+                }
+                LocalUsage::Expr(expr) => {
+                    self.reinfer_expr(expr);
+                }
+            }
+        }
+    }
+
     /// recursively replaces weakly-typed expressions with strong types.
     ///
     /// ```text
@@ -139,12 +190,8 @@ impl InferenceCtx<'_> {
     fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: ResolvedTy) -> bool {
         let found_ty = current_module!(self).expr_tys[expr];
 
-        // println!(
-        //     "replace_weak_tys {:?} {:?}",
-        //     found_ty,
-        //     new_ty
-        // );
-        if !Self::is_weak_type_replacable(self.resolved_arena, found_ty, new_ty) {
+        // println!("  replace_weak_tys {:?} {:?}", found_ty, new_ty);
+        if !self.is_weak_type_replaceable_by(found_ty, new_ty) {
             // println!("no");
             return false;
         }
@@ -195,9 +242,50 @@ impl InferenceCtx<'_> {
                 self.replace_weak_tys(expr, new_ty);
             }
             Expr::Local(local_def) => {
+                println!(
+                    "[START] replacing value of l{} to {:?}",
+                    local_def.into_raw(),
+                    new_ty
+                );
                 if self.replace_weak_tys(current_bodies!(self)[local_def].value, new_ty) {
+                    println!("successfully replaced l{}", local_def.into_raw());
                     current_module!(self).local_tys.insert(local_def, new_ty);
                 }
+
+                println!(
+                    "  new type of l{} is {:?}",
+                    local_def.into_raw(),
+                    current_module!(self)[local_def]
+                );
+                println!(
+                    "  new type of #{} is {:?}",
+                    current_bodies!(self)[local_def].value.into_raw(),
+                    current_module!(self)[current_bodies!(self)[local_def].value]
+                );
+
+                // now get everything that used this variable and make sure the types are correct for those things
+                let usages = self
+                    .local_usages
+                    .get(local_def)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // now that we have the usages, clear them so no nasty recursion takes place
+                if let Some(usages) = self.local_usages.get_mut(local_def) {
+                    usages.clear();
+                }
+
+                println!("  [START] replacing usages");
+                self.reinfer_usages(usages);
+                println!("  [EXIT]");
+
+                let local_reinferred_ty = self.reinfer_expr(current_bodies!(self)[local_def].value);
+
+                if current_module!(self)[local_def] != local_reinferred_ty {
+                    println!("not the same anymore");
+                }
+
+                println!("[EXIT]");
             }
             _ => {}
         }
@@ -209,6 +297,7 @@ impl InferenceCtx<'_> {
     /// only if they are being mutated through a deref or index
     fn get_mutability(&self, expr: Idx<Expr>, derefs: i32) -> ExprMutability {
         match &current_bodies!(self)[expr] {
+            Expr::Missing => ExprMutability::Mutable,
             Expr::Array { .. } => ExprMutability::Mutable,
             Expr::Ref { mutable, .. } => {
                 if *mutable && derefs > 0 {
@@ -236,9 +325,28 @@ impl InferenceCtx<'_> {
                 self.get_mutability(local_def.value, derefs)
             }
             Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
-            _ => {
-                ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
+            Expr::Param { idx } => {
+                let param_ty = self.param_tys.as_ref().unwrap()[*idx as usize];
+
+                if derefs > 0 {
+                    if let Some((mutable, _)) = param_ty.get_pointer_semantics(self.resolved_arena)
+                    {
+                        if mutable {
+                            ExprMutability::Mutable
+                        } else {
+                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                        }
+                    } else if param_ty.is_array(self.resolved_arena) {
+                        ExprMutability::Mutable // todo: perhaps arrays must be declared mut?
+                    } else {
+                        unreachable!("Only pointers and arrays can be dereferenced")
+                    }
+                } else {
+                    // todo: for these, the params should be declared as `mut`
+                    ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
+                }
             }
+            _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),
         }
     }
 
@@ -246,6 +354,9 @@ impl InferenceCtx<'_> {
         match &current_bodies!(self)[stmt] {
             hir::Stmt::Expr(expr) => {
                 self.infer_expr(*expr);
+
+                self.find_usages(&[*expr], LocalUsage::Expr(*expr));
+
                 None
             }
             hir::Stmt::LocalDef(local_def) => {
@@ -271,6 +382,9 @@ impl InferenceCtx<'_> {
                         current_module!(self).local_tys.insert(*local_def, *def_ty);
                     }
                 }
+
+                self.find_usages(&[def_body.value], LocalUsage::Def(*local_def));
+
                 None
             }
             hir::Stmt::Assign(assign) => {
@@ -319,25 +433,265 @@ impl InferenceCtx<'_> {
 
                 self.expect_match(value_ty, source_ty, assign_body.value);
 
-                if matches!(
-                    (&source_ty, &value_ty),
-                    (
-                        ResolvedTy::IInt(_) | ResolvedTy::UInt(_),
-                        ResolvedTy::IInt(0) | ResolvedTy::UInt(0)
-                    )
-                ) {
-                    self.replace_weak_tys(assign_body.value, source_ty);
-                }
+                self.replace_weak_tys(assign_body.value, source_ty);
+
+                self.find_usages(
+                    &[assign_body.source, assign_body.value],
+                    LocalUsage::Assign(*assign),
+                );
 
                 None
             }
         }
     }
 
+    fn find_usages(&mut self, exprs: &[Idx<hir::Expr>], local_usage: LocalUsage) {
+        let mut locals = HashSet::default();
+        for expr in exprs {
+            self.get_referenced_locals(*expr, &mut locals);
+        }
+
+        for local in locals {
+            println!("reference to l{} in {:?}", local.into_raw(), local_usage);
+            if let Some(usages) = self.local_usages.get_mut(local) {
+                usages.insert(local_usage);
+            } else {
+                let mut usages = FxHashSet::default();
+                usages.insert(local_usage);
+
+                self.local_usages.insert(local, usages);
+            }
+        }
+    }
+
+    fn get_referenced_locals(&self, expr: Idx<hir::Expr>, local_defs: &mut HashSet<Idx<LocalDef>>) {
+        match &current_bodies!(self)[expr] {
+            Expr::Missing => {}
+            Expr::IntLiteral(_) => {}
+            Expr::FloatLiteral(_) => {}
+            Expr::BoolLiteral(_) => {}
+            Expr::StringLiteral(_) => {}
+            Expr::Cast { expr, .. } => {
+                self.get_referenced_locals(*expr, local_defs);
+            }
+            Expr::Ref { expr, .. } => {
+                self.get_referenced_locals(*expr, local_defs);
+            }
+            Expr::Deref { pointer } => {
+                self.get_referenced_locals(*pointer, local_defs);
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.get_referenced_locals(*lhs, local_defs);
+                self.get_referenced_locals(*rhs, local_defs);
+            }
+            Expr::Unary { expr, .. } => self.get_referenced_locals(*expr, local_defs),
+            Expr::Array { items, .. } => {
+                for item in items {
+                    self.get_referenced_locals(*item, local_defs);
+                }
+            }
+            Expr::Index { array, index } => {
+                self.get_referenced_locals(*index, local_defs);
+                self.get_referenced_locals(*array, local_defs);
+            }
+            Expr::Block { tail_expr, .. } => {
+                if let Some(tail_expr) = tail_expr {
+                    self.get_referenced_locals(*tail_expr, local_defs);
+                }
+            }
+            Expr::If {
+                condition,
+                body,
+                else_branch,
+            } => {
+                self.get_referenced_locals(*condition, local_defs);
+                self.get_referenced_locals(*body, local_defs);
+                if let Some(else_branch) = else_branch {
+                    self.get_referenced_locals(*else_branch, local_defs);
+                }
+            }
+            Expr::While { condition, body } => {
+                if let Some(condition) = condition {
+                    self.get_referenced_locals(*condition, local_defs);
+                }
+                self.get_referenced_locals(*body, local_defs)
+            }
+            Expr::Local(def) => {
+                local_defs.insert(*def);
+            }
+            Expr::Global(_) => {}
+            Expr::Param { .. } => {}
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    self.get_referenced_locals(*arg, local_defs);
+                }
+            }
+            Expr::PrimitiveTy { .. } => {}
+        }
+    }
+
+    fn reinfer_expr(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
+        let new_ty = match &current_bodies!(self)[expr] {
+            Expr::Cast { expr: inner, .. } => {
+                self.reinfer_expr(*inner);
+
+                current_module!(self)[expr]
+            }
+            Expr::Ref {
+                mutable,
+                expr: inner,
+            } => {
+                let old_inner = current_module!(self)[*inner];
+                let new_inner = self.reinfer_expr(*inner);
+
+                if old_inner != new_inner {
+                    ResolvedTy::Pointer {
+                        mutable: *mutable,
+                        sub_ty: self.resolved_arena.alloc(new_inner),
+                    }
+                } else {
+                    return current_module!(self)[expr];
+                }
+            }
+            Expr::Deref { pointer } => {
+                let old_inner = current_module!(self)[*pointer];
+
+                let new_inner = self.reinfer_expr(*pointer);
+
+                if old_inner != new_inner {
+                    match new_inner {
+                        ResolvedTy::Pointer { sub_ty, .. } => self.resolved_arena[sub_ty],
+                        _ => ResolvedTy::Unknown,
+                    }
+                } else {
+                    return current_module!(self)[expr];
+                }
+            }
+            Expr::Binary { lhs, rhs, op } => {
+                let old_lhs = current_module!(self)[*lhs];
+                let new_lhs = self.reinfer_expr(*lhs);
+
+                let old_rhs = current_module!(self)[*rhs];
+                let new_rhs = self.reinfer_expr(*rhs);
+
+                if old_lhs != new_lhs || old_rhs != new_rhs {
+                    if let Some(output_ty) =
+                        op.get_possible_output_ty(self.resolved_arena, new_lhs, new_rhs)
+                    {
+                        self.replace_weak_tys(*lhs, output_ty.max_ty);
+                        self.replace_weak_tys(*rhs, output_ty.max_ty);
+
+                        output_ty.final_output_ty
+                    } else {
+                        op.default_ty()
+                    }
+                } else {
+                    return current_module!(self)[expr];
+                }
+            }
+            Expr::Unary { expr: inner, .. } => {
+                let old_inner = current_module!(self)[*inner];
+                let new_inner = self.reinfer_expr(*inner);
+
+                if old_inner != new_inner {
+                    new_inner
+                } else {
+                    return current_module!(self)[expr];
+                }
+            }
+            Expr::Array { items, .. } => {
+                for item in items {
+                    self.reinfer_expr(*item);
+                }
+
+                return current_module!(self)[expr];
+            }
+            Expr::Index { array, index } => {
+                self.reinfer_expr(*index);
+
+                let old_array = current_module!(self)[*array];
+                let new_array = self.reinfer_expr(*array);
+
+                if old_array != new_array {
+                    new_array
+                        .get_array_semantics(self.resolved_arena)
+                        .map(|(_, sub_ty)| sub_ty)
+                        .unwrap_or(ResolvedTy::Unknown)
+                } else {
+                    return current_module!(self)[expr];
+                }
+            }
+            Expr::Block {
+                tail_expr: Some(tail_expr),
+                ..
+            } => {
+                let old_tail = current_module!(self)[*tail_expr];
+                let new_tail = self.reinfer_expr(*tail_expr);
+
+                if old_tail != new_tail {
+                    new_tail
+                } else {
+                    return old_tail;
+                }
+            }
+            Expr::Block {
+                tail_expr: None, ..
+            } => {
+                return current_module!(self)[expr];
+            }
+            Expr::If {
+                condition,
+                body,
+                else_branch,
+            } => {
+                self.reinfer_expr(*condition);
+
+                let old_body = current_module!(self)[*body];
+                let new_body = self.reinfer_expr(*body);
+
+                if let Some(else_branch) = else_branch {
+                    self.reinfer_expr(*else_branch);
+                }
+
+                if old_body != new_body {
+                    new_body
+                } else {
+                    return old_body;
+                }
+            }
+            Expr::While { condition, body } => {
+                if let Some(condition) = condition {
+                    println!("reinfer condition");
+                    self.reinfer_expr(*condition);
+                }
+
+                let old_body = current_module!(self)[*body];
+                let new_body = self.reinfer_expr(*body);
+
+                if old_body != new_body {
+                    new_body
+                } else {
+                    return old_body;
+                }
+            }
+            Expr::Local(local) => current_module!(self).local_tys[*local],
+            _ => return current_module!(self)[expr],
+        };
+
+        current_module!(self).expr_tys.insert(expr, new_ty);
+
+        new_ty
+    }
+
     fn infer_expr(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
+        if current_module!(self).expr_tys.get(expr).is_some() {
+            return self.reinfer_expr(expr);
+        }
+
         let ty = match &current_bodies!(self)[expr] {
             hir::Expr::Missing => ResolvedTy::Unknown,
             hir::Expr::IntLiteral(_) => ResolvedTy::UInt(0),
+            hir::Expr::FloatLiteral(_) => ResolvedTy::Float(0),
             hir::Expr::BoolLiteral(_) => ResolvedTy::Bool,
             hir::Expr::StringLiteral(_) => ResolvedTy::String,
             hir::Expr::Array { size, items, ty } => {
@@ -359,7 +713,7 @@ impl InferenceCtx<'_> {
                 if source_ty == ResolvedTy::Unknown {
                     ResolvedTy::Unknown
                 } else if let Some((actual_size, array_sub_ty)) =
-                    source_ty.has_array_semantics(self.resolved_arena)
+                    source_ty.get_array_semantics(self.resolved_arena)
                 {
                     if let hir::Expr::IntLiteral(index) = current_bodies!(self)[*index] {
                         if index >= actual_size {
@@ -378,7 +732,9 @@ impl InferenceCtx<'_> {
 
                     let index_ty = self.infer_expr(*index);
 
-                    self.expect_match(index_ty, ResolvedTy::UInt(u32::MAX), *index);
+                    if self.expect_match(index_ty, ResolvedTy::UInt(u32::MAX), *index) {
+                        self.replace_weak_tys(*index, ResolvedTy::UInt(u32::MAX));
+                    }
 
                     array_sub_ty
                 } else {
@@ -486,30 +842,12 @@ impl InferenceCtx<'_> {
                 let lhs_ty = self.infer_expr(*lhs);
                 let rhs_ty = self.infer_expr(*rhs);
 
-                let (can_perform, default_ty): (&[ResolvedTy], _) = match op {
-                    hir::BinaryOp::Add
-                    | hir::BinaryOp::Sub
-                    | hir::BinaryOp::Mul
-                    | hir::BinaryOp::Div => (&[ResolvedTy::IInt(0)], ResolvedTy::IInt(0)),
-                    hir::BinaryOp::Lt
-                    | hir::BinaryOp::Gt
-                    | hir::BinaryOp::Le
-                    | hir::BinaryOp::Ge
-                    | hir::BinaryOp::Eq
-                    | hir::BinaryOp::Ne => {
-                        (&[ResolvedTy::IInt(0), ResolvedTy::Type], ResolvedTy::Bool)
-                    }
-                    hir::BinaryOp::And | hir::BinaryOp::Or => {
-                        (&[ResolvedTy::Bool], ResolvedTy::Bool)
-                    }
-                };
-
-                if let Some(max_ty) = cast::max_cast(self.resolved_arena, lhs_ty, rhs_ty) {
+                if let Some(output_ty) =
+                    op.get_possible_output_ty(self.resolved_arena, lhs_ty, rhs_ty)
+                {
                     if lhs_ty != ResolvedTy::Unknown
                         && rhs_ty != ResolvedTy::Unknown
-                        && !can_perform.iter().any(|expected_ty| {
-                            cast::has_semantics_of(self.resolved_arena, max_ty, *expected_ty)
-                        })
+                        && !op.can_perform(self.resolved_arena, output_ty.max_ty)
                     {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::OpMismatch {
@@ -523,16 +861,10 @@ impl InferenceCtx<'_> {
                         });
                     }
 
-                    self.replace_weak_tys(*lhs, max_ty);
-                    self.replace_weak_tys(*rhs, max_ty);
+                    self.replace_weak_tys(*lhs, output_ty.max_ty);
+                    self.replace_weak_tys(*rhs, output_ty.max_ty);
 
-                    match op {
-                        hir::BinaryOp::Add
-                        | hir::BinaryOp::Sub
-                        | hir::BinaryOp::Mul
-                        | hir::BinaryOp::Div => max_ty,
-                        _ => ResolvedTy::Bool,
-                    }
+                    output_ty.final_output_ty
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::OpMismatch {
@@ -544,7 +876,8 @@ impl InferenceCtx<'_> {
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
-                    default_ty
+
+                    op.default_ty()
                 }
             }
             hir::Expr::Unary { expr, op } => {
@@ -554,8 +887,9 @@ impl InferenceCtx<'_> {
                     hir::UnaryOp::Neg => {
                         self.expect_match(expr_type, ResolvedTy::IInt(0), *expr);
                         match expr_type {
-                            ResolvedTy::UInt(bit_width) => ResolvedTy::IInt(bit_width),
-                            ResolvedTy::IInt(bit_width) => ResolvedTy::UInt(bit_width),
+                            ResolvedTy::UInt(bit_width) | ResolvedTy::IInt(bit_width) => {
+                                ResolvedTy::IInt(bit_width)
+                            }
                             _ => ResolvedTy::Unknown,
                         }
                     }
@@ -720,7 +1054,8 @@ impl InferenceCtx<'_> {
             return true;
         }
 
-        if found == ResolvedTy::Unknown || expected == ResolvedTy::Unknown {
+        if found.is_unknown(self.resolved_arena) || expected.is_unknown(self.resolved_arena) {
+            // return false without throwing an error
             return false;
         }
 

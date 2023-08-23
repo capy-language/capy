@@ -4,7 +4,7 @@ mod ctx;
 use hir::TyWithRange;
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
 
 #[derive(Clone)]
@@ -29,6 +29,9 @@ pub enum ResolvedTy {
     /// a bit-width of u32::MAX represents a usize
     /// a bit-width of 0 represents ANY unsigned integer type
     UInt(u32),
+    /// the bit-width can either be 32 or 64
+    /// a bit-width of 0 represents ANY float type
+    Float(u32),
     Bool,
     String,
     Array {
@@ -67,7 +70,21 @@ impl ResolvedTy {
         }
     }
 
-    /// returns true if the type is void, or contains void, or is an empty array
+    /// checks if `self` is a pointer, and returns the mutability and subtype if so
+    pub fn get_pointer_semantics(
+        self,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> Option<(bool, ResolvedTy)> {
+        match self {
+            ResolvedTy::Pointer { mutable, sub_ty } => Some((mutable, resolved_arena[sub_ty])),
+            ResolvedTy::Distinct { ty, .. } => {
+                resolved_arena[ty].get_pointer_semantics(resolved_arena)
+            }
+            _ => None,
+        }
+    }
+
+    /// returns true if the type is void, or contains void, or is an empty array, etc.
     pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
         match self {
             ResolvedTy::Void => true,
@@ -76,6 +93,22 @@ impl ResolvedTy {
                 *size == 0 || resolved_arena[*sub_ty].is_empty(resolved_arena)
             }
             ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_empty(resolved_arena),
+            _ => false,
+        }
+    }
+
+    /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
+    pub fn is_unknown(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::NotYetResolved => true,
+            ResolvedTy::Unknown => true,
+            ResolvedTy::Pointer { sub_ty, .. } => {
+                resolved_arena[*sub_ty].is_unknown(resolved_arena)
+            }
+            ResolvedTy::Array { size, sub_ty } => {
+                *size == 0 || resolved_arena[*sub_ty].is_unknown(resolved_arena)
+            }
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_unknown(resolved_arena),
             _ => false,
         }
     }
@@ -182,14 +215,14 @@ impl ResolvedTy {
     }
 
     /// checks if `self` is an array, and returns the size and subtype if so
-    pub fn has_array_semantics(
+    pub fn get_array_semantics(
         self,
         resolved_arena: &Arena<ResolvedTy>,
     ) -> Option<(u64, ResolvedTy)> {
         match self {
             ResolvedTy::Array { size, sub_ty } => Some((size, resolved_arena[sub_ty])),
             ResolvedTy::Distinct { ty, .. } => {
-                resolved_arena[ty].has_array_semantics(resolved_arena)
+                resolved_arena[ty].get_array_semantics(resolved_arena)
             }
             _ => None,
         }
@@ -336,10 +369,18 @@ pub struct InferenceCtx<'a> {
     world_index: &'a hir::WorldIndex,
     twr_arena: &'a Arena<TyWithRange>,
     resolved_arena: &'a mut Arena<ResolvedTy>,
+    local_usages: ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>,
     param_tys: Option<Vec<ResolvedTy>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
     modules: FxHashMap<hir::Name, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LocalUsage {
+    Def(Idx<hir::LocalDef>),
+    Assign(Idx<hir::Assign>),
+    Expr(Idx<hir::Expr>),
 }
 
 impl<'a> InferenceCtx<'a> {
@@ -355,6 +396,7 @@ impl<'a> InferenceCtx<'a> {
             world_index,
             twr_arena,
             resolved_arena,
+            local_usages: ArenaMap::default(),
             param_tys: None,
             diagnostics: Vec::new(),
             signatures: FxHashMap::default(),
@@ -404,6 +446,8 @@ impl<'a> InferenceCtx<'a> {
         (result, self.diagnostics)
     }
 
+    /// constructs the signature of a global only once, even though it might have many uses.
+    /// saves much unneeded work
     fn singleton_global_signature(
         &mut self,
         global: &hir::Global,
@@ -419,6 +463,8 @@ impl<'a> InferenceCtx<'a> {
         self.signatures[&fqn].as_global().unwrap().clone()
     }
 
+    /// newly constructs the signature of a global every time it is called.
+    /// please use `singleton_global_signature` instead
     fn generate_global_signature(&mut self, global: &hir::Global, fqn: hir::Fqn) -> Signature {
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
@@ -460,6 +506,8 @@ impl<'a> InferenceCtx<'a> {
         sig
     }
 
+    /// constructs the signature of a function only once, even though it might have many uses.
+    /// saves much unneeded work
     fn singleton_fn_signature(
         &mut self,
         function: &hir::Function,
@@ -474,6 +522,8 @@ impl<'a> InferenceCtx<'a> {
         sig.as_function().unwrap().clone()
     }
 
+    /// newly constructs the signature of a function every time it is called.
+    /// please use `singleton_fn_signature` instead
     fn generate_function_signature(
         &mut self,
         function: &hir::Function,
@@ -666,6 +716,7 @@ impl<'a> InferenceCtx<'a> {
             hir::TyWithRange::Unknown => ResolvedTy::Unknown,
             hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width),
             hir::TyWithRange::UInt { bit_width, .. } => ResolvedTy::UInt(bit_width),
+            hir::TyWithRange::Float { bit_width, .. } => ResolvedTy::Float(bit_width),
             hir::TyWithRange::Bool { .. } => ResolvedTy::Bool,
             hir::TyWithRange::String { .. } => ResolvedTy::String,
             hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
@@ -817,6 +868,10 @@ impl ResolvedTy {
                 u32::MAX => "usize".to_string(),
                 0 => "{uint}".to_string(),
                 _ => format!("u{}", bit_width),
+            },
+            Self::Float(bit_width) => match *bit_width {
+                0 => "{float}".to_string(),
+                _ => format!("f{}", bit_width),
             },
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
@@ -978,6 +1033,36 @@ mod tests {
     }
 
     #[test]
+    fn function_with_float_return_ty() {
+        check(
+            r#"
+                one :: () -> f32 { 1.0 };
+            "#,
+            expect![[r#"
+                main.one : () -> f32
+                0 : f32
+                1 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn function_with_float_return_ty_int_body() {
+        check(
+            r#"
+                one :: () -> f32 { 1 };
+            "#,
+            expect![[r#"
+                main.one : () -> f32
+                0 : f32
+                1 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
     fn functions_with_undefined_return_ty() {
         check(
             r#"
@@ -994,16 +1079,16 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Undefined {
-                            name: i.intern("baz"),
+                            name: i.intern("foo"),
                         },
-                        71..74,
+                        30..33,
                         None,
                     ),
                     (
                         TyDiagnosticKind::Undefined {
-                            name: i.intern("foo"),
+                            name: i.intern("baz"),
                         },
-                        30..33,
+                        71..74,
                         None,
                     ),
                 ]
@@ -1169,6 +1254,140 @@ mod tests {
     }
 
     #[test]
+    fn strong_int_to_float() {
+        check(
+            r#"
+                main :: () -> {
+                    foo : u16 = 5;
+
+                    bar : f32 = foo;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : u16
+                1 : u16
+                2 : void
+                l0 : u16
+                l1 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn weak_int_to_float() {
+        check(
+            r#"
+                main :: () -> {
+                    foo : f32 = 5;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : f32
+                1 : void
+                l0 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn binary_expr_float_and_float() {
+        check(
+            r#"
+                main :: () -> {
+                    foo : f32 = 5;
+                    bar : f64 = 10;
+
+                    foo + bar;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : f32
+                1 : f64
+                2 : f32
+                3 : f64
+                4 : f64
+                5 : void
+                l0 : f32
+                l1 : f64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn binary_expr_strong_int_and_strong_float() {
+        check(
+            r#"
+                main :: () -> {
+                    foo : i32 = 5;
+                    bar : f64 = 10;
+
+                    foo + bar;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : i32
+                1 : f64
+                2 : i32
+                3 : f64
+                4 : f64
+                5 : void
+                l0 : i32
+                l1 : f64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn binary_expr_weak_int_and_strong_float() {
+        check(
+            r#"
+                main :: () -> {
+                    foo : f64 = 10;
+
+                    5 + foo;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : f64
+                1 : f64
+                2 : f64
+                3 : f64
+                4 : void
+                l0 : f64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn binary_expr_weak_int_and_weak_float() {
+        check(
+            r#"
+                main :: () -> {
+                    5 + 10.0;
+                };
+            "#,
+            expect![[r#"
+                main.main : () -> void
+                0 : {float}
+                1 : {float}
+                2 : {float}
+                3 : void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
     fn inference_simple_by_annotation() {
         check(
             r#"
@@ -1284,7 +1503,7 @@ mod tests {
                 5 : i32
                 6 : [6]i32
                 7 : [6]i32
-                8 : {uint}
+                8 : usize
                 9 : i32
                 10 : i32
                 l0 : [6]i32
@@ -1313,7 +1532,7 @@ mod tests {
                 5 : i32
                 6 : [6]i32
                 7 : [6]i32
-                8 : {uint}
+                8 : usize
                 9 : i32
                 10 : i32
                 l0 : [6]i32
@@ -1612,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn local_auto_small_unsign_to_big_sign() {
+    fn local_auto_small_unsigned_to_big_signed() {
         check(
             r#"
                 foo :: () -> i16 {
@@ -1635,7 +1854,7 @@ mod tests {
     }
 
     #[test]
-    fn local_auto_small_sign_to_big_unsign() {
+    fn local_auto_small_signed_to_big_unsigned() {
         check(
             r#"
                 foo :: () -> u16 {
@@ -1668,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn local_auto_sign_to_unsign() {
+    fn local_auto_signed_to_unsigned() {
         check(
             r#"
                 foo :: () -> u16 {
@@ -1700,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    fn local_auto_big_sign_to_small_unsign() {
+    fn local_auto_big_signed_to_small_unsigned() {
         check(
             r#"
                 foo :: () -> u8 {
@@ -1959,16 +2178,16 @@ mod tests {
     fn multi_neg_unary_expr() {
         check(
             r#"
-                pos :: () -> u8 { ----4 };
+                pos :: () -> i8 { ----4 };
             "#,
             expect![[r#"
-                main.pos : () -> u8
-                0 : u8
-                1 : u8
-                2 : u8
-                3 : u8
-                4 : u8
-                5 : u8
+                main.pos : () -> i8
+                0 : i8
+                1 : i8
+                2 : i8
+                3 : i8
+                4 : i8
+                5 : i8
             "#]],
             |_| [],
         );
@@ -2463,13 +2682,13 @@ mod tests {
                 3 : i32
                 4 : [3]i32
                 5 : main.Vector3
-                6 : {uint}
+                6 : usize
                 7 : i32
                 8 : main.Vector3
-                9 : {uint}
+                9 : usize
                 10 : i32
                 11 : main.Vector3
-                12 : {uint}
+                12 : usize
                 13 : i32
                 14 : void
                 l0 : main.Vector3
@@ -2709,6 +2928,111 @@ mod tests {
                     TyDiagnosticKind::MutableRefToImmutableData,
                     90..98,
                     Some((TyDiagnosticHelpKind::ImmutableBinding, 53..61)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn reinfer_usages() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+                
+                    baz := foo;
+                
+                    foo = foo + 1;
+                
+                    bar(foo);
+                };
+                
+                bar :: (x: usize) -> {};
+            "#,
+            expect![[r#"
+                main.bar : (usize) -> void
+                main.main : () -> void
+                0 : usize
+                1 : usize
+                2 : usize
+                3 : usize
+                4 : usize
+                5 : usize
+                6 : usize
+                7 : void
+                8 : void
+                9 : void
+                l0 : usize
+                l1 : usize
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn pass_mut_ref_to_immutable_ref() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+                
+                    bar(^mut foo);
+                };
+                
+                bar :: (x: ^i32) -> {};
+            "#,
+            expect![[r#"
+                main.bar : (^i32) -> void
+                main.main : () -> void
+                0 : i32
+                1 : i32
+                2 : ^i32
+                3 : void
+                4 : void
+                5 : void
+                l0 : i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn pass_immutable_ref_to_mut_ref() {
+        check(
+            r#"
+                main :: () -> {
+                    foo := 5;
+                
+                    bar(^foo);
+                };
+                
+                bar :: (x: ^mut i32) -> {};
+            "#,
+            expect![[r#"
+                main.bar : (^mut i32) -> void
+                main.main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : ^{uint}
+                3 : void
+                4 : void
+                5 : void
+                l0 : {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Pointer {
+                            mutable: true,
+                            sub_ty: Idx::from_raw(RawIdx::from(0)),
+                        },
+                        found: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: Idx::from_raw(RawIdx::from(1)),
+                        },
+                    },
+                    104..108,
+                    None,
                 )]
             },
         );

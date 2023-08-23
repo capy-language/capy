@@ -30,6 +30,7 @@ pub struct Bodies {
 pub enum Expr {
     Missing,
     IntLiteral(u64),
+    FloatLiteral(f64),
     BoolLiteral(bool),
     StringLiteral(String),
     Cast {
@@ -130,6 +131,7 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Mod,
 
     // cmp operations
     Lt,
@@ -163,6 +165,7 @@ pub struct LoweringDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
+    OutOfRangeFloatLiteral,
     UndefinedLocal {
         name: Key,
     },
@@ -462,10 +465,11 @@ impl<'a> Ctx<'a> {
             ast::Expr::IndexExpr(index_expr) => self.lower_index_expr(index_expr),
             ast::Expr::VarRef(var_ref) => self.lower_var_ref(var_ref),
             ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
+            ast::Expr::FloatLiteral(float_literal) => self.lower_float_literal(float_literal),
             ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
             ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
-            ast::Expr::Lambda(_) => unreachable!(),
+            ast::Expr::Lambda(_) => todo!(),
         }
     }
 
@@ -561,6 +565,7 @@ impl<'a> Ctx<'a> {
             Some(ast::BinaryOp::Sub(_)) => BinaryOp::Sub,
             Some(ast::BinaryOp::Mul(_)) => BinaryOp::Mul,
             Some(ast::BinaryOp::Div(_)) => BinaryOp::Div,
+            Some(ast::BinaryOp::Mod(_)) => BinaryOp::Mod,
             Some(ast::BinaryOp::Lt(_)) => BinaryOp::Lt,
             Some(ast::BinaryOp::Gt(_)) => BinaryOp::Gt,
             Some(ast::BinaryOp::Le(_)) => BinaryOp::Le,
@@ -1051,6 +1056,24 @@ impl<'a> Ctx<'a> {
         Expr::Missing
     }
 
+    fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
+        // todo: come back here
+        let value = float_literal
+            .value(self.tree)
+            .and_then(|int| int.text(self.tree).parse().ok());
+
+        if let Some(value) = value {
+            return Expr::FloatLiteral(value);
+        }
+
+        self.diagnostics.push(LoweringDiagnostic {
+            kind: LoweringDiagnosticKind::OutOfRangeFloatLiteral,
+            range: float_literal.range(self.tree),
+        });
+
+        Expr::Missing
+    }
+
     fn lower_bool_literal(&mut self, bool_literal: ast::BoolLiteral) -> Expr {
         let value = bool_literal
             .value(self.tree)
@@ -1300,6 +1323,8 @@ impl Bodies {
 
                 Expr::IntLiteral(n) => s.push_str(&format!("{}", n)),
 
+                Expr::FloatLiteral(n) => s.push_str(&format!("{}", n)),
+
                 Expr::BoolLiteral(b) => s.push_str(&format!("{}", b)),
 
                 Expr::StringLiteral(content) => s.push_str(&format!("{content:?}")),
@@ -1374,6 +1399,7 @@ impl Bodies {
                         BinaryOp::Sub => s.push('-'),
                         BinaryOp::Mul => s.push('*'),
                         BinaryOp::Div => s.push('/'),
+                        BinaryOp::Mod => s.push('%'),
                         BinaryOp::Lt => s.push('<'),
                         BinaryOp::Gt => s.push('>'),
                         BinaryOp::Le => s.push_str("<="),

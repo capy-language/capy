@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use cranelift::{
     codegen::ir::Endianness,
     prelude::{
-        types, EntityRef, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
+        types, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
         StackSlotKind, Value, Variable,
     },
 };
@@ -15,7 +15,7 @@ use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 
 use crate::{
-    convert::{ToCompSize, ToCompType},
+    convert::{NumberType, ToCompSize, ToCompType},
     gen,
     mangle::Mangle,
     CraneliftSignature,
@@ -96,27 +96,18 @@ impl FunctionCompiler<'_> {
                         .call_memcpy(self.module.target_config(), dest, body, array_size);
 
                     self.builder.ins().return_(&[dest])
-                } else if let Some(return_int_ty) = return_ty
+                } else if let Some(return_ty) = return_ty
                     .to_comp_type(self.module, self.resolved_arena)
-                    .into_int_type()
+                    .into_number_type()
                 {
-                    let body_int_ty = self.tys[self.fqn.module][hir_body]
+                    // the actual type that was returned might not be what the function was
+                    // actually supposed to return, so we have to cast it to make sure
+                    let body_ty = self.tys[self.fqn.module][hir_body]
                         .to_comp_type(self.module, self.resolved_arena)
-                        .into_int_type()
+                        .into_number_type()
                         .unwrap();
 
-                    let cast = match body_int_ty.bit_width.cmp(&return_int_ty.bit_width) {
-                        std::cmp::Ordering::Less if return_int_ty.signed && body_int_ty.signed => {
-                            self.builder.ins().sextend(return_int_ty.ty, body)
-                        }
-                        std::cmp::Ordering::Less => {
-                            self.builder.ins().uextend(return_int_ty.ty, body)
-                        }
-                        std::cmp::Ordering::Equal => body,
-                        std::cmp::Ordering::Greater => {
-                            self.builder.ins().ireduce(return_int_ty.ty, body)
-                        }
-                    };
+                    let cast = gen::cast(&mut self.builder, body, body_ty, return_ty);
 
                     self.builder.ins().return_(&[cast])
                 } else {
@@ -137,9 +128,9 @@ impl FunctionCompiler<'_> {
                 match (
                     self.tys[module][expr]
                         .to_comp_type(self.module, self.resolved_arena)
-                        .into_int_type()
+                        .into_number_type()
                         .unwrap()
-                        .bit_width,
+                        .bit_width(),
                     self.module.isa().endianness(),
                 ) {
                     (8, Endianness::Little) => (n as u8).to_le_bytes().to_vec(),
@@ -352,15 +343,31 @@ impl FunctionCompiler<'_> {
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
         match self.bodies_map[&self.fqn.module][expr].clone() {
             hir::Expr::Missing => unreachable!(),
-            hir::Expr::IntLiteral(n) => Some(
-                self.builder.ins().iconst(
-                    self.tys[self.fqn.module][expr]
-                        .to_comp_type(self.module, self.resolved_arena)
-                        .into_real_type()
-                        .unwrap(),
-                    n as i64,
-                ),
-            ),
+            hir::Expr::IntLiteral(n) => {
+                let number_ty = self.tys[self.fqn.module][expr]
+                    .to_comp_type(self.module, self.resolved_arena)
+                    .into_number_type()
+                    .unwrap();
+                if number_ty.float {
+                    match number_ty.bit_width() {
+                        32 => Some(self.builder.ins().f32const(n as f32)),
+                        64 => Some(self.builder.ins().f64const(n as f64)),
+                        _ => unreachable!(),
+                    }
+                } else {
+                    Some(self.builder.ins().iconst(number_ty.ty, n as i64))
+                }
+            }
+            hir::Expr::FloatLiteral(f) => match self.tys[self.fqn.module][expr]
+                .to_comp_type(self.module, self.resolved_arena)
+                .into_number_type()
+                .unwrap()
+                .bit_width()
+            {
+                32 => Some(self.builder.ins().f32const(f as f32)),
+                64 => Some(self.builder.ins().f64const(f)),
+                _ => unreachable!(),
+            },
             hir::Expr::BoolLiteral(b) => Some(self.builder.ins().iconst(types::I8, b as i64)),
             hir::Expr::StringLiteral(text) => {
                 let data = self.create_global_str(text);
@@ -402,25 +409,22 @@ impl FunctionCompiler<'_> {
 
                 let index_ty = self.tys[self.fqn.module][index]
                     .to_comp_type(self.module, self.resolved_arena)
-                    .into_int_type()
+                    .into_number_type()
                     .unwrap();
 
-                let index = self.compile_expr(index).unwrap(); // this might be less than usize
+                let index = self.compile_expr(index).unwrap();
 
-                let naive_index = match index_ty
-                    .bit_width
-                    .cmp(&self.module.target_config().pointer_bits())
-                {
-                    std::cmp::Ordering::Less => self
-                        .builder
-                        .ins()
-                        .uextend(self.module.target_config().pointer_type(), index),
-                    std::cmp::Ordering::Equal => index,
-                    std::cmp::Ordering::Greater => self
-                        .builder
-                        .ins()
-                        .ireduce(self.module.target_config().pointer_type(), index),
-                };
+                // make sure that the index is a usize before proceeding
+                let naive_index = gen::cast(
+                    &mut self.builder,
+                    index,
+                    index_ty,
+                    NumberType {
+                        ty: self.module.target_config().pointer_type(),
+                        float: false,
+                        signed: false,
+                    },
+                );
 
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
@@ -455,39 +459,20 @@ impl FunctionCompiler<'_> {
             hir::Expr::Cast {
                 expr: inner_expr, ..
             } => {
-                let inner = self.compile_expr(inner_expr);
+                let inner = self.compile_expr(inner_expr)?;
                 let cast_from = match self.tys[self.fqn.module][inner_expr]
                     .to_comp_type(self.module, self.resolved_arena)
-                    .into_int_type()
+                    .into_number_type()
                 {
                     Some(int_ty) => int_ty,
-                    None => return inner,
+                    None => return Some(inner),
                 };
                 let cast_to = self.tys[self.fqn.module][expr]
                     .to_comp_type(self.module, self.resolved_arena)
-                    .into_int_type()
+                    .into_number_type()
                     .unwrap();
 
-                // println!("{:?} as {:?}", cast_from, cast_to);
-
-                // check if casting is irrelevant
-                if cast_from.bit_width == cast_to.bit_width {
-                    // println!("irrelevant");
-                    inner
-                } else {
-                    inner.map(|inner| {
-                        // if the inner type is getting larger
-                        if cast_from.bit_width < cast_to.bit_width {
-                            if cast_from.signed && cast_to.signed {
-                                self.builder.ins().sextend(cast_to.ty, inner)
-                            } else {
-                                self.builder.ins().uextend(cast_to.ty, inner)
-                            }
-                        } else {
-                            self.builder.ins().ireduce(cast_to.ty, inner)
-                        }
-                    })
-                }
+                Some(gen::cast(&mut self.builder, inner, cast_from, cast_to))
             }
             hir::Expr::Ref { expr, .. } => {
                 // references to locals or globals should return the actual memory address of the local or global
@@ -518,7 +503,9 @@ impl FunctionCompiler<'_> {
                     ))
                 }
             }
-            hir::Expr::Deref { pointer } => {
+            hir::Expr::Deref {
+                pointer: pointer_expr,
+            } => {
                 let self_ty = if no_load {
                     self.module.target_config().pointer_type()
                 } else {
@@ -528,13 +515,20 @@ impl FunctionCompiler<'_> {
                         .unwrap()
                 };
 
-                let pointer = self.compile_expr_with_args(pointer, no_load)?;
+                let pointer = self.compile_expr_with_args(pointer_expr, no_load)?;
 
-                Some(
-                    self.builder
-                        .ins()
-                        .load(self_ty, MemFlags::trusted(), pointer, 0),
-                )
+                if matches!(
+                    self.bodies_map[&self.fqn.module][pointer_expr],
+                    hir::Expr::Param { .. }
+                ) {
+                    Some(pointer)
+                } else {
+                    Some(
+                        self.builder
+                            .ins()
+                            .load(self_ty, MemFlags::trusted(), pointer, 0),
+                    )
+                }
             }
             hir::Expr::Binary {
                 lhs: lhs_expr,
@@ -544,66 +538,109 @@ impl FunctionCompiler<'_> {
                 let lhs = self.compile_expr(lhs_expr).unwrap();
                 let rhs = self.compile_expr(rhs_expr).unwrap();
 
-                Some(match op {
-                    hir::BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
-                    hir::BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
-                    hir::BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
-                    hir::BinaryOp::Div => match self.tys[self.fqn.module][expr] {
-                        hir_ty::ResolvedTy::IInt(_) => self.builder.ins().sdiv(lhs, rhs),
-                        hir_ty::ResolvedTy::UInt(_) => self.builder.ins().udiv(lhs, rhs),
-                        _ => unreachable!(),
-                    },
-                    hir::BinaryOp::Lt => match self.tys[self.fqn.module][lhs_expr] {
-                        hir_ty::ResolvedTy::IInt(_) => {
-                            self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
+                let lhs_ty = self.tys[self.fqn.module][lhs_expr]
+                    .to_comp_type(self.module, self.resolved_arena)
+                    .into_number_type()
+                    .unwrap();
+                let rhs_ty = self.tys[self.fqn.module][rhs_expr]
+                    .to_comp_type(self.module, self.resolved_arena)
+                    .into_number_type()
+                    .unwrap();
+
+                let max_ty = lhs_ty.max(rhs_ty);
+                println!("max ty {:?} {:?} {:?} : {:?}", lhs_ty, op, rhs_ty, max_ty);
+
+                // we need to make sure that both types are the same before we can do any operations on them
+                let lhs = gen::cast(&mut self.builder, lhs, lhs_ty, max_ty);
+                let rhs = gen::cast(&mut self.builder, rhs, rhs_ty, max_ty);
+
+                if max_ty.float {
+                    Some(match op {
+                        hir::BinaryOp::Add => self.builder.ins().fadd(lhs, rhs),
+                        hir::BinaryOp::Sub => self.builder.ins().fsub(lhs, rhs),
+                        hir::BinaryOp::Mul => self.builder.ins().fmul(lhs, rhs),
+                        hir::BinaryOp::Div => self.builder.ins().fdiv(lhs, rhs),
+                        hir::BinaryOp::Mod => unreachable!(),
+                        hir::BinaryOp::Lt => self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
+                        hir::BinaryOp::Gt => {
+                            self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs)
                         }
-                        hir_ty::ResolvedTy::UInt(_) => {
-                            self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs)
+                        hir::BinaryOp::Le => {
+                            self.builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs)
                         }
-                        _ => unreachable!(),
-                    },
-                    hir::BinaryOp::Gt => match self.tys[self.fqn.module][lhs_expr] {
-                        hir_ty::ResolvedTy::IInt(_) => {
-                            self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
-                        }
-                        hir_ty::ResolvedTy::UInt(_) => {
+                        hir::BinaryOp::Ge => {
                             self.builder
                                 .ins()
-                                .icmp(IntCC::UnsignedGreaterThan, lhs, rhs)
+                                .fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs)
                         }
-                        _ => unreachable!(),
-                    },
-                    hir::BinaryOp::Le => match self.tys[self.fqn.module][lhs_expr] {
-                        hir_ty::ResolvedTy::IInt(_) => {
-                            self.builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
+                        hir::BinaryOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
+                        hir::BinaryOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
+                        hir::BinaryOp::And => self.builder.ins().band(lhs, rhs),
+                        hir::BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
+                    })
+                } else {
+                    Some(match op {
+                        hir::BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
+                        hir::BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
+                        hir::BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
+                        hir::BinaryOp::Div => {
+                            if max_ty.signed {
+                                self.builder.ins().sdiv(lhs, rhs)
+                            } else {
+                                self.builder.ins().udiv(lhs, rhs)
+                            }
                         }
-                        hir_ty::ResolvedTy::UInt(_) => {
-                            self.builder
-                                .ins()
-                                .icmp(IntCC::UnsignedLessThanOrEqual, lhs, rhs)
+                        hir::BinaryOp::Mod => {
+                            if max_ty.signed {
+                                self.builder.ins().srem(lhs, rhs)
+                            } else {
+                                self.builder.ins().urem(lhs, rhs)
+                            }
                         }
-                        _ => unreachable!(),
-                    },
-                    hir::BinaryOp::Ge => match self.tys[self.fqn.module][lhs_expr] {
-                        hir_ty::ResolvedTy::IInt(_) => {
-                            self.builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
+                        hir::BinaryOp::Lt => {
+                            if max_ty.signed {
+                                self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
+                            } else {
+                                self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs)
+                            }
                         }
-                        hir_ty::ResolvedTy::UInt(_) => {
-                            self.builder
-                                .ins()
-                                .icmp(IntCC::UnsignedGreaterThanOrEqual, lhs, rhs)
+                        hir::BinaryOp::Gt => {
+                            if max_ty.signed {
+                                self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
+                            } else {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::UnsignedGreaterThan, lhs, rhs)
+                            }
                         }
-                        _ => unreachable!(),
-                    },
-                    hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
-                    hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
-                    hir::BinaryOp::And => self.builder.ins().band(lhs, rhs),
-                    hir::BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
-                })
+                        hir::BinaryOp::Le => {
+                            if max_ty.signed {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
+                            } else {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::UnsignedLessThanOrEqual, lhs, rhs)
+                            }
+                        }
+                        hir::BinaryOp::Ge => {
+                            if max_ty.signed {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
+                            } else {
+                                self.builder
+                                    .ins()
+                                    .icmp(IntCC::UnsignedGreaterThanOrEqual, lhs, rhs)
+                            }
+                        }
+                        hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
+                        hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
+                        hir::BinaryOp::And => self.builder.ins().band(lhs, rhs),
+                        hir::BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
+                    })
+                }
             }
             hir::Expr::Unary { expr, op } => {
                 let expr = self.compile_expr(expr).unwrap();
@@ -625,17 +662,36 @@ impl FunctionCompiler<'_> {
                 let func = self.get_func_id(fqn);
                 let local_func = self.module.declare_func_in_func(func, self.builder.func);
 
-                let mut arg_values = args
-                    .iter()
-                    .filter_map(|arg| match self.tys[self.fqn.module][*arg] {
-                        hir_ty::ResolvedTy::Unknown => todo!(),
-                        _ => self.compile_expr(*arg), // filter_map removes the void values
-                    })
-                    .collect::<Vec<_>>();
-
                 let signature = self.tys[fqn].as_function().unwrap_or_else(|| {
                     panic!("tried to compile non-function as function");
                 });
+
+                let mut arg_values = args
+                    .iter()
+                    .zip(signature.param_tys.iter())
+                    .filter_map(|(arg_expr, expected_ty)| {
+                        let actual_ty = self.tys[self.fqn.module][*arg_expr]
+                            .to_comp_type(self.module, self.resolved_arena);
+
+                        let arg = self.compile_expr(*arg_expr);
+
+                        if let Some(actual_ty) = actual_ty.into_number_type() {
+                            let expected_ty = expected_ty
+                                .to_comp_type(self.module, self.resolved_arena)
+                                .into_number_type()
+                                .unwrap();
+
+                            Some(gen::cast(
+                                &mut self.builder,
+                                arg.unwrap(),
+                                actual_ty,
+                                expected_ty,
+                            ))
+                        } else {
+                            arg
+                        }
+                    })
+                    .collect::<Vec<_>>();
 
                 if signature.return_ty.is_array(self.resolved_arena) {
                     let array_size = signature
@@ -692,7 +748,7 @@ impl FunctionCompiler<'_> {
                 } else {
                     Some(self.builder.ins().load(
                         global_ty.into_real_type().unwrap(),
-                        MemFlags::new().with_aligned(),
+                        MemFlags::trusted(),
                         global_ptr,
                         0,
                     ))
@@ -800,7 +856,7 @@ impl FunctionCompiler<'_> {
                 self.builder.ins().jump(header_block, &[]);
 
                 // We've reached the bottom of the loop, so there will be no
-                // more backedges to the header to exits to the bottom.
+                // more back edges to the header
                 self.builder.seal_block(header_block);
 
                 self.builder.switch_to_block(exit_block);

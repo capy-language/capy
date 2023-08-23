@@ -40,6 +40,7 @@ pub enum NodeKind {
     WhileExpr,
     Condition,
     IntLiteral,
+    FloatLiteral,
     BoolLiteral,
     StringLiteral,
     CastExpr,

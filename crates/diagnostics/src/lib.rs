@@ -386,6 +386,7 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
 fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> String {
     match &d.kind {
         LoweringDiagnosticKind::OutOfRangeIntLiteral => "integer literal out of range".to_string(),
+        LoweringDiagnosticKind::OutOfRangeFloatLiteral => "float literal out of range".to_string(),
         LoweringDiagnosticKind::UndefinedLocal { name } => {
             format!("undefined variable `{}`", interner.lookup(*name))
         }
@@ -461,6 +462,7 @@ fn ty_diagnostic_message(
                     hir::BinaryOp::Sub => "subtracted by",
                     hir::BinaryOp::Mul => "multiplied by",
                     hir::BinaryOp::Div => "divided by",
+                    hir::BinaryOp::Mod => "modulo'ed by",
                     hir::BinaryOp::Lt
                     | hir::BinaryOp::Gt
                     | hir::BinaryOp::Le
@@ -559,6 +561,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Extern => "`extern`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
+        TokenKind::Float => "float",
         TokenKind::Quote => "`\"`",
         TokenKind::Escape => "escape sequence",
         TokenKind::StringContents => "string",
@@ -566,6 +569,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Hyphen => "`-`",
         TokenKind::Asterisk => "`*`",
         TokenKind::Slash => "`/`",
+        TokenKind::Percent => "`%`",
         TokenKind::Less => "`<`",
         TokenKind::LessEquals => "`<=`",
         TokenKind::Greater => "`>`",

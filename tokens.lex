@@ -9,6 +9,7 @@ Distinct = 'distinct'
 Mut = 'mut'
 Extern = 'extern'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
+Float = /[0-9]*\.[0-9]+([eE][-+]?[0-9]+)?/
 Int = /[0-9]+/
 Bool = /true|false/
 _Quote
@@ -18,6 +19,7 @@ Plus = '+'
 Hyphen = '-'
 Asterisk = '*'
 Slash = '/'
+Percent = '%'
 Less = '<'
 LessEquals = '<='
 Greater = '>'

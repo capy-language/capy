@@ -80,7 +80,7 @@ fn parse_expr_bp(
 
         let (left_bp, right_bp) = if p.at(TokenKind::Plus) || p.at(TokenKind::Hyphen) {
             (1, 2)
-        } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) {
+        } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) || p.at(TokenKind::Percent) {
             (3, 4)
         } else if p.at(TokenKind::DoubleEquals) || p.at(TokenKind::BangEquals) {
             (5, 6)
@@ -122,6 +122,9 @@ fn parse_lhs(
     let cm = if p.at(TokenKind::Int) {
         // println!("parse int");
         parse_int_literal(p)
+    } else if p.at(TokenKind::Float) {
+        // println!("parse decimal");
+        parse_float_literal(p)
     } else if p.at(TokenKind::Bool) {
         // println!("parse bool");
         parse_bool_literal(p)
@@ -171,6 +174,13 @@ fn parse_int_literal(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     p.bump();
     m.complete(p, NodeKind::IntLiteral)
+}
+
+fn parse_float_literal(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::Float));
+    let m = p.start();
+    p.bump();
+    m.complete(p, NodeKind::FloatLiteral)
 }
 
 fn parse_bool_literal(p: &mut Parser) -> CompletedMarker {

@@ -164,6 +164,42 @@ macro_rules! def_multi_node {
     };
 }
 
+macro_rules! def_multi_token {
+    (
+        $node_name:ident:
+        $($simple_child_name:ident -> $simple_child_token_kind:ident)*
+    ) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $node_name {
+            $($simple_child_name($simple_child_token_kind),)*
+        }
+
+        impl AstToken for $node_name {
+            fn cast(token: SyntaxToken, tree: &SyntaxTree) -> Option<Self> {
+                match token.kind(tree) {
+                    $(TokenKind::$simple_child_token_kind =>
+                        Some(Self::$simple_child_name($simple_child_token_kind(token))),)*
+                    _ => None,
+                }
+            }
+
+            fn syntax(self) -> SyntaxToken {
+                match self {
+                    $(Self::$simple_child_name(node) => node.syntax(),)*
+                }
+            }
+        }
+
+        impl std::fmt::Debug for $node_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Self::$simple_child_name(node) => f.debug_tuple("$simple_child_name").field(node).finish(),)*
+                }
+            }
+        }
+    };
+}
+
 def_ast_node!(Root);
 
 impl Root {
@@ -321,6 +357,7 @@ def_multi_node! {
     Binary -> BinaryExpr
     Unary -> UnaryExpr
     IntLiteral -> IntLiteral
+    FloatLiteral -> FloatLiteral
     BoolLiteral -> BoolLiteral
     StringLiteral -> StringLiteral
     Array -> Array
@@ -572,6 +609,14 @@ impl IntLiteral {
     }
 }
 
+def_ast_node!(FloatLiteral);
+
+impl FloatLiteral {
+    pub fn value(self, tree: &SyntaxTree) -> Option<Float> {
+        token(self, tree)
+    }
+}
+
 def_ast_node!(BoolLiteral);
 
 impl BoolLiteral {
@@ -588,62 +633,26 @@ impl StringLiteral {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BinaryOp {
+def_multi_token! {
+    BinaryOp:
     // math operations
-    Add(Plus),
-    Sub(Hyphen),
-    Mul(Asterisk),
-    Div(Slash),
+    Add -> Plus
+    Sub -> Hyphen
+    Mul -> Asterisk
+    Div -> Slash
+    Mod -> Percent
 
-    // cmp operations
-    Lt(Less),
-    Gt(Greater),
-    Le(LessEquals),
-    Ge(GreaterEquals),
-    Eq(DoubleEquals),
-    Ne(BangEquals),
+    // comparison operations
+    Lt -> Less
+    Gt -> Greater
+    Le -> LessEquals
+    Ge -> GreaterEquals
+    Eq -> DoubleEquals
+    Ne -> BangEquals
 
     // boolean operations
-    And(DoubleAnd),
-    Or(DoublePipe),
-}
-
-impl AstToken for BinaryOp {
-    fn cast(token: SyntaxToken, tree: &SyntaxTree) -> Option<Self> {
-        match token.kind(tree) {
-            TokenKind::Plus => Some(Self::Add(Plus(token))),
-            TokenKind::Hyphen => Some(Self::Sub(Hyphen(token))),
-            TokenKind::Asterisk => Some(Self::Mul(Asterisk(token))),
-            TokenKind::Slash => Some(Self::Div(Slash(token))),
-            TokenKind::Less => Some(Self::Lt(Less(token))),
-            TokenKind::Greater => Some(Self::Gt(Greater(token))),
-            TokenKind::LessEquals => Some(Self::Le(LessEquals(token))),
-            TokenKind::GreaterEquals => Some(Self::Ge(GreaterEquals(token))),
-            TokenKind::DoubleEquals => Some(Self::Eq(DoubleEquals(token))),
-            TokenKind::BangEquals => Some(Self::Ne(BangEquals(token))),
-            TokenKind::DoubleAnd => Some(Self::And(DoubleAnd(token))),
-            TokenKind::DoublePipe => Some(Self::Or(DoublePipe(token))),
-            _ => None,
-        }
-    }
-
-    fn syntax(self) -> SyntaxToken {
-        match self {
-            Self::Add(plus) => plus.syntax(),
-            Self::Sub(hyphen) => hyphen.syntax(),
-            Self::Mul(asterisk) => asterisk.syntax(),
-            Self::Div(slash) => slash.syntax(),
-            Self::Lt(less) => less.syntax(),
-            Self::Gt(greater) => greater.syntax(),
-            Self::Le(less_equals) => less_equals.syntax(),
-            Self::Ge(greater_equals) => greater_equals.syntax(),
-            Self::Eq(double_equals) => double_equals.syntax(),
-            Self::Ne(bang_equals) => bang_equals.syntax(),
-            Self::And(double_and) => double_and.syntax(),
-            Self::Or(double_pipe) => double_pipe.syntax(),
-        }
-    }
+    And -> DoubleAnd
+    Or -> DoublePipe
 }
 
 def_ast_node!(UnaryExpr);
@@ -658,33 +667,14 @@ impl UnaryExpr {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UnaryOp {
+def_multi_token! {
+    UnaryOp:
     // math operations
-    Pos(Plus),
-    Neg(Hyphen),
+    Pos -> Plus
+    Neg -> Hyphen
 
     // boolean operations
-    Not(Bang),
-}
-
-impl AstToken for UnaryOp {
-    fn cast(token: SyntaxToken, tree: &SyntaxTree) -> Option<Self> {
-        match token.kind(tree) {
-            TokenKind::Plus => Some(Self::Pos(Plus(token))),
-            TokenKind::Hyphen => Some(Self::Neg(Hyphen(token))),
-            TokenKind::Bang => Some(Self::Not(Bang(token))),
-            _ => None,
-        }
-    }
-
-    fn syntax(self) -> SyntaxToken {
-        match self {
-            Self::Pos(plus) => plus.syntax(),
-            Self::Neg(hyphen) => hyphen.syntax(),
-            Self::Not(bang) => bang.syntax(),
-        }
-    }
+    Not -> Bang
 }
 
 def_ast_token!(Mut);
@@ -694,6 +684,7 @@ def_ast_token!(Plus);
 def_ast_token!(Hyphen);
 def_ast_token!(Asterisk);
 def_ast_token!(Slash);
+def_ast_token!(Percent);
 def_ast_token!(Less);
 def_ast_token!(Greater);
 def_ast_token!(LessEquals);
@@ -706,6 +697,7 @@ def_ast_token!(DoubleAnd);
 def_ast_token!(DoublePipe);
 def_ast_token!(Ident);
 def_ast_token!(Int);
+def_ast_token!(Float);
 def_ast_token!(Bool);
 
 pub enum StringComponent {
@@ -1270,6 +1262,23 @@ mod tests {
         };
 
         assert_eq!(int_literal.value(&tree).unwrap().text(&tree), "92");
+    }
+
+    #[test]
+    fn get_value_of_float_literal() {
+        let (tree, root) = parse("4.5;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let float_literal = match expr {
+            Some(Expr::FloatLiteral(float_literal)) => float_literal,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(float_literal.value(&tree).unwrap().text(&tree), "4.5");
     }
 
     #[test]

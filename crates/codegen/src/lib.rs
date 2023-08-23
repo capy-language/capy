@@ -544,5 +544,19 @@ mod tests {
         )
     }
 
-    // "ptrs.capy" and "ptrs_to_ptrs.capy" tests won't be the same on all platforms
+    #[test]
+    fn convert() {
+        check(
+            "../../examples/convert.capy",
+            &[],
+            "main",
+            expect![[r#"
+            12.500
+
+            "#]],
+            0,
+        )
+    }
+
+    // "ptrs.capy" and "ptrs_to_ptrs.capy" tests are not reproducible
 }

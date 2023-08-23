@@ -1,6 +1,7 @@
 use cranelift::codegen;
 use cranelift::prelude::{
-    AbiParam, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Variable,
+    types, AbiParam, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
+    Value, Variable,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use hir::UIDGenerator;
@@ -105,7 +106,7 @@ impl<'a> CodeGen<'a> {
         let entry_block = builder.create_block();
 
         builder.switch_to_block(entry_block);
-        // tell the builder that the block will have no furthur predecessors
+        // tell the builder that the block will have no further predecessors
         builder.seal_block(entry_block);
 
         let arg_argc =
@@ -130,23 +131,22 @@ impl<'a> CodeGen<'a> {
         let exit_code = match entry_point_signature
             .return_ty
             .to_comp_type(self.module, self.resolved_arena)
-            .into_int_type()
+            .into_number_type()
         {
-            Some(return_int_ty) => {
+            Some(found_return_ty) => {
                 let exit_code = builder.inst_results(call)[0];
 
-                match return_int_ty
-                    .bit_width
-                    .cmp(&self.module.target_config().pointer_bits())
-                {
-                    std::cmp::Ordering::Less => builder
-                        .ins()
-                        .uextend(self.module.target_config().pointer_type(), exit_code),
-                    std::cmp::Ordering::Equal => exit_code,
-                    std::cmp::Ordering::Greater => builder
-                        .ins()
-                        .ireduce(self.module.target_config().pointer_type(), exit_code),
-                }
+                // cast the exit code from the entry point into a usize
+                cast(
+                    &mut builder,
+                    exit_code,
+                    found_return_ty,
+                    NumberType {
+                        ty: self.module.target_config().pointer_type(),
+                        float: false,
+                        signed: false,
+                    },
+                )
             }
             _ => builder
                 .ins()
@@ -281,4 +281,91 @@ pub(crate) fn get_func_id(
     functions.insert(fqn, func_id);
 
     func_id
+}
+
+pub(crate) fn cast(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    cast_from: NumberType,
+    cast_to: NumberType,
+) -> Value {
+    if cast_from.bit_width() == cast_to.bit_width() && cast_from.float == cast_to.float {
+        // the cast is irrelevant, so just return the value
+        return val;
+    }
+
+    match (cast_from.float, cast_to.float) {
+        (true, true) => {
+            // float to float
+            match cast_from.bit_width().cmp(&cast_to.bit_width()) {
+                std::cmp::Ordering::Less => builder.ins().fpromote(cast_to.ty, val),
+                std::cmp::Ordering::Equal => val,
+                std::cmp::Ordering::Greater => builder.ins().fdemote(cast_to.ty, val),
+            }
+        }
+        (true, false) => {
+            // float to int
+
+            // cranelift can only convert floats to i32 or i64, so we do that first,
+            // then cast the i32 or i64 to the actual one we want
+            let int_to = match cast_from.bit_width() {
+                32 => types::I32,
+                64 => types::I64,
+                _ => unreachable!(),
+            };
+
+            let first_cast = if cast_to.signed {
+                builder.ins().fcvt_to_sint_sat(int_to, val)
+            } else {
+                builder.ins().fcvt_to_uint_sat(int_to, val)
+            };
+
+            // now we can convert the `first_cast` int value to the actual int type we want
+            match cast_from.bit_width().cmp(&cast_to.bit_width()) {
+                std::cmp::Ordering::Less if cast_to.signed => {
+                    builder.ins().sextend(cast_to.ty, first_cast)
+                }
+                std::cmp::Ordering::Less => builder.ins().uextend(cast_to.ty, first_cast),
+                std::cmp::Ordering::Equal => first_cast,
+                std::cmp::Ordering::Greater => builder.ins().ireduce(cast_to.ty, first_cast),
+            }
+        }
+        (false, true) => {
+            // int to float
+
+            // first we have to convert the int to an int that can converted to float
+            let int_to = match cast_to.bit_width() {
+                32 => types::I32,
+                64 => types::I64,
+                _ => unreachable!(),
+            };
+
+            let first_cast = match cast_from.bit_width().cmp(&cast_to.bit_width()) {
+                std::cmp::Ordering::Less if cast_from.signed && cast_to.signed => {
+                    builder.ins().sextend(int_to, val)
+                }
+                std::cmp::Ordering::Less => builder.ins().uextend(int_to, val),
+                std::cmp::Ordering::Equal => val,
+                std::cmp::Ordering::Greater => builder.ins().ireduce(int_to, val),
+            };
+
+            // now we can convert that 32 or 64 bit int into a 32 or 64 bit float
+            if cast_from.signed {
+                builder.ins().fcvt_from_sint(cast_to.ty, first_cast)
+            } else {
+                builder.ins().fcvt_from_uint(cast_to.ty, first_cast)
+            }
+        }
+        (false, false) => {
+            // int to int
+            match cast_from.bit_width().cmp(&cast_to.bit_width()) {
+                std::cmp::Ordering::Less if cast_from.signed && cast_to.signed => {
+                    builder.ins().sextend(cast_to.ty, val)
+                }
+                std::cmp::Ordering::Less => builder.ins().uextend(cast_to.ty, val),
+                std::cmp::Ordering::Equal => val,
+                std::cmp::Ordering::Greater => builder.ins().ireduce(cast_to.ty, val),
+            }
+        }
+    }
 }

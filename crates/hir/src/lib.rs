@@ -63,6 +63,10 @@ pub enum TyWithRange {
         bit_width: u32,
         range: TextRange,
     },
+    Float {
+        bit_width: u32,
+        range: TextRange,
+    },
     Bool {
         range: TextRange,
     },
@@ -97,16 +101,18 @@ pub enum TyWithRange {
 impl TyWithRange {
     pub fn primitive_id(&self) -> Option<u64> {
         const INT_BIT: u64 = 1 << 63;
-        const SIGNED_BIT: u64 = 1 << 62;
-        const BOOL_BIT: u64 = 1 << 61;
-        const STRING_BIT: u64 = 1 << 60;
-        const TYPE_ID_BIT: u64 = 1 << 59;
+        const FLOAT_BIT: u64 = 1 << 62;
+        const SIGNED_BIT: u64 = 1 << 61;
+        const BOOL_BIT: u64 = 1 << 60;
+        const STRING_BIT: u64 = 1 << 59;
+        const TYPE_ID_BIT: u64 = 1 << 58;
 
         match self {
             TyWithRange::Unknown => Some(0),
             TyWithRange::Void { .. } => Some(0),
             TyWithRange::IInt { bit_width, .. } => Some(INT_BIT ^ SIGNED_BIT ^ (*bit_width as u64)),
             TyWithRange::UInt { bit_width, .. } => Some(INT_BIT ^ (*bit_width as u64)),
+            TyWithRange::Float { bit_width, .. } => Some(FLOAT_BIT ^ (*bit_width as u64)),
             TyWithRange::Bool { .. } => Some(BOOL_BIT),
             TyWithRange::String { .. } => Some(STRING_BIT),
             TyWithRange::Array { .. } => None,
@@ -325,6 +331,16 @@ impl TyWithRange {
                 bit_width: 8,
                 range,
             }
+        } else if key == Key::f64() {
+            TyWithRange::Float {
+                bit_width: 64,
+                range,
+            }
+        } else if key == Key::f32() {
+            TyWithRange::Float {
+                bit_width: 32,
+                range,
+            }
         } else if key == Key::bool() {
             TyWithRange::Bool { range }
         } else if key == Key::string() {
@@ -353,6 +369,7 @@ impl TyWithRange {
                     "isize".to_string()
                 }
             }
+            Self::Float { bit_width, .. } => format!("f{}", bit_width),
             Self::Bool { .. } => "bool".to_string(),
             Self::String { .. } => "string".to_string(),
             Self::Array { size, sub_ty, .. } => {
