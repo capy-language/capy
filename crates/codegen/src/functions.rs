@@ -248,7 +248,6 @@ impl FunctionCompiler<'_> {
                     .into_real_type()
                     .unwrap();
 
-                // todo: defs should be on the stack
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.bytes(),

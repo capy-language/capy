@@ -1057,7 +1057,6 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
-        // todo: come back here
         let value = float_literal
             .value(self.tree)
             .and_then(|int| int.text(self.tree).parse().ok());

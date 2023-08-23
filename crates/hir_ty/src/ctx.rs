@@ -337,12 +337,12 @@ impl InferenceCtx<'_> {
                             ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
                         }
                     } else if param_ty.is_array(self.resolved_arena) {
-                        ExprMutability::Mutable // todo: perhaps arrays must be declared mut?
+                        ExprMutability::Mutable // todo: i don't like this, the parameter itself should be `mut`
                     } else {
                         unreachable!("Only pointers and arrays can be dereferenced")
                     }
                 } else {
-                    // todo: for these, the params should be declared as `mut`
+                    // todo: for these, the param itself should be declared as `mut`
                     ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
                 }
             }
@@ -424,7 +424,7 @@ impl InferenceCtx<'_> {
                         kind: TyDiagnosticKind::CannotMutate,
                         module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(assign_body.source),
-                        help: None, // todo: maybe change this
+                        help: None,
                     }),
                 }
 
