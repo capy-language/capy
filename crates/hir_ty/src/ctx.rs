@@ -61,7 +61,7 @@ impl InferenceCtx<'_> {
         for (def, usages) in local_usages.iter() {
             self.local_usages.get_mut(def).unwrap().clear();
 
-            println!("leftover l{} references", def.into_raw());
+            // println!("leftover l{} references", def.into_raw());
             self.reinfer_usages(usages.clone());
         }
 
@@ -144,18 +144,9 @@ impl InferenceCtx<'_> {
 
     fn reinfer_usages(&mut self, usages: FxHashSet<LocalUsage>) {
         for usage in usages {
-            println!("  - usage {:?}", usage);
             match usage {
                 LocalUsage::Def(user_local_def) => {
-                    let user_proper_ty = current_module!(self)[user_local_def].clone();
-
                     let user_local_body = &current_bodies!(self)[user_local_def];
-
-                    println!(
-                        "    old ty : {:?} = {:?}",
-                        user_proper_ty,
-                        current_module!(self)[user_local_body.value]
-                    );
 
                     let user_local_ty = self.reinfer_expr(user_local_body.value);
 
@@ -242,26 +233,9 @@ impl InferenceCtx<'_> {
                 self.replace_weak_tys(expr, new_ty);
             }
             Expr::Local(local_def) => {
-                println!(
-                    "[START] replacing value of l{} to {:?}",
-                    local_def.into_raw(),
-                    new_ty
-                );
                 if self.replace_weak_tys(current_bodies!(self)[local_def].value, new_ty.clone()) {
-                    println!("successfully replaced l{}", local_def.into_raw());
                     current_module!(self).local_tys.insert(local_def, new_ty);
                 }
-
-                println!(
-                    "  new type of l{} is {:?}",
-                    local_def.into_raw(),
-                    current_module!(self)[local_def]
-                );
-                println!(
-                    "  new type of #{} is {:?}",
-                    current_bodies!(self)[local_def].value.into_raw(),
-                    current_module!(self)[current_bodies!(self)[local_def].value]
-                );
 
                 // now get everything that used this variable and make sure the types are correct for those things
                 let usages = self
@@ -275,17 +249,9 @@ impl InferenceCtx<'_> {
                     usages.clear();
                 }
 
-                println!("  [START] replacing usages");
                 self.reinfer_usages(usages);
-                println!("  [EXIT]");
 
-                let local_reinferred_ty = self.reinfer_expr(current_bodies!(self)[local_def].value);
-
-                if current_module!(self)[local_def] != local_reinferred_ty {
-                    println!("not the same anymore");
-                }
-
-                println!("[EXIT]");
+                // self.reinfer_expr(current_bodies!(self)[local_def].value);
             }
             _ => {}
         }
@@ -329,9 +295,7 @@ impl InferenceCtx<'_> {
                 let param_ty = self.param_tys.as_ref().unwrap()[*idx as usize].clone();
 
                 if derefs > 0 {
-                    if let Some((mutable, _)) =
-                        param_ty.clone().get_pointer_semantics(self.resolved_arena)
-                    {
+                    if let Some((mutable, _)) = param_ty.clone().into_pointer(self.resolved_arena) {
                         if mutable {
                             ExprMutability::Mutable
                         } else {
@@ -455,7 +419,7 @@ impl InferenceCtx<'_> {
         }
 
         for local in locals {
-            println!("reference to l{} in {:?}", local.into_raw(), local_usage);
+            // println!("reference to l{} in {:?}", local.into_raw(), local_usage);
             if let Some(usages) = self.local_usages.get_mut(local) {
                 usages.insert(local_usage);
             } else {
@@ -617,7 +581,7 @@ impl InferenceCtx<'_> {
 
                 if old_array != new_array {
                     new_array
-                        .get_array_semantics(self.resolved_arena)
+                        .into_array(self.resolved_arena)
                         .map(|(_, sub_ty)| sub_ty)
                         .unwrap_or(ResolvedTy::Unknown)
                 } else {
@@ -664,7 +628,6 @@ impl InferenceCtx<'_> {
             }
             Expr::While { condition, body } => {
                 if let Some(condition) = condition {
-                    println!("reinfer condition");
                     self.reinfer_expr(*condition);
                 }
 
@@ -716,7 +679,7 @@ impl InferenceCtx<'_> {
                 if source_ty == ResolvedTy::Unknown {
                     ResolvedTy::Unknown
                 } else if let Some((actual_size, array_sub_ty)) =
-                    source_ty.clone().get_array_semantics(self.resolved_arena)
+                    source_ty.clone().into_array(self.resolved_arena)
                 {
                     if let hir::Expr::IntLiteral(index) = current_bodies!(self)[*index] {
                         if index >= actual_size {
@@ -978,33 +941,45 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::Local(local) => current_module!(self).local_tys[*local].clone(),
             hir::Expr::Param { idx } => self.param_tys.as_ref().unwrap()[*idx as usize].clone(),
-            hir::Expr::Call { path, args } => {
-                let fqn = match *path {
-                    hir::PathWithRange::ThisModule { name, .. } => hir::Fqn {
+            hir::Expr::Call { callee, args } => {
+                let callee_ty = self.infer_expr(*callee);
+
+                if let Some((params, return_ty)) = callee_ty.clone().into_fn(self.resolved_arena) {
+                    if params.len() != args.len() {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::MismatchedArgCount {
+                                found: args.len(),
+                                expected: params.len(),
+                            },
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
+                        });
+                    }
+
+                    for (idx, arg) in args.iter().enumerate() {
+                        let arg_ty = self.infer_expr(*arg);
+
+                        if idx >= params.len() {
+                            continue;
+                        }
+                        let param_ty = params[idx].clone();
+                        self.expect_match(arg_ty, param_ty.clone(), *arg);
+
+                        self.replace_weak_tys(*arg, param_ty);
+                    }
+
+                    return_ty
+                } else {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::CalledNonFunction { found: callee_ty },
                         module: self.current_module.unwrap(),
-                        name,
-                    },
-                    hir::PathWithRange::OtherModule { fqn, .. } => fqn,
-                };
+                        range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
+                    });
 
-                let definition = self.world_index.get_definition(fqn).unwrap();
-
-                let function = match definition {
-                    hir::Definition::Function(f) => f,
-                    _ => todo!(),
-                };
-
-                let function_signature = self.singleton_fn_signature(function, fqn);
-
-                for (idx, arg) in args.iter().enumerate() {
-                    let arg_ty = self.infer_expr(*arg);
-                    let param_ty = function_signature.param_tys[idx].clone();
-                    self.expect_match(arg_ty, param_ty.clone(), *arg);
-
-                    self.replace_weak_tys(*arg, param_ty);
+                    ResolvedTy::Unknown
                 }
-
-                function_signature.return_ty
             }
             hir::Expr::Global(path) => {
                 let fqn = match *path {
@@ -1017,24 +992,31 @@ impl InferenceCtx<'_> {
 
                 let definition = self.world_index.get_definition(fqn).unwrap();
 
-                let global = match definition {
-                    hir::Definition::Global(global) => global,
-                    _ => todo!(),
-                };
+                match definition {
+                    hir::Definition::Global(global) => {
+                        let global_signature = self.singleton_global_signature(global, fqn);
 
-                let global_signature = self.singleton_global_signature(global, fqn);
+                        if global_signature.ty == ResolvedTy::NotYetResolved {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(expr),
+                                help: None,
+                            });
 
-                if global_signature.ty == ResolvedTy::NotYetResolved {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
-                        module: self.current_module.unwrap(),
-                        range: current_bodies!(self).range_for_expr(expr),
-                        help: None,
-                    });
+                            ResolvedTy::Unknown
+                        } else {
+                            global_signature.ty
+                        }
+                    }
+                    hir::Definition::Function(function) => {
+                        let fn_signature = self.singleton_fn_signature(function, fqn);
 
-                    ResolvedTy::Unknown
-                } else {
-                    global_signature.ty
+                        ResolvedTy::Function {
+                            params: fn_signature.param_tys,
+                            return_ty: self.resolved_arena.alloc(fn_signature.return_ty),
+                        }
+                    }
                 }
             }
             hir::Expr::PrimitiveTy { .. } => ResolvedTy::Type,

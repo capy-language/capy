@@ -564,7 +564,7 @@ impl VarRef {
 def_ast_node!(Call);
 
 impl Call {
-    pub fn name(self, tree: &SyntaxTree) -> Option<Path> {
+    pub fn callee(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 
@@ -1170,7 +1170,13 @@ mod tests {
             Some(Expr::Call(call)) => call,
             _ => unreachable!(),
         };
-        let path = call.name(&tree).unwrap();
+
+        let var = match call.callee(&tree) {
+            Some(Expr::VarRef(var)) => var,
+            _ => unreachable!(),
+        };
+
+        let path = var.name(&tree).unwrap();
 
         assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "print");
         assert!(path.nested_name(&tree).is_none());

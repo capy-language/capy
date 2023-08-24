@@ -10,7 +10,7 @@ use text_size::TextRange;
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::{GetDefinitionError, WorldIndex},
-    Definition, Fqn, Function, Name, TyParseError, TyWithRange, UIDGenerator,
+    Definition, Fqn, Name, TyParseError, TyWithRange, UIDGenerator,
 };
 
 #[derive(Clone)]
@@ -81,7 +81,7 @@ pub enum Expr {
         idx: u32,
     },
     Call {
-        path: PathWithRange,
+        callee: Idx<Expr>,
         args: Vec<Idx<Expr>>,
     },
     /// either a primitive type (such as `i32`, 'bool', etc.), or an array type, or a pointer to a primitive type, or a distinct type
@@ -714,194 +714,18 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_call(&mut self, call: ast::Call) -> Expr {
-        let path = match call.name(self.tree) {
-            Some(path) => path,
-            None => return Expr::Missing,
-        };
+        let callee = self.lower_expr(call.callee(self.tree));
 
-        let ident = match path.top_level_name(self.tree) {
-            Some(ident) => ident,
-            None => return Expr::Missing,
-        };
+        let mut args = Vec::new();
 
-        if let Some(function_name_token) = path.nested_name(self.tree) {
-            let module_name_token = ident;
-
-            let module_name = self.interner.intern(module_name_token.text(self.tree));
-            let function_name = self.interner.intern(function_name_token.text(self.tree));
-
-            let fqn = Fqn {
-                module: Name(module_name),
-                name: Name(function_name),
-            };
-
-            match self.world_index.get_definition(fqn) {
-                Ok(definition) => {
-                    let path = PathWithRange::OtherModule {
-                        fqn,
-                        module_range: module_name_token.range(self.tree),
-                        name_range: function_name_token.range(self.tree),
-                    };
-
-                    self.bodies.other_module_references.insert(fqn);
-
-                    self.bodies
-                        .symbol_map
-                        .insert(module_name_token, Symbol::Module(Name(module_name)));
-
-                    match definition {
-                        Definition::Function(function) => {
-                            self.bodies
-                                .symbol_map
-                                .insert(function_name_token, Symbol::Function(path.path()));
-                            return lower(self, call, function, path, function_name_token);
-                        }
-                        Definition::Global(_) => todo!(),
-                    }
-                }
-                Err(GetDefinitionError::UnknownModule) => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::UndefinedModule { name: module_name },
-                        range: module_name_token.range(self.tree),
-                    });
-
-                    self.bodies
-                        .symbol_map
-                        .insert(module_name_token, Symbol::Unknown);
-                    self.bodies
-                        .symbol_map
-                        .insert(function_name_token, Symbol::Unknown);
-
-                    return Expr::Missing;
-                }
-                Err(GetDefinitionError::UnknownDefinition) => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::UndefinedLocal {
-                            name: function_name,
-                        },
-                        range: function_name_token.range(self.tree),
-                    });
-
-                    self.bodies
-                        .symbol_map
-                        .insert(module_name_token, Symbol::Module(Name(module_name)));
-                    self.bodies
-                        .symbol_map
-                        .insert(function_name_token, Symbol::Unknown);
-
-                    return Expr::Missing;
-                }
+        if let Some(arg_list) = call.arg_list(self.tree) {
+            for arg in arg_list.args(self.tree) {
+                let expr = self.lower_expr(arg.value(self.tree));
+                args.push(expr);
             }
         }
 
-        // only have one ident as path
-        let name = self.interner.intern(ident.text(self.tree));
-
-        if let Some(def) = self.look_up_in_current_scope(name) {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::CalledNonLambda { name },
-                range: ident.range(self.tree),
-            });
-
-            self.bodies.symbol_map.insert(ident, Symbol::Local(def));
-            return Expr::Local(def);
-        }
-
-        // todo: allow calling parameters
-        if let Some((idx, ast)) = self.look_up_param(name) {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::CalledNonLambda { name },
-                range: ident.range(self.tree),
-            });
-
-            self.bodies.symbol_map.insert(ident, Symbol::Param(ast));
-            return Expr::Param { idx };
-        }
-
-        let name = Name(name);
-        if let Ok(definition) = self.world_index.get_definition(Fqn {
-            module: self.module,
-            name,
-        }) {
-            let path = PathWithRange::ThisModule {
-                name,
-                range: ident.range(self.tree),
-            };
-
-            match definition {
-                Definition::Function(function) => {
-                    self.bodies
-                        .symbol_map
-                        .insert(ident, Symbol::Function(path.path()));
-                    return lower(self, call, function, path, ident);
-                }
-                Definition::Global(_) => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::CalledNonLambda { name: name.0 },
-                        range: ident.range(self.tree),
-                    });
-
-                    self.bodies
-                        .symbol_map
-                        .insert(ident, Symbol::Global(path.path()));
-                    return Expr::Global(path);
-                }
-            }
-        }
-
-        self.diagnostics.push(LoweringDiagnostic {
-            kind: LoweringDiagnosticKind::UndefinedLocal { name: name.0 },
-            range: ident.range(self.tree),
-        });
-
-        self.bodies.symbol_map.insert(ident, Symbol::Unknown);
-
-        fn lower(
-            ctx: &mut Ctx,
-            call: ast::Call,
-            function: &Function,
-            path: PathWithRange,
-            ident: ast::Ident,
-        ) -> Expr {
-            let arg_list = call.arg_list(ctx.tree);
-
-            let expected = function.params.len() as u32;
-            let got = match &arg_list {
-                Some(al) => al.args(ctx.tree).count() as u32,
-                None => 0,
-            };
-
-            if expected != got {
-                let name = match path {
-                    PathWithRange::ThisModule { name, .. } => name.0,
-                    PathWithRange::OtherModule { fqn, .. } => fqn.name.0,
-                };
-
-                ctx.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::MismatchedArgCount {
-                        name,
-                        expected,
-                        found: got,
-                    },
-                    range: ident.range(ctx.tree),
-                });
-
-                return Expr::Missing;
-            }
-
-            let mut args = Vec::new();
-
-            if let Some(arg_list) = arg_list {
-                for arg in arg_list.args(ctx.tree) {
-                    let expr = ctx.lower_expr(arg.value(ctx.tree));
-                    args.push(expr);
-                }
-            }
-
-            Expr::Call { path, args }
-        }
-
-        Expr::Missing
+        Expr::Call { callee, args }
     }
 
     fn lower_index_expr(&mut self, index_expr: ast::IndexExpr) -> Expr {
@@ -940,7 +764,7 @@ impl<'a> Ctx<'a> {
             };
 
             match self.world_index.get_definition(fqn) {
-                Ok(_) => {
+                Ok(def) => {
                     let path = PathWithRange::OtherModule {
                         fqn,
                         module_range: module_name_token.range(self.tree),
@@ -952,6 +776,19 @@ impl<'a> Ctx<'a> {
                     self.bodies
                         .symbol_map
                         .insert(module_name_token, Symbol::Module(Name(module_name)));
+
+                    match def {
+                        Definition::Function(_) => {
+                            self.bodies
+                                .symbol_map
+                                .insert(var_name_token, Symbol::Function(path.path()));
+                        }
+                        Definition::Global(_) => {
+                            self.bodies
+                                .symbol_map
+                                .insert(var_name_token, Symbol::Global(path.path()));
+                        }
+                    }
 
                     self.bodies
                         .symbol_map
@@ -1366,7 +1203,7 @@ impl Bodies {
                         interner,
                         indentation,
                     );
-                    s.push_str("[ ");
+                    s.push('[');
                     write_expr(
                         *index,
                         show_idx,
@@ -1376,7 +1213,7 @@ impl Bodies {
                         interner,
                         indentation,
                     );
-                    s.push_str(" ]");
+                    s.push(']');
                 }
 
                 Expr::Cast { expr, ty } => {
@@ -1574,8 +1411,16 @@ impl Bodies {
 
                 Expr::Param { idx } => s.push_str(&format!("p{}", idx)),
 
-                Expr::Call { path, args } => {
-                    s.push_str(&path.path().display(interner));
+                Expr::Call { callee, args } => {
+                    write_expr(
+                        *callee,
+                        show_idx,
+                        bodies,
+                        s,
+                        twr_arena,
+                        interner,
+                        indentation,
+                    );
 
                     s.push('(');
                     for (idx, arg) in args.iter().enumerate() {

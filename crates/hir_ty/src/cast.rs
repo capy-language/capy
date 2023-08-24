@@ -288,7 +288,7 @@ pub(crate) fn can_fit(
         (found, ResolvedTy::Distinct { ty, .. }) => {
             can_fit(resolved_arena, found, resolved_arena[ty].clone())
         }
-        _ => false,
+        (found, expected) => found.is_equal_to(expected, resolved_arena),
     }
 }
 

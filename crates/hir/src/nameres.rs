@@ -42,6 +42,16 @@ impl PathWithRange {
             Self::OtherModule { fqn, .. } => Path::OtherModule(fqn),
         }
     }
+
+    pub fn into_fqn(self, this_module: Name) -> Fqn {
+        match self {
+            PathWithRange::ThisModule { name, .. } => Fqn {
+                module: this_module,
+                name,
+            },
+            PathWithRange::OtherModule { fqn, .. } => fqn,
+        }
+    }
 }
 
 pub struct NameResDiagnostic {

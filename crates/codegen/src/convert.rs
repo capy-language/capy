@@ -185,12 +185,24 @@ impl ToCraneliftSignature for CapyFnSignature {
         module: &dyn Module,
         resolved_arena: &Arena<ResolvedTy>,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
+        (self.param_tys.clone(), self.return_ty.clone())
+            .to_cranelift_signature(module, resolved_arena)
+    }
+}
+
+impl ToCraneliftSignature for (Vec<ResolvedTy>, ResolvedTy) {
+    fn to_cranelift_signature(
+        &self,
+        module: &dyn Module,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
+        let (param_tys, return_ty) = self;
+
         let mut real_ty_count = 0;
 
         let mut new_idx_to_old_idx = FxHashMap::default();
 
-        let mut param_types = self
-            .param_tys
+        let mut param_types = param_tys
             .iter()
             .enumerate()
             .filter_map(|(idx, param_ty)| {
@@ -211,7 +223,7 @@ impl ToCraneliftSignature for CapyFnSignature {
             })
             .collect::<Vec<_>>();
 
-        if self.return_ty.is_array(resolved_arena) {
+        if return_ty.is_array(resolved_arena) {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
@@ -221,8 +233,7 @@ impl ToCraneliftSignature for CapyFnSignature {
         (
             CraneliftSignature {
                 params: param_types,
-                returns: self
-                    .return_ty
+                returns: return_ty
                     .to_comp_type(module, resolved_arena)
                     .into_real_type()
                     .map(|ty| vec![AbiParam::new(ty)])

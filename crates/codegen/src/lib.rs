@@ -587,5 +587,23 @@ mod tests {
         )
     }
 
+    #[test]
+    fn first_class_functions() {
+        check(
+            "../../examples/first_class_functions.capy",
+            &[],
+            "main",
+            expect![[r#"
+            apply add to  1 and 2 ... 3
+            apply sub to  5 and 3 ... 2
+            apply mul to  3 and 2 ... 6
+            apply div to 10 and 2 ... 5
+            apply pow to  2 and 3 ... 8
+
+            "#]],
+            0,
+        )
+    }
+
     // "ptrs.capy" and "ptrs_to_ptrs.capy" tests are not reproducible
 }

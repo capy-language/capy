@@ -46,9 +46,11 @@ fn parse_expr_bp(
 
     loop {
         let mut at_lbrack = p.at(TokenKind::LBrack);
+        let mut at_lparen = p.at(TokenKind::LParen);
         let mut at_caret = p.at(TokenKind::Caret);
         let mut at_as = p.at(TokenKind::As);
-        while at_lbrack || at_caret || at_as {
+
+        while at_lbrack || at_caret || at_as || at_lparen {
             if at_lbrack {
                 let indexing_expr = lhs.precede(p).complete(p, NodeKind::Source).precede(p);
                 p.bump();
@@ -60,6 +62,36 @@ fn parse_expr_bp(
                 p.expect_with_no_skip(TokenKind::RBrack);
 
                 lhs = indexing_expr.complete(p, NodeKind::IndexExpr);
+            } else if at_lparen {
+                let call = lhs.precede(p);
+
+                let arg_list_m = p.start();
+
+                p.bump();
+
+                // collect arguments
+                loop {
+                    if p.at(TokenKind::RParen) {
+                        break;
+                    }
+                    if let Some(arg_m) = expr::parse_expr(p, "argument") {
+                        arg_m.precede(p).complete(p, NodeKind::Arg);
+                    }
+
+                    if p.at_eof() {
+                        break;
+                    }
+
+                    if !p.at(TokenKind::RParen) {
+                        p.expect_with_no_skip(TokenKind::Comma);
+                    }
+                }
+
+                p.expect(TokenKind::RParen);
+
+                arg_list_m.complete(p, NodeKind::ArgList);
+
+                lhs = call.complete(p, NodeKind::Call);
             } else if at_caret {
                 let deref = lhs.precede(p);
                 p.bump();
@@ -74,6 +106,7 @@ fn parse_expr_bp(
             }
 
             at_lbrack = p.at(TokenKind::LBrack);
+            at_lparen = p.at(TokenKind::LParen);
             at_caret = p.at(TokenKind::Caret);
             at_as = p.at(TokenKind::As);
         }
@@ -133,7 +166,7 @@ fn parse_lhs(
         parse_string_literal(p)
     } else if p.at(TokenKind::Ident) {
         // println!("parse var or call");
-        parse_var_or_call(p)
+        parse_var(p)
     } else if p.at(TokenKind::Caret) {
         // println!("parse ref");
         parse_ref(p, recovery_set)
@@ -227,41 +260,13 @@ fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::Distinct)
 }
 
-fn parse_var_or_call(p: &mut Parser) -> CompletedMarker {
+fn parse_var(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Ident));
     let m = p.start();
+
     parse_path(p, TokenSet::NONE);
 
-    if p.at(TokenKind::LParen) {
-        let arg_list_m = p.start();
-
-        p.bump();
-
-        // collect arguments
-        loop {
-            if p.at(TokenKind::RParen) {
-                break;
-            }
-            if let Some(arg_m) = expr::parse_expr(p, "argument") {
-                arg_m.precede(p).complete(p, NodeKind::Arg);
-            }
-
-            if p.at_eof() {
-                break;
-            }
-
-            if !p.at(TokenKind::RParen) {
-                p.expect_with_no_skip(TokenKind::Comma);
-            }
-        }
-
-        p.expect(TokenKind::RParen);
-
-        arg_list_m.complete(p, NodeKind::ArgList);
-        m.complete(p, NodeKind::Call)
-    } else {
-        m.complete(p, NodeKind::VarRef)
-    }
+    m.complete(p, NodeKind::VarRef)
 }
 
 fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {

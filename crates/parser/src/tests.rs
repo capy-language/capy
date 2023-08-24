@@ -7,7 +7,7 @@ use std::{env, fs, thread};
 use token::Tokens;
 
 #[derive(Debug, PartialEq)]
-enum RunResult {
+enum TestResult {
     Ok,
     Panic,
     Hung,
@@ -40,11 +40,11 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
         }
 
         let timer = timer::Timer::new();
-        let (tx, rx) = std::sync::mpsc::channel::<RunResult>();
+        let (tx, rx) = std::sync::mpsc::channel::<TestResult>();
 
         let tx_ = tx.clone();
         let _guard = timer.schedule_with_delay(chrono::Duration::seconds(1), move || {
-            tx_.send(RunResult::Hung).unwrap();
+            tx_.send(TestResult::Hung).unwrap();
         });
 
         let tx_ = tx.clone();
@@ -67,9 +67,9 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
             .is_err();
 
             tx_.send(if panic {
-                RunResult::Panic
+                TestResult::Panic
             } else {
-                RunResult::Ok
+                TestResult::Ok
             })
             .unwrap();
         });
@@ -92,9 +92,9 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
     let mut fails = 0;
     for (path, result) in test_results {
         let (color, name) = match result {
-            RunResult::Ok => (ANSI_GREEN, "ok"),
-            RunResult::Panic => (ANSI_RED, "FAILED"),
-            RunResult::Hung => (ANSI_RED, "HUNG"),
+            TestResult::Ok => (ANSI_GREEN, "ok"),
+            TestResult::Panic => (ANSI_RED, "FAILED"),
+            TestResult::Hung => (ANSI_RED, "HUNG"),
         };
         println!(
             "{: <longest_name$} ... {}{}{}",
@@ -103,7 +103,7 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
             name,
             ANSI_RESET
         );
-        if result != RunResult::Ok {
+        if result != TestResult::Ok {
             fails += 1;
         }
     }

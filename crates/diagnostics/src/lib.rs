@@ -500,6 +500,15 @@ fn ty_diagnostic_message(
                 actual_size,
             )
         }
+        hir_ty::TyDiagnosticKind::MismatchedArgCount { found, expected } => {
+            format!("expected {} arguments but found {}", expected, found)
+        }
+        hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
+            format!(
+                "expected a function, but found {}",
+                found.display(resolved_arena, interner),
+            )
+        }
         hir_ty::TyDiagnosticKind::DerefMismatch { found } => {
             format!(
                 "tried dereferencing `^` a non-pointer, `{}`",

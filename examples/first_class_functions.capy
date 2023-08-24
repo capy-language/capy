@@ -1,0 +1,42 @@
+main :: () {
+    printf("apply add to  1 and 2 ... %i\n", apply(add, 1, 2));
+    printf("apply sub to  5 and 3 ... %i\n", apply(sub, 5, 3));
+    printf("apply mul to  3 and 2 ... %i\n", apply(mul, 3, 2));
+    printf("apply div to 10 and 2 ... %i\n", apply(div, 10, 2));
+    printf("apply pow to  2 and 3 ... %i\n", apply(pow, 2, 3));
+};
+
+apply :: (fn: (x: i32, y: i32) -> i32, x: i32, y: i32) -> i32 {
+    fn(x, y)
+};
+
+add :: (x: i32, y: i32) -> i32 {
+    x + y
+};
+
+sub :: (x: i32, y: i32) -> i32 {
+    x - y
+};
+
+mul :: (x: i32, y: i32) -> i32 {
+    x * y
+};
+
+div :: (x: i32, y: i32) -> i32 {
+    x / y
+};
+
+pow :: (x: i32, y: i32) -> i32 {
+    res := 1;
+
+    i := 0;
+    while i < y {
+        res = res * x;
+
+        i = i + 1;
+    };
+
+    res
+};
+
+printf :: (str: string, n: i32) extern;

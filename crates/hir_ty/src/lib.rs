@@ -50,7 +50,7 @@ pub enum ResolvedTy {
     Type,
     // this is only ever used for functions defined locally
     Function {
-        params: Vec<Idx<ResolvedTy>>,
+        params: Vec<ResolvedTy>,
         return_ty: Idx<ResolvedTy>,
     },
     Void,
@@ -75,18 +75,40 @@ impl ResolvedTy {
         }
     }
 
-    /// checks if `self` is a pointer, and returns the mutability and subtype if so
-    pub fn get_pointer_semantics(
+    /// returns the mutability and sub type
+    pub fn into_fn(
         self,
         resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<(bool, ResolvedTy)> {
+    ) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
+        match self {
+            ResolvedTy::Function { params, return_ty } => {
+                Some((params, resolved_arena[return_ty].clone()))
+            }
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[ty].clone().into_fn(resolved_arena),
+            _ => None,
+        }
+    }
+
+    /// returns the mutability and sub type
+    pub fn into_pointer(self, resolved_arena: &Arena<ResolvedTy>) -> Option<(bool, ResolvedTy)> {
         match self {
             ResolvedTy::Pointer { mutable, sub_ty } => {
                 Some((mutable, resolved_arena[sub_ty].clone()))
             }
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[ty]
-                .clone()
-                .get_pointer_semantics(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => {
+                resolved_arena[ty].clone().into_pointer(resolved_arena)
+            }
+            _ => None,
+        }
+    }
+
+    /// returns the length and sub type
+    pub fn into_array(self, resolved_arena: &Arena<ResolvedTy>) -> Option<(u64, ResolvedTy)> {
+        match self {
+            ResolvedTy::Array { size, sub_ty } => Some((size, resolved_arena[sub_ty].clone())),
+            ResolvedTy::Distinct { ty, .. } => {
+                resolved_arena[ty].clone().into_array(resolved_arena)
+            }
             _ => None,
         }
     }
@@ -177,9 +199,9 @@ impl ResolvedTy {
                     && first_params.len() == second_params.len()
                     && first_params.iter().zip(second_params.iter()).all(
                         |(first_param, second_param)| {
-                            resolved_arena[*first_param]
+                            first_param
                                 .clone()
-                                .is_equal_to(resolved_arena[*second_param].clone(), resolved_arena)
+                                .is_equal_to(second_param.clone(), resolved_arena)
                         },
                     )
             }
@@ -245,20 +267,6 @@ impl ResolvedTy {
                     .is_functionally_equivalent_to(other, resolved_arena)
             }
             (first, second) => first.is_equal_to(second, resolved_arena),
-        }
-    }
-
-    /// checks if `self` is an array, and returns the size and subtype if so
-    pub fn get_array_semantics(
-        self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<(u64, ResolvedTy)> {
-        match self {
-            ResolvedTy::Array { size, sub_ty } => Some((size, resolved_arena[sub_ty].clone())),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[ty]
-                .clone()
-                .get_array_semantics(resolved_arena),
-            _ => None,
         }
     }
 }
@@ -363,6 +371,13 @@ pub enum TyDiagnosticKind {
         index: u64,
         actual_size: u64,
         array_ty: ResolvedTy,
+    },
+    MismatchedArgCount {
+        found: usize,
+        expected: usize,
+    },
+    CalledNonFunction {
+        found: ResolvedTy,
     },
     DerefMismatch {
         found: ResolvedTy,
@@ -579,11 +594,7 @@ impl<'a> InferenceCtx<'a> {
             ResolvedTy::Unknown => {}
             ResolvedTy::Function { .. } => {
                 let actual_ty = ResolvedTy::Function {
-                    params: param_tys
-                        .clone()
-                        .into_iter()
-                        .map(|ty| self.resolved_arena.alloc(ty))
-                        .collect(),
+                    params: param_tys.clone(),
                     return_ty: self.resolved_arena.alloc(return_ty.clone()),
                 };
 
@@ -609,11 +620,7 @@ impl<'a> InferenceCtx<'a> {
                     kind: TyDiagnosticKind::Mismatch {
                         expected: other,
                         found: ResolvedTy::Function {
-                            params: param_tys
-                                .clone()
-                                .into_iter()
-                                .map(|ty| self.resolved_arena.alloc(ty))
-                                .collect(),
+                            params: param_tys.clone(),
                             return_ty: self.resolved_arena.alloc(return_ty.clone()),
                         },
                     },
@@ -839,11 +846,7 @@ impl<'a> InferenceCtx<'a> {
             } => ResolvedTy::Function {
                 params: params
                     .into_iter()
-                    .map(|param| {
-                        let resolved = self.resolve_ty(param);
-
-                        self.resolved_arena.alloc(resolved)
-                    })
+                    .map(|param| self.resolve_ty(param))
                     .collect(),
                 return_ty: {
                     let resolved = self.resolve_ty(return_ty);
@@ -1009,7 +1012,7 @@ impl ResolvedTy {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&resolved_arena[*param].display(resolved_arena, interner));
+                    res.push_str(&param.display(resolved_arena, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
@@ -2365,9 +2368,10 @@ mod tests {
             expect![[r#"
                 main.main : () -> void
                 main.nothing : () -> void
-                0 : void
+                0 : () -> void
                 1 : void
                 2 : void
+                3 : void
             "#]],
             |_| [],
         );
@@ -2383,10 +2387,11 @@ mod tests {
             expect![[r#"
                 main.main : () -> i32
                 main.number : () -> i32
-                0 : i32
+                0 : () -> i32
                 1 : i32
                 2 : i32
                 3 : i32
+                4 : i32
             "#]],
             |_| [],
         );
@@ -2402,11 +2407,12 @@ mod tests {
             expect![[r#"
                 main.id : (i32) -> i32
                 main.main : () -> i32
-                0 : i32
+                0 : (i32) -> i32
                 1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
+                5 : i32
             "#]],
             |_| [],
         );
@@ -2422,14 +2428,15 @@ mod tests {
             expect![[r#"
                 main.main : () -> i32
                 main.multiply : (i32, i32) -> i32
-                0 : void
-                1 : string
-                2 : i32
+                0 : (i32, i32) -> i32
+                1 : void
+                2 : string
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
+                8 : i32
             "#]],
             |_| {
                 [
@@ -2470,9 +2477,10 @@ mod tests {
                   0 : string
                   1 : string
                 main:
-                  0 : i32
-                  1 : string
+                  0 : (i32) -> string
+                  1 : i32
                   2 : string
+                  3 : string
             "#]],
             |_| [],
         );
@@ -2494,14 +2502,15 @@ mod tests {
             expect![[r#"
                 main.main : () -> void
                 main.take_i32 : (i32) -> void
-                0 : {uint}
+                0 : (i32) -> void
                 1 : {uint}
                 2 : {uint}
-                3 : string
+                3 : {uint}
                 4 : string
-                5 : void
+                5 : string
                 6 : void
                 7 : void
+                8 : void
                 l0 : {uint}
             "#]],
             |_| {
@@ -3080,10 +3089,11 @@ mod tests {
                 3 : usize
                 4 : usize
                 5 : usize
-                6 : usize
-                7 : void
+                6 : (usize) -> void
+                7 : usize
                 8 : void
                 9 : void
+                10 : void
                 l0 : usize
                 l1 : usize
             "#]],
@@ -3107,11 +3117,12 @@ mod tests {
                 main.bar : (^i32) -> void
                 main.main : () -> void
                 0 : i32
-                1 : i32
-                2 : ^i32
-                3 : void
+                1 : (^i32) -> void
+                2 : i32
+                3 : ^i32
                 4 : void
                 5 : void
+                6 : void
                 l0 : i32
             "#]],
             |_| [],
@@ -3134,11 +3145,12 @@ mod tests {
                 main.bar : (^mut i32) -> void
                 main.main : () -> void
                 0 : {uint}
-                1 : {uint}
-                2 : ^{uint}
-                3 : void
+                1 : (^mut i32) -> void
+                2 : {uint}
+                3 : ^{uint}
                 4 : void
                 5 : void
+                6 : void
                 l0 : {uint}
             "#]],
             |_| {
@@ -3150,7 +3162,7 @@ mod tests {
                         },
                         found: ResolvedTy::Pointer {
                             mutable: false,
-                            sub_ty: Idx::from_raw(RawIdx::from(1)),
+                            sub_ty: Idx::from_raw(RawIdx::from(2)),
                         },
                     },
                     101..105,
@@ -3192,15 +3204,12 @@ mod tests {
                 [(
                     TyDiagnosticKind::Mismatch {
                         expected: ResolvedTy::Function {
-                            params: vec![
-                                Idx::from_raw(RawIdx::from(0)),
-                                Idx::from_raw(RawIdx::from(1)),
-                            ],
-                            return_ty: Idx::from_raw(RawIdx::from(2)),
+                            params: vec![ResolvedTy::Float(32), ResolvedTy::IInt(8)],
+                            return_ty: Idx::from_raw(RawIdx::from(0)),
                         },
                         found: ResolvedTy::Function {
-                            params: vec![Idx::from_raw(RawIdx::from(3))],
-                            return_ty: Idx::from_raw(RawIdx::from(4)),
+                            params: vec![ResolvedTy::IInt(32)],
+                            return_ty: Idx::from_raw(RawIdx::from(1)),
                         },
                     },
                     56..116,
