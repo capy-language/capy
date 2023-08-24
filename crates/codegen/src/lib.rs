@@ -174,14 +174,22 @@ mod tests {
 
             let tokens = lexer::lex(text);
             let parse = parser::parse_source_file(&tokens, text);
-            assert_eq!(parse.errors(), &[]);
+            cfg_if::cfg_if! {
+            if #[cfg(not(feature = "disable_codegen_checks"))] {
+                assert_eq!(parse.errors(), &[]);
+            }
+            }
 
             let tree = parse.into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
             let (index, diagnostics) =
                 hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-            assert_eq!(diagnostics, vec![]);
+            cfg_if::cfg_if! {
+            if #[cfg(not(feature = "disable_codegen_checks"))] {
+                assert_eq!(diagnostics, vec![]);
+            }
+            }
 
             let module = hir::Name(interner.intern(module_name));
 
@@ -196,7 +204,11 @@ mod tests {
                 &mut twr_arena,
                 &mut interner,
             );
-            assert_eq!(diagnostics, vec![]);
+            cfg_if::cfg_if! {
+            if #[cfg(not(feature = "disable_codegen_checks"))] {
+                assert_eq!(diagnostics, vec![]);
+            }
+            }
 
             bodies_map.insert(module, bodies);
         }
@@ -206,14 +218,23 @@ mod tests {
         let module = hir::Name(interner.intern(main_name));
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
-        assert_eq!(parse.errors(), &[]);
+        cfg_if::cfg_if! {
+        if #[cfg(not(feature = "disable_codegen_checks"))] {
+            assert_eq!(parse.errors(), &[]);
+        }
+        }
 
         let tree = parse.into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
         let (index, diagnostics) =
             hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-        assert_eq!(diagnostics, vec![]);
+        cfg_if::cfg_if! {
+        if #[cfg(not(feature = "disable_codegen_checks"))] {
+            assert_eq!(diagnostics, vec![]);
+        }
+        }
+
         world_index.add_module(module, index);
 
         let (bodies, diagnostics) = hir::lower(
@@ -225,14 +246,22 @@ mod tests {
             &mut twr_arena,
             &mut interner,
         );
-        assert_eq!(diagnostics, vec![]);
+        cfg_if::cfg_if! {
+        if #[cfg(not(feature = "disable_codegen_checks"))] {
+            assert_eq!(diagnostics, vec![]);
+        }
+        }
         bodies_map.insert(module, bodies);
 
         let mut resolved_arena = Arena::new();
 
         let (inference_result, diagnostics) =
             InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena).finish();
-        assert_eq!(diagnostics, vec![]);
+        cfg_if::cfg_if! {
+        if #[cfg(not(feature = "disable_codegen_checks"))] {
+            assert_eq!(diagnostics, vec![]);
+        }
+        }
 
         let bytes = compile_obj(
             true,

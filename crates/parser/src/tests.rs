@@ -108,7 +108,9 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
         }
     }
     println!();
-    if fails > 0 {
+    if fails == 1 {
+        panic!("1 parser test failed");
+    } else if fails > 1 {
         panic!("{} parser tests failed", fails);
     }
 }

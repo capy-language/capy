@@ -82,7 +82,7 @@ impl<'tokens> Parser<'tokens> {
         if self.at(kind) {
             self.bump();
         } else {
-            self.error_without_skip();
+            self.error_with_no_skip();
         }
     }
 
@@ -93,11 +93,12 @@ impl<'tokens> Parser<'tokens> {
         self.error_with_recovery_set_no_default(recovery_set.union(DEFAULT_RECOVERY_SET))
     }
 
+    #[allow(unused)]
     pub(crate) fn error(&mut self) -> Option<CompletedMarker> {
         self.error_with_recovery_set_no_default(DEFAULT_RECOVERY_SET)
     }
 
-    pub(crate) fn error_without_skip(&mut self) -> Option<CompletedMarker> {
+    pub(crate) fn error_with_no_skip(&mut self) -> Option<CompletedMarker> {
         self.error_with_recovery_set_no_default(TokenSet::ALL)
     }
 

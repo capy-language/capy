@@ -50,7 +50,7 @@ pub enum TyParseError {
     NonPrimitive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TyWithRange {
     Unknown,
     /// a bit-width of u32::MAX represents an isize
@@ -86,6 +86,12 @@ pub enum TyWithRange {
     Distinct {
         uid: u32,
         ty: Idx<TyWithRange>,
+        range: TextRange,
+    },
+    Function {
+        params: Vec<Idx<TyWithRange>>,
+        return_ty: Idx<TyWithRange>,
+        range: TextRange,
     },
     Type {
         range: TextRange,
@@ -99,6 +105,31 @@ pub enum TyWithRange {
 }
 
 impl TyWithRange {
+    pub fn range(&self) -> Option<TextRange> {
+        match self {
+            TyWithRange::Unknown => None,
+            TyWithRange::IInt { range, .. }
+            | TyWithRange::UInt { range, .. }
+            | TyWithRange::Float { range, .. }
+            | TyWithRange::Bool { range }
+            | TyWithRange::String { range }
+            | TyWithRange::Array { range, .. }
+            | TyWithRange::Pointer { range, .. }
+            | TyWithRange::Distinct { range, .. }
+            | TyWithRange::Function { range, .. }
+            | TyWithRange::Type { range } => Some(*range),
+            TyWithRange::Void { range } => *range,
+            TyWithRange::Named { path } => match path {
+                PathWithRange::ThisModule { range, .. } => Some(*range),
+                PathWithRange::OtherModule {
+                    module_range,
+                    name_range,
+                    ..
+                } => Some(module_range.cover(*name_range)),
+            },
+        }
+    }
+
     pub fn primitive_id(&self) -> Option<u64> {
         const INT_BIT: u64 = 1 << 63;
         const FLOAT_BIT: u64 = 1 << 62;
@@ -119,6 +150,7 @@ impl TyWithRange {
             TyWithRange::Pointer { .. } => None,
             TyWithRange::Type { .. } => Some(TYPE_ID_BIT),
             TyWithRange::Distinct { .. } => None,
+            TyWithRange::Function { .. } => None,
             TyWithRange::Named { .. } => None,
         }
     }
@@ -262,6 +294,44 @@ impl TyWithRange {
                 Ok(TyWithRange::Distinct {
                     uid: uid_gen.generate_unique_id(),
                     ty: twr_arena.alloc(ty),
+                    range: distinct.range(tree),
+                })
+            }
+            ast::Expr::Lambda(lambda) => {
+                let mut params = Vec::new();
+
+                if let Some(param_list) = lambda.param_list(tree) {
+                    for param in param_list.params(tree) {
+                        // let name = param
+                        //     .name(tree)
+                        //     .map(|ident| Name(interner.intern(ident.text(tree))));
+
+                        let ty = Self::parse(
+                            param.ty(tree).and_then(|ty| ty.expr(tree)),
+                            uid_gen,
+                            twr_arena,
+                            interner,
+                            tree,
+                            primitives_only,
+                        )?;
+
+                        params.push(twr_arena.alloc(ty));
+                    }
+                }
+
+                let return_ty = Self::parse(
+                    lambda.return_ty(tree).and_then(|ty| ty.expr(tree)),
+                    uid_gen,
+                    twr_arena,
+                    interner,
+                    tree,
+                    primitives_only,
+                )?;
+
+                Ok(TyWithRange::Function {
+                    params,
+                    return_ty: twr_arena.alloc(return_ty),
+                    range: lambda.range(tree),
                 })
             }
             _ => Err((TyParseError::NotATy, ty.range(tree))),
@@ -382,7 +452,7 @@ impl TyWithRange {
                 format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
             }
             Self::Type { .. } => "type".to_string(),
-            Self::Distinct { uid, ty } => {
+            Self::Distinct { uid, ty, .. } => {
                 format!(
                     "distinct'{} {}",
                     uid,
@@ -390,6 +460,24 @@ impl TyWithRange {
                 )
             }
             Self::Named { path } => path.path().display(interner),
+            Self::Function {
+                params, return_ty, ..
+            } => {
+                let mut res = "(".to_string();
+
+                for (idx, param) in params.iter().enumerate() {
+                    res.push_str(&twr_arena[*param].display(twr_arena, interner));
+
+                    if idx != params.len() - 1 {
+                        res.push_str(", ");
+                    }
+                }
+                res.push_str(") -> ");
+
+                res.push_str(&twr_arena[*return_ty].display(twr_arena, interner));
+
+                res
+            }
             Self::Void { .. } => "void".to_string(),
         }
     }

@@ -20,4 +20,4 @@ error at 8: missing Colon
 error at 8: missing parameter type
 error at 8: missing RParen
 error at 8: missing Arrow
-error at 8: missing lambda body
+error at 8: missing return type

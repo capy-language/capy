@@ -15,7 +15,7 @@ main :: () -> i32 {
     0
 };
 
-puts :: (some_text: string) -> extern; // libc defined
+puts :: (some_text: string) extern; // libc defined
 ```
 
 Capy files end with `.capy` and a bunch of examples can be found in the `examples` folder.
@@ -38,7 +38,7 @@ You can replace `run` with `build` to output only the final executable.
 
 If you want to use libc functions, define them with `extern` as above.
 Varargs do not work, but this can be worked around,
-e.g. by explicity defining `printf` to take 3 arguments.
+e.g. by explicitly defining `printf` to take 3 arguments.
 This is done numerous times in the `examples` folder.
 
 You have to manually include all the files your code references in the `capy` command, although this might change in the future.

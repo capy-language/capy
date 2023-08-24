@@ -1,8 +1,8 @@
-(x: i32) {};
+(x: i32) -> void
 ===
-Root@0..12
-  ExprStmt@0..11
-    Lambda@0..11
+Root@0..16
+  ExprStmt@0..16
+    Lambda@0..16
       ParamList@0..8
         LParen@0..1 "("
         Param@1..7
@@ -15,7 +15,9 @@ Root@0..12
                 Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
-      Block@9..11
-        LBrace@9..10 "{"
-        RBrace@10..11 "}"
-  Semicolon@11..12 ";"
+      Arrow@9..11 "->"
+      Whitespace@11..12 " "
+      Ty@12..16
+        VarRef@12..16
+          Path@12..16
+            Ident@12..16 "void"

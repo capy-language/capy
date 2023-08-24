@@ -1,4 +1,4 @@
-use crate::{AstNode, Expr, Lambda};
+use crate::{AstNode, Expr, IfExpr, WhileExpr};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
@@ -10,21 +10,31 @@ pub struct ValidationDiagnostic {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ValidationDiagnosticKind {
-    UnneededVoid,
+    AlwaysTrue,
+    AlwaysFalse,
 }
 
 pub fn validate(ast: impl AstNode, tree: &SyntaxTree) -> Vec<ValidationDiagnostic> {
     let mut errors = Vec::new();
 
     for node in ast.syntax().descendant_nodes(tree) {
-        if let Some(Expr::VarRef(path_ty)) = Lambda::cast(node, tree)
-            .and_then(|lambda| lambda.return_ty(tree))
-            .and_then(|return_ty| return_ty.expr(tree))
+        if let Some(Expr::BoolLiteral(bool_lit)) = IfExpr::cast(node, tree)
+            .and_then(|if_expr| if_expr.condition(tree))
+            .or_else(|| {
+                WhileExpr::cast(node, tree)
+                    .and_then(|while_expr| while_expr.condition(tree))
+                    .and_then(|cond| cond.value(tree))
+            })
         {
-            if path_ty.text(tree) == "void" {
+            if bool_lit.text(tree) == "true" {
                 errors.push(ValidationDiagnostic {
-                    kind: ValidationDiagnosticKind::UnneededVoid,
-                    range: path_ty.range(tree),
+                    kind: ValidationDiagnosticKind::AlwaysTrue,
+                    range: node.range(tree),
+                });
+            } else {
+                errors.push(ValidationDiagnostic {
+                    kind: ValidationDiagnosticKind::AlwaysFalse,
+                    range: node.range(tree),
                 });
             }
         }
@@ -100,10 +110,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_unneeded_parens() {
+    fn validate_if_always_true() {
         check_repl_line(
-            "() -> void {}",
-            [(ValidationDiagnosticKind::UnneededVoid, (6..10))],
+            "if true {}",
+            [(ValidationDiagnosticKind::AlwaysTrue, (0..10))],
+        );
+    }
+
+    #[test]
+    fn validate_if_always_false() {
+        check_repl_line(
+            "if false {}",
+            [(ValidationDiagnosticKind::AlwaysFalse, (0..11))],
+        );
+    }
+
+    #[test]
+    fn validate_while_always_true() {
+        check_repl_line(
+            "while true {}",
+            [(ValidationDiagnosticKind::AlwaysTrue, (0..13))],
+        );
+    }
+
+    #[test]
+    fn validate_while_always_false() {
+        check_repl_line(
+            "while false {}",
+            [(ValidationDiagnosticKind::AlwaysFalse, (0..14))],
         );
     }
 }

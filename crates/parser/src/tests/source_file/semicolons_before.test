@@ -1,23 +1,21 @@
-;;;main := () -> {};
+;;;main := () {};
 ===
-Root@0..20
+Root@0..17
   Semicolon@0..1 ";"
   Semicolon@1..2 ";"
   Semicolon@2..3 ";"
-  VarDef@3..19
+  VarDef@3..16
     Ident@3..7 "main"
     Whitespace@7..8 " "
     Colon@8..9 ":"
     Equals@9..10 "="
     Whitespace@10..11 " "
-    Lambda@11..19
+    Lambda@11..16
       ParamList@11..13
         LParen@11..12 "("
         RParen@12..13 ")"
       Whitespace@13..14 " "
-      Arrow@14..16 "->"
-      Whitespace@16..17 " "
-      Block@17..19
-        LBrace@17..18 "{"
-        RBrace@18..19 "}"
-  Semicolon@19..20 ";"
+      Block@14..16
+        LBrace@14..15 "{"
+        RBrace@15..16 "}"
+  Semicolon@16..17 ";"

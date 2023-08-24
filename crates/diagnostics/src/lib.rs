@@ -363,7 +363,8 @@ fn syntax_error_message(e: &SyntaxError) -> String {
 
 fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
     match d.kind {
-        ValidationDiagnosticKind::UnneededVoid => "unneeded `void`".to_string(),
+        ValidationDiagnosticKind::AlwaysTrue => "this is always true".to_string(),
+        ValidationDiagnosticKind::AlwaysFalse => "this is always false".to_string(),
     }
 }
 
@@ -378,7 +379,6 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
         IndexingDiagnosticKind::MissingTy { name } => {
             format!("global `{}` must have a type", interner.lookup(*name))
         }
-        IndexingDiagnosticKind::FunctionTy => "lambdas can not be typed".to_string(),
         IndexingDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }

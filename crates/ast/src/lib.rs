@@ -1567,7 +1567,7 @@ mod tests {
 
     #[test]
     fn get_lambda_body() {
-        let (tree, root) = parse("() -> {};");
+        let (tree, root) = parse("() {};");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1589,7 +1589,7 @@ mod tests {
 
     #[test]
     fn get_lambda_extern() {
-        let (tree, root) = parse("() -> extern;");
+        let (tree, root) = parse("() extern;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1603,5 +1603,22 @@ mod tests {
 
         assert!(lambda.body(&tree).is_none());
         assert!(lambda.r#extern(&tree).is_some());
+    }
+
+    #[test]
+    fn no_lambda_body() {
+        let (tree, root) = parse("() -> void;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let lambda = match expr {
+            Some(Expr::Lambda(lambda)) => lambda,
+            _ => unreachable!(),
+        };
+
+        assert!(lambda.body(&tree).is_none());
     }
 }

@@ -289,7 +289,7 @@ impl FunctionCompiler<'_> {
     fn compile_array_items(&mut self, items: Vec<Idx<hir::Expr>>, stack_addr: Value, offset: i32) {
         assert!(!items.is_empty());
 
-        let inner_ty = self.tys[self.fqn.module][items[0]];
+        let inner_ty = self.tys[self.fqn.module][items[0]].clone();
         let inner_size = inner_ty.get_size_in_bytes(self.module, self.resolved_arena);
 
         for (idx, item) in items.iter().enumerate() {
@@ -428,7 +428,7 @@ impl FunctionCompiler<'_> {
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
                 // So the index has to be multiplied by the element size
-                let element_ty = self.tys[self.fqn.module][expr];
+                let element_ty = self.tys[self.fqn.module][expr].clone();
                 let element_size = element_ty.get_size_in_bytes(self.module, self.resolved_arena);
                 let element_size = self.builder.ins().iconst(
                     self.module.target_config().pointer_type(),

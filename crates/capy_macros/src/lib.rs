@@ -116,6 +116,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                     .into();
                 }
                 let value = parts[2].trim();
+
                 let tag = if value.starts_with('/') {
                     let regex = value
                         .strip_prefix('/')
@@ -124,7 +125,10 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                         .unwrap()
                         .replace("\\r", "\r")
                         .replace("\\n", "\n");
+
+                    let docs = format!("represents `/{}/`", regex);
                     quote! {
+                        #[doc = #docs]
                         #[regex(#regex)]
                     }
                 } else if value.starts_with('\'') {
@@ -135,12 +139,16 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                         .unwrap()
                         .replace("\\r", "\r")
                         .replace("\\n", "\n");
+
+                    let docs = format!("represents `'{}'`", token);
                     // let token = format_ident!(r##"r#"{}"#"##, token);
                     quote! {
+                        #[doc = #docs]
                         #[token(#token)]
                     }
                 } else if value == "!" {
                     quote! {
+                        #[doc = "represents an error value"]
                         #[error]
                     }
                 } else {
@@ -161,15 +169,28 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                 });
             }
             EnumTy::Stripped => {
+                let tag = if parts.len() == 3 {
+                    let value = parts[2].trim();
+
+                    let doc = format!("represents `{}`", value);
+                    quote! {
+                        #[doc = #doc]
+                    }
+                } else {
+                    quote!()
+                };
+
                 if parts[0].starts_with("__") {
                     continue;
                 } else if parts[0].starts_with('_') {
                     let name = format_ident!("{}", parts[0].strip_prefix('_').unwrap());
                     entries.extend(quote! {
+                        #tag
                         #name,
                     });
                 } else {
                     entries.extend(quote! {
+                        #tag
                         #name,
                     });
                 }

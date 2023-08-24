@@ -15,4 +15,4 @@ main :: () -> i32 {
     0
 };
 
-printf :: (n: string) -> extern;
+printf :: (n: string) extern;

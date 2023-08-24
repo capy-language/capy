@@ -8,4 +8,4 @@ main :: () -> i32 {
     0
 };
 
-puts :: (some_text: string) -> extern; // libc defined
+puts :: (some_text: string) extern; // libc defined

@@ -334,24 +334,30 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     param_list_m.complete(p, NodeKind::ParamList);
 
-    p.expect_with_no_skip(TokenKind::Arrow);
+    if !p.at_set(TokenSet::new([TokenKind::LBrace, TokenKind::Extern])) {
+        p.expect_with_no_skip(TokenKind::Arrow);
 
-    if p.at(TokenKind::Ident) || p.at(TokenKind::LBrack) || p.at(TokenKind::Caret) {
-        parse_ty(
-            p,
-            "return type",
-            recovery_set.union(TokenSet::new([TokenKind::LBrace])),
-        );
+        if p.at(TokenKind::Ident) || p.at(TokenKind::LBrack) || p.at(TokenKind::Caret) {
+            parse_ty(
+                p,
+                "return type",
+                recovery_set.union(TokenSet::new([TokenKind::LBrace])),
+            );
+        } else {
+            let _guard = p.expected_syntax_name("return type");
+            p.error_with_no_skip();
+        }
     }
 
     if p.at(TokenKind::LBrace) {
         parse_block(p, recovery_set);
     } else if p.at(TokenKind::Extern) {
         p.bump();
-    } else {
-        let _guard = p.expected_syntax_name("lambda body");
-        p.error();
     }
+    // else {
+    //     let _guard = p.expected_syntax_name("lambda body");
+    //     p.error();
+    // }
 
     m.complete(p, NodeKind::Lambda)
 }

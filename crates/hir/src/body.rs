@@ -35,7 +35,7 @@ pub enum Expr {
     StringLiteral(String),
     Cast {
         expr: Idx<Expr>,
-        ty: TyWithRange,
+        ty: Idx<TyWithRange>,
     },
     Ref {
         mutable: bool,
@@ -56,7 +56,7 @@ pub enum Expr {
     Array {
         size: Option<u64>,
         items: Vec<Idx<Expr>>,
-        ty: TyWithRange,
+        ty: Idx<TyWithRange>,
     },
     Index {
         array: Idx<Expr>,
@@ -102,7 +102,7 @@ pub enum Stmt {
 #[derive(Clone)]
 pub struct LocalDef {
     pub mutable: bool,
-    pub ty: TyWithRange,
+    pub ty: Idx<TyWithRange>,
     pub value: Idx<Expr>,
     pub ast: ast::Define,
     pub range: TextRange,
@@ -366,7 +366,7 @@ impl<'a> Ctx<'a> {
         let value = self.lower_expr(local_def.value(self.tree));
         let id = self.bodies.local_defs.alloc(LocalDef {
             mutable: matches!(local_def, ast::Define::Variable(_)),
-            ty,
+            ty: self.twr_arena.alloc(ty),
             value,
             ast: local_def,
             range: local_def.range(self.tree),
@@ -478,7 +478,10 @@ impl<'a> Ctx<'a> {
 
         let expr = self.lower_expr(cast_expr.expr(self.tree));
 
-        Expr::Cast { expr, ty }
+        Expr::Cast {
+            expr,
+            ty: self.twr_arena.alloc(ty),
+        }
     }
 
     fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
@@ -655,7 +658,11 @@ impl<'a> Ctx<'a> {
                 }
             });
 
-        Expr::Array { size, items, ty }
+        Expr::Array {
+            size,
+            items,
+            ty: self.twr_arena.alloc(ty),
+        }
     }
 
     fn lower_block(&mut self, block: ast::Block) -> Expr {
@@ -1309,7 +1316,7 @@ impl Bodies {
             show_idx: bool,
             bodies: &Bodies,
             s: &mut String,
-            ty_arena: &Arena<TyWithRange>,
+            twr_arena: &Arena<TyWithRange>,
             interner: &Interner,
             mut indentation: usize,
         ) {
@@ -1334,13 +1341,13 @@ impl Bodies {
                         s.push_str(&size.to_string());
                     }
                     s.push(']');
-                    s.push_str(ty.display(ty_arena, interner).as_str());
+                    s.push_str(twr_arena[*ty].display(twr_arena, interner).as_str());
 
                     s.push('{');
 
                     for (idx, item) in items.iter().enumerate() {
                         s.push(' ');
-                        write_expr(*item, show_idx, bodies, s, ty_arena, interner, indentation);
+                        write_expr(*item, show_idx, bodies, s, twr_arena, interner, indentation);
                         if idx != items.len() - 1 {
                             s.push(',');
                         }
@@ -1350,18 +1357,34 @@ impl Bodies {
                 }
 
                 Expr::Index { array, index } => {
-                    write_expr(*array, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(
+                        *array,
+                        show_idx,
+                        bodies,
+                        s,
+                        twr_arena,
+                        interner,
+                        indentation,
+                    );
                     s.push_str("[ ");
-                    write_expr(*index, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(
+                        *index,
+                        show_idx,
+                        bodies,
+                        s,
+                        twr_arena,
+                        interner,
+                        indentation,
+                    );
                     s.push_str(" ]");
                 }
 
                 Expr::Cast { expr, ty } => {
-                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
 
                     s.push_str(" as ");
 
-                    s.push_str(ty.display(ty_arena, interner).as_str());
+                    s.push_str(twr_arena[*ty].display(twr_arena, interner).as_str());
                 }
 
                 Expr::Ref { mutable, expr } => {
@@ -1371,7 +1394,7 @@ impl Bodies {
                         s.push_str("mut ");
                     }
 
-                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
                 }
 
                 Expr::Deref { pointer } => {
@@ -1380,7 +1403,7 @@ impl Bodies {
                         show_idx,
                         bodies,
                         s,
-                        ty_arena,
+                        twr_arena,
                         interner,
                         indentation,
                     );
@@ -1389,7 +1412,7 @@ impl Bodies {
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(*lhs, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*lhs, show_idx, bodies, s, twr_arena, interner, indentation);
 
                     s.push(' ');
 
@@ -1411,7 +1434,7 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(*rhs, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*rhs, show_idx, bodies, s, twr_arena, interner, indentation);
                 }
 
                 Expr::Unary { expr, op } => {
@@ -1421,7 +1444,7 @@ impl Bodies {
                         UnaryOp::Not => s.push('!'),
                     }
 
-                    write_expr(*expr, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
                 }
 
                 Expr::Block {
@@ -1441,7 +1464,7 @@ impl Bodies {
                         show_idx,
                         bodies,
                         &mut inner,
-                        ty_arena,
+                        twr_arena,
                         interner,
                         indentation + 4,
                     );
@@ -1473,7 +1496,7 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(stmt, show_idx, bodies, s, ty_arena, interner, indentation);
+                        write_stmt(stmt, show_idx, bodies, s, twr_arena, interner, indentation);
                         s.push('\n');
                     }
 
@@ -1484,7 +1507,7 @@ impl Bodies {
                             show_idx,
                             bodies,
                             s,
-                            ty_arena,
+                            twr_arena,
                             interner,
                             indentation,
                         );
@@ -1508,12 +1531,12 @@ impl Bodies {
                         show_idx,
                         bodies,
                         s,
-                        ty_arena,
+                        twr_arena,
                         interner,
                         indentation,
                     );
                     s.push(' ');
-                    write_expr(*body, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
                         write_expr(
@@ -1521,7 +1544,7 @@ impl Bodies {
                             show_idx,
                             bodies,
                             s,
-                            ty_arena,
+                            twr_arena,
                             interner,
                             indentation,
                         );
@@ -1536,7 +1559,7 @@ impl Bodies {
                             show_idx,
                             bodies,
                             s,
-                            ty_arena,
+                            twr_arena,
                             interner,
                             indentation,
                         );
@@ -1544,7 +1567,7 @@ impl Bodies {
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(*body, show_idx, bodies, s, ty_arena, interner, indentation);
+                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
@@ -1560,14 +1583,16 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(*arg, show_idx, bodies, s, ty_arena, interner, indentation);
+                        write_expr(*arg, show_idx, bodies, s, twr_arena, interner, indentation);
                     }
                     s.push(')');
                 }
 
                 Expr::Global(path) => s.push_str(&path.path().display(interner)),
 
-                Expr::PrimitiveTy { ty } => s.push_str(&ty_arena[*ty].display(ty_arena, interner)),
+                Expr::PrimitiveTy { ty } => {
+                    s.push_str(&twr_arena[*ty].display(twr_arena, interner))
+                }
             }
 
             if show_idx {

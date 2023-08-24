@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 
 use ast::{AstNode, AstToken, Ident};
 use interner::{Interner, Key};
-use la_arena::Arena;
+use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 use syntax::SyntaxTree;
 use text_size::TextRange;
@@ -83,13 +83,15 @@ pub enum Definition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub params: Vec<Param>,
-    pub return_ty: TyWithRange,
+    pub return_ty: Idx<TyWithRange>,
+    pub ty_annotation: Idx<TyWithRange>,
+    pub full_range: TextRange,
     pub is_extern: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Global {
-    pub ty: TyWithRange,
+    pub ty: Idx<TyWithRange>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +103,7 @@ pub struct RangeInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: Option<Name>,
-    pub ty: TyWithRange,
+    pub ty: Idx<TyWithRange>,
 }
 
 pub fn index(
@@ -211,7 +213,7 @@ impl Ctx<'_> {
     fn index_lambda(
         &mut self,
         name_token: Option<Ident>,
-        type_annotation: Option<ast::Ty>,
+        ty_annotation: Option<ast::Ty>,
         lambda: ast::Lambda,
     ) -> IndexDefinitionResult {
         let name_token = match name_token {
@@ -220,13 +222,8 @@ impl Ctx<'_> {
         };
         let name = Name(self.interner.intern(name_token.text(self.tree)));
 
-        //(self.lower_type(Some(type_)), Some(type_.range(self.tree)))
-        if let Some(type_) = type_annotation {
-            self.diagnostics.push(IndexingDiagnostic {
-                kind: IndexingDiagnosticKind::FunctionTy,
-                range: type_.range(self.tree),
-            })
-        }
+        let ty_annotation = self.parse_ty(ty_annotation);
+        let ty_annotation = self.twr_arena.alloc(ty_annotation);
 
         let mut params = Vec::new();
         let mut param_type_ranges = Vec::new();
@@ -242,11 +239,14 @@ impl Ctx<'_> {
 
                 let ty = self.parse_ty(ty);
 
-                params.push(Param { name, ty });
+                params.push(Param {
+                    name,
+                    ty: self.twr_arena.alloc(ty),
+                });
             }
         }
 
-        let return_type = lambda
+        let return_ty = lambda
             .return_ty(self.tree)
             .map_or(TyWithRange::Void { range: None }, |ty| {
                 self.parse_ty(Some(ty))
@@ -255,7 +255,9 @@ impl Ctx<'_> {
         IndexDefinitionResult::Ok {
             definition: Definition::Function(Function {
                 params,
-                return_ty: return_type,
+                return_ty: self.twr_arena.alloc(return_ty),
+                ty_annotation,
+                full_range: lambda.range(self.tree),
                 is_extern: lambda.r#extern(self.tree).is_some(),
             }),
             name,
@@ -283,7 +285,9 @@ impl Ctx<'_> {
         let ty = self.parse_ty(var_def.ty(self.tree));
 
         IndexDefinitionResult::Ok {
-            definition: Definition::Global(Global { ty }),
+            definition: Definition::Global(Global {
+                ty: self.twr_arena.alloc(ty),
+            }),
             name,
             name_token,
         }
@@ -310,6 +314,5 @@ pub enum IndexingDiagnosticKind {
     NonBindingAtRoot,
     AlreadyDefined { name: Key },
     MissingTy { name: Key },
-    FunctionTy,
     TyParseError(TyParseError),
 }

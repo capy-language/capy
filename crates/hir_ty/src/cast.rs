@@ -29,7 +29,7 @@ impl TypedBinaryOp for hir::BinaryOp {
         second: ResolvedTy,
     ) -> Option<BinaryOutputTy> {
         max_cast(resolved_arena, first, second).map(|max_ty| BinaryOutputTy {
-            max_ty,
+            max_ty: max_ty.clone(),
             final_output_ty: match self {
                 hir::BinaryOp::Add
                 | hir::BinaryOp::Sub
@@ -65,7 +65,7 @@ impl TypedBinaryOp for hir::BinaryOp {
 
         expected
             .iter()
-            .any(|expected| has_semantics_of(resolved_arena, found, *expected))
+            .any(|expected| has_semantics_of(resolved_arena, found.clone(), expected.clone()))
     }
 
     fn default_ty(&self) -> ResolvedTy {
@@ -179,7 +179,7 @@ pub(crate) fn max_cast(
                 uid,
                 ty: distinct_ty,
             };
-            if has_semantics_of(resolved_arena, distinct, other) {
+            if has_semantics_of(resolved_arena, distinct.clone(), other) {
                 Some(distinct)
             } else {
                 None
@@ -258,8 +258,8 @@ pub(crate) fn can_fit(
                 (true, _) | (false, false)
             ) && can_fit(
                 resolved_arena,
-                resolved_arena[found_ty],
-                resolved_arena[expected_ty],
+                resolved_arena[found_ty].clone(),
+                resolved_arena[expected_ty].clone(),
             )
         }
         (
@@ -275,8 +275,8 @@ pub(crate) fn can_fit(
             found_size == expected_size
                 && can_fit(
                     resolved_arena,
-                    resolved_arena[found_ty],
-                    resolved_arena[expected_ty],
+                    resolved_arena[found_ty].clone(),
+                    resolved_arena[expected_ty].clone(),
                 )
         }
         (
@@ -286,7 +286,7 @@ pub(crate) fn can_fit(
             },
         ) => found_uid == expected_uid,
         (found, ResolvedTy::Distinct { ty, .. }) => {
-            can_fit(resolved_arena, found, resolved_arena[ty])
+            can_fit(resolved_arena, found, resolved_arena[ty].clone())
         }
         _ => false,
     }
@@ -297,7 +297,7 @@ pub(crate) fn primitive_castable(
     from: ResolvedTy,
     to: ResolvedTy,
 ) -> bool {
-    if can_fit(resolved_arena, from, to) {
+    if can_fit(resolved_arena, from.clone(), to.clone()) {
         return true;
     }
 
@@ -307,10 +307,14 @@ pub(crate) fn primitive_castable(
             ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
         ) => true,
         (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
-            primitive_castable(resolved_arena, resolved_arena[from], resolved_arena[to])
+            primitive_castable(
+                resolved_arena,
+                resolved_arena[from].clone(),
+                resolved_arena[to].clone(),
+            )
         }
         (ResolvedTy::Distinct { ty: from, .. }, to) => {
-            primitive_castable(resolved_arena, resolved_arena[from], to)
+            primitive_castable(resolved_arena, resolved_arena[from].clone(), to)
         }
         _ => false,
     }
@@ -322,9 +326,9 @@ pub(crate) fn has_semantics_of(
     found: ResolvedTy,
     expected: ResolvedTy,
 ) -> bool {
-    match (found, expected) {
+    match (found.clone(), expected.clone()) {
         (ResolvedTy::Distinct { ty, .. }, ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
-            if has_semantics_of(resolved_arena, resolved_arena[ty], expected) {
+            if has_semantics_of(resolved_arena, resolved_arena[ty].clone(), expected.clone()) {
                 return true;
             }
         }
@@ -340,7 +344,7 @@ pub(crate) fn has_semantics_of(
             }
         }
         (ResolvedTy::Distinct { ty, .. }, expected) => {
-            if has_semantics_of(resolved_arena, resolved_arena[ty], expected) {
+            if has_semantics_of(resolved_arena, resolved_arena[ty].clone(), expected) {
                 return true;
             }
         }

@@ -25,10 +25,8 @@ pub fn lex(text: &str) -> Tokens {
             LexerTokenKind::__InternalComment => lex_comment(start, range.len(), handler),
             _ => {
                 let transmuted = unsafe { mem::transmute(kind) };
-                // we compare the debug names of the two values to ensure that no transmutation bugs occured
-                let og_name = format!("{:?}", kind);
-                let new_name = format!("{:?}", transmuted);
-                assert_eq!(og_name, new_name);
+                // we compare the debug names of the two values to ensure that no transmutation bugs occurred
+                debug_assert_eq!(format!("{:?}", kind), format!("{:?}", transmuted));
                 handler(transmuted, start)
             }
         }

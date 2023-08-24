@@ -1,8 +1,8 @@
-(x: i32) -> extern;
+(x: i32) extern;
 ===
-Root@0..19
-  ExprStmt@0..18
-    Lambda@0..18
+Root@0..16
+  ExprStmt@0..15
+    Lambda@0..15
       ParamList@0..8
         LParen@0..1 "("
         Param@1..7
@@ -15,7 +15,5 @@ Root@0..19
                 Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
-      Arrow@9..11 "->"
-      Whitespace@11..12 " "
-      Extern@12..18 "extern"
-  Semicolon@18..19 ";"
+      Extern@9..15 "extern"
+  Semicolon@15..16 ";"

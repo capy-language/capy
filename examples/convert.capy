@@ -3,7 +3,7 @@ HYPHEN :: 45;
 PERIOD :: 46;
 ZERO :: 48;
 
-reverse :: (buf: [20]u8, starting_offset: usize, len: usize) -> {
+reverse :: (buf: [20]u8, starting_offset: usize, len: usize) {
     i := starting_offset;
     j := len - 1;
     temp := 0;
@@ -51,7 +51,7 @@ int_to_string :: (n: i32, buf: [20]u8, buf_offset: usize, required_digits: usize
     idx
 };
 
-ftoa :: (n: f32, buf: [20]u8, afterpoint: usize) -> {
+ftoa :: (n: f32, buf: [20]u8, afterpoint: usize) {
     ipart := n as i32;
 
     fpart := n - {ipart as f32};
@@ -80,7 +80,7 @@ pow :: (base: i32, exp: i32) -> i32 {
     result
 };
 
-main :: () -> {
+main :: () {
     buf := [20]u8 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     ftoa(12.5, buf, 3);
@@ -88,4 +88,4 @@ main :: () -> {
     puts(buf);
 };
 
-puts :: (str: [20]u8) -> extern;
+puts :: (str: [20]u8) extern;

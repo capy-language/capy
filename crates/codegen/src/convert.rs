@@ -162,6 +162,9 @@ impl ToCompType for ResolvedTy {
             hir_ty::ResolvedTy::Distinct { ty, .. } => {
                 resolved_arena[*ty].to_comp_type(module, resolved_arena)
             }
+            hir_ty::ResolvedTy::Function { .. } => {
+                CompType::Pointer(module.target_config().pointer_type())
+            }
             hir_ty::ResolvedTy::Type => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
         }
@@ -255,6 +258,7 @@ impl ToCompSize for ResolvedTy {
             ResolvedTy::Distinct { ty, .. } => {
                 resolved_arena[*ty].get_size_in_bytes(module, resolved_arena)
             }
+            ResolvedTy::Function { .. } => module.target_config().pointer_bytes() as u32,
             ResolvedTy::Type => 0,
             ResolvedTy::Void => 0,
         }

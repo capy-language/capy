@@ -228,7 +228,7 @@ impl<'a> CodeGen<'a> {
             params: FxHashMap::default(),
         };
 
-        compiler.finish(signature.return_ty, new_idx_to_old_idx);
+        compiler.finish(signature.return_ty.clone(), new_idx_to_old_idx);
 
         if self.verbose {
             println!(

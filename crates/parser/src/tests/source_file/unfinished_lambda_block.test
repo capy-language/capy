@@ -1,26 +1,24 @@
-foo := () -> {
+foo := () {
     bar
 ===
-Root@0..22
-  VarDef@0..22
+Root@0..19
+  VarDef@0..19
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
     Equals@5..6 "="
     Whitespace@6..7 " "
-    Lambda@7..22
+    Lambda@7..19
       ParamList@7..9
         LParen@7..8 "("
         RParen@8..9 ")"
       Whitespace@9..10 " "
-      Arrow@10..12 "->"
-      Whitespace@12..13 " "
-      Block@13..22
-        LBrace@13..14 "{"
-        Whitespace@14..19 "\n    "
-        ExprStmt@19..22
-          VarRef@19..22
-            Path@19..22
-              Ident@19..22 "bar"
-error at 22: missing RBrace
-error at 22: missing Semicolon
+      Block@10..19
+        LBrace@10..11 "{"
+        Whitespace@11..16 "\n    "
+        ExprStmt@16..19
+          VarRef@16..19
+            Path@16..19
+              Ident@16..19 "bar"
+error at 19: missing RBrace
+error at 19: missing Semicolon

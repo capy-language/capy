@@ -8,4 +8,4 @@ Root@0..5
         RParen@1..2 ")"
       Whitespace@2..3 " "
       Arrow@3..5 "->"
-error at 5: missing lambda body
+error at 5: missing return type
