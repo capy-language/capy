@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use cranelift::{
-    codegen::ir::Endianness,
+    codegen::ir::{Endianness, FuncRef},
     prelude::{
         types, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
         StackSlotKind, Value, Variable,
@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub(crate) struct FunctionCompiler<'a> {
-    pub(crate) fqn: hir::Fqn, // the fqn of this function
+    pub(crate) module_name: hir::Name,
     pub(crate) signature: CraneliftSignature,
 
     pub(crate) resolved_arena: &'a Arena<ResolvedTy>,
@@ -35,6 +35,15 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) data_description: &'a mut DataDescription,
 
     pub(crate) functions_to_compile: &'a mut VecDeque<hir::Fqn>,
+    pub(crate) lambdas_to_compile: &'a mut VecDeque<(
+        hir::Name,
+        Idx<hir::Lambda>,
+        Vec<Idx<ResolvedTy>>,
+        ResolvedTy,
+    )>,
+
+    pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
+    pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
 
     // globals
     pub(crate) functions: &'a mut FxHashMap<hir::Fqn, FuncId>,
@@ -48,7 +57,12 @@ pub(crate) struct FunctionCompiler<'a> {
 }
 
 impl FunctionCompiler<'_> {
-    pub(crate) fn finish(mut self, return_ty: ResolvedTy, new_idx_to_old_idx: FxHashMap<u64, u64>) {
+    pub(crate) fn finish(
+        mut self,
+        function_body: Idx<hir::Expr>,
+        return_ty: ResolvedTy,
+        new_idx_to_old_idx: FxHashMap<u64, u64>,
+    ) {
         // Create the entry block, to start emitting code in.
         let entry_block = self.builder.create_block();
 
@@ -79,9 +93,9 @@ impl FunctionCompiler<'_> {
             self.builder.def_var(var, value);
         }
 
-        let hir_body = self.bodies_map[&self.fqn.module].function_body(self.fqn.name);
+        // let hir_body = self.bodies_map[&self.module_name].function_body(self.module_name.name);
 
-        match self.compile_expr(hir_body) {
+        match self.compile_expr(function_body) {
             Some(body) => {
                 if return_ty.is_array(self.resolved_arena) {
                     let dest = self.builder.use_var(dest_param.unwrap());
@@ -102,7 +116,7 @@ impl FunctionCompiler<'_> {
                 {
                     // the actual type that was returned might not be what the function was
                     // actually supposed to return, so we have to cast it to make sure
-                    let body_ty = self.tys[self.fqn.module][hir_body]
+                    let body_ty = self.tys[self.module_name][function_body]
                         .to_comp_type(self.module, self.resolved_arena)
                         .into_number_type()
                         .unwrap();
@@ -223,10 +237,24 @@ impl FunctionCompiler<'_> {
         )
     }
 
+    fn get_local_func(&mut self, fqn: hir::Fqn) -> FuncRef {
+        if let Some(func_ref) = self.local_functions.get(&fqn) {
+            return *func_ref;
+        }
+
+        let func_id = self.get_func_id(fqn);
+
+        let local_func = self.module.declare_func_in_func(func_id, self.builder.func);
+
+        self.local_functions.insert(fqn, local_func);
+
+        local_func
+    }
+
     fn compile_stmt(&mut self, stmt: &Idx<hir::Stmt>) {
-        match self.bodies_map[&self.fqn.module][*stmt] {
+        match self.bodies_map[&self.module_name][*stmt] {
             hir::Stmt::Expr(expr) => {
-                match self.tys[self.fqn.module][expr] {
+                match self.tys[self.module_name][expr] {
                     hir_ty::ResolvedTy::Unknown => unreachable!(),
                     _ => {
                         self.compile_expr(expr);
@@ -234,7 +262,7 @@ impl FunctionCompiler<'_> {
                 };
             }
             hir::Stmt::LocalDef(local_def) => {
-                let value = self.bodies_map[&self.fqn.module][local_def].value;
+                let value = self.bodies_map[&self.module_name][local_def].value;
 
                 let value = if let Some(val) = self.compile_expr(value) {
                     val
@@ -243,7 +271,7 @@ impl FunctionCompiler<'_> {
                     return;
                 };
 
-                let ty = self.tys[self.fqn.module][local_def]
+                let ty = self.tys[self.module_name][local_def]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_real_type()
                     .unwrap();
@@ -264,7 +292,7 @@ impl FunctionCompiler<'_> {
                 self.locals.insert(local_def, stack_slot_addr);
             }
             hir::Stmt::Assign(assign) => {
-                let assign_body = &self.bodies_map[&self.fqn.module][assign];
+                let assign_body = &self.bodies_map[&self.module_name][assign];
 
                 let source =
                     if let Some(val) = self.compile_expr_with_args(assign_body.source, true) {
@@ -289,11 +317,11 @@ impl FunctionCompiler<'_> {
     fn compile_array_items(&mut self, items: Vec<Idx<hir::Expr>>, stack_addr: Value, offset: i32) {
         assert!(!items.is_empty());
 
-        let inner_ty = self.tys[self.fqn.module][items[0]].clone();
+        let inner_ty = self.tys[self.module_name][items[0]].clone();
         let inner_size = inner_ty.get_size_in_bytes(self.module, self.resolved_arena);
 
         for (idx, item) in items.iter().enumerate() {
-            match self.bodies_map[&self.fqn.module][*item].clone() {
+            match self.bodies_map[&self.module_name][*item].clone() {
                 hir::Expr::Array { items, .. } => self.compile_array_items(
                     items,
                     stack_addr,
@@ -340,10 +368,10 @@ impl FunctionCompiler<'_> {
     }
 
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
-        match self.bodies_map[&self.fqn.module][expr].clone() {
+        match self.bodies_map[&self.module_name][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
-                let number_ty = self.tys[self.fqn.module][expr]
+                let number_ty = self.tys[self.module_name][expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                     .unwrap();
@@ -357,7 +385,7 @@ impl FunctionCompiler<'_> {
                     Some(self.builder.ins().iconst(number_ty.ty, n as i64))
                 }
             }
-            hir::Expr::FloatLiteral(f) => match self.tys[self.fqn.module][expr]
+            hir::Expr::FloatLiteral(f) => match self.tys[self.module_name][expr]
                 .to_comp_type(self.module, self.resolved_arena)
                 .into_number_type()
                 .unwrap()
@@ -377,11 +405,11 @@ impl FunctionCompiler<'_> {
                 Some(self.builder.ins().symbol_value(pointer, local_id))
             }
             hir::Expr::Array { items, .. } => {
-                if self.tys[self.fqn.module][expr].is_empty(self.resolved_arena) {
+                if self.tys[self.module_name][expr].is_empty(self.resolved_arena) {
                     return None;
                 }
 
-                let array_size = self.tys[self.fqn.module][expr]
+                let array_size = self.tys[self.module_name][expr]
                     .get_size_in_bytes(self.module, self.resolved_arena);
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -400,13 +428,13 @@ impl FunctionCompiler<'_> {
                 Some(stack_addr)
             }
             hir::Expr::Index { array, index } => {
-                if self.tys[self.fqn.module][expr].is_empty(self.resolved_arena) {
+                if self.tys[self.module_name][expr].is_empty(self.resolved_arena) {
                     return None;
                 }
 
                 let array = self.compile_expr(array).unwrap(); // this will be usize
 
-                let index_ty = self.tys[self.fqn.module][index]
+                let index_ty = self.tys[self.module_name][index]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                     .unwrap();
@@ -428,7 +456,7 @@ impl FunctionCompiler<'_> {
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
                 // So the index has to be multiplied by the element size
-                let element_ty = self.tys[self.fqn.module][expr].clone();
+                let element_ty = self.tys[self.module_name][expr].clone();
                 let element_size = element_ty.get_size_in_bytes(self.module, self.resolved_arena);
                 let element_size = self.builder.ins().iconst(
                     self.module.target_config().pointer_type(),
@@ -459,14 +487,14 @@ impl FunctionCompiler<'_> {
                 expr: inner_expr, ..
             } => {
                 let inner = self.compile_expr(inner_expr)?;
-                let cast_from = match self.tys[self.fqn.module][inner_expr]
+                let cast_from = match self.tys[self.module_name][inner_expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                 {
                     Some(int_ty) => int_ty,
                     None => return Some(inner),
                 };
-                let cast_to = self.tys[self.fqn.module][expr]
+                let cast_to = self.tys[self.module_name][expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                     .unwrap();
@@ -476,12 +504,12 @@ impl FunctionCompiler<'_> {
             hir::Expr::Ref { expr, .. } => {
                 // references to locals or globals should return the actual memory address of the local or global
                 if matches!(
-                    self.bodies_map[&self.fqn.module][expr],
+                    self.bodies_map[&self.module_name][expr],
                     hir::Expr::Local(_) | hir::Expr::Global(_)
                 ) {
                     self.compile_expr_with_args(expr, true)
                 } else {
-                    let inner_size = self.tys[self.fqn.module][expr]
+                    let inner_size = self.tys[self.module_name][expr]
                         .get_size_in_bytes(self.module, self.resolved_arena);
 
                     // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
@@ -508,7 +536,7 @@ impl FunctionCompiler<'_> {
                 let self_ty = if no_load {
                     self.module.target_config().pointer_type()
                 } else {
-                    self.tys[self.fqn.module][expr]
+                    self.tys[self.module_name][expr]
                         .to_comp_type(self.module, self.resolved_arena)
                         .into_real_type()
                         .unwrap()
@@ -517,7 +545,7 @@ impl FunctionCompiler<'_> {
                 let pointer = self.compile_expr_with_args(pointer_expr, no_load)?;
 
                 if matches!(
-                    self.bodies_map[&self.fqn.module][pointer_expr],
+                    self.bodies_map[&self.module_name][pointer_expr],
                     hir::Expr::Param { .. }
                 ) {
                     Some(pointer)
@@ -537,11 +565,11 @@ impl FunctionCompiler<'_> {
                 let lhs = self.compile_expr(lhs_expr).unwrap();
                 let rhs = self.compile_expr(rhs_expr).unwrap();
 
-                let lhs_ty = self.tys[self.fqn.module][lhs_expr]
+                let lhs_ty = self.tys[self.module_name][lhs_expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                     .unwrap();
-                let rhs_ty = self.tys[self.fqn.module][rhs_expr]
+                let rhs_ty = self.tys[self.module_name][rhs_expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_number_type()
                     .unwrap();
@@ -649,22 +677,22 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Call { callee, args } => {
-                let (param_tys, return_ty) = self.tys[self.fqn.module][callee]
+                let (param_tys, return_ty) = self.tys[self.module_name][callee]
                     .clone()
-                    .into_fn(self.resolved_arena)
+                    .as_function(self.resolved_arena)
                     .unwrap();
 
                 let mut arg_values = args
                     .iter()
                     .zip(param_tys.iter())
                     .filter_map(|(arg_expr, expected_ty)| {
-                        let actual_ty = self.tys[self.fqn.module][*arg_expr]
+                        let actual_ty = self.tys[self.module_name][*arg_expr]
                             .to_comp_type(self.module, self.resolved_arena);
 
                         let arg = self.compile_expr(*arg_expr);
 
                         if let Some(actual_ty) = actual_ty.into_number_type() {
-                            let expected_ty = expected_ty
+                            let expected_ty = self.resolved_arena[*expected_ty]
                                 .to_comp_type(self.module, self.resolved_arena)
                                 .into_number_type()
                                 .unwrap();
@@ -681,8 +709,9 @@ impl FunctionCompiler<'_> {
                     })
                     .collect::<Vec<_>>();
 
-                if return_ty.is_array(self.resolved_arena) {
-                    let array_size = return_ty.get_size_in_bytes(self.module, self.resolved_arena);
+                if self.resolved_arena[return_ty].is_array(self.resolved_arena) {
+                    let array_size = self.resolved_arena[return_ty]
+                        .get_size_in_bytes(self.module, self.resolved_arena);
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
@@ -697,20 +726,46 @@ impl FunctionCompiler<'_> {
                     arg_values.push(stack_slot_addr);
                 }
 
-                let call = match self.bodies_map[&self.fqn.module][callee] {
+                let call = match self.bodies_map[&self.module_name][callee] {
                     hir::Expr::Global(path) => {
-                        let fqn = path.into_fqn(self.fqn.module);
+                        let fqn = path.into_fqn(self.module_name);
 
-                        let func_id = self.get_func_id(fqn);
-                        let local_func =
-                            self.module.declare_func_in_func(func_id, self.builder.func);
+                        let local_func = self.get_local_func(fqn);
+
+                        self.builder.ins().call(local_func, &arg_values)
+                    }
+                    hir::Expr::Local(local)
+                        if !self.bodies_map[&self.module_name][local].mutable =>
+                    {
+                        let value = self.bodies_map[&self.module_name][local].value;
+
+                        if let hir::Expr::Lambda(lambda) = self.bodies_map[&self.module_name][value]
+                        {
+                            let local_func = self.lambda_to_local_func(callee, lambda);
+
+                            self.builder.ins().call(local_func, &arg_values)
+                        } else {
+                            let callee = self.compile_expr(callee).unwrap();
+
+                            let (comp_sig, _) = (param_tys, self.resolved_arena[return_ty].clone())
+                                .to_cranelift_signature(self.module, self.resolved_arena);
+
+                            let sig_ref = self.builder.import_signature(comp_sig);
+
+                            self.builder
+                                .ins()
+                                .call_indirect(sig_ref, callee, &arg_values)
+                        }
+                    }
+                    hir::Expr::Lambda(lambda) => {
+                        let local_func = self.lambda_to_local_func(callee, lambda);
 
                         self.builder.ins().call(local_func, &arg_values)
                     }
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let (comp_sig, _) = (param_tys, return_ty.clone())
+                        let (comp_sig, _) = (param_tys, self.resolved_arena[return_ty].clone())
                             .to_cranelift_signature(self.module, self.resolved_arena);
 
                         let sig_ref = self.builder.import_signature(comp_sig);
@@ -721,7 +776,7 @@ impl FunctionCompiler<'_> {
                     }
                 };
 
-                if return_ty.is_empty(self.resolved_arena) {
+                if self.resolved_arena[return_ty].is_empty(self.resolved_arena) {
                     None
                 } else {
                     Some(self.builder.inst_results(call)[0])
@@ -730,7 +785,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::Global(path) => {
                 let fqn = match path {
                     hir::PathWithRange::ThisModule { name, .. } => hir::Fqn {
-                        module: self.fqn.module,
+                        module: self.module_name,
                         name,
                     },
                     hir::PathWithRange::OtherModule { fqn, .. } => fqn,
@@ -738,10 +793,7 @@ impl FunctionCompiler<'_> {
 
                 match &self.tys[fqn] {
                     hir_ty::Signature::Function(_) => {
-                        let func_id = self.get_func_id(fqn);
-
-                        let local_func =
-                            self.module.declare_func_in_func(func_id, self.builder.func);
+                        let local_func = self.get_local_func(fqn);
 
                         Some(
                             self.builder
@@ -801,7 +853,7 @@ impl FunctionCompiler<'_> {
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
-                let return_ty = self.tys[self.fqn.module][expr]
+                let return_ty = self.tys[self.module_name][expr]
                     .to_comp_type(self.module, self.resolved_arena)
                     .into_real_type();
 
@@ -894,7 +946,7 @@ impl FunctionCompiler<'_> {
                 if no_load {
                     Some(ptr)
                 } else {
-                    let ty = self.tys[self.fqn.module][local_def]
+                    let ty = self.tys[self.module_name][local_def]
                         .to_comp_type(self.module, self.resolved_arena)
                         .into_real_type()
                         .unwrap();
@@ -906,7 +958,51 @@ impl FunctionCompiler<'_> {
                 .params
                 .get(&(idx as u64))
                 .map(|param| self.builder.use_var(*param)),
+            hir::Expr::Lambda(lambda) => {
+                let local_func = self.lambda_to_local_func(expr, lambda);
+
+                Some(
+                    self.builder
+                        .ins()
+                        .func_addr(self.module.target_config().pointer_type(), local_func),
+                )
+            }
             hir::Expr::PrimitiveTy { .. } => None,
         }
+    }
+
+    fn lambda_to_local_func(&mut self, expr: Idx<hir::Expr>, lambda: Idx<hir::Lambda>) -> FuncRef {
+        if let Some(func_ref) = self.local_lambdas.get(&lambda) {
+            return *func_ref;
+        }
+
+        let (param_tys, return_ty) = self.tys[self.module_name][expr]
+            .as_function(self.resolved_arena)
+            .unwrap();
+
+        self.lambdas_to_compile.push_back((
+            self.module_name,
+            lambda,
+            param_tys.clone(),
+            self.resolved_arena[return_ty].clone(),
+        ));
+
+        let (sig, _) = (param_tys, self.resolved_arena[return_ty].clone())
+            .to_cranelift_signature(self.module, self.resolved_arena);
+
+        let func_id = self
+            .module
+            .declare_function(
+                &(self.module_name, lambda).to_mangled_name(self.interner),
+                Linkage::Export,
+                &sig,
+            )
+            .unwrap();
+
+        let local_func = self.module.declare_func_in_func(func_id, self.builder.func);
+
+        self.local_lambdas.insert(lambda, local_func);
+
+        local_func
     }
 }

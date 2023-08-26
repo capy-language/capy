@@ -574,9 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn convert() {
+    fn float_to_string() {
         check(
-            "../../examples/convert.capy",
+            "../../examples/float_to_string.capy",
             &[],
             "main",
             expect![[r#"
@@ -601,7 +601,7 @@ mod tests {
             apply pow to  2 and 3 ... 8
 
             "#]],
-            0,
+            50,
         )
     }
 

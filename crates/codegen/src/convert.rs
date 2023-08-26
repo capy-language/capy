@@ -1,7 +1,7 @@
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::Module;
 use hir_ty::ResolvedTy;
-use la_arena::Arena;
+use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 
 use crate::{CapyFnSignature, CraneliftSignature};
@@ -190,7 +190,7 @@ impl ToCraneliftSignature for CapyFnSignature {
     }
 }
 
-impl ToCraneliftSignature for (Vec<ResolvedTy>, ResolvedTy) {
+impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
@@ -206,6 +206,7 @@ impl ToCraneliftSignature for (Vec<ResolvedTy>, ResolvedTy) {
             .iter()
             .enumerate()
             .filter_map(|(idx, param_ty)| {
+                let param_ty = &resolved_arena[*param_ty];
                 let param_ty = match param_ty {
                     hir_ty::ResolvedTy::Void { .. } => None,
                     other_ty => Some(AbiParam::new(

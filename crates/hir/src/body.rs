@@ -10,7 +10,7 @@ use text_size::TextRange;
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::{GetDefinitionError, WorldIndex},
-    Definition, Fqn, Name, TyParseError, TyWithRange, UIDGenerator,
+    Definition, Fqn, Function, Name, Param, TyParseError, TyWithRange, UIDGenerator,
 };
 
 #[derive(Clone)]
@@ -22,6 +22,7 @@ pub struct Bodies {
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
     function_bodies: FxHashMap<Name, Idx<Expr>>,
     globals: FxHashMap<Name, Idx<Expr>>,
+    lambdas: Arena<Lambda>,
     other_module_references: FxHashSet<Fqn>,
     symbol_map: FxHashMap<ast::Ident, Symbol>,
 }
@@ -84,12 +85,18 @@ pub enum Expr {
         callee: Idx<Expr>,
         args: Vec<Idx<Expr>>,
     },
-    /// either a primitive type (such as `i32`, 'bool', etc.), or an array type, or a pointer to a primitive type, or a distinct type
-    ///
-    /// references and pointer types have no difference to each other at this stage of compilation
+    Lambda(Idx<Lambda>),
+    /// either a primitive type (such as `i32`, 'bool', etc.), or an array type,
+    /// or a pointer to a primitive type, or a distinct type
     PrimitiveTy {
         ty: Idx<TyWithRange>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct Lambda {
+    pub function: Function,
+    pub body: Idx<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,26 +173,10 @@ pub struct LoweringDiagnostic {
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
     OutOfRangeFloatLiteral,
-    UndefinedLocal {
-        name: Key,
-    },
-    UndefinedModule {
-        name: Key,
-    },
-    MutableGlobal,
-    MismatchedArgCount {
-        name: Key,
-        found: u32,
-        expected: u32,
-    },
-    CalledNonLambda {
-        name: Key,
-    },
-    ArrayMissingBody,
-    ArraySizeMismatch {
-        found: u32,
-        expected: u32,
-    },
+    UndefinedLocal { name: Key },
+    UndefinedModule { name: Key },
+    NonGlobalExtern,
+    ArraySizeMismatch { found: u32, expected: u32 },
     TyParseError(TyParseError),
     InvalidEscape,
 }
@@ -218,7 +209,7 @@ pub fn lower(
             ast::Define::Variable(variable) => (variable.name(tree), variable.value(tree)),
         };
         match value {
-            Some(ast::Expr::Lambda(lambda)) => ctx.lower_lambda(name, lambda),
+            Some(ast::Expr::Lambda(lambda)) => ctx.lower_function(name, lambda),
             val => ctx.lower_global(name, val),
         }
     }
@@ -259,6 +250,7 @@ impl<'a> Ctx<'a> {
                 expr_ranges: ArenaMap::default(),
                 function_bodies: FxHashMap::default(),
                 globals: FxHashMap::default(),
+                lambdas: Arena::new(),
                 other_module_references: FxHashSet::default(),
                 symbol_map: FxHashMap::default(),
             },
@@ -314,7 +306,7 @@ impl<'a> Ctx<'a> {
         self.bodies.globals.insert(name, body);
     }
 
-    fn lower_lambda(&mut self, name_token: Option<ast::Ident>, lambda: ast::Lambda) {
+    fn lower_function(&mut self, name_token: Option<ast::Ident>, lambda: ast::Lambda) {
         let name = match name_token {
             Some(ident) => Name(self.interner.intern(ident.text(self.tree))),
             None => return,
@@ -348,6 +340,63 @@ impl<'a> Ctx<'a> {
         let body = self.lower_expr(lambda.body(self.tree));
         self.params.clear();
         self.bodies.function_bodies.insert(name, body);
+    }
+
+    fn lower_lambda(&mut self, lambda: ast::Lambda) -> Expr {
+        let mut params = Vec::new();
+        let mut param_type_ranges = Vec::new();
+
+        let old_params = self.params.clone();
+        self.params.clear();
+
+        if let Some(param_list) = lambda.param_list(self.tree) {
+            for (idx, param) in param_list.params(self.tree).enumerate() {
+                let key = param
+                    .name(self.tree)
+                    .map(|name| self.interner.intern(name.text(self.tree)));
+
+                let ty = param.ty(self.tree);
+                param_type_ranges.push(ty.map(|type_| type_.range(self.tree)));
+
+                let ty = self.lower_ty(ty);
+
+                params.push(Param {
+                    name: key.map(|key| Name(key)),
+                    ty: self.twr_arena.alloc(ty),
+                });
+
+                if let Some(key) = key {
+                    self.params.insert(key, (idx as u32, param));
+                }
+            }
+        }
+
+        if let Some(r#extern) = lambda.r#extern(self.tree) {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::NonGlobalExtern,
+                range: r#extern.range(self.tree),
+            });
+        }
+
+        let body = self.lower_expr(lambda.body(self.tree));
+        self.params = old_params;
+
+        let return_ty = lambda
+            .return_ty(self.tree)
+            .map_or(TyWithRange::Void { range: None }, |ty| {
+                self.lower_ty(Some(ty))
+            });
+
+        Expr::Lambda(self.bodies.lambdas.alloc(Lambda {
+            function: Function {
+                params,
+                return_ty: self.twr_arena.alloc(return_ty),
+                ty_annotation: self.twr_arena.alloc(TyWithRange::Unknown),
+                full_range: lambda.range(self.tree),
+                is_extern: lambda.r#extern(self.tree).is_some(), // this doesn't matter since lambdas can't be extern
+            },
+            body,
+        }))
     }
 
     fn lower_stmt(&mut self, stmt: ast::Stmt) -> Stmt {
@@ -394,46 +443,6 @@ impl<'a> Ctx<'a> {
         Stmt::Assign(id)
     }
 
-    // fn lower_local_assignment(&mut self, assign: ast::Assign, name: Key) -> Stmt {
-    //     let local_def = self.look_up_in_current_scope(name);
-    //     if local_def.is_none() {
-    //         if self
-    //             .world_index
-    //             .get_definition(Fqn {
-    //                 module: self.module,
-    //                 name: Name(name),
-    //             })
-    //             .is_ok()
-    //             || self.params.contains_key(&name)
-    //         {
-    //             self.diagnostics.push(LoweringDiagnostic {
-    //                 kind: LoweringDiagnosticKind::SetImmutable { name },
-    //                 range: assign.range(self.tree),
-    //             })
-    //         } else {
-    //             self.diagnostics.push(LoweringDiagnostic {
-    //                 kind: LoweringDiagnosticKind::UndefinedLocal { name },
-    //                 range: assign.source(self.tree).unwrap().range(self.tree),
-    //             })
-    //         }
-    //     } else if !self.bodies.local_defs[local_def.unwrap()].mutable {
-    //         self.diagnostics.push(LoweringDiagnostic {
-    //             kind: LoweringDiagnosticKind::SetImmutable { name },
-    //             range: assign.range(self.tree),
-    //         })
-    //     }
-
-    //     let value = self.lower_expr(assign.value(self.tree));
-
-    //     let id = self.bodies.local_sets.alloc(LocalSet {
-    //         source: local_def,
-    //         value,
-    //         ast: assign,
-    //     });
-
-    //     Stmt::LocalSet(id)
-    // }
-
     fn lower_expr(&mut self, expr: Option<ast::Expr>) -> Idx<Expr> {
         let expr_ast = match expr {
             Some(expr) => expr,
@@ -469,7 +478,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
             ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
-            ast::Expr::Lambda(_) => todo!(),
+            ast::Expr::Lambda(lambda) => self.lower_lambda(lambda),
         }
     }
 
@@ -1055,6 +1064,14 @@ impl std::ops::Index<Idx<Assign>> for Bodies {
     }
 }
 
+impl std::ops::Index<Idx<Lambda>> for Bodies {
+    type Output = Lambda;
+
+    fn index(&self, id: Idx<Lambda>) -> &Self::Output {
+        &self.lambdas[id]
+    }
+}
+
 impl std::ops::Index<Idx<Stmt>> for Bodies {
     type Output = Stmt;
 
@@ -1434,6 +1451,35 @@ impl Bodies {
                 }
 
                 Expr::Global(path) => s.push_str(&path.path().display(interner)),
+
+                Expr::Lambda(lambda) => {
+                    let Lambda { function, body } = &bodies.lambdas[*lambda];
+
+                    s.push('(');
+                    for (idx, param) in function.params.iter().enumerate() {
+                        if let Some(name) = param.name {
+                            s.push_str(interner.lookup(name.0));
+                            s.push_str(": ");
+                        }
+
+                        s.push_str(twr_arena[param.ty].display(twr_arena, interner).as_str());
+
+                        if idx != function.params.len() - 1 {
+                            s.push_str(", ");
+                        }
+                    }
+                    s.push_str(") -> ");
+
+                    s.push_str(
+                        twr_arena[function.return_ty]
+                            .display(twr_arena, interner)
+                            .as_str(),
+                    );
+
+                    s.push(' ');
+
+                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
+                }
 
                 Expr::PrimitiveTy { ty } => {
                     s.push_str(&twr_arena[*ty].display(twr_arena, interner))

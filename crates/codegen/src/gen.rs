@@ -7,7 +7,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use hir::UIDGenerator;
 use hir_ty::ResolvedTy;
 use interner::Interner;
-use la_arena::Arena;
+use la_arena::{Arena, Idx};
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 
@@ -30,6 +30,12 @@ pub(crate) struct CodeGen<'a> {
 
     entry_point: hir::Fqn,
     functions_to_compile: VecDeque<hir::Fqn>,
+    lambdas_to_compile: VecDeque<(
+        hir::Name,
+        Idx<hir::Lambda>,
+        Vec<Idx<ResolvedTy>>,
+        ResolvedTy,
+    )>,
 
     // globals
     functions: FxHashMap<hir::Fqn, FuncId>,
@@ -60,6 +66,7 @@ impl<'a> CodeGen<'a> {
             module,
             entry_point,
             functions_to_compile: VecDeque::from([entry_point]),
+            lambdas_to_compile: VecDeque::new(),
             functions: FxHashMap::default(),
             data: FxHashMap::default(),
             str_id_gen: UIDGenerator::default(),
@@ -73,9 +80,43 @@ impl<'a> CodeGen<'a> {
     }
 
     fn compile_queued_functions(&mut self) {
-        while let Some(name) = self.functions_to_compile.pop_front() {
-            self.compile_function(name);
-            self.compile_queued_functions();
+        while let Some(fqn) = self.functions_to_compile.pop_front() {
+            let signature = self.tys[fqn]
+                .as_function()
+                .expect("tried to compile non-function as function");
+
+            if signature.is_extern {
+                continue;
+            }
+
+            self.compile_function(
+                &format!(
+                    "{}.{}",
+                    self.interner.lookup(fqn.module.0),
+                    self.interner.lookup(fqn.name.0)
+                ),
+                &fqn.to_mangled_name(self.interner),
+                fqn.module,
+                self.bodies_map[&fqn.module].function_body(fqn.name),
+                signature.param_tys.clone(),
+                signature.return_ty.clone(),
+            );
+        }
+        while let Some((module_name, lambda, param_tys, return_ty)) =
+            self.lambdas_to_compile.pop_front()
+        {
+            self.compile_function(
+                &format!(
+                    "{}.lambda#{}",
+                    self.interner.lookup(module_name.0),
+                    lambda.into_raw()
+                ),
+                &(module_name, lambda).to_mangled_name(self.interner),
+                module_name,
+                self.bodies_map[&module_name][lambda].body,
+                param_tys,
+                return_ty,
+            );
         }
     }
 
@@ -159,7 +200,7 @@ impl<'a> CodeGen<'a> {
         builder.finalize();
 
         if self.verbose {
-            println!("main:\n{}", self.ctx.func);
+            println!("main \x1B[90mmain\x1B[0m:\n{}", self.ctx.func);
         }
 
         self.module
@@ -183,26 +224,21 @@ impl<'a> CodeGen<'a> {
         )
     }
 
-    fn compile_function(&mut self, fqn: hir::Fqn) {
-        let signature = self.tys[fqn]
-            .as_function()
-            .expect("tried to compile non-function as function");
-
-        if signature.is_extern {
-            return;
-        }
-
+    fn compile_function(
+        &mut self,
+        unmangled_name: &str,
+        mangled_name: &str,
+        module_name: hir::Name,
+        body: Idx<hir::Expr>,
+        param_tys: Vec<Idx<ResolvedTy>>,
+        return_ty: ResolvedTy,
+    ) {
         let (comp_sig, new_idx_to_old_idx) =
-            signature.to_cranelift_signature(self.module, self.resolved_arena);
+            (param_tys, return_ty.clone()).to_cranelift_signature(self.module, self.resolved_arena);
         let func_id = self
             .module
-            .declare_function(
-                &fqn.to_mangled_name(self.interner),
-                Linkage::Export,
-                &comp_sig,
-            )
+            .declare_function(&mangled_name, Linkage::Export, &comp_sig)
             .unwrap();
-        self.functions.insert(fqn, func_id);
 
         self.ctx.func.signature = comp_sig.clone();
 
@@ -211,7 +247,7 @@ impl<'a> CodeGen<'a> {
 
         let compiler = FunctionCompiler {
             builder,
-            fqn,
+            module_name,
             signature: comp_sig,
             resolved_arena: self.resolved_arena,
             interner: self.interner,
@@ -220,6 +256,9 @@ impl<'a> CodeGen<'a> {
             module: self.module,
             data_description: &mut self.data_description,
             functions_to_compile: &mut self.functions_to_compile,
+            lambdas_to_compile: &mut self.lambdas_to_compile,
+            local_functions: FxHashMap::default(),
+            local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
@@ -228,14 +267,12 @@ impl<'a> CodeGen<'a> {
             params: FxHashMap::default(),
         };
 
-        compiler.finish(signature.return_ty.clone(), new_idx_to_old_idx);
+        compiler.finish(body, return_ty, new_idx_to_old_idx);
 
         if self.verbose {
             println!(
-                "{}.{}:\n{}",
-                self.interner.lookup(fqn.module.0),
-                self.interner.lookup(fqn.name.0),
-                self.ctx.func
+                "{} \x1B[90m{}\x1B[0m:\n{}",
+                unmangled_name, mangled_name, self.ctx.func
             );
         }
 

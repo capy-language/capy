@@ -393,27 +393,10 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::UndefinedModule { name } => {
             format!("undefined module `{}`", interner.lookup(*name))
         }
-        LoweringDiagnosticKind::MutableGlobal => "globals cannot be mutable".to_string(),
-        LoweringDiagnosticKind::MismatchedArgCount {
-            name,
-            expected,
-            found: got,
-        } => {
-            format!(
-                "`{}` expected {} arguments, but got {}",
-                interner.lookup(*name),
-                expected,
-                got
-            )
-        }
-        LoweringDiagnosticKind::CalledNonLambda { name } => {
-            format!(
-                "tried to call `{}`, which is not a lambda",
-                interner.lookup(*name)
-            )
+        LoweringDiagnosticKind::NonGlobalExtern => {
+            "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
-        LoweringDiagnosticKind::ArrayMissingBody => "array missing a body `{}`".to_string(),
         LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
             format!("expected `{}` elements, found `{}`", expected, found)
         }

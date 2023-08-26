@@ -1,11 +1,13 @@
-mod cast;
 mod ctx;
+mod resolved_ty;
 
 use hir::TyWithRange;
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
+
+pub use resolved_ty::*;
 
 #[derive(Clone)]
 pub struct InferenceResult {
@@ -17,258 +19,7 @@ pub struct InferenceResult {
 pub struct ModuleInference {
     expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
     local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
-}
-
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
-pub enum ResolvedTy {
-    NotYetResolved,
-    Unknown,
-    /// a bit-width of u32::MAX represents an isize
-    /// a bit-width of 0 represents ANY signed integer type
-    IInt(u32),
-    /// a bit-width of u32::MAX represents a usize
-    /// a bit-width of 0 represents ANY unsigned integer type
-    UInt(u32),
-    /// the bit-width can either be 32 or 64
-    /// a bit-width of 0 represents ANY float type
-    Float(u32),
-    Bool,
-    String,
-    Array {
-        size: u64,
-        sub_ty: Idx<ResolvedTy>,
-    },
-    Pointer {
-        mutable: bool,
-        sub_ty: Idx<ResolvedTy>,
-    },
-    Distinct {
-        fqn: Option<hir::Fqn>,
-        uid: u32,
-        ty: Idx<ResolvedTy>,
-    },
-    Type,
-    // this is only ever used for functions defined locally
-    Function {
-        params: Vec<ResolvedTy>,
-        return_ty: Idx<ResolvedTy>,
-    },
-    Void,
-}
-
-impl ResolvedTy {
-    /// what it sounds like
-    pub fn is_array(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
-        match self {
-            ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
-            _ => false,
-        }
-    }
-
-    /// what it sounds like
-    pub fn is_pointer(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
-        match self {
-            ResolvedTy::Pointer { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_pointer(resolved_arena),
-            _ => false,
-        }
-    }
-
-    /// returns the mutability and sub type
-    pub fn into_fn(
-        self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
-        match self {
-            ResolvedTy::Function { params, return_ty } => {
-                Some((params, resolved_arena[return_ty].clone()))
-            }
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[ty].clone().into_fn(resolved_arena),
-            _ => None,
-        }
-    }
-
-    /// returns the mutability and sub type
-    pub fn into_pointer(self, resolved_arena: &Arena<ResolvedTy>) -> Option<(bool, ResolvedTy)> {
-        match self {
-            ResolvedTy::Pointer { mutable, sub_ty } => {
-                Some((mutable, resolved_arena[sub_ty].clone()))
-            }
-            ResolvedTy::Distinct { ty, .. } => {
-                resolved_arena[ty].clone().into_pointer(resolved_arena)
-            }
-            _ => None,
-        }
-    }
-
-    /// returns the length and sub type
-    pub fn into_array(self, resolved_arena: &Arena<ResolvedTy>) -> Option<(u64, ResolvedTy)> {
-        match self {
-            ResolvedTy::Array { size, sub_ty } => Some((size, resolved_arena[sub_ty].clone())),
-            ResolvedTy::Distinct { ty, .. } => {
-                resolved_arena[ty].clone().into_array(resolved_arena)
-            }
-            _ => None,
-        }
-    }
-
-    /// returns true if the type is void, or contains void, or is an empty array, etc.
-    pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
-        match self {
-            ResolvedTy::Void => true,
-            ResolvedTy::Pointer { sub_ty, .. } => resolved_arena[*sub_ty].is_empty(resolved_arena),
-            ResolvedTy::Array { size, sub_ty } => {
-                *size == 0 || resolved_arena[*sub_ty].is_empty(resolved_arena)
-            }
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_empty(resolved_arena),
-            _ => false,
-        }
-    }
-
-    /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
-    pub fn is_unknown(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
-        match self {
-            ResolvedTy::NotYetResolved => true,
-            ResolvedTy::Unknown => true,
-            ResolvedTy::Pointer { sub_ty, .. } => {
-                resolved_arena[*sub_ty].is_unknown(resolved_arena)
-            }
-            ResolvedTy::Array { size, sub_ty } => {
-                *size == 0 || resolved_arena[*sub_ty].is_unknown(resolved_arena)
-            }
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_unknown(resolved_arena),
-            _ => false,
-        }
-    }
-
-    /// A true equality check
-    pub fn is_equal_to(self, other: Self, resolved_arena: &Arena<ResolvedTy>) -> bool {
-        if self == other {
-            return true;
-        }
-
-        match (self, other) {
-            (
-                ResolvedTy::Array {
-                    size: first_size,
-                    sub_ty: first_sub_ty,
-                },
-                ResolvedTy::Array {
-                    size: second_size,
-                    sub_ty: second_sub_ty,
-                    ..
-                },
-            ) => {
-                first_size == second_size
-                    && resolved_arena[first_sub_ty]
-                        .clone()
-                        .is_equal_to(resolved_arena[second_sub_ty].clone(), resolved_arena)
-            }
-            (
-                ResolvedTy::Pointer {
-                    mutable: first_mutable,
-                    sub_ty: first_sub_ty,
-                },
-                ResolvedTy::Pointer {
-                    mutable: second_mutable,
-                    sub_ty: second_sub_ty,
-                },
-            ) => {
-                first_mutable == second_mutable
-                    && resolved_arena[first_sub_ty]
-                        .clone()
-                        .is_equal_to(resolved_arena[second_sub_ty].clone(), resolved_arena)
-            }
-            (ResolvedTy::Distinct { uid: first, .. }, ResolvedTy::Distinct { uid: second, .. }) => {
-                first == second
-            }
-            (
-                ResolvedTy::Function {
-                    params: first_params,
-                    return_ty: first_return_ty,
-                },
-                ResolvedTy::Function {
-                    params: second_params,
-                    return_ty: second_return_ty,
-                },
-            ) => {
-                resolved_arena[first_return_ty]
-                    .clone()
-                    .is_equal_to(resolved_arena[second_return_ty].clone(), resolved_arena)
-                    && first_params.len() == second_params.len()
-                    && first_params.iter().zip(second_params.iter()).all(
-                        |(first_param, second_param)| {
-                            first_param
-                                .clone()
-                                .is_equal_to(second_param.clone(), resolved_arena)
-                        },
-                    )
-            }
-            _ => false,
-        }
-    }
-
-    /// an equality check that ignores distinct types.
-    /// All other types must be exactly equal (i32 == i32, i32 != i64)
-    pub fn is_functionally_equivalent_to(
-        self,
-        other: Self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
-        match (self, other) {
-            (
-                ResolvedTy::Array {
-                    size: first_size,
-                    sub_ty: first_sub_ty,
-                },
-                ResolvedTy::Array {
-                    size: second_size,
-                    sub_ty: second_sub_ty,
-                    ..
-                },
-            ) => {
-                first_size == second_size
-                    && resolved_arena[first_sub_ty]
-                        .clone()
-                        .is_functionally_equivalent_to(
-                            resolved_arena[second_sub_ty].clone(),
-                            resolved_arena,
-                        )
-            }
-            (
-                ResolvedTy::Pointer {
-                    mutable: first_mutable,
-                    sub_ty: first_sub_ty,
-                },
-                ResolvedTy::Pointer {
-                    mutable: second_mutable,
-                    sub_ty: second_sub_ty,
-                },
-            ) => {
-                first_mutable == second_mutable
-                    && resolved_arena[first_sub_ty]
-                        .clone()
-                        .is_functionally_equivalent_to(
-                            resolved_arena[second_sub_ty].clone(),
-                            resolved_arena,
-                        )
-            }
-            (ResolvedTy::Distinct { ty: first, .. }, ResolvedTy::Distinct { ty: second, .. }) => {
-                resolved_arena[first]
-                    .clone()
-                    .is_functionally_equivalent_to(resolved_arena[second].clone(), resolved_arena)
-            }
-            (ResolvedTy::Distinct { ty: distinct, .. }, other)
-            | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
-                // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
-                resolved_arena[distinct]
-                    .clone()
-                    .is_functionally_equivalent_to(other, resolved_arena)
-            }
-            (first, second) => first.is_equal_to(second, resolved_arena),
-        }
-    }
+    lambdas: ArenaMap<Idx<hir::Lambda>, FunctionSignature>,
 }
 
 impl std::ops::Index<hir::Fqn> for InferenceResult {
@@ -328,7 +79,7 @@ impl Signature {
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub return_ty: ResolvedTy,
-    pub param_tys: Vec<ResolvedTy>,
+    pub param_tys: Vec<Idx<ResolvedTy>>,
     pub is_extern: bool,
 }
 
@@ -418,8 +169,8 @@ pub struct InferenceCtx<'a> {
     world_index: &'a hir::WorldIndex,
     twr_arena: &'a Arena<TyWithRange>,
     resolved_arena: &'a mut Arena<ResolvedTy>,
-    local_usages: ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>,
-    param_tys: Option<Vec<ResolvedTy>>,
+    local_usages: FxHashMap<hir::Name, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
+    param_tys: Option<Vec<Idx<ResolvedTy>>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
     modules: FxHashMap<hir::Name, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
@@ -445,7 +196,7 @@ impl<'a> InferenceCtx<'a> {
             world_index,
             twr_arena,
             resolved_arena,
-            local_usages: ArenaMap::default(),
+            local_usages: FxHashMap::default(),
             param_tys: None,
             diagnostics: Vec::new(),
             signatures: FxHashMap::default(),
@@ -460,6 +211,7 @@ impl<'a> InferenceCtx<'a> {
                 ModuleInference {
                     expr_tys: ArenaMap::default(),
                     local_tys: ArenaMap::default(),
+                    lambdas: ArenaMap::default(),
                 },
             );
         }
@@ -512,7 +264,7 @@ impl<'a> InferenceCtx<'a> {
         self.signatures[&fqn].as_global().unwrap().clone()
     }
 
-    /// newly constructs the signature of a global every time it is called.
+    /// newly constructs the signature of a global, possibly throwing diagnostics.
     /// please use `singleton_global_signature` instead
     fn generate_global_signature(&mut self, global: &hir::Global, fqn: hir::Fqn) -> Signature {
         let old_module = self.current_module;
@@ -571,7 +323,7 @@ impl<'a> InferenceCtx<'a> {
         sig.as_function().unwrap().clone()
     }
 
-    /// newly constructs the signature of a function every time it is called.
+    /// newly constructs the signature of a function, possibly throwing diagnostics.
     /// please use `singleton_fn_signature` instead
     fn generate_function_signature(
         &mut self,
@@ -586,7 +338,10 @@ impl<'a> InferenceCtx<'a> {
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| self.resolve_ty(param.ty))
+            .map(|param| {
+                let ty = self.resolve_ty(param.ty);
+                self.resolved_arena.alloc(ty)
+            })
             .collect();
 
         let ty_annotation = self.resolve_ty(function.ty_annotation);
@@ -598,10 +353,7 @@ impl<'a> InferenceCtx<'a> {
                     return_ty: self.resolved_arena.alloc(return_ty.clone()),
                 };
 
-                if !actual_ty
-                    .clone()
-                    .is_equal_to(ty_annotation.clone(), self.resolved_arena)
-                {
+                if !actual_ty.is_equal_to(&ty_annotation, self.resolved_arena) {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::Mismatch {
                             expected: ty_annotation,
@@ -652,6 +404,45 @@ impl<'a> InferenceCtx<'a> {
         }
 
         self.current_module = old_module;
+
+        sig
+    }
+
+    /// newly constructs the signature of a function, possibly throwing diagnostics.
+    /// please use `singleton_fn_signature` instead
+    fn generate_unnamed_function_signature(
+        &mut self,
+        lambda: Idx<hir::Lambda>,
+    ) -> FunctionSignature {
+        let hir::Lambda { function, body } =
+            &self.bodies_map[&self.current_module.unwrap()][lambda];
+
+        let return_ty = self.resolve_ty(function.return_ty);
+
+        let param_tys: Vec<_> = function
+            .params
+            .iter()
+            .map(|param| {
+                let ty = self.resolve_ty(param.ty);
+                self.resolved_arena.alloc(ty)
+            })
+            .collect();
+
+        let sig = FunctionSignature {
+            param_tys,
+            return_ty,
+            is_extern: function.is_extern,
+        };
+
+        self.modules
+            .get_mut(&self.current_module.unwrap())
+            .unwrap()
+            .lambdas
+            .insert(lambda, sig.clone());
+
+        if !function.is_extern {
+            self.finish_body_known(*body, Some(sig.param_tys.clone()), sig.return_ty.clone());
+        }
 
         sig
     }
@@ -846,7 +637,10 @@ impl<'a> InferenceCtx<'a> {
             } => ResolvedTy::Function {
                 params: params
                     .into_iter()
-                    .map(|param| self.resolve_ty(param))
+                    .map(|param| {
+                        let ty = self.resolve_ty(param);
+                        self.resolved_arena.alloc(ty)
+                    })
                     .collect(),
                 return_ty: {
                     let resolved = self.resolve_ty(return_ty);
@@ -903,11 +697,11 @@ impl InferenceResult {
                         s.push_str("extern ");
                     }
                     s.push('(');
-                    for (idx, param_type) in param_tys.iter().enumerate() {
+                    for (idx, param_ty) in param_tys.iter().enumerate() {
                         if idx != 0 {
                             s.push_str(", ");
                         }
-                        s.push_str(&param_type.display(resolved_arena, interner));
+                        s.push_str(&resolved_arena[*param_ty].display(resolved_arena, interner));
                     }
                     s.push(')');
 
@@ -1012,7 +806,7 @@ impl ResolvedTy {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&param.display(resolved_arena, interner));
+                    res.push_str(&resolved_arena[*param].display(resolved_arena, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
@@ -3162,7 +2956,7 @@ mod tests {
                         },
                         found: ResolvedTy::Pointer {
                             mutable: false,
-                            sub_ty: Idx::from_raw(RawIdx::from(2)),
+                            sub_ty: Idx::from_raw(RawIdx::from(3)),
                         },
                     },
                     101..105,
@@ -3204,12 +2998,15 @@ mod tests {
                 [(
                     TyDiagnosticKind::Mismatch {
                         expected: ResolvedTy::Function {
-                            params: vec![ResolvedTy::Float(32), ResolvedTy::IInt(8)],
-                            return_ty: Idx::from_raw(RawIdx::from(0)),
+                            params: vec![
+                                Idx::from_raw(RawIdx::from(1)),
+                                Idx::from_raw(RawIdx::from(2)),
+                            ],
+                            return_ty: Idx::from_raw(RawIdx::from(3)),
                         },
                         found: ResolvedTy::Function {
-                            params: vec![ResolvedTy::IInt(32)],
-                            return_ty: Idx::from_raw(RawIdx::from(1)),
+                            params: vec![Idx::from_raw(RawIdx::from(0))],
+                            return_ty: Idx::from_raw(RawIdx::from(4)),
                         },
                     },
                     56..116,
