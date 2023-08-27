@@ -47,6 +47,8 @@ enum ExprMutability {
     Mutable,
     ImmutableBinding(TextRange),
     ImmutableRef(TextRange),
+    ImmutableParam(TextRange),
+    ImmutableGlobal(TextRange),
     CannotMutate(TextRange),
 }
 
@@ -129,7 +131,7 @@ impl InferenceCtx<'_> {
         let found_ty = &current_module!(self).expr_tys[expr];
 
         // println!("  replace_weak_tys {:?} {:?}", found_ty, new_ty);
-        if !found_ty.is_weak_type_replaceable_by(&new_ty, self.resolved_arena) {
+        if !found_ty.is_weak_type_replaceable_by(new_ty, self.resolved_arena) {
             // println!("no");
             return false;
         }
@@ -237,7 +239,7 @@ impl InferenceCtx<'_> {
             }
             Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
             Expr::Param { idx } => {
-                let param_ty = self.param_tys.as_ref().unwrap()[*idx as usize].clone();
+                let param_ty = self.param_tys.as_ref().unwrap()[*idx as usize];
                 let param_ty = &self.resolved_arena[param_ty];
 
                 if derefs > 0 {
@@ -247,15 +249,15 @@ impl InferenceCtx<'_> {
                         } else {
                             ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
                         }
-                    } else if param_ty.is_array(self.resolved_arena) {
-                        ExprMutability::Mutable // todo: i don't like this, the parameter itself should be `mut`
                     } else {
-                        unreachable!("Only pointers and arrays can be dereferenced")
+                        ExprMutability::ImmutableParam(current_bodies!(self).range_for_expr(expr))
                     }
                 } else {
-                    // todo: for these, the param itself should be declared as `mut`
-                    ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr))
+                    ExprMutability::ImmutableParam(current_bodies!(self).range_for_expr(expr))
                 }
+            }
+            Expr::Global(_) => {
+                ExprMutability::ImmutableGlobal(current_bodies!(self).range_for_expr(expr))
             }
             _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),
         }
@@ -317,6 +319,14 @@ impl InferenceCtx<'_> {
                             }),
                             ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
                                 kind: TyDiagnosticHelpKind::ImmutableRef,
+                                range,
+                            }),
+                            ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableParam,
+                                range,
+                            }),
+                            ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableGlobal,
                                 range,
                             }),
                             ExprMutability::Mutable => None,
@@ -712,6 +722,14 @@ impl InferenceCtx<'_> {
                             kind: TyDiagnosticHelpKind::ImmutableRef,
                             range,
                         }),
+                        ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
+                            kind: TyDiagnosticHelpKind::ImmutableParam,
+                            range,
+                        }),
+                        ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
+                            kind: TyDiagnosticHelpKind::ImmutableGlobal,
+                            range,
+                        }),
                         ExprMutability::Mutable => None,
                     };
 
@@ -884,7 +902,7 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::Local(local) => current_module!(self).local_tys[*local].clone(),
             hir::Expr::Param { idx } => {
-                self.resolved_arena[self.param_tys.as_ref().unwrap()[*idx as usize].clone()].clone()
+                self.resolved_arena[self.param_tys.as_ref().unwrap()[*idx as usize]].clone()
             }
             hir::Expr::Call { callee, args } => {
                 let callee_ty = self.infer_expr(*callee);

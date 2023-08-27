@@ -1,6 +1,7 @@
 use hir::Fqn;
 use interner::Interner;
-use la_arena::Idx;
+
+use crate::gen::LambdaToCompile;
 
 pub(crate) trait Mangle {
     fn to_mangled_name(&self, interner: &Interner) -> String;
@@ -26,18 +27,18 @@ impl Mangle for Fqn {
     }
 }
 
-impl Mangle for (hir::Name, Idx<hir::Lambda>) {
+impl Mangle for LambdaToCompile {
     fn to_mangled_name(&self, interner: &Interner) -> String {
         let mut mangled = String::new();
 
         mangled.push_str("_CML");
 
-        let module_str = interner.lookup(self.0 .0);
+        let module_str = interner.lookup(self.module_name.0);
         mangled.push_str(&module_str.len().to_string());
         mangled.push_str(module_str);
 
         mangled.push_str("l_");
-        mangled.push_str(&self.1.into_raw().to_string());
+        mangled.push_str(&self.lambda.into_raw().to_string());
 
         mangled.push('E');
 

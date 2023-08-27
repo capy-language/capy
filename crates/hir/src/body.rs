@@ -361,7 +361,7 @@ impl<'a> Ctx<'a> {
                 let ty = self.lower_ty(ty);
 
                 params.push(Param {
-                    name: key.map(|key| Name(key)),
+                    name: key.map(Name),
                     ty: self.twr_arena.alloc(ty),
                 });
 

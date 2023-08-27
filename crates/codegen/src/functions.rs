@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     convert::{NumberType, ToCompSize, ToCompType, ToCraneliftSignature},
-    gen,
+    gen::{self, LambdaToCompile},
     mangle::Mangle,
     CraneliftSignature,
 };
@@ -35,12 +35,7 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) data_description: &'a mut DataDescription,
 
     pub(crate) functions_to_compile: &'a mut VecDeque<hir::Fqn>,
-    pub(crate) lambdas_to_compile: &'a mut VecDeque<(
-        hir::Name,
-        Idx<hir::Lambda>,
-        Vec<Idx<ResolvedTy>>,
-        ResolvedTy,
-    )>,
+    pub(crate) lambdas_to_compile: &'a mut VecDeque<LambdaToCompile>,
 
     pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
     pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
@@ -59,8 +54,10 @@ pub(crate) struct FunctionCompiler<'a> {
 impl FunctionCompiler<'_> {
     pub(crate) fn finish(
         mut self,
-        function_body: Idx<hir::Expr>,
+
+        param_tys: Vec<Idx<ResolvedTy>>,
         return_ty: ResolvedTy,
+        function_body: Idx<hir::Expr>,
         new_idx_to_old_idx: FxHashMap<u64, u64>,
     ) {
         // Create the entry block, to start emitting code in.
@@ -77,8 +74,6 @@ impl FunctionCompiler<'_> {
         for (idx, param) in self.signature.params.iter().enumerate() {
             let param_ty = param.value_type;
 
-            let value = self.builder.block_params(entry_block)[idx];
-
             let var = Variable::new(self.var_id_gen.generate_unique_id() as usize);
 
             if new_idx_to_old_idx.contains_key(&(idx as u64)) {
@@ -90,7 +85,43 @@ impl FunctionCompiler<'_> {
 
             self.builder.declare_var(var, param_ty);
 
-            self.builder.def_var(var, value);
+            let value = self.builder.block_params(entry_block)[idx];
+
+            let old_idx = match new_idx_to_old_idx.get(&(idx as u64)) {
+                Some(old_idx) => *old_idx,
+                None => {
+                    self.builder.def_var(var, value);
+                    continue;
+                }
+            };
+            let param_ty = &self.resolved_arena[param_tys[old_idx as usize]];
+
+            if param_ty.is_array(self.resolved_arena) {
+                let size = param_ty.get_size_in_bytes(self.module, self.resolved_arena);
+
+                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+
+                let stack_slot_addr = self.builder.ins().stack_addr(
+                    self.module.target_config().pointer_type(),
+                    stack_slot,
+                    0,
+                );
+
+                let size = self
+                    .builder
+                    .ins()
+                    .iconst(self.module.target_config().pointer_type(), size as i64);
+
+                self.builder
+                    .call_memcpy(self.module.target_config(), stack_slot_addr, value, size);
+
+                self.builder.def_var(var, stack_slot_addr);
+            } else {
+                self.builder.def_var(var, value);
+            }
         }
 
         // let hir_body = self.bodies_map[&self.module_name].function_body(self.module_name.name);
@@ -307,9 +338,21 @@ impl FunctionCompiler<'_> {
                     return;
                 };
 
-                self.builder
-                    .ins()
-                    .store(MemFlags::trusted(), value, source, 0);
+                let value_ty = &self.tys[self.module_name][assign_body.value];
+                if value_ty.is_array(self.resolved_arena) {
+                    let size = value_ty.get_size_in_bytes(self.module, self.resolved_arena);
+                    let size = self
+                        .builder
+                        .ins()
+                        .iconst(self.module.target_config().pointer_type(), size as i64);
+
+                    self.builder
+                        .call_memcpy(self.module.target_config(), source, value, size)
+                } else {
+                    self.builder
+                        .ins()
+                        .store(MemFlags::trusted(), value, source, 0);
+                }
             }
         }
     }
@@ -503,7 +546,11 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::Ref { expr, .. } => {
                 // references to locals or globals should return the actual memory address of the local or global
-                if matches!(
+                if self.tys[self.module_name][expr].is_array(self.resolved_arena) {
+                    let expr = self.compile_expr_with_args(expr, false).unwrap();
+
+                    Some(expr)
+                } else if matches!(
                     self.bodies_map[&self.module_name][expr],
                     hir::Expr::Local(_) | hir::Expr::Global(_)
                 ) {
@@ -533,23 +580,22 @@ impl FunctionCompiler<'_> {
             hir::Expr::Deref {
                 pointer: pointer_expr,
             } => {
-                let self_ty = if no_load {
-                    self.module.target_config().pointer_type()
-                } else {
-                    self.tys[self.module_name][expr]
-                        .to_comp_type(self.module, self.resolved_arena)
-                        .into_real_type()
-                        .unwrap()
-                };
-
                 let pointer = self.compile_expr_with_args(pointer_expr, no_load)?;
 
-                if matches!(
-                    self.bodies_map[&self.module_name][pointer_expr],
-                    hir::Expr::Param { .. }
-                ) {
+                let self_ty = &self.tys[self.module_name][expr];
+
+                if self_ty.is_array(self.resolved_arena) {
                     Some(pointer)
                 } else {
+                    let self_ty = if no_load {
+                        self.module.target_config().pointer_type()
+                    } else {
+                        self_ty
+                            .to_comp_type(self.module, self.resolved_arena)
+                            .into_real_type()
+                            .unwrap()
+                    };
+
                     Some(
                         self.builder
                             .ins()
@@ -980,23 +1026,23 @@ impl FunctionCompiler<'_> {
             .as_function(self.resolved_arena)
             .unwrap();
 
-        self.lambdas_to_compile.push_back((
-            self.module_name,
+        let ltc = LambdaToCompile {
+            module_name: self.module_name,
             lambda,
-            param_tys.clone(),
-            self.resolved_arena[return_ty].clone(),
-        ));
+            param_tys: param_tys.clone(),
+            return_ty: self.resolved_arena[return_ty].clone(),
+        };
+
+        let mangled = ltc.to_mangled_name(self.interner);
+
+        self.lambdas_to_compile.push_back(ltc);
 
         let (sig, _) = (param_tys, self.resolved_arena[return_ty].clone())
             .to_cranelift_signature(self.module, self.resolved_arena);
 
         let func_id = self
             .module
-            .declare_function(
-                &(self.module_name, lambda).to_mangled_name(self.interner),
-                Linkage::Export,
-                &sig,
-            )
+            .declare_function(&mangled, Linkage::Export, &sig)
             .unwrap();
 
         let local_func = self.module.declare_func_in_func(func_id, self.builder.func);

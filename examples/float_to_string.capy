@@ -3,32 +3,32 @@ HYPHEN :: 45;
 PERIOD :: 46;
 ZERO :: 48;
 
-reverse :: (buf: [20]u8, starting_offset: usize, len: usize) {
+reverse :: (buf: ^mut [20]u8, starting_offset: usize, len: usize) {
     i := starting_offset;
     j := len - 1;
     temp := 0;
 
     while i < j {
-        temp = buf[i];
-        buf[i] = buf[j];
-        buf[j] = temp;
+        temp = buf^[i];
+        buf^[i] = buf^[j];
+        buf^[j] = temp;
         i = i + 1;
         j = j - 1;
     }
 };
 
-int_to_string :: (n: i32, buf: [20]u8, buf_offset: usize, required_digits: usize) -> usize {
+int_to_string :: (n: i32, buf: ^mut [20]u8, buf_offset: usize, required_digits: usize) -> usize {
     idx := buf_offset;
 
     n := n;
     if n < 0 {
         n = -n;
-        buf[idx] = HYPHEN; // 45 is the unicode hyphen
+        buf^[idx] = HYPHEN; // 45 is the unicode hyphen
         idx = idx + 1;
     };
 
     if n == 0 {
-        buf[idx] = ZERO;
+        buf^[idx] = ZERO;
         idx = idx + 1;
     };
 
@@ -36,13 +36,13 @@ int_to_string :: (n: i32, buf: [20]u8, buf_offset: usize, required_digits: usize
         remainder := n % 10;
         n = n / 10;
 
-        buf[idx] = {ZERO + remainder} as u8;
+        buf^[idx] = {ZERO + remainder} as u8;
 
         idx = idx + 1;
     };
 
     while idx < required_digits {
-        buf[idx] = ZERO;
+        buf^[idx] = ZERO;
         idx = idx + 1;
     };
 
@@ -51,7 +51,7 @@ int_to_string :: (n: i32, buf: [20]u8, buf_offset: usize, required_digits: usize
     idx
 };
 
-ftoa :: (n: f32, buf: [20]u8, afterpoint: usize) {
+ftoa :: (n: f32, buf: ^mut [20]u8, afterpoint: usize) {
     ipart := n as i32;
 
     fpart := n - {ipart as f32};
@@ -59,7 +59,7 @@ ftoa :: (n: f32, buf: [20]u8, afterpoint: usize) {
     idx := int_to_string(ipart, buf, 0, 0);
 
     if afterpoint != 0 {
-        buf[idx] = PERIOD;
+        buf^[idx] = PERIOD;
 
         fpart = fpart * pow(10, afterpoint as i32) as f32;
 
@@ -83,7 +83,7 @@ pow :: (base: i32, exp: i32) -> i32 {
 main :: () {
     buf := [20]u8 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    ftoa(12.5, buf, 3);
+    ftoa(12.5, ^mut buf, 3);
 
     puts(buf);
 };

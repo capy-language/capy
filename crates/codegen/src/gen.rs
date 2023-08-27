@@ -15,6 +15,13 @@ use crate::convert::*;
 use crate::functions::FunctionCompiler;
 use crate::mangle::Mangle;
 
+pub(crate) struct LambdaToCompile {
+    pub(crate) module_name: hir::Name,
+    pub(crate) lambda: Idx<hir::Lambda>,
+    pub(crate) param_tys: Vec<Idx<ResolvedTy>>,
+    pub(crate) return_ty: ResolvedTy,
+}
+
 pub(crate) struct CodeGen<'a> {
     verbose: bool,
 
@@ -30,12 +37,7 @@ pub(crate) struct CodeGen<'a> {
 
     entry_point: hir::Fqn,
     functions_to_compile: VecDeque<hir::Fqn>,
-    lambdas_to_compile: VecDeque<(
-        hir::Name,
-        Idx<hir::Lambda>,
-        Vec<Idx<ResolvedTy>>,
-        ResolvedTy,
-    )>,
+    lambdas_to_compile: VecDeque<LambdaToCompile>,
 
     // globals
     functions: FxHashMap<hir::Fqn, FuncId>,
@@ -102,20 +104,18 @@ impl<'a> CodeGen<'a> {
                 signature.return_ty.clone(),
             );
         }
-        while let Some((module_name, lambda, param_tys, return_ty)) =
-            self.lambdas_to_compile.pop_front()
-        {
+        while let Some(ltc) = self.lambdas_to_compile.pop_front() {
             self.compile_function(
                 &format!(
                     "{}.lambda#{}",
-                    self.interner.lookup(module_name.0),
-                    lambda.into_raw()
+                    self.interner.lookup(ltc.module_name.0),
+                    ltc.lambda.into_raw()
                 ),
-                &(module_name, lambda).to_mangled_name(self.interner),
-                module_name,
-                self.bodies_map[&module_name][lambda].body,
-                param_tys,
-                return_ty,
+                &ltc.to_mangled_name(self.interner),
+                ltc.module_name,
+                self.bodies_map[&ltc.module_name][ltc.lambda].body,
+                ltc.param_tys,
+                ltc.return_ty,
             );
         }
     }
@@ -233,11 +233,11 @@ impl<'a> CodeGen<'a> {
         param_tys: Vec<Idx<ResolvedTy>>,
         return_ty: ResolvedTy,
     ) {
-        let (comp_sig, new_idx_to_old_idx) =
-            (param_tys, return_ty.clone()).to_cranelift_signature(self.module, self.resolved_arena);
+        let (comp_sig, new_idx_to_old_idx) = (param_tys.clone(), return_ty.clone())
+            .to_cranelift_signature(self.module, self.resolved_arena);
         let func_id = self
             .module
-            .declare_function(&mangled_name, Linkage::Export, &comp_sig)
+            .declare_function(mangled_name, Linkage::Export, &comp_sig)
             .unwrap();
 
         self.ctx.func.signature = comp_sig.clone();
@@ -267,7 +267,7 @@ impl<'a> CodeGen<'a> {
             params: FxHashMap::default(),
         };
 
-        compiler.finish(body, return_ty, new_idx_to_old_idx);
+        compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);
 
         if self.verbose {
             println!(

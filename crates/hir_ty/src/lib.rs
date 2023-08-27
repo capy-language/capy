@@ -161,6 +161,8 @@ pub enum TyDiagnosticHelpKind {
     FoundToBeImmutable,
     ImmutableBinding,
     ImmutableRef,
+    ImmutableParam,
+    ImmutableGlobal,
 }
 
 pub struct InferenceCtx<'a> {

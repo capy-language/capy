@@ -427,7 +427,7 @@ impl ResolvedTy {
             (found, ResolvedTy::Distinct { ty, .. }) => {
                 found.can_fit_into(&resolved_arena[*ty], resolved_arena)
             }
-            (found, expected) => found.is_equal_to(&expected, resolved_arena),
+            (found, expected) => found.is_equal_to(expected, resolved_arena),
         }
     }
 

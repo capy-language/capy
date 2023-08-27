@@ -371,7 +371,7 @@ fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
 fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> String {
     match &d.kind {
         IndexingDiagnosticKind::NonBindingAtRoot => {
-            "globals must be binding `::` and not variable `:=`".to_string()
+            "all globals must be binding `::` and not variable `:=`".to_string()
         }
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
@@ -537,6 +537,10 @@ fn ty_diagnostic_help_message(d: &TyDiagnosticHelp) -> String {
         hir_ty::TyDiagnosticHelpKind::ImmutableRef => {
             "this is an immutable reference. consider changing it to `^mut`".to_string()
         }
+        hir_ty::TyDiagnosticHelpKind::ImmutableParam => {
+            "parameters are immutable. consider passing a `^mut`".to_string()
+        }
+        hir_ty::TyDiagnosticHelpKind::ImmutableGlobal => "globals are immutable".to_string(),
     }
 }
 
