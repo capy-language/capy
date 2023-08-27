@@ -511,7 +511,7 @@ mod tests {
                 global[0][0][2] = 125
                 global[0][1][0] = 105
                 global[0][1][1] = 115
-                global[0][1][2] = 127
+                global[0][1][2] = 125
                 global[0][2][0] = 105
                 global[0][2][1] = 115
                 global[0][2][2] = 125

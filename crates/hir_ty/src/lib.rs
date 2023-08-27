@@ -3197,4 +3197,64 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn int_too_large_for_type() {
+        check(
+            r#"
+                foo :: () {
+                    my_num : i8 = 128;
+                };
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : i8
+                2 : void
+                l0 : i8
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IntTooBigForType {
+                        found: 128,
+                        max: 127,
+                        ty: ResolvedTy::IInt(8),
+                    },
+                    63..66,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn int_too_large_for_type_by_inference() {
+        check(
+            r#"
+                foo :: () {
+                    my_num := 128;
+
+                    my_other_num : i8 = my_num;
+                };
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : i8
+                3 : i8
+                4 : void
+                l0 : i8
+                l1 : i8
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IntTooBigForType {
+                        found: 128,
+                        max: 127,
+                        ty: ResolvedTy::IInt(8),
+                    },
+                    59..62,
+                    None,
+                )]
+            },
+        );
+    }
 }
