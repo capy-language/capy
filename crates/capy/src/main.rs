@@ -182,8 +182,8 @@ fn compile_files(
 
     // print out errors and warnings
 
-    let has_errors =
-        !ty_diagnostics.is_empty() || source_files.iter().any(|(_, source)| source.has_errors());
+    let has_errors = ty_diagnostics.iter().any(hir_ty::TyDiagnostic::is_error)
+        || source_files.iter().any(|(_, source)| source.has_errors());
     source_files
         .iter()
         .for_each(|(_, source)| source.print_diagnostics());

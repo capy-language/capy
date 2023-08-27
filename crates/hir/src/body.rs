@@ -86,7 +86,7 @@ pub enum Expr {
         args: Vec<Idx<Expr>>,
     },
     Lambda(Idx<Lambda>),
-    /// either a primitive type (such as `i32`, 'bool', etc.), or an array type,
+    /// either a primitive type (such as `i32`, `bool`, etc.), or an array type,
     /// or a pointer to a primitive type, or a distinct type
     PrimitiveTy {
         ty: Idx<TyWithRange>,
@@ -109,7 +109,7 @@ pub enum Stmt {
 #[derive(Clone)]
 pub struct LocalDef {
     pub mutable: bool,
-    pub ty: Idx<TyWithRange>,
+    pub ty: Idx<Expr>,
     pub value: Idx<Expr>,
     pub ast: ast::Define,
     pub range: TextRange,
@@ -411,11 +411,11 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
-        let ty = self.lower_ty(local_def.ty(self.tree));
+        let ty = self.lower_expr(local_def.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
         let value = self.lower_expr(local_def.value(self.tree));
         let id = self.bodies.local_defs.alloc(LocalDef {
             mutable: matches!(local_def, ast::Define::Variable(_)),
-            ty: self.twr_arena.alloc(ty),
+            ty,
             value,
             ast: local_def,
             range: local_def.range(self.tree),

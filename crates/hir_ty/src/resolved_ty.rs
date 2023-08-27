@@ -230,6 +230,27 @@ impl ResolvedTy {
         }
     }
 
+    pub(crate) fn get_max_int_size(&self, resolved_arena: &Arena<ResolvedTy>) -> Option<u64> {
+        match self {
+            ResolvedTy::IInt(bit_width) => match bit_width {
+                8 => Some(i8::MAX as u64),
+                16 => Some(i16::MAX as u64),
+                32 => Some(i32::MAX as u64),
+                64 | 128 => Some(i64::MAX as u64),
+                _ => None,
+            },
+            ResolvedTy::UInt(bit_width) => match bit_width {
+                8 => Some(u8::MAX as u64),
+                16 => Some(u16::MAX as u64),
+                32 => Some(u32::MAX as u64),
+                64 | 128 => Some(u64::MAX),
+                _ => None,
+            },
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].get_max_int_size(resolved_arena),
+            _ => None,
+        }
+    }
+
     /// automagically converts two types into the type that can represent both.
     ///
     /// this function accepts unknown types.

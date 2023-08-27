@@ -100,7 +100,10 @@ impl InferenceCtx<'_> {
                     let user_local_ty = self.reinfer_expr(user_local_body.value);
 
                     // if there is no type annotation on the user, then replace it's type
-                    if self.twr_arena[user_local_body.ty] == TyWithRange::Unknown {
+                    if matches!(
+                        current_bodies!(self)[user_local_body.ty],
+                        hir::Expr::Missing
+                    ) {
                         current_module!(self)
                             .local_tys
                             .insert(user_local_def, user_local_ty);
@@ -140,6 +143,22 @@ impl InferenceCtx<'_> {
         current_module!(self).expr_tys.insert(expr, new_ty.clone());
 
         match current_bodies!(self)[expr] {
+            Expr::IntLiteral(num) => {
+                if let Some(max_size) = new_ty.get_max_int_size(self.resolved_arena) {
+                    if num > max_size {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::IntTooBigForType {
+                                found: num,
+                                max: max_size,
+                                ty: new_ty.clone(),
+                            },
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
+                        });
+                    }
+                }
+            }
             Expr::Block {
                 tail_expr: Some(tail_expr),
                 ..
@@ -276,7 +295,7 @@ impl InferenceCtx<'_> {
                 let def_body = &current_bodies!(self)[*local_def];
                 let value_ty = self.infer_expr(def_body.value);
 
-                let def_ty = self.resolve_ty(def_body.ty);
+                let def_ty = self.parse_expr_to_ty(def_body.ty);
 
                 match &def_ty {
                     ResolvedTy::Unknown => {
@@ -1030,13 +1049,29 @@ impl InferenceCtx<'_> {
         // int literal (which can be inferred into any int type),
         // then we can just quickly set it's type here
         if let (
-            hir::Expr::IntLiteral(_),
+            hir::Expr::IntLiteral(num),
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width),
         ) = (&current_bodies!(self)[expr], expected)
         {
             if *bit_width != u32::MAX {
                 current_module!(self).expr_tys[expr] = expected.clone();
             }
+
+            if let Some(max_size) = expected.get_max_int_size(self.resolved_arena) {
+                if *num > max_size {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::IntTooBigForType {
+                            found: *num,
+                            max: max_size,
+                            ty: expected.clone(),
+                        },
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
+                    });
+                }
+            }
+
             return true;
         }
 

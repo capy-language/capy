@@ -134,7 +134,13 @@ impl Diagnostic {
             Repr::Validation(_) => Severity::Warning,
             Repr::Indexing(_) => Severity::Error,
             Repr::Lowering(_) => Severity::Error,
-            Repr::Ty(_) => Severity::Error,
+            Repr::Ty(d) => {
+                if d.is_error() {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                }
+            }
         }
     }
 
@@ -504,7 +510,7 @@ fn ty_diagnostic_message(
                 expected.display(resolved_arena, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::Undefined { name } => {
+        hir_ty::TyDiagnosticKind::UndefinedTy { name } => {
             format!("undefined type `{}`", interner.lookup(*name))
         }
         hir_ty::TyDiagnosticKind::NotYetResolved { path } => {
@@ -514,7 +520,9 @@ fn ty_diagnostic_message(
             )
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
-        hir_ty::TyDiagnosticKind::MutableTy => "types cannot be mutable".to_string(),
+        hir_ty::TyDiagnosticKind::LocalTyIsVariable => {
+            "local variables cannot be used as types if they are mutable".to_string()
+        }
         hir_ty::TyDiagnosticKind::MutateBinding => "cannot mutate a `::` binding".to_string(),
         hir_ty::TyDiagnosticKind::MutateImmutableRef => {
             "cannot mutate an immutable reference. consider changing it to `^mut`".to_string()
@@ -522,6 +530,14 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::CannotMutate => "cannot mutate immutable data".to_string(),
         hir_ty::TyDiagnosticKind::MutableRefToImmutableData => {
             "cannot get a `^mut` to immutable data".to_string()
+        }
+        hir_ty::TyDiagnosticKind::IntTooBigForType { found, max, ty } => {
+            format!(
+                "integer literal `{}` is too big for `{}`, which can only hold up to {}",
+                found,
+                ty.display(resolved_arena, interner),
+                max
+            )
         }
     }
 }
@@ -550,6 +566,9 @@ fn ty_diagnostic_help_message(
                 "here, the `if` returns a {}",
                 found.display(resolved_arena, interner)
             )
+        }
+        hir_ty::TyDiagnosticHelpKind::MutableVariable => {
+            "`:=` bindings are immutable. consider changing it to `::`".to_string()
         }
     }
 }
