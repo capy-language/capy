@@ -21,6 +21,6 @@ main :: () {
     printf("x = { %i, ", x[0]);
     printf("%i, ", x[1]);
     printf("%i }\n", x[2]);
-};
+}
 
 printf :: (str: string, n: i32) extern;

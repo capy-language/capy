@@ -7,13 +7,13 @@ _start :: () {
     
     printf("main() returned with: %i\n", code);
     exit(255);
-};
+}
 
 main :: () -> i64 {
     printf("Hello from Main!\n", 0);
 
     0
-};
+}
 
 printf :: (str: string, i: i64) extern;
 

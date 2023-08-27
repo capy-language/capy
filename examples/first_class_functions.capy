@@ -1,22 +1,22 @@
 add :: (x: i32, y: i32) -> i32 {
     x + y
-};
+}
 
 sub :: (x: i32, y: i32) -> i32 {
     x - y
-};
+}
 
 mul :: (x: i32, y: i32) -> i32 {
     x * y
-};
+}
 
 div :: (x: i32, y: i32) -> i32 {
     x / y
-};
+}
 
 apply :: (fn: (x: i32, y: i32) -> i32, x: i32, y: i32) -> i32 {
     fn(x, y)
-};
+}
 
 main :: () -> i32 {
     printf("apply add to  1 and 2 ... %i\n", apply(add, 1, 2));
@@ -32,7 +32,7 @@ main :: () -> i32 {
             res = res * x;
 
             i = i + 1;
-        };
+        }
 
         res
     };
@@ -44,6 +44,6 @@ main :: () -> i32 {
     (val: i32) -> i32 {
         val * 2
     }(25)
-};
+}
 
 printf :: (str: string, n: i32) extern;

@@ -10,7 +10,7 @@ fib :: (n: i32) -> i32 {
     } else {
         fib(n - 1) + fib(n - 2)
     }
-};
+}
 
 main :: () {
     io.printf("Running Fibonacci(%d) x %d times...\nReady... Go!\n", target, repeat);
@@ -26,5 +26,5 @@ main :: () {
 
     if result != answer {
         io.printf("The answer is WRONG! Should be %d\n", answer, 0);
-    };
-};
+    }
+}

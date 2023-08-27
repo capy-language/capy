@@ -163,6 +163,7 @@ pub enum TyDiagnosticHelpKind {
     ImmutableRef,
     ImmutableParam,
     ImmutableGlobal,
+    IfReturnsTypeHere { found: ResolvedTy },
 }
 
 pub struct InferenceCtx<'a> {
@@ -234,7 +235,7 @@ impl<'a> InferenceCtx<'a> {
 
                 #[allow(clippy::map_entry)]
                 if !self.signatures.contains_key(&fqn) {
-                    let fn_sig = self.generate_function_signature(function, fqn);
+                    let fn_sig = self.get_function_signature(function, fqn);
                     self.signatures.insert(fqn, fn_sig);
                 }
             }
@@ -309,33 +310,14 @@ impl<'a> InferenceCtx<'a> {
         sig
     }
 
-    /// constructs the signature of a function only once, even though it might have many uses.
-    /// saves much unneeded work
-    fn singleton_fn_signature(
-        &mut self,
-        function: &hir::Function,
-        fqn: hir::Fqn,
-    ) -> FunctionSignature {
+    /// could potentially return a non-function signature depending on the function's type annotation
+    fn get_function_signature(&mut self, function: &hir::Function, fqn: hir::Fqn) -> Signature {
         if let Some(sig) = self.signatures.get(&fqn) {
-            return sig.as_function().unwrap().clone();
+            return sig.clone();
         }
 
-        let sig = self.generate_function_signature(function, fqn);
-
-        sig.as_function().unwrap().clone()
-    }
-
-    /// newly constructs the signature of a function, possibly throwing diagnostics.
-    /// please use `singleton_fn_signature` instead
-    fn generate_function_signature(
-        &mut self,
-        function: &hir::Function,
-        fqn: hir::Fqn,
-    ) -> Signature {
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
-
-        let return_ty = self.resolve_ty(function.return_ty);
 
         let param_tys: Vec<_> = function
             .params
@@ -346,19 +328,40 @@ impl<'a> InferenceCtx<'a> {
             })
             .collect();
 
+        let return_ty = self.resolve_ty(function.return_ty);
+
         let ty_annotation = self.resolve_ty(function.ty_annotation);
-        match ty_annotation {
-            ResolvedTy::Unknown => {}
+        let sig = match &ty_annotation {
+            ResolvedTy::Unknown => {
+                let sig = Signature::Function(FunctionSignature {
+                    param_tys: param_tys.clone(),
+                    return_ty: return_ty.clone(),
+                    is_extern: function.is_extern,
+                });
+
+                self.signatures.insert(fqn, sig.clone());
+
+                if !function.is_extern {
+                    self.finish_body_known(
+                        self.bodies_map[&fqn.module].function_body(fqn.name),
+                        Some(param_tys),
+                        return_ty,
+                    );
+                }
+
+                sig
+            }
             ResolvedTy::Function { .. } => {
                 let actual_ty = ResolvedTy::Function {
                     params: param_tys.clone(),
                     return_ty: self.resolved_arena.alloc(return_ty.clone()),
                 };
 
-                if !actual_ty.is_equal_to(&ty_annotation, self.resolved_arena) {
+                let correct_signature = actual_ty.is_equal_to(&ty_annotation, self.resolved_arena);
+                if !correct_signature {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::Mismatch {
-                            expected: ty_annotation,
+                            expected: ty_annotation.clone(),
                             found: actual_ty,
                         },
                         module: self.current_module.unwrap(),
@@ -368,11 +371,32 @@ impl<'a> InferenceCtx<'a> {
                         help: None,
                     });
                 }
+
+                let (annotation_param_tys, annotation_return_ty) =
+                    ty_annotation.as_function(self.resolved_arena).unwrap();
+
+                let annotation_sig = Signature::Function(FunctionSignature {
+                    param_tys: annotation_param_tys,
+                    return_ty: self.resolved_arena[annotation_return_ty].clone(),
+                    is_extern: function.is_extern,
+                });
+
+                self.signatures.insert(fqn, annotation_sig.clone());
+
+                if !function.is_extern {
+                    self.finish_body_known(
+                        self.bodies_map[&fqn.module].function_body(fqn.name),
+                        Some(param_tys.clone()),
+                        return_ty.clone(),
+                    );
+                }
+
+                annotation_sig
             }
-            other => {
+            _ => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
-                        expected: other,
+                        expected: ty_annotation.clone(),
                         found: ResolvedTy::Function {
                             params: param_tys.clone(),
                             return_ty: self.resolved_arena.alloc(return_ty.clone()),
@@ -384,26 +408,22 @@ impl<'a> InferenceCtx<'a> {
                     range: function.full_range,
                     help: None,
                 });
+
+                let annotation_sig = Signature::Global(GlobalSignature { ty: ty_annotation });
+
+                self.signatures.insert(fqn, annotation_sig.clone());
+
+                if !function.is_extern {
+                    self.finish_body_known(
+                        self.bodies_map[&fqn.module].function_body(fqn.name),
+                        Some(param_tys.clone()),
+                        return_ty.clone(),
+                    );
+                }
+
+                annotation_sig
             }
-        }
-
-        let sig = Signature::Function(FunctionSignature {
-            param_tys,
-            return_ty,
-            is_extern: function.is_extern,
-        });
-
-        self.signatures.insert(fqn, sig.clone());
-
-        if !function.is_extern {
-            let fn_sig = sig.as_function().unwrap();
-
-            self.finish_body_known(
-                self.bodies_map[&fqn.module].function_body(fqn.name),
-                Some(fn_sig.param_tys.clone()),
-                fn_sig.return_ty.clone(),
-            );
-        }
+        };
 
         self.current_module = old_module;
 
@@ -2985,34 +3005,129 @@ mod tests {
     }
 
     #[test]
-    fn function_with_ty_annotation_err() {
+    fn fn_with_diff_fn_annotation() {
         check(
             r#"
                 foo : (arg: f32, arg2: i8) -> string : (x: i32) {
-                    // do stuff
+                    foo(x);
                 };
             "#,
             expect![[r#"
-                main.foo : (i32) -> void
-                0 : void
+                main.foo : (f32, i8) -> string
+                0 : (f32, i8) -> string
+                1 : i32
+                2 : string
+                3 : void
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::Function {
+                                params: vec![
+                                    Idx::from_raw(RawIdx::from(1)),
+                                    Idx::from_raw(RawIdx::from(2)),
+                                ],
+                                return_ty: Idx::from_raw(RawIdx::from(3)),
+                            },
+                            found: ResolvedTy::Function {
+                                params: vec![Idx::from_raw(RawIdx::from(0))],
+                                return_ty: Idx::from_raw(RawIdx::from(4)),
+                            },
+                        },
+                        56..112,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::MismatchedArgCount {
+                            found: 1,
+                            expected: 2,
+                        },
+                        87..93,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::Float(32),
+                            found: ResolvedTy::IInt(32),
+                        },
+                        91..92,
+                        None,
+                    ),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn fn_with_global_annotation() {
+        check(
+            r#"
+                foo : i32 : (x: i32) {
+                    foo(x);
+                }
+            "#,
+            expect![[r#"
+                main.foo : i32
+                0 : i32
+                2 : <unknown>
+                3 : void
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::IInt(32),
+                            found: ResolvedTy::Function {
+                                params: vec![Idx::from_raw(RawIdx::from(0))],
+                                return_ty: Idx::from_raw(RawIdx::from(1)),
+                            },
+                        },
+                        29..85,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::CalledNonFunction {
+                            found: ResolvedTy::IInt(32),
+                        },
+                        60..66,
+                        None,
+                    ),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn missing_else() {
+        check(
+            r#"
+                foo :: (arg: bool) -> string {
+                    if arg {
+                        "hello"
+                    }
+                };
+            "#,
+            expect![[r#"
+                main.foo : (bool) -> string
+                0 : bool
+                1 : string
+                2 : string
+                3 : string
+                4 : string
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Function {
-                            params: vec![
-                                Idx::from_raw(RawIdx::from(1)),
-                                Idx::from_raw(RawIdx::from(2)),
-                            ],
-                            return_ty: Idx::from_raw(RawIdx::from(3)),
-                        },
-                        found: ResolvedTy::Function {
-                            params: vec![Idx::from_raw(RawIdx::from(0))],
-                            return_ty: Idx::from_raw(RawIdx::from(4)),
-                        },
+                    TyDiagnosticKind::MissingElse {
+                        expected: ResolvedTy::String,
                     },
-                    56..116,
-                    None,
+                    68..130,
+                    Some((
+                        TyDiagnosticHelpKind::IfReturnsTypeHere {
+                            found: ResolvedTy::String,
+                        },
+                        101..108,
+                    )),
                 )]
             },
         );

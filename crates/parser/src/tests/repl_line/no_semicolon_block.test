@@ -1,0 +1,27 @@
+{
+    {
+
+    }
+
+    {
+
+    }
+}
+===
+Root@0..30
+  ExprStmt@0..30
+    Block@0..30
+      LBrace@0..1 "{"
+      Whitespace@1..6 "\n    "
+      ExprStmt@6..14
+        Block@6..14
+          LBrace@6..7 "{"
+          Whitespace@7..13 "\n\n    "
+          RBrace@13..14 "}"
+      Whitespace@14..20 "\n\n    "
+      Block@20..28
+        LBrace@20..21 "{"
+        Whitespace@21..27 "\n\n    "
+        RBrace@27..28 "}"
+      Whitespace@28..29 "\n"
+      RBrace@29..30 "}"

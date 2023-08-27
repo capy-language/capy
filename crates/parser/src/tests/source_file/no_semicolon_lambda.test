@@ -1,0 +1,17 @@
+foo :: () {}
+===
+Root@0..12
+  Binding@0..12
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Colon@5..6 ":"
+    Whitespace@6..7 " "
+    Lambda@7..12
+      ParamList@7..9
+        LParen@7..8 "("
+        RParen@8..9 ")"
+      Whitespace@9..10 " "
+      Block@10..12
+        LBrace@10..11 "{"
+        RBrace@11..12 "}"

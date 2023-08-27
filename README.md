@@ -13,7 +13,7 @@ main :: () -> i32 {
 
     // exit with code 0
     0
-};
+}
 
 puts :: (some_text: string) extern; // libc defined
 ```

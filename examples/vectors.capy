@@ -4,6 +4,6 @@ main :: () {
     my_point : Vector3 = [] i32 { 1, 2, 3 };
 
     printf("my_point: (%i, %i, %i)\n", my_point[0], my_point[1], my_point[2]);
-};
+}
 
 printf :: (str: string, x: i32, y: i32, z: i32) extern;

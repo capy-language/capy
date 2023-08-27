@@ -1,0 +1,39 @@
+{
+    if true {
+
+    }
+
+    if false {
+
+    }
+}
+===
+Root@0..47
+  ExprStmt@0..47
+    Block@0..47
+      LBrace@0..1 "{"
+      Whitespace@1..6 "\n    "
+      ExprStmt@6..22
+        IfExpr@6..22
+          If@6..8 "if"
+          Whitespace@8..9 " "
+          BoolLiteral@9..13
+            Bool@9..13 "true"
+          Whitespace@13..14 " "
+          Block@14..22
+            LBrace@14..15 "{"
+            Whitespace@15..21 "\n\n    "
+            RBrace@21..22 "}"
+      Whitespace@22..28 "\n\n    "
+      IfExpr@28..45
+        If@28..30 "if"
+        Whitespace@30..31 " "
+        BoolLiteral@31..36
+          Bool@31..36 "false"
+        Whitespace@36..37 " "
+        Block@37..45
+          LBrace@37..38 "{"
+          Whitespace@38..44 "\n\n    "
+          RBrace@44..45 "}"
+      Whitespace@45..46 "\n"
+      RBrace@46..47 "}"

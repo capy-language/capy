@@ -5,7 +5,7 @@ use crate::token_set::TokenSet;
 use super::*;
 
 /// this function would only be called in a REPL or code block
-pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
+pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> {
     while p.at(TokenKind::Semicolon) {
         p.bump();
     }
@@ -18,9 +18,12 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
     // Idents can start expressions AND definitions
     // this code tells the difference by looking ahead
     if p.at(TokenKind::Ident) && p.at_ahead(1, TokenSet::new([TokenKind::Colon])) {
-        let res = Some(parse_def(p));
+        let (res, _) = parse_def(p, false);
         p.expect_with_no_skip(TokenKind::Semicolon);
-        return res;
+        while p.at(TokenKind::Semicolon) {
+            p.bump();
+        }
+        return Some(res);
     }
 
     // now we know that it's just an expression
@@ -33,7 +36,7 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
 
     let m = expr_cm.precede(p);
 
-    let res = if p.at(TokenKind::Equals) {
+    let (res, requires_semicolon) = if p.at(TokenKind::Equals) {
         // make the other expression a source, and then surround it with an assignment
         let m = m.complete(p, NodeKind::Source).precede(p);
 
@@ -41,24 +44,34 @@ pub(crate) fn parse_stmt(p: &mut Parser) -> Option<CompletedMarker> {
 
         expr::parse_expr(p, "value");
 
-        Some(m.complete(p, NodeKind::Assign))
+        (Some(m.complete(p, NodeKind::Assign)), true)
     } else {
-        Some(m.complete(p, NodeKind::ExprStmt))
+        let requires_semicolon = !matches!(
+            expr_cm.kind(),
+            NodeKind::IfExpr | NodeKind::WhileExpr | NodeKind::Block
+        );
+
+        (Some(m.complete(p, NodeKind::ExprStmt)), requires_semicolon)
     };
 
-    if !p.at_eof() {
+    if !(repl && p.at_eof()) && requires_semicolon {
         p.expect_with_no_skip(TokenKind::Semicolon);
+    }
+    while p.at(TokenKind::Semicolon) {
+        p.bump();
     }
 
     res
 }
 
-enum Def {
+#[derive(PartialEq)]
+enum DefMutability {
     Binding,
     Variable,
 }
 
-pub(crate) fn parse_def(p: &mut Parser) -> CompletedMarker {
+/// returns the completed marker for the definition, and a bool if it is a top level lambda definition
+pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> (CompletedMarker, bool) {
     let _guard = p.expected_syntax_name("statement");
 
     let m = p.start();
@@ -74,19 +87,26 @@ pub(crate) fn parse_def(p: &mut Parser) -> CompletedMarker {
 
     let def = if p.at(TokenKind::Colon) {
         p.expect(TokenKind::Colon);
-        Def::Binding
+        DefMutability::Binding
     } else {
         p.expect(TokenKind::Equals);
-        Def::Variable
+        DefMutability::Variable
     };
 
-    expr::parse_expr(p, "value");
+    let value = expr::parse_expr(p, "value");
 
-    m.complete(
-        p,
-        match def {
-            Def::Binding => NodeKind::Binding,
-            Def::Variable => NodeKind::VarDef,
-        },
+    (
+        m.complete(
+            p,
+            match def {
+                DefMutability::Binding => NodeKind::Binding,
+                DefMutability::Variable => NodeKind::VarDef,
+            },
+        ),
+        top_level
+            && value
+                .map(|value| value.kind() == NodeKind::Lambda)
+                .unwrap_or_default()
+            && p.previous_token_kind() != TokenKind::Extern,
     )
 }

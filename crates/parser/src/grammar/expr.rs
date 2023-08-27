@@ -436,7 +436,7 @@ fn parse_block(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     p.bump();
 
     while !p.at(TokenKind::RBrace) && !p.at_eof() {
-        stmt::parse_stmt(p);
+        stmt::parse_stmt(p, false);
     }
 
     p.expect_with_recovery_set(TokenKind::RBrace, recovery_set);

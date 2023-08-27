@@ -1,0 +1,37 @@
+{
+    while true {
+
+    }
+
+    loop {
+
+    }
+}
+===
+Root@0..46
+  ExprStmt@0..46
+    Block@0..46
+      LBrace@0..1 "{"
+      Whitespace@1..6 "\n    "
+      ExprStmt@6..25
+        WhileExpr@6..25
+          While@6..11 "while"
+          Whitespace@11..12 " "
+          Condition@12..16
+            BoolLiteral@12..16
+              Bool@12..16 "true"
+          Whitespace@16..17 " "
+          Block@17..25
+            LBrace@17..18 "{"
+            Whitespace@18..24 "\n\n    "
+            RBrace@24..25 "}"
+      Whitespace@25..31 "\n\n    "
+      WhileExpr@31..44
+        Loop@31..35 "loop"
+        Whitespace@35..36 " "
+        Block@36..44
+          LBrace@36..37 "{"
+          Whitespace@37..43 "\n\n    "
+          RBrace@43..44 "}"
+      Whitespace@44..45 "\n"
+      RBrace@45..46 "}"

@@ -230,6 +230,26 @@ impl<'tokens> Parser<'tokens> {
         self.tokens.range(previous_token_idx)
     }
 
+    pub(crate) fn previous_token_kind(&mut self) -> TokenKind {
+        let mut previous_token_idx = if let Some(idx) = self.token_idx.checked_sub(1) {
+            idx
+        } else {
+            return self.tokens.kind(self.token_idx);
+        };
+
+        while let TokenKind::Whitespace | TokenKind::CommentLeader | TokenKind::CommentContents =
+            self.tokens.kind(previous_token_idx)
+        {
+            previous_token_idx = if let Some(idx) = previous_token_idx.checked_sub(1) {
+                idx
+            } else {
+                return self.tokens.kind(self.token_idx);
+            }
+        }
+
+        self.tokens.kind(previous_token_idx)
+    }
+
     fn skip_trivia(&mut self) {
         while self.at_raw(TokenKind::Whitespace)
             || self.at_raw(TokenKind::CommentLeader)

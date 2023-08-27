@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    resolved_ty::TypedBinaryOp, InferenceCtx, LocalUsage, ResolvedTy, TyDiagnostic,
+    resolved_ty::TypedBinaryOp, InferenceCtx, LocalUsage, ResolvedTy, Signature, TyDiagnostic,
     TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind,
 };
 
@@ -877,6 +877,15 @@ impl InferenceCtx<'_> {
                         body_ty
                     }
                 } else {
+                    let help_range = match &current_bodies!(self)[*body] {
+                        Expr::Block {
+                            tail_expr: Some(tail_expr),
+                            ..
+                        } => current_bodies!(self).range_for_expr(*tail_expr),
+                        // this *should* be unreachable
+                        _ => current_bodies!(self).range_for_expr(*body),
+                    };
+
                     if !matches!(body_ty, ResolvedTy::Unknown | ResolvedTy::Void) {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::MissingElse {
@@ -884,7 +893,12 @@ impl InferenceCtx<'_> {
                             },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
-                            help: None,
+                            help: Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::IfReturnsTypeHere {
+                                    found: body_ty.clone(),
+                                },
+                                range: help_range,
+                            }),
                         });
                     }
 
@@ -976,11 +990,15 @@ impl InferenceCtx<'_> {
                         }
                     }
                     hir::Definition::Function(function) => {
-                        let fn_signature = self.singleton_fn_signature(function, fqn);
+                        let signature = self.get_function_signature(function, fqn);
 
-                        ResolvedTy::Function {
-                            params: fn_signature.param_tys,
-                            return_ty: self.resolved_arena.alloc(fn_signature.return_ty),
+                        match signature {
+                            Signature::Function(fn_sig) => ResolvedTy::Function {
+                                params: fn_sig.param_tys,
+                                // todo: I don't like this alloc
+                                return_ty: self.resolved_arena.alloc(fn_sig.return_ty),
+                            },
+                            Signature::Global(global) => global.ty,
                         }
                     }
                 }

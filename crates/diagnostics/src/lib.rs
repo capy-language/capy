@@ -92,7 +92,7 @@ impl Diagnostic {
                 "{}help{}: {}",
                 ANSI_CYAN,
                 ANSI_WHITE,
-                help.message()
+                help.message(resolved_arena, interner)
             ));
 
             let range = help.range();
@@ -170,9 +170,9 @@ impl HelpDiagnostic<'_> {
         }
     }
 
-    pub fn message(&self) -> String {
+    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
         match &self {
-            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d),
+            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d, resolved_arena, interner),
         }
     }
 }
@@ -526,7 +526,11 @@ fn ty_diagnostic_message(
     }
 }
 
-fn ty_diagnostic_help_message(d: &TyDiagnosticHelp) -> String {
+fn ty_diagnostic_help_message(
+    d: &TyDiagnosticHelp,
+    resolved_arena: &Arena<ResolvedTy>,
+    interner: &Interner,
+) -> String {
     match &d.kind {
         hir_ty::TyDiagnosticHelpKind::FoundToBeImmutable => {
             "this is found to be immutable".to_string()
@@ -541,6 +545,12 @@ fn ty_diagnostic_help_message(d: &TyDiagnosticHelp) -> String {
             "parameters are immutable. consider passing a `^mut`".to_string()
         }
         hir_ty::TyDiagnosticHelpKind::ImmutableGlobal => "globals are immutable".to_string(),
+        hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {
+            format!(
+                "here, the `if` returns a {}",
+                found.display(resolved_arena, interner)
+            )
+        }
     }
 }
 

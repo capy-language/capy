@@ -4,6 +4,6 @@ main :: () {
     z := ^^x;
 
     printf("%x -> %x -> %i", z, z^, z^^);
-};
+}
 
 printf :: (s: string, n1: ^^i32, n2: ^i32, n3: i32) extern;
