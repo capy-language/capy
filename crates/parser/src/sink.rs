@@ -1,7 +1,7 @@
 use crate::{error::SyntaxError, Parse};
 
 use super::event::Event;
-use syntax::{SyntaxBuilder, TokenKind, NodeKind};
+use syntax::{NodeKind, SyntaxBuilder, TokenKind};
 use token::Tokens;
 
 pub(crate) struct Sink<'tokens> {
@@ -13,7 +13,12 @@ pub(crate) struct Sink<'tokens> {
 
 impl<'tokens> Sink<'tokens> {
     pub(crate) fn new(events: Vec<Event>, tokens: &'tokens Tokens, input: &str) -> Self {
-        Self { events, tokens, token_idx: 0, builder: SyntaxBuilder::new(input) }
+        Self {
+            events,
+            tokens,
+            token_idx: 0,
+            builder: SyntaxBuilder::new(input),
+        }
     }
 
     pub(crate) fn finish(mut self, errors: Vec<SyntaxError>) -> Parse {
@@ -21,7 +26,7 @@ impl<'tokens> Sink<'tokens> {
         // and the last event always finishes that node
         assert!(matches!(self.events.get(0), Some(Event::StartNode { .. })));
         assert!(matches!(self.events.last(), Some(Event::FinishNode)));
-        
+
         // We want to avoid nodes having trailing trivia:
         //
         // BinaryExpr
@@ -60,7 +65,10 @@ impl<'tokens> Sink<'tokens> {
         self.skip_trivia();
         self.process_event(unsafe { *last });
 
-        Parse { syntax_tree: self.builder.finish(), errors }
+        Parse {
+            syntax_tree: self.builder.finish(),
+            errors,
+        }
     }
 
     #[inline(always)]

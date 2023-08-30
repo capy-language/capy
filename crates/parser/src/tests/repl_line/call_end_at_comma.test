@@ -4,14 +4,12 @@ Root@0..8
   ExprStmt@0..8
     Call@0..8
       VarRef@0..3
-        Path@0..3
-          Ident@0..3 "foo"
+        Ident@0..3 "foo"
       ArgList@3..8
         LParen@3..4 "("
         Arg@4..7
           VarRef@4..7
-            Path@4..7
-              Ident@4..7 "bar"
+            Ident@4..7 "bar"
         Comma@7..8 ","
 error at 8: missing argument
 error at 8: missing RParen

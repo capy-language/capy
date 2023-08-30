@@ -165,6 +165,9 @@ impl ToCompType for ResolvedTy {
             hir_ty::ResolvedTy::Function { .. } => {
                 CompType::Pointer(module.target_config().pointer_type())
             }
+            hir_ty::ResolvedTy::Struct { .. } => {
+                CompType::Pointer(module.target_config().pointer_type())
+            }
             hir_ty::ResolvedTy::Type => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
         }
@@ -224,7 +227,7 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
             })
             .collect::<Vec<_>>();
 
-        if return_ty.is_array(resolved_arena) {
+        if return_ty.is_aggregate(resolved_arena) {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
@@ -248,6 +251,18 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
 
 pub(crate) trait ToCompSize {
     fn get_size_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32;
+
+    /// Most types must appear in addresses that are a mutliple of a certain "alignment".
+    /// This is a restriction of the underlying architechture.
+    ///
+    /// For example, the alignment of `i16` is `2`
+    ///
+    /// If the alignment is `2` and the address is not an even number,
+    /// padding will be added to accomidate the `i16`.
+    ///
+    /// An alignment of `1` is accepted in all
+    /// memory locations
+    fn get_align_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32;
 }
 
 impl ToCompSize for ResolvedTy {
@@ -261,7 +276,7 @@ impl ToCompSize for ResolvedTy {
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width) => bit_width / 8,
             ResolvedTy::Float(0) => 32 / 8,
             ResolvedTy::Float(bit_width) => bit_width / 8,
-            ResolvedTy::Bool => 8, // bools are u8's
+            ResolvedTy::Bool => 1, // bools are u8's
             ResolvedTy::String => module.target_config().pointer_bytes() as u32,
             ResolvedTy::Array { size, sub_ty } => {
                 resolved_arena[*sub_ty].get_size_in_bytes(module, resolved_arena) * *size as u32
@@ -271,8 +286,91 @@ impl ToCompSize for ResolvedTy {
                 resolved_arena[*ty].get_size_in_bytes(module, resolved_arena)
             }
             ResolvedTy::Function { .. } => module.target_config().pointer_bytes() as u32,
+            ResolvedTy::Struct { fields } => {
+                let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
+                StructMemory::new(fields, module, resolved_arena).size
+            }
             ResolvedTy::Type => 0,
             ResolvedTy::Void => 0,
         }
+    }
+
+    fn get_align_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32 {
+        match self {
+            ResolvedTy::NotYetResolved | ResolvedTy::Unknown => unreachable!(),
+            ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_) => {
+                self.get_size_in_bytes(module, resolved_arena).min(8)
+            }
+            ResolvedTy::Bool => 1, // bools are u8's
+            ResolvedTy::String
+            | ResolvedTy::Array { .. }
+            | ResolvedTy::Pointer { .. }
+            | ResolvedTy::Distinct { .. }
+            | ResolvedTy::Function { .. } => self.get_size_in_bytes(module, resolved_arena),
+            ResolvedTy::Struct { fields } => fields
+                .iter()
+                .map(|(_, ty)| resolved_arena[*ty].get_align_in_bytes(module, resolved_arena))
+                .max()
+                .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
+            ResolvedTy::Type => 1,
+            ResolvedTy::Void => 1,
+        }
+    }
+}
+
+pub(crate) struct StructMemory {
+    size: u32,
+    offsets: Vec<u32>,
+}
+
+impl StructMemory {
+    /// checks if the offset is a multiple of the alignment
+    ///
+    /// if not, returns the amount of bytes needed
+    /// to make it a valid offset
+    fn padding_needed_for(offset: u32, align: u32) -> u32 {
+        let misalign = offset % align;
+        if misalign > 0 {
+            // the amount needed to round up to the next proper offset
+            align - misalign
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn new(
+        fields: Vec<Idx<ResolvedTy>>,
+        module: &dyn Module,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> Self {
+        let mut offsets = Vec::with_capacity(fields.len());
+        let mut max_align = 1;
+        let mut current_offset = 0;
+
+        for field in fields {
+            let field_align = resolved_arena[field].get_align_in_bytes(module, resolved_arena);
+            if field_align > max_align {
+                max_align = field_align;
+            }
+
+            current_offset += Self::padding_needed_for(current_offset, field_align);
+
+            offsets.push(current_offset);
+
+            current_offset += resolved_arena[field].get_size_in_bytes(module, resolved_arena);
+        }
+
+        Self {
+            size: current_offset + Self::padding_needed_for(current_offset, max_align),
+            offsets,
+        }
+    }
+
+    pub(crate) fn size(&self) -> u32 {
+        self.size
+    }
+
+    pub(crate) fn offsets(&self) -> &Vec<u32> {
+        &self.offsets
     }
 }

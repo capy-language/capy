@@ -12,6 +12,5 @@ Root@0..13
         Whitespace@6..7 " "
         Ty@7..12
           VarRef@7..12
-            Path@7..12
-              Ident@7..12 "usize"
+            Ident@7..12 "usize"
   Semicolon@12..13 ";"

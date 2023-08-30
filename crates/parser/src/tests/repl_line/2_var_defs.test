@@ -9,8 +9,7 @@ Root@0..23
     Equals@5..6 "="
     Whitespace@6..7 " "
     VarRef@7..10
-      Path@7..10
-        Ident@7..10 "bar"
+      Ident@7..10 "bar"
   Semicolon@10..11 ";"
   Whitespace@11..12 "\n"
   VarDef@12..22
@@ -20,6 +19,5 @@ Root@0..23
     Equals@17..18 "="
     Whitespace@18..19 " "
     VarRef@19..22
-      Path@19..22
-        Ident@19..22 "qux"
+      Ident@19..22 "qux"
   Semicolon@22..23 ";"

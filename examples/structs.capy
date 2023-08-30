@@ -1,0 +1,53 @@
+Person :: struct {
+    name: string,
+    age: i32
+};
+
+main :: () {
+    some_guy := Person {
+        name: "Terry",
+        age: 48,
+    };
+
+    people := [] Person {
+        Person {
+            name: "Bob",
+            age: 32,
+        },
+        some_guy, // copied into the array
+        Person {
+            name: "Walter",
+            age: 52,
+        },
+    };
+
+    some_guy.age = 1000;
+
+    people[0].age = 3;
+
+    puts("people:");
+    idx := 0;
+    while idx < 3 {
+        print_person_by_ref(^people[idx]);
+        idx = idx + 1;
+    }
+
+    puts("\nsome_guy:");
+    print_person_by_value(some_guy);
+}
+
+// While a struct is internally a pointer, a pointer to a struct doesn't actually get
+// compiled as a pointer to a pointer. The only machine code difference between the
+// following two functions is that print_person_by_value memcopies the struct into
+// it's stack before using it
+
+print_person_by_value :: (p: Person) {
+    printf("%s is %i years old\n", p.name, p.age);
+}
+
+print_person_by_ref :: (p: ^Person) {
+    printf("%s is %i years old\n", p^.name, p^.age);
+}
+
+puts :: (s: string) extern;
+printf :: (s: string, name: string, age: i32) extern;

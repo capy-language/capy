@@ -29,8 +29,7 @@ puts :: (s: string) extern;
 printf :: (s: string, buf: string) extern;
 
 // fopen actually returns a pointer to a FILE struct, but
-// since Capy doesn't have structs yet, we can just treat the
-// return value as a usize, and everything still works
+// we just treat this as a usize and everything just works
 fopen :: (filename: string, mode: string) -> usize extern;
 fclose :: (fp: usize) -> i32 extern;
 
@@ -38,6 +37,7 @@ fputc :: (c: i8, fp: usize) -> i32 extern;
 fputs :: (s: string, fp: usize) -> i32 extern;
 
 fgetc :: (fp: usize) -> u8 extern;
-// the real function takes in char*, but since there is no way to
-// allocate stack memory other than with arrays, that's what we use
+// the real function takes in char*, but since there is
+// no way to allocate stack memory other than with arrays, 
+// that's what we use for this example
 fgets :: (buf: [20]u8, n: i32, fp: usize) -> string extern;

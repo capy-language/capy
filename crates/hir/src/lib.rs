@@ -45,8 +45,7 @@ pub enum TyParseError {
     ArraySizeOutOfBounds,
     ArrayHasBody,
     NotATy,
-    NonGlobalTy,
-    /// only returned if primitives are specifically asked for
+    /// only returned if only primitives are asked for
     NonPrimitive,
 }
 
@@ -93,6 +92,10 @@ pub enum TyWithRange {
         return_ty: Idx<TyWithRange>,
         range: TextRange,
     },
+    Struct {
+        fields: Vec<(Option<Name>, Idx<TyWithRange>)>,
+        range: TextRange,
+    },
     Type {
         range: TextRange,
     },
@@ -117,6 +120,7 @@ impl TyWithRange {
             | TyWithRange::Pointer { range, .. }
             | TyWithRange::Distinct { range, .. }
             | TyWithRange::Function { range, .. }
+            | TyWithRange::Struct { range, .. }
             | TyWithRange::Type { range } => Some(*range),
             TyWithRange::Void { range } => *range,
             TyWithRange::Named { path } => match path {
@@ -151,6 +155,7 @@ impl TyWithRange {
             TyWithRange::Type { .. } => Some(TYPE_ID_BIT),
             TyWithRange::Distinct { .. } => None,
             TyWithRange::Function { .. } => None,
+            TyWithRange::Struct { .. } => None,
             TyWithRange::Named { .. } => None,
         }
     }
@@ -228,57 +233,60 @@ impl TyWithRange {
                 })
             }
             ast::Expr::VarRef(var_ref) => {
-                let path = match var_ref.name(tree) {
+                let ident = match var_ref.name(tree) {
                     Some(path) => path,
                     None => return Ok(TyWithRange::Unknown),
                 };
 
-                let ident = match path.top_level_name(tree) {
-                    Some(ident) => ident,
-                    None => return Ok(TyWithRange::Unknown),
-                };
+                let key = interner.intern(ident.text(tree));
+                let range = ident.range(tree);
 
-                if let Some(var_name_token) = path.nested_name(tree) {
-                    if primitives_only {
-                        return Err((TyParseError::NonPrimitive, var_ref.range(tree)));
-                    }
-
-                    let module_name_token = ident;
-
-                    let module_name = interner.intern(module_name_token.text(tree));
-                    let var_name = interner.intern(var_name_token.text(tree));
-
-                    let fqn = Fqn {
-                        module: Name(module_name),
-                        name: Name(var_name),
-                    };
-
-                    Ok(TyWithRange::Named {
-                        path: PathWithRange::OtherModule {
-                            fqn,
-                            module_range: module_name_token.range(tree),
-                            name_range: var_name_token.range(tree),
-                        },
-                    })
-                } else {
-                    let key = interner.intern(ident.text(tree));
-                    let range = ident.range(tree);
-
-                    match Self::from_key(key, range) {
-                        Some(primitive) => Ok(primitive),
-                        None => {
-                            if primitives_only {
-                                Err((TyParseError::NonPrimitive, var_ref.range(tree)))
-                            } else {
-                                Ok(TyWithRange::Named {
-                                    path: PathWithRange::ThisModule {
-                                        name: Name(key),
-                                        range,
-                                    },
-                                })
-                            }
+                match Self::from_key(key, range) {
+                    Some(primitive) => Ok(primitive),
+                    None => {
+                        if primitives_only {
+                            Err((TyParseError::NonPrimitive, var_ref.range(tree)))
+                        } else {
+                            Ok(TyWithRange::Named {
+                                path: PathWithRange::ThisModule {
+                                    name: Name(key),
+                                    range,
+                                },
+                            })
                         }
                     }
+                }
+            }
+            ast::Expr::Path(path) => {
+                if primitives_only {
+                    return Err((TyParseError::NonPrimitive, path.range(tree)));
+                }
+
+                match path.previous_part(tree) {
+                    Some(ast::Expr::VarRef(var_ref)) => {
+                        let module = var_ref.name(tree).unwrap();
+                        let module_name = interner.intern(module.text(tree));
+
+                        let global = match path.field_name(tree) {
+                            Some(name) => name,
+                            None => return Ok(TyWithRange::Unknown),
+                        };
+                        let global_name = interner.intern(global.text(tree));
+
+                        let fqn = Fqn {
+                            module: Name(module_name),
+                            name: Name(global_name),
+                        };
+
+                        Ok(TyWithRange::Named {
+                            path: PathWithRange::OtherModule {
+                                fqn,
+                                module_range: module.range(tree),
+                                name_range: global.range(tree),
+                            },
+                        })
+                    }
+                    _ => Err((TyParseError::NotATy, ty.range(tree))),
                 }
             }
             ast::Expr::Distinct(distinct) => {
@@ -332,6 +340,31 @@ impl TyWithRange {
                     params,
                     return_ty: twr_arena.alloc(return_ty),
                     range: lambda.range(tree),
+                })
+            }
+            ast::Expr::StructDecl(struct_decl) => {
+                let mut fields = Vec::new();
+
+                for field in struct_decl.fields(tree) {
+                    let name = field
+                        .name(tree)
+                        .map(|ident| Name(interner.intern(ident.text(tree))));
+
+                    let ty = Self::parse(
+                        field.ty(tree).and_then(|ty| ty.expr(tree)),
+                        uid_gen,
+                        twr_arena,
+                        interner,
+                        tree,
+                        primitives_only,
+                    )?;
+
+                    fields.push((name, twr_arena.alloc(ty)));
+                }
+
+                Ok(TyWithRange::Struct {
+                    fields,
+                    range: struct_decl.range(tree),
                 })
             }
             _ => Err((TyParseError::NotATy, ty.range(tree))),
@@ -475,6 +508,25 @@ impl TyWithRange {
                 res.push_str(") -> ");
 
                 res.push_str(&twr_arena[*return_ty].display(twr_arena, interner));
+
+                res
+            }
+            Self::Struct { fields, .. } => {
+                let mut res = "struct {".to_string();
+
+                for (idx, (name, ty)) in fields.iter().enumerate() {
+                    if let Some(name) = name {
+                        res.push_str(interner.lookup(name.0));
+                        res.push_str(": ");
+                    }
+
+                    res.push_str(&twr_arena[*ty].display(twr_arena, interner));
+
+                    if idx != fields.len() - 1 {
+                        res.push_str(", ");
+                    }
+                }
+                res.push('}');
 
                 res
             }

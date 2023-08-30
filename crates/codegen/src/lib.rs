@@ -605,5 +605,25 @@ mod tests {
         )
     }
 
+    #[test]
+    fn structs() {
+        check(
+            "../../examples/structs.capy",
+            &[],
+            "main",
+            expect![[r#"
+            people:
+            Bob is 3 years old
+            Terry is 48 years old
+            Walter is 52 years old
+
+            some_guy:
+            Terry is 1000 years old
+
+            "#]],
+            0,
+        )
+    }
+
     // "ptrs.capy" and "ptrs_to_ptrs.capy" tests are not reproducible
 }

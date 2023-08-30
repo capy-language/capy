@@ -53,6 +53,23 @@ bar := ^mut foo;
 bar^ = 10;
 ```
 
+Structs,
+
+```capy
+Person :: struct {
+    name: string,
+    age: i32
+};
+
+gandalf := Person {
+    name: "Gandalf",
+    age: 2000,
+};
+
+// birthday!
+gandalf.age = gandalf.age + 1;
+```
+
 First Class Functions,
 
 ```capy
@@ -78,20 +95,23 @@ Look at the `examples` folder to see more.
 
 ## Limitations
 
-If you want to use libc functions, define them with `extern` as above.
-Varargs do not work, but this can be worked around,
-e.g. by explicitly defining `printf` to take 3 arguments.
-
 You have to manually include all the files your code references in the `capy` command, although this might change in the future.
 Frankly, a lot of this might change in the future.
 
+If you want to use libc functions, define them with `extern` as above.
+Variadic functions do not work. You *could* try explicitly defining `printf`
+to take 3 arguments, but this won't work for floats, which are passed into
+variadic functions differently depending on the calling convention.
+Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030),
+so that might be added in the future.
+
 Currently, `gcc` must be installed for the compiler to work.
+It is only used for linking to libc and producing a proper executable.
 
 ## Shout Outs
 
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), this entire codebase is largely ripped from [gingerbread](https://github.com/gingerbread-lang/gingerbread)/[eldiro](https://github.com/lunacookies/eldiro), although I added a lot more.
 
-Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and you guys made all my dreams come true.
-Although you need to up your documentation game, because I mean c'mon man; I pretty much only had the [jit demo](https://github.com/bytecodealliance/cranelift-jit-demo/) to work with.
+Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and you guys made all my dreams come true. Even if the documentation wasn't picture perfect.
 
-If anyone wants to use this repo to see how I've implemented higher-level features such as strings, arrays, etc. in cranelift, then it's all in `crates/codegen`.
+If anyone wants to use this repo to see how I've implemented higher-level features such as arrays, structs, first class functions, etc. in cranelift, then it's all in `crates/codegen`.

@@ -8,8 +8,7 @@ Root@0..26
         RBrack@1..2 "]"
       Ty@2..8
         VarRef@2..8
-          Path@2..8
-            Ident@2..8 "string"
+          Ident@2..8 "string"
       ArrayBody@8..26
         LBrace@8..9 "{"
         ArrayItem@9..16

@@ -48,13 +48,17 @@ pub enum NodeKind {
     DerefExpr,
     BinaryExpr,
     UnaryExpr,
-    Binding, // e.g. `x :: 5`
-    VarDef,  // e.g. `x := 5`
+    Binding, // `x :: 5`
+    VarDef,  // `x := 5`
     Assign,
     ExprStmt,
     Lambda,
     ParamList,
     Param,
+    StructDeclaration, // `struct { foo: i32 }`
+    FieldDeclaration,  // `foo: i32`
+    StructLiteral,     // `My_Struct { foo: 123 }`
+    FieldLiteral,      // `foo: 123`
     Ty,
     Path,
     Comment,

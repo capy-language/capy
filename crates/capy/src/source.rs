@@ -159,7 +159,7 @@ impl SourceFile {
             .any(|fn_name| fn_name == name)
     }
 
-    pub(crate) fn print_diagnostics(&self) {
+    pub(crate) fn print_diagnostics(&self, with_color: bool) {
         let line_index = LineIndex::new(&self.contents);
         for diagnostic in &self.diagnostics {
             println!(
@@ -170,7 +170,8 @@ impl SourceFile {
                         &self.contents,
                         &self.resolved_arena.borrow(),
                         &self.interner.borrow(),
-                        &line_index
+                        &line_index,
+                        with_color
                     )
                     .join("\n")
             );

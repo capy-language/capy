@@ -121,7 +121,7 @@ pub enum TyDiagnosticKind {
         found: ResolvedTy,
         expected: ResolvedTy,
     },
-    IndexMismatch {
+    IndexNonArray {
         found: ResolvedTy,
     },
     IndexOutOfBounds {
@@ -136,28 +136,33 @@ pub enum TyDiagnosticKind {
     CalledNonFunction {
         found: ResolvedTy,
     },
-    DerefMismatch {
+    DerefNonPointer {
         found: ResolvedTy,
     },
     MissingElse {
         expected: ResolvedTy,
     },
-    MutateBinding,
-    MutateImmutableRef,
     CannotMutate,
     MutableRefToImmutableData,
-    UndefinedTy {
-        name: Key,
-    },
     NotYetResolved {
         path: hir::Path,
     },
     ParamNotATy,
-    LocalTyIsVariable,
+    LocalTyIsMutable,
     IntTooBigForType {
         found: u64,
         max: u64,
         ty: ResolvedTy,
+    },
+    UnknownModule {
+        name: Key,
+    },
+    UnknownFqn {
+        fqn: hir::Fqn,
+    },
+    NonExistentField {
+        field: Key,
+        found: ResolvedTy,
     },
 }
 
@@ -482,17 +487,20 @@ impl<'a> InferenceCtx<'a> {
     }
 
     fn path_with_range_to_ty(&mut self, path: hir::PathWithRange) -> ResolvedTy {
-        let (fqn, range) = match path {
+        let (fqn, module_range, name_range) = match path {
             hir::PathWithRange::ThisModule { name, range } => (
                 hir::Fqn {
                     module: self.current_module.expect("there is no current module"),
                     name,
                 },
+                None,
                 range,
             ),
             hir::PathWithRange::OtherModule {
-                fqn, name_range, ..
-            } => (fqn, name_range),
+                fqn,
+                module_range,
+                name_range,
+            } => (fqn, Some(module_range), name_range),
         };
 
         match self.world_index.get_definition(fqn) {
@@ -505,26 +513,27 @@ impl<'a> InferenceCtx<'a> {
                     }
 
                     if global_ty != ResolvedTy::Type {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::Mismatch {
-                                expected: ResolvedTy::Type,
-                                found: global_ty,
-                            },
-                            module: self.current_module.unwrap(),
-                            range,
-                            help: None,
-                        });
+                        if !global_ty.is_unknown(self.resolved_arena) {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::Mismatch {
+                                    expected: ResolvedTy::Type,
+                                    found: global_ty,
+                                },
+                                module: self.current_module.unwrap(),
+                                range: name_range,
+                                help: None,
+                            });
+                        }
                         return ResolvedTy::Unknown;
                     }
 
                     let global_body = self.bodies_map[&fqn.module].global(fqn.name);
 
+                    let old_module = self.current_module.replace(fqn.module);
+
                     let actual_ty = self.parse_expr_to_ty(global_body);
 
-                    // parse the global body into a type
-                    //match global_body {}
-
-                    // give distinct types a name if they don't already have one
+                    self.current_module = old_module;
 
                     match actual_ty {
                         ResolvedTy::Distinct {
@@ -539,13 +548,44 @@ impl<'a> InferenceCtx<'a> {
                         _ => actual_ty,
                     }
                 }
-                _ => todo!(),
+                hir::Definition::Function(func) => {
+                    let global_ty = self.get_function_signature(func, fqn);
+
+                    match global_ty {
+                        Signature::Function(func) => {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::Mismatch {
+                                    expected: ResolvedTy::Type,
+                                    found: ResolvedTy::Function {
+                                        params: func.param_tys,
+                                        return_ty: self.resolved_arena.alloc(func.return_ty),
+                                    },
+                                },
+                                module: self.current_module.unwrap(),
+                                range: name_range,
+                                help: None,
+                            });
+
+                            ResolvedTy::Unknown
+                        }
+                        Signature::Global(_) => ResolvedTy::Unknown,
+                    }
+                }
             },
-            Err(_) => {
+            Err(hir::GetDefinitionError::UnknownModule) => {
                 self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UndefinedTy { name: fqn.name.0 },
+                    kind: TyDiagnosticKind::UnknownModule { name: fqn.module.0 },
                     module: self.current_module.unwrap(),
-                    range,
+                    range: module_range.unwrap(),
+                    help: None,
+                });
+                ResolvedTy::Unknown
+            }
+            Err(hir::GetDefinitionError::UnknownDefinition) => {
+                self.diagnostics.push(TyDiagnostic {
+                    kind: TyDiagnosticKind::UnknownFqn { fqn },
+                    module: self.current_module.unwrap(),
+                    range: name_range,
                     help: None,
                 });
                 ResolvedTy::Unknown
@@ -573,17 +613,20 @@ impl<'a> InferenceCtx<'a> {
                 }
 
                 if local_ty != ResolvedTy::Type {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::Type,
-                            found: self.modules[&self.current_module.unwrap()].local_tys
-                                [*local_def]
-                                .clone(),
-                        },
-                        module: self.current_module.unwrap(),
-                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
-                        help: None,
-                    });
+                    if !local_ty.is_unknown(self.resolved_arena) {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::Mismatch {
+                                expected: ResolvedTy::Type,
+                                found: self.modules[&self.current_module.unwrap()].local_tys
+                                    [*local_def]
+                                    .clone(),
+                            },
+                            module: self.current_module.unwrap(),
+                            range: self.bodies_map[&self.current_module.unwrap()]
+                                .range_for_expr(expr),
+                            help: None,
+                        });
+                    }
 
                     return ResolvedTy::Unknown;
                 }
@@ -592,7 +635,7 @@ impl<'a> InferenceCtx<'a> {
 
                 if local_def.mutable {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::LocalTyIsVariable,
+                        kind: TyDiagnosticKind::LocalTyIsMutable,
                         module: self.current_module.unwrap(),
                         range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
                         help: Some(TyDiagnosticHelp {
@@ -617,12 +660,57 @@ impl<'a> InferenceCtx<'a> {
 
                 ResolvedTy::Unknown
             }
+            hir::Expr::Path {
+                previous,
+                field,
+                field_range,
+            } => match &self.bodies_map[&self.current_module.unwrap()][*previous] {
+                hir::Expr::Module(module) => {
+                    let path = hir::PathWithRange::OtherModule {
+                        fqn: hir::Fqn {
+                            module: *module,
+                            name: *field,
+                        },
+                        module_range: self.bodies_map[&self.current_module.unwrap()]
+                            .range_for_expr(*previous),
+                        name_range: *field_range,
+                    };
+
+                    self.path_with_range_to_ty(path)
+                }
+                _ => {
+                    let expr_ty = self.modules[&self.current_module.unwrap()]
+                        .expr_tys
+                        .get(expr)
+                        .cloned();
+                    let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
+                    if !expr_ty.is_unknown(self.resolved_arena) {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::Mismatch {
+                                expected: ResolvedTy::Type,
+                                found: expr_ty,
+                            },
+                            module: self.current_module.unwrap(),
+                            range: self.bodies_map[&self.current_module.unwrap()]
+                                .range_for_expr(expr),
+                            help: None,
+                        });
+                    }
+
+                    ResolvedTy::Unknown
+                }
+            },
             hir::Expr::PrimitiveTy { ty } => self.resolve_ty(*ty),
             _ => {
+                let expr_ty = self.modules[&self.current_module.unwrap()]
+                    .expr_tys
+                    .get(expr)
+                    .cloned();
+                let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
                         expected: ResolvedTy::Type,
-                        found: self.modules[&self.current_module.unwrap()].expr_tys[expr].clone(),
+                        found: expr_ty,
                     },
                     module: self.current_module.unwrap(),
                     range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
@@ -684,6 +772,16 @@ impl<'a> InferenceCtx<'a> {
 
                     self.resolved_arena.alloc(resolved)
                 },
+            },
+            hir::TyWithRange::Struct { fields, .. } => ResolvedTy::Struct {
+                fields: fields
+                    .iter()
+                    .cloned()
+                    .map(|(name, ty)| {
+                        let field_ty = self.resolve_ty(ty);
+                        (name, self.resolved_arena.alloc(field_ty))
+                    })
+                    .collect(),
             },
         }
     }
@@ -851,6 +949,26 @@ impl ResolvedTy {
                 }
                 res.push_str(") -> ");
                 res.push_str(&resolved_arena[*return_ty].display(resolved_arena, interner));
+
+                res
+            }
+            Self::Struct { fields } => {
+                let mut res = "struct {".to_string();
+
+                for (idx, (name, ty)) in fields.iter().enumerate() {
+                    if let Some(name) = name {
+                        res.push_str(interner.lookup(name.0));
+                        res.push_str(": ");
+                    }
+
+                    res.push_str(&resolved_arena[*ty].display(resolved_arena, interner));
+
+                    if idx != fields.len() - 1 {
+                        res.push_str(", ");
+                    }
+                }
+
+                res.push('}');
 
                 res
             }
@@ -1034,21 +1152,52 @@ mod tests {
             |i| {
                 [
                     (
-                        TyDiagnosticKind::UndefinedTy {
-                            name: i.intern("foo"),
+                        TyDiagnosticKind::UnknownFqn {
+                            fqn: hir::Fqn {
+                                module: hir::Name(i.intern("main")),
+                                name: hir::Name(i.intern("foo")),
+                            },
                         },
                         30..33,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::UndefinedTy {
-                            name: i.intern("baz"),
+                        TyDiagnosticKind::UnknownModule {
+                            name: i.intern("bar"),
                         },
-                        71..74,
+                        67..70,
                         None,
                     ),
                 ]
             },
+        );
+    }
+
+    #[test]
+    fn ty_in_other_module() {
+        check(
+            r#"
+                #- main
+                fun :: () -> numbers.imaginary {
+                    foo : numbers.imaginary = 0;
+
+                    foo
+                }
+                #- numbers
+                imaginary :: distinct i32;
+            "#,
+            expect![[r#"
+                main.fun : () -> numbers.imaginary
+                numbers.imaginary : type
+                main:
+                  2 : numbers.imaginary
+                  3 : numbers.imaginary
+                  4 : numbers.imaginary
+                  l0 : numbers.imaginary
+                numbers:
+                  0 : type
+            "#]],
+            |_| [],
         );
     }
 
@@ -2308,10 +2457,10 @@ mod tests {
                   0 : string
                   1 : string
                 main:
-                  0 : (i32) -> string
-                  1 : i32
-                  2 : string
+                  1 : (i32) -> string
+                  2 : i32
                   3 : string
+                  4 : string
             "#]],
             |_| [],
         );
@@ -2836,7 +2985,13 @@ mod tests {
                 3 : {uint}
                 4 : void
             "#]],
-            |_| [(TyDiagnosticKind::CannotMutate, 50..55, None)],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    50..59,
+                    Some((TyDiagnosticHelpKind::FoundToBeImmutable, 50..55)),
+                )]
+            },
         );
     }
 
@@ -3085,6 +3240,7 @@ mod tests {
             expect![[r#"
                 main.foo : i32
                 0 : i32
+                1 : i32
                 2 : <unknown>
                 3 : void
             "#]],
@@ -3190,7 +3346,7 @@ mod tests {
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::LocalTyIsVariable,
+                    TyDiagnosticKind::LocalTyIsMutable,
                     106..115,
                     Some((TyDiagnosticHelpKind::MutableVariable, 49..74)),
                 )]
@@ -3255,6 +3411,303 @@ mod tests {
                     None,
                 )]
             },
+        );
+    }
+
+    #[test]
+    fn struct_literal() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () {
+                    some_guy := Person {
+                        name: "Joe Schmoe",
+                        age: 31,
+                    };
+                };
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                3 : string
+                4 : i32
+                5 : struct {name: string, age: i32}
+                6 : void
+                l0 : struct {name: string, age: i32}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn get_struct_field() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () -> i32 {
+                    some_guy := Person {
+                        name: "Joe Schmoe",
+                        age: 31,
+                    };
+
+                    some_guy.age
+                };
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> i32
+                0 : type
+                3 : string
+                4 : i32
+                5 : struct {name: string, age: i32}
+                6 : struct {name: string, age: i32}
+                7 : i32
+                8 : i32
+                l0 : struct {name: string, age: i32}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn non_existent_field() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () -> i32 {
+                    some_guy := Person {
+                        name: "Joe Schmoe",
+                        age: 31,
+                    };
+
+                    some_guy.height
+                };
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> i32
+                0 : type
+                3 : string
+                4 : i32
+                5 : struct {name: string, age: i32}
+                6 : struct {name: string, age: i32}
+                7 : <unknown>
+                8 : <unknown>
+                l0 : struct {name: string, age: i32}
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NonExistentField {
+                        field: i.intern("height"),
+                        found: ResolvedTy::Struct {
+                            fields: vec![
+                                (
+                                    Some(hir::Name(i.intern("name"))),
+                                    Idx::from_raw(RawIdx::from(0)),
+                                ),
+                                (
+                                    Some(hir::Name(i.intern("age"))),
+                                    Idx::from_raw(RawIdx::from(1)),
+                                ),
+                            ],
+                        },
+                    },
+                    316..331,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn if_mismatch() {
+        check(
+            r#"
+                foo :: (bar: bool) {
+                    if bar {
+                        "Hello!"
+                    } else {
+                        100
+                    };
+                };
+            "#,
+            expect![[r#"
+                main.foo : (bool) -> void
+                0 : bool
+                1 : string
+                2 : string
+                3 : {uint}
+                4 : {uint}
+                5 : string
+                6 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IfMismatch {
+                        found: ResolvedTy::UInt(0),
+                        expected: ResolvedTy::String,
+                    },
+                    58..178,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn index_non_array() {
+        check(
+            r#"
+                foo :: () {
+                    bar := "Hello!";
+
+                    bar[0];
+                };
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : string
+                2 : string
+                3 : {uint}
+                4 : <unknown>
+                5 : void
+                l0 : string
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IndexNonArray {
+                        found: ResolvedTy::String,
+                    },
+                    87..93,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mismatch_arg_count() {
+        check(
+            r#"
+                bar :: (num: i32) {};
+
+                foo :: () {
+                    bar(1, 2, 3);
+                }
+            "#,
+            expect![[r#"
+                main.bar : (i32) -> void
+                main.foo : () -> void
+                0 : void
+                1 : (i32) -> void
+                2 : i32
+                3 : {uint}
+                4 : {uint}
+                5 : void
+                6 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MismatchedArgCount {
+                        found: 3,
+                        expected: 1,
+                    },
+                    88..100,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn call_non_function() {
+        check(
+            r#"
+                foo :: () {
+                    wow := "Wow!";
+
+                    wow(42);
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : string
+                2 : string
+                3 : {uint}
+                4 : <unknown>
+                5 : void
+                l0 : string
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CalledNonFunction {
+                        found: ResolvedTy::String,
+                    },
+                    85..92,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn deref_non_pointer() {
+        check(
+            r#"
+                foo :: () {
+                    wow := "Wow!";
+
+                    wow^;
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : string
+                2 : string
+                3 : <unknown>
+                4 : void
+                l0 : string
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::DerefNonPointer {
+                        found: ResolvedTy::String,
+                    },
+                    85..89,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn param_as_ty() {
+        check(
+            r#"
+                foo :: (T: type) {
+                    wow : T = "hello :)";
+                }
+            "#,
+            expect![[r#"
+                main.foo : (type) -> void
+                1 : string
+                2 : void
+                l0 : string
+            "#]],
+            |_| [(TyDiagnosticKind::ParamNotATy, 62..63, None)],
         );
     }
 }

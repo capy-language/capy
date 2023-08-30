@@ -18,7 +18,6 @@ Root@0..19
         Whitespace@11..16 "\n    "
         ExprStmt@16..19
           VarRef@16..19
-            Path@16..19
-              Ident@16..19 "bar"
+            Ident@16..19 "bar"
 error at 19: missing Semicolon
 error at 19: missing RBrace

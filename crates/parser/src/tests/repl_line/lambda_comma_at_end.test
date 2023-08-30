@@ -1,9 +1,9 @@
-(x: foo, y: bar, z: baz, w: qux) {};
+(x: foo, y: bar, z: baz, w: qux,) {};
 ===
-Root@0..36
-  ExprStmt@0..35
-    Lambda@0..35
-      ParamList@0..32
+Root@0..37
+  ExprStmt@0..36
+    Lambda@0..36
+      ParamList@0..33
         LParen@0..1 "("
         Param@1..7
           Ident@1..2 "x"
@@ -39,9 +39,10 @@ Root@0..36
           Ty@28..31
             VarRef@28..31
               Ident@28..31 "qux"
-        RParen@31..32 ")"
-      Whitespace@32..33 " "
-      Block@33..35
-        LBrace@33..34 "{"
-        RBrace@34..35 "}"
-  Semicolon@35..36 ";"
+        Comma@31..32 ","
+        RParen@32..33 ")"
+      Whitespace@33..34 " "
+      Block@34..36
+        LBrace@34..35 "{"
+        RBrace@35..36 "}"
+  Semicolon@36..37 ";"

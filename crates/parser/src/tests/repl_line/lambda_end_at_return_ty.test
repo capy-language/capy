@@ -11,13 +11,11 @@ Root@0..16
           Whitespace@3..4 " "
           Ty@4..7
             VarRef@4..7
-              Path@4..7
-                Ident@4..7 "i32"
+              Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
       Arrow@9..11 "->"
       Whitespace@11..12 " "
       Ty@12..16
         VarRef@12..16
-          Path@12..16
-            Ident@12..16 "void"
+          Ident@12..16 "void"

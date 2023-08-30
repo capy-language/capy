@@ -3,11 +3,11 @@ foo.bar(42);
 Root@0..12
   ExprStmt@0..11
     Call@0..11
-      VarRef@0..7
-        Path@0..7
+      Path@0..7
+        VarRef@0..3
           Ident@0..3 "foo"
-          Dot@3..4 "."
-          Ident@4..7 "bar"
+        Dot@3..4 "."
+        Ident@4..7 "bar"
       ArgList@7..11
         LParen@7..8 "("
         Arg@8..10

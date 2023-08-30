@@ -5,8 +5,7 @@ Root@0..11
     IndexExpr@0..11
       Source@0..8
         VarRef@0..8
-          Path@0..8
-            Ident@0..8 "my_array"
+          Ident@0..8 "my_array"
       LBrack@8..9 "["
       Index@9..10
         IntLiteral@9..10

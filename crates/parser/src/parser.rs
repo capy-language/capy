@@ -195,7 +195,12 @@ impl<'tokens> Parser<'tokens> {
 
     pub(crate) fn at_set(&mut self, set: TokenSet) -> bool {
         self.skip_trivia();
-        self.peek().map_or(false, |kind| set.contains(kind))
+        self.peek_raw().map_or(false, |kind| set.contains(kind))
+    }
+
+    pub(crate) fn kind(&mut self) -> Option<TokenKind> {
+        self.skip_trivia();
+        self.peek_raw()
     }
 
     pub(crate) fn bump(&mut self) {
@@ -260,16 +265,12 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn at_raw(&self, kind: TokenKind) -> bool {
-        self.peek().map_or(false, |k| k == kind)
+        self.peek_raw().map_or(false, |k| k == kind)
     }
 
-    pub(crate) fn peek(&self) -> Option<TokenKind> {
+    fn peek_raw(&self) -> Option<TokenKind> {
         self.tokens.get_kind(self.token_idx)
     }
-
-    // pub(crate) fn peek_range(&self) -> TextRange {
-    //     self.tokens.range(self.token_idx)
-    // }
 }
 
 pub(crate) struct ExpectedSyntaxGuard {

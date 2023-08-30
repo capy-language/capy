@@ -1,0 +1,20 @@
+{ 1 + 1 }.hello
+===
+Root@0..15
+  ExprStmt@0..15
+    Path@0..15
+      Block@0..9
+        LBrace@0..1 "{"
+        Whitespace@1..2 " "
+        BinaryExpr@2..7
+          IntLiteral@2..3
+            Int@2..3 "1"
+          Whitespace@3..4 " "
+          Plus@4..5 "+"
+          Whitespace@5..6 " "
+          IntLiteral@6..7
+            Int@6..7 "1"
+        Whitespace@7..8 " "
+        RBrace@8..9 "}"
+      Dot@9..10 "."
+      Ident@10..15 "hello"

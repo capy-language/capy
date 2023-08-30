@@ -18,6 +18,7 @@ line_index = {path = "../line_index"}
 diagnostics = {path = "../diagnostics"}
 interner = {path = "../interner"}
 rustc-hash = "1.1"
+supports-color = "2.0.0"
 
 [dependencies.clap]
 version = "4.1.8"

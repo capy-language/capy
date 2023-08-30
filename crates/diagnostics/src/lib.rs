@@ -57,6 +57,7 @@ impl Diagnostic {
         resolved_arena: &Arena<ResolvedTy>,
         interner: &Interner,
         line_index: &LineIndex,
+        with_colors: bool,
     ) -> Vec<String> {
         let range = self.range();
 
@@ -66,32 +67,41 @@ impl Diagnostic {
         // unlike TextRange which is always exclusive
         let (end_line, end_col) = line_index.line_col(range.end() - TextSize::from(1));
 
-        const ANSI_YELLOW: &str = "\x1B[1;93m";
-        const ANSI_RED: &str = "\x1B[1;91m";
-        const ANSI_WHITE: &str = "\x1B[1;97m";
-        const ANSI_CYAN: &str = "\x1B[1;96m";
+        let (ansi_yellow, ansi_red, ansi_white, ansi_blue) = if with_colors {
+            ("\x1B[1;93m", "\x1B[1;91m", "\x1B[1;97m", "\x1B[1;94m")
+        } else {
+            ("", "", "", "")
+        };
 
         let severity = match self.severity() {
-            Severity::Warning => format!("{}warning", ANSI_YELLOW),
-            Severity::Error => format!("{}error", ANSI_RED),
+            Severity::Warning => format!("{}warning", ansi_yellow),
+            Severity::Error => format!("{}error", ansi_red),
         };
 
         let mut lines = vec![format!(
             "{}{}: {}",
             severity,
-            ANSI_WHITE,
+            ansi_white,
             self.message(resolved_arena, interner)
         )];
 
         input_snippet(
-            filename, input, start_line, start_col, end_line, end_col, range, &mut lines,
+            filename,
+            input,
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            range,
+            &mut lines,
+            with_colors,
         );
 
         if let Some(help) = self.help() {
             lines.push(format!(
                 "{}help{}: {}",
-                ANSI_CYAN,
-                ANSI_WHITE,
+                ansi_blue,
+                ansi_white,
                 help.message(resolved_arena, interner)
             ));
 
@@ -104,7 +114,15 @@ impl Diagnostic {
             let (end_line, end_col) = line_index.line_col(range.end() - TextSize::from(1));
 
             input_snippet(
-                filename, input, start_line, start_col, end_line, end_col, range, &mut lines,
+                filename,
+                input,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                range,
+                &mut lines,
+                with_colors,
             );
         }
 
@@ -193,10 +211,13 @@ fn input_snippet(
     end_col: ColNr,
     range: TextRange,
     lines: &mut Vec<String>,
+    with_colors: bool,
 ) {
-    const ANSI_RESET: &str = "\x1B[0m";
-    const ANSI_GRAY: &str = "\x1B[1;90m";
-    const ANSI_YELLOW: &str = "\x1B[1;93m";
+    let (ansi_reset, ansi_gray, ansi_yellow) = if with_colors {
+        ("\x1B[0m", "\x1B[1;90m", "\x1B[1;93m")
+    } else {
+        ("", "", "")
+    };
 
     const PADDING: &str = " | ";
     const POINTER_UP: &str = "^";
@@ -210,33 +231,33 @@ fn input_snippet(
 
         lines.push(format!(
             "{}{}--> at {}:{}:{}",
-            ANSI_GRAY,
+            ansi_gray,
             line_number_padding,
             filename,
             start_line.0 + 1,
             start_col.0 + 1,
         ));
 
-        lines.push(format!("{}{}{}", ANSI_GRAY, line_number_padding, PADDING));
+        lines.push(format!("{}{}{}", ansi_gray, line_number_padding, PADDING));
 
         lines.push(format!(
             "{}{}{}{}{}",
-            ANSI_GRAY,
+            ansi_gray,
             start_line.0 + 1,
             PADDING,
-            ANSI_RESET,
+            ansi_reset,
             file_lines[start_line.0 as usize]
         ));
 
         lines.push(format!(
             "{}{}{}{}{}{}{}",
-            ANSI_GRAY,
+            ansi_gray,
             line_number_padding,
             PADDING,
             " ".repeat(start_col.0 as usize),
-            ANSI_YELLOW,
+            ansi_yellow,
             POINTER_UP.repeat(range.len().try_into().unwrap()),
-            ANSI_RESET
+            ansi_reset
         ));
 
         return;
@@ -248,7 +269,7 @@ fn input_snippet(
 
     lines.push(format!(
         "{}{}--> at {}:{}:{}",
-        ANSI_GRAY,
+        ansi_gray,
         line_number_padding,
         filename,
         start_line.0 + 1,
@@ -256,29 +277,29 @@ fn input_snippet(
     ));
 
     // blank line
-    lines.push(format!("{}{}{}", ANSI_GRAY, line_number_padding, PADDING));
+    lines.push(format!("{}{}{}", ansi_gray, line_number_padding, PADDING));
 
     // now start printing the actual lines of code
     let first_line = file_lines[start_line.0 as usize];
     lines.push(format!(
         "{}{}{}{}{}{}{}{}",
-        ANSI_GRAY,
+        ansi_gray,
         start_line.0 + 1,
         " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
         PADDING,
-        ANSI_YELLOW,
+        ansi_yellow,
         "  ",
-        ANSI_RESET,
+        ansi_reset,
         first_line
     ));
 
     // arrow below first line
     lines.push(format!(
         "{}{}{}{}{}{}{}",
-        ANSI_GRAY,
+        ansi_gray,
         line_number_padding,
         PADDING,
-        ANSI_YELLOW,
+        ansi_yellow,
         " ",
         "_".repeat(start_col.0 as usize + 1),
         POINTER_UP,
@@ -293,13 +314,13 @@ fn input_snippet(
     {
         lines.push(format!(
             "{}{}{}{}{}{}{}{}",
-            ANSI_GRAY,
+            ansi_gray,
             num + 1,
             " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(num as u32 + 1, 10)),
             PADDING,
-            ANSI_YELLOW,
+            ansi_yellow,
             "| ",
-            ANSI_RESET,
+            ansi_reset,
             file_line
         ));
     }
@@ -307,24 +328,24 @@ fn input_snippet(
     let last_line = file_lines[end_line.0 as usize];
     lines.push(format!(
         "{}{}{}{}{}{}{}",
-        ANSI_GRAY,
+        ansi_gray,
         end_line.0 + 1,
         PADDING,
-        ANSI_YELLOW,
+        ansi_yellow,
         "| ",
-        ANSI_RESET,
+        ansi_reset,
         last_line
     ));
     lines.push(format!(
         "{}{}{}{}{}{}{}{}",
-        ANSI_GRAY,
+        ansi_gray,
         line_number_padding,
         PADDING,
-        ANSI_YELLOW,
+        ansi_yellow,
         "|",
         "_".repeat(end_col.0 as usize + 1),
         POINTER_UP,
-        ANSI_RESET
+        ansi_reset
     ));
 }
 
@@ -382,9 +403,6 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
         }
-        IndexingDiagnosticKind::MissingTy { name } => {
-            format!("global `{}` must have a type", interner.lookup(*name))
-        }
         IndexingDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
@@ -393,11 +411,8 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
     match &d.kind {
         LoweringDiagnosticKind::OutOfRangeIntLiteral => "integer literal out of range".to_string(),
         LoweringDiagnosticKind::OutOfRangeFloatLiteral => "float literal out of range".to_string(),
-        LoweringDiagnosticKind::UndefinedLocal { name } => {
-            format!("undefined variable `{}`", interner.lookup(*name))
-        }
-        LoweringDiagnosticKind::UndefinedModule { name } => {
-            format!("undefined module `{}`", interner.lookup(*name))
+        LoweringDiagnosticKind::UndefinedRef { name } => {
+            format!("undefined reference to `{}`", interner.lookup(*name))
         }
         LoweringDiagnosticKind::NonGlobalExtern => {
             "non-global functions cannot be extern".to_string()
@@ -417,7 +432,6 @@ fn lower_ty_parse_error(d: &TyParseError) -> String {
         TyParseError::ArraySizeOutOfBounds => "integer literal out of range".to_string(),
         TyParseError::ArrayHasBody => "array type cannot have a body".to_string(),
         TyParseError::NotATy => "expression cannot be converted into a type".to_string(),
-        TyParseError::NonGlobalTy => "tried to use a non-global variable as a type".to_string(),
         TyParseError::NonPrimitive => unreachable!(),
     }
 }
@@ -471,7 +485,7 @@ fn ty_diagnostic_message(
                 expected.display(resolved_arena, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::IndexMismatch { found } => {
+        hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
             format!(
                 "tried indexing `[]` a non-array, `{}`",
                 found.display(resolved_arena, interner)
@@ -498,7 +512,7 @@ fn ty_diagnostic_message(
                 found.display(resolved_arena, interner),
             )
         }
-        hir_ty::TyDiagnosticKind::DerefMismatch { found } => {
+        hir_ty::TyDiagnosticKind::DerefNonPointer { found } => {
             format!(
                 "tried dereferencing `^` a non-pointer, `{}`",
                 found.display(resolved_arena, interner)
@@ -510,9 +524,6 @@ fn ty_diagnostic_message(
                 expected.display(resolved_arena, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::UndefinedTy { name } => {
-            format!("undefined type `{}`", interner.lookup(*name))
-        }
         hir_ty::TyDiagnosticKind::NotYetResolved { path } => {
             format!(
                 "circular definition, `{}` has not yet been resolved",
@@ -520,12 +531,8 @@ fn ty_diagnostic_message(
             )
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
-        hir_ty::TyDiagnosticKind::LocalTyIsVariable => {
+        hir_ty::TyDiagnosticKind::LocalTyIsMutable => {
             "local variables cannot be used as types if they are mutable".to_string()
-        }
-        hir_ty::TyDiagnosticKind::MutateBinding => "cannot mutate a `::` binding".to_string(),
-        hir_ty::TyDiagnosticKind::MutateImmutableRef => {
-            "cannot mutate an immutable reference. consider changing it to `^mut`".to_string()
         }
         hir_ty::TyDiagnosticKind::CannotMutate => "cannot mutate immutable data".to_string(),
         hir_ty::TyDiagnosticKind::MutableRefToImmutableData => {
@@ -539,6 +546,19 @@ fn ty_diagnostic_message(
                 max
             )
         }
+        hir_ty::TyDiagnosticKind::UnknownModule { name } => {
+            format!("could not find a module named `{}`", interner.lookup(*name))
+        }
+        hir_ty::TyDiagnosticKind::UnknownFqn { fqn } => format!(
+            "`{}` does not exist within the module `{}`",
+            interner.lookup(fqn.name.0),
+            interner.lookup(fqn.module.0)
+        ),
+        hir_ty::TyDiagnosticKind::NonExistentField { field, found } => format!(
+            "there is no field `{}` within `{}`",
+            interner.lookup(*field),
+            found.display(resolved_arena, interner)
+        ),
     }
 }
 
@@ -584,6 +604,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Mut => "`mut`",
         TokenKind::Distinct => "`distinct`",
         TokenKind::Extern => "`extern`",
+        TokenKind::Struct => "`struct`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",

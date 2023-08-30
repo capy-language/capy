@@ -313,6 +313,5 @@ pub struct IndexingDiagnostic {
 pub enum IndexingDiagnosticKind {
     NonBindingAtRoot,
     AlreadyDefined { name: Key },
-    MissingTy { name: Key },
     TyParseError(TyParseError),
 }

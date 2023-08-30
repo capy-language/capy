@@ -6,7 +6,6 @@ Root@0..4
       LBrace@0..1 "{"
       ExprStmt@1..4
         VarRef@1..4
-          Path@1..4
-            Ident@1..4 "foo"
+          Ident@1..4 "foo"
 error at 4: missing Semicolon
 error at 4: missing RBrace

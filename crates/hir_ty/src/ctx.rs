@@ -142,7 +142,7 @@ impl InferenceCtx<'_> {
 
         current_module!(self).expr_tys.insert(expr, new_ty.clone());
 
-        match current_bodies!(self)[expr] {
+        match current_bodies!(self)[expr].clone() {
             Expr::IntLiteral(num) => {
                 if let Some(max_size) = new_ty.get_max_int_size(self.resolved_arena) {
                     if num > max_size {
@@ -219,6 +219,16 @@ impl InferenceCtx<'_> {
 
                 // self.reinfer_expr(current_bodies!(self)[local_def].value);
             }
+            Expr::StructLiteral { fields, .. } => {
+                let field_tys = new_ty.as_struct(self.resolved_arena).unwrap();
+
+                for (idx, (_, value)) in fields.into_iter().enumerate() {
+                    let new_field_ty = field_tys[idx].1;
+                    let new_field_ty = self.resolved_arena[new_field_ty].clone();
+
+                    self.replace_weak_tys(value, &new_field_ty);
+                }
+            }
             _ => {}
         }
 
@@ -256,7 +266,6 @@ impl InferenceCtx<'_> {
 
                 self.get_mutability(local_def.value, derefs)
             }
-            Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
             Expr::Param { idx } => {
                 let param_ty = self.param_tys.as_ref().unwrap()[*idx as usize];
                 let param_ty = &self.resolved_arena[param_ty];
@@ -278,6 +287,8 @@ impl InferenceCtx<'_> {
             Expr::Global(_) => {
                 ExprMutability::ImmutableGlobal(current_bodies!(self).range_for_expr(expr))
             }
+            Expr::Path { previous, .. } => self.get_mutability(*previous, derefs),
+            Expr::Call { .. } if derefs > 0 => ExprMutability::Mutable,
             _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),
         }
     }
@@ -324,50 +335,37 @@ impl InferenceCtx<'_> {
             hir::Stmt::Assign(assign) => {
                 let assign_body = &current_bodies!(self)[*assign];
 
-                match &current_bodies!(self)[assign_body.source] {
-                    Expr::Missing => {}
-                    Expr::Deref { .. } | Expr::Index { .. } | Expr::Local(_) => {
-                        let help = match self.get_mutability(assign_body.source, 0) {
-                            ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
-                                kind: TyDiagnosticHelpKind::FoundToBeImmutable,
-                                range,
-                            }),
-                            ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
-                                kind: TyDiagnosticHelpKind::ImmutableBinding,
-                                range,
-                            }),
-                            ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
-                                kind: TyDiagnosticHelpKind::ImmutableRef,
-                                range,
-                            }),
-                            ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
-                                kind: TyDiagnosticHelpKind::ImmutableParam,
-                                range,
-                            }),
-                            ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
-                                kind: TyDiagnosticHelpKind::ImmutableGlobal,
-                                range,
-                            }),
-                            ExprMutability::Mutable => None,
-                        };
+                let help = match self.get_mutability(assign_body.source, 0) {
+                    ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::FoundToBeImmutable,
+                        range,
+                    }),
+                    ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::ImmutableBinding,
+                        range,
+                    }),
+                    ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::ImmutableRef,
+                        range,
+                    }),
+                    ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::ImmutableParam,
+                        range,
+                    }),
+                    ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::ImmutableGlobal,
+                        range,
+                    }),
+                    ExprMutability::Mutable => None,
+                };
 
-                        if help.is_some() {
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::CannotMutate,
-                                module: self.current_module.unwrap(),
-                                range: assign_body.range,
-                                help,
-                            })
-                        }
-                    }
-                    // Expr::Global(_) => {}, assignment to globals isn't allowed
-                    // Expr::Param { idx } => {}, assignment to parameters isn't allowed
-                    _ => self.diagnostics.push(TyDiagnostic {
+                if help.is_some() {
+                    self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::CannotMutate,
                         module: self.current_module.unwrap(),
-                        range: current_bodies!(self).range_for_expr(assign_body.source),
-                        help: None,
-                    }),
+                        range: assign_body.range,
+                        help,
+                    })
                 }
 
                 let source_ty = self.infer_expr(assign_body.source);
@@ -433,8 +431,8 @@ impl InferenceCtx<'_> {
                 }
             }
             Expr::Index { array, index } => {
-                self.get_referenced_locals(*index, local_defs);
                 self.get_referenced_locals(*array, local_defs);
+                self.get_referenced_locals(*index, local_defs);
             }
             Expr::Block { tail_expr, .. } => {
                 if let Some(tail_expr) = tail_expr {
@@ -463,14 +461,18 @@ impl InferenceCtx<'_> {
             }
             Expr::Global(_) => {}
             Expr::Param { .. } => {}
-            Expr::Call { args, .. } => {
+            Expr::Call { callee, args } => {
+                self.get_referenced_locals(*callee, local_defs);
                 for arg in args {
                     self.get_referenced_locals(*arg, local_defs);
                 }
             }
-            Expr::Lambda(_) => {
-                // todo: think about whether some code here makes sense or not
+            Expr::Module(_) => {}
+            Expr::Path { previous, .. } => {
+                self.get_referenced_locals(*previous, local_defs);
             }
+            Expr::Lambda(_) => {}
+            Expr::StructLiteral { .. } => {} // struct literals are always strongly typed
             Expr::PrimitiveTy { .. } => {}
         }
     }
@@ -552,6 +554,11 @@ impl InferenceCtx<'_> {
                 return current_module!(self)[expr].clone();
             }
             Expr::Index { array, index } => {
+                println!(
+                    "#{} is {:?}",
+                    array.into_raw(),
+                    current_module!(self)[*array]
+                );
                 self.reinfer_expr(*index);
 
                 let old_array = current_module!(self)[*array].clone();
@@ -619,7 +626,10 @@ impl InferenceCtx<'_> {
                 }
             }
             Expr::Local(local) => current_module!(self).local_tys[*local].clone(),
-            _ => return current_module!(self)[expr].clone(),
+            _ => {
+                println!("#{}", expr.into_raw());
+                return current_module!(self)[expr].clone();
+            }
         };
 
         current_module!(self).expr_tys.insert(expr, new_ty.clone());
@@ -627,7 +637,7 @@ impl InferenceCtx<'_> {
         new_ty
     }
 
-    fn infer_expr(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
+    pub(crate) fn infer_expr(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
         if current_module!(self).expr_tys.get(expr).is_some() {
             return self.reinfer_expr(expr);
         }
@@ -653,6 +663,13 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::Index { array, index } => {
                 let source_ty = self.infer_expr(*array);
+                let index_ty = self.infer_expr(*index);
+
+                println!(
+                    "#{} is {:?}",
+                    array.into_raw(),
+                    current_module!(self)[*array]
+                );
 
                 if source_ty == ResolvedTy::Unknown {
                     ResolvedTy::Unknown
@@ -674,8 +691,6 @@ impl InferenceCtx<'_> {
                         }
                     }
 
-                    let index_ty = self.infer_expr(*index);
-
                     if self.expect_match(&index_ty, &ResolvedTy::UInt(u32::MAX), *index) {
                         self.replace_weak_tys(*index, &ResolvedTy::UInt(u32::MAX));
                     }
@@ -683,7 +698,7 @@ impl InferenceCtx<'_> {
                     self.resolved_arena[array_sub_ty].clone()
                 } else {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::IndexMismatch { found: source_ty },
+                        kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
                         module: self.current_module.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
@@ -727,46 +742,46 @@ impl InferenceCtx<'_> {
                 mutable,
                 expr: sub_expr,
             } => {
-                if *mutable {
-                    let help = match self.get_mutability(*sub_expr, 0) {
-                        ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::FoundToBeImmutable,
-                            range,
-                        }),
-                        ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::ImmutableBinding,
-                            range,
-                        }),
-                        ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::ImmutableRef,
-                            range,
-                        }),
-                        ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::ImmutableParam,
-                            range,
-                        }),
-                        ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::ImmutableGlobal,
-                            range,
-                        }),
-                        ExprMutability::Mutable => None,
-                    };
-
-                    if help.is_some() {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::MutableRefToImmutableData,
-                            module: self.current_module.unwrap(),
-                            range: current_bodies!(self).range_for_expr(expr),
-                            help,
-                        })
-                    }
-                }
-
                 let sub_ty = self.infer_expr(*sub_expr);
 
                 if matches!(sub_ty, ResolvedTy::Type) {
                     ResolvedTy::Type
                 } else {
+                    if *mutable {
+                        let help = match self.get_mutability(*sub_expr, 0) {
+                            ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::FoundToBeImmutable,
+                                range,
+                            }),
+                            ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableBinding,
+                                range,
+                            }),
+                            ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableRef,
+                                range,
+                            }),
+                            ExprMutability::ImmutableParam(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableParam,
+                                range,
+                            }),
+                            ExprMutability::ImmutableGlobal(range) => Some(TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::ImmutableGlobal,
+                                range,
+                            }),
+                            ExprMutability::Mutable => None,
+                        };
+
+                        if help.is_some() {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::MutableRefToImmutableData,
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(expr),
+                                help,
+                            })
+                        }
+                    }
+
                     ResolvedTy::Pointer {
                         mutable: *mutable,
                         sub_ty: self.resolved_arena.alloc(sub_ty),
@@ -780,7 +795,7 @@ impl InferenceCtx<'_> {
                     ResolvedTy::Pointer { sub_ty, .. } => self.resolved_arena[sub_ty].clone(),
                     _ => {
                         self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::DerefMismatch { found: deref_ty },
+                            kind: TyDiagnosticKind::DerefNonPointer { found: deref_ty },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
@@ -885,8 +900,8 @@ impl InferenceCtx<'_> {
                     } else {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::IfMismatch {
-                                found: body_ty.clone(),
-                                expected: else_ty,
+                                found: else_ty,
+                                expected: body_ty.clone(),
                             },
                             module: self.current_module.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
@@ -926,7 +941,8 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::While { condition, body } => {
                 if let Some(condition) = condition {
-                    let _ = self.infer_expr(*condition);
+                    let cond_ty = self.infer_expr(*condition);
+                    self.expect_match(&cond_ty, &ResolvedTy::Bool, *condition);
                 }
                 let body_ty = self.infer_expr(*body);
                 self.expect_match(&body_ty, &ResolvedTy::Void, *body);
@@ -936,49 +952,6 @@ impl InferenceCtx<'_> {
             hir::Expr::Local(local) => current_module!(self).local_tys[*local].clone(),
             hir::Expr::Param { idx } => {
                 self.resolved_arena[self.param_tys.as_ref().unwrap()[*idx as usize]].clone()
-            }
-            hir::Expr::Call { callee, args } => {
-                let callee_ty = self.infer_expr(*callee);
-
-                if let Some((params, return_ty)) =
-                    callee_ty.clone().as_function(self.resolved_arena)
-                {
-                    if params.len() != args.len() {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::MismatchedArgCount {
-                                found: args.len(),
-                                expected: params.len(),
-                            },
-                            module: self.current_module.unwrap(),
-                            range: current_bodies!(self).range_for_expr(expr),
-                            help: None,
-                        });
-                    }
-
-                    for (idx, arg) in args.iter().enumerate() {
-                        let arg_ty = self.infer_expr(*arg);
-
-                        if idx >= params.len() {
-                            continue;
-                        }
-                        let param_ty = &self.resolved_arena[params[idx]].clone();
-
-                        self.expect_match(&arg_ty, param_ty, *arg);
-
-                        self.replace_weak_tys(*arg, param_ty);
-                    }
-
-                    self.resolved_arena[return_ty].clone()
-                } else {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::CalledNonFunction { found: callee_ty },
-                        module: self.current_module.unwrap(),
-                        range: current_bodies!(self).range_for_expr(expr),
-                        help: None,
-                    });
-
-                    ResolvedTy::Unknown
-                }
             }
             hir::Expr::Global(path) => {
                 let fqn = match *path {
@@ -1022,12 +995,190 @@ impl InferenceCtx<'_> {
                     }
                 }
             }
+            hir::Expr::Module(_) => {
+                panic!("modules can't be referred to just as themselves");
+            }
+            hir::Expr::Path {
+                previous, field, ..
+            } => match &current_bodies!(self)[*previous] {
+                hir::Expr::Module(module_name) => {
+                    let fqn = hir::Fqn {
+                        module: *module_name,
+                        name: *field,
+                    };
+
+                    let definition = self.world_index.get_definition(fqn);
+
+                    match definition {
+                        Ok(hir::Definition::Global(global)) => {
+                            let global_signature = self.singleton_global_signature(global, fqn);
+
+                            if global_signature.ty == ResolvedTy::NotYetResolved {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::NotYetResolved {
+                                        path: hir::Path::OtherModule(fqn),
+                                    },
+                                    module: self.current_module.unwrap(),
+                                    range: current_bodies!(self).range_for_expr(expr),
+                                    help: None,
+                                });
+
+                                ResolvedTy::Unknown
+                            } else {
+                                global_signature.ty
+                            }
+                        }
+                        Ok(hir::Definition::Function(function)) => {
+                            let signature = self.get_function_signature(function, fqn);
+
+                            match signature {
+                                Signature::Function(fn_sig) => ResolvedTy::Function {
+                                    params: fn_sig.param_tys,
+                                    return_ty: self.resolved_arena.alloc(fn_sig.return_ty),
+                                },
+                                Signature::Global(global) => global.ty,
+                            }
+                        }
+                        Err(hir::GetDefinitionError::UnknownModule) => unreachable!(),
+                        Err(hir::GetDefinitionError::UnknownDefinition) => {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::UnknownFqn { fqn },
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(expr),
+                                help: None,
+                            });
+
+                            ResolvedTy::Unknown
+                        }
+                    }
+                }
+                _ => {
+                    let previous_ty = self.infer_expr(*previous);
+
+                    if let Some(fields) = previous_ty.as_struct(self.resolved_arena) {
+                        if let Some((_, ty)) = fields.iter().find(|(name, _)| name == &Some(*field))
+                        {
+                            self.resolved_arena[*ty].clone()
+                        } else {
+                            if !previous_ty.is_unknown(self.resolved_arena) {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::NonExistentField {
+                                        field: field.0,
+                                        found: previous_ty,
+                                    },
+                                    module: self.current_module.unwrap(),
+                                    range: current_bodies!(self).range_for_expr(expr),
+                                    help: None,
+                                });
+                            }
+
+                            ResolvedTy::Unknown
+                        }
+                    } else {
+                        let previous_ty = self.infer_expr(*previous);
+
+                        if !previous_ty.is_unknown(self.resolved_arena) {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::NonExistentField {
+                                    field: field.0,
+                                    found: previous_ty,
+                                },
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(expr),
+                                help: None,
+                            });
+                        }
+
+                        ResolvedTy::Unknown
+                    }
+                }
+            },
+            hir::Expr::Call { callee, args } => {
+                let callee_ty = self.infer_expr(*callee);
+
+                if let Some((params, return_ty)) =
+                    callee_ty.clone().as_function(self.resolved_arena)
+                {
+                    if params.len() != args.len() {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::MismatchedArgCount {
+                                found: args.len(),
+                                expected: params.len(),
+                            },
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
+                        });
+                    }
+
+                    for (idx, arg) in args.iter().enumerate() {
+                        let arg_ty = self.infer_expr(*arg);
+
+                        if idx >= params.len() {
+                            continue;
+                        }
+                        let param_ty = &self.resolved_arena[params[idx]].clone();
+
+                        self.expect_match(&arg_ty, param_ty, *arg);
+
+                        self.replace_weak_tys(*arg, param_ty);
+                    }
+
+                    self.resolved_arena[return_ty].clone()
+                } else {
+                    for arg in args {
+                        self.infer_expr(*arg);
+                    }
+
+                    if callee_ty != ResolvedTy::Unknown {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::CalledNonFunction { found: callee_ty },
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
+                        });
+                    }
+
+                    ResolvedTy::Unknown
+                }
+            }
             hir::Expr::Lambda(lambda) => {
                 let sig = self.generate_unnamed_function_signature(*lambda);
 
                 ResolvedTy::Function {
                     params: sig.param_tys,
                     return_ty: self.resolved_arena.alloc(sig.return_ty),
+                }
+            }
+            hir::Expr::StructLiteral {
+                ty: ty_expr,
+                fields: field_values,
+            } => {
+                let ty = self.parse_expr_to_ty(*ty_expr);
+
+                let field_tys = field_values
+                    .iter()
+                    .copied()
+                    .map(|(name, value)| {
+                        let value_ty = self.infer_expr(value);
+                        (name, self.resolved_arena.alloc(value_ty))
+                    })
+                    .collect::<Vec<_>>();
+
+                let actual_ty = ResolvedTy::Struct { fields: field_tys };
+
+                if self.expect_match(&actual_ty, &ty, expr) {
+                    let expected_field_tys = ty.as_struct(self.resolved_arena).unwrap();
+
+                    for (idx, (_, field_val)) in field_values.iter().enumerate() {
+                        let expected_field_ty =
+                            self.resolved_arena[expected_field_tys[idx].1].clone();
+                        self.replace_weak_tys(*field_val, &expected_field_ty);
+                    }
+
+                    ty
+                } else {
+                    actual_ty
                 }
             }
             hir::Expr::PrimitiveTy { .. } => ResolvedTy::Type,

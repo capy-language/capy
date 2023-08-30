@@ -4,8 +4,7 @@ Root@0..6
   ExprStmt@0..5
     Call@0..5
       VarRef@0..3
-        Path@0..3
-          Ident@0..3 "foo"
+        Ident@0..3 "foo"
       ArgList@3..5
         LParen@3..4 "("
         RParen@4..5 ")"

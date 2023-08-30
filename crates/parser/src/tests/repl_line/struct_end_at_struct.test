@@ -1,0 +1,7 @@
+struct
+===
+Root@0..6
+  ExprStmt@0..6
+    StructDeclaration@0..6
+      Struct@0..6 "struct"
+error at 6: missing struct body

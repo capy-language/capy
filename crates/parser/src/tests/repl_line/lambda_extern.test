@@ -11,8 +11,7 @@ Root@0..16
           Whitespace@3..4 " "
           Ty@4..7
             VarRef@4..7
-              Path@4..7
-                Ident@4..7 "i32"
+              Ident@4..7 "i32"
         RParen@7..8 ")"
       Whitespace@8..9 " "
       Extern@9..15 "extern"

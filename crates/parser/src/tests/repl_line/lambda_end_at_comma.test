@@ -11,8 +11,7 @@ Root@0..8
           Whitespace@3..4 " "
           Ty@4..7
             VarRef@4..7
-              Path@4..7
-                Ident@4..7 "i32"
+              Ident@4..7 "i32"
         Comma@7..8 ","
         Param@8..8
 error at 8: missing parameter name

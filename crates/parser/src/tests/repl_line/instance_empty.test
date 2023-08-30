@@ -1,0 +1,12 @@
+My_Struct {};
+===
+Root@0..13
+  ExprStmt@0..12
+    StructLiteral@0..12
+      Ty@0..9
+        VarRef@0..9
+          Ident@0..9 "My_Struct"
+      Whitespace@9..10 " "
+      LBrace@10..11 "{"
+      RBrace@11..12 "}"
+  Semicolon@12..13 ";"

@@ -8,8 +8,7 @@ Root@0..14
     Equals@5..6 "="
     Whitespace@6..7 " "
     VarRef@7..10
-      Path@7..10
-        Ident@7..10 "bar"
+      Ident@7..10 "bar"
   Semicolon@10..11 ";"
   Semicolon@11..12 ";"
   Semicolon@12..13 ";"

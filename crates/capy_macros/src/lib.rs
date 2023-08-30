@@ -116,6 +116,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                     .into();
                 }
                 let value = parts[2].trim();
+                let docs = format!("represents `{}`", value);
 
                 let tag = if value.starts_with('/') {
                     let regex = value
@@ -126,7 +127,6 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                         .replace("\\r", "\r")
                         .replace("\\n", "\n");
 
-                    let docs = format!("represents `/{}/`", regex);
                     quote! {
                         #[doc = #docs]
                         #[regex(#regex)]
@@ -140,8 +140,6 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                         .replace("\\r", "\r")
                         .replace("\\n", "\n");
 
-                    let docs = format!("represents `'{}'`", token);
-                    // let token = format_ident!(r##"r#"{}"#"##, token);
                     quote! {
                         #[doc = #docs]
                         #[token(#token)]
@@ -165,6 +163,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
             }
             EnumTy::Full => {
                 entries.extend(quote! {
+                    #[doc = "custom defined token"]
                     #name,
                 });
             }
@@ -172,12 +171,18 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                 let tag = if parts.len() == 3 {
                     let value = parts[2].trim();
 
-                    let doc = format!("represents `{}`", value);
+                    let doc = if value == "!" {
+                        "represents an error value".to_string()
+                    } else {
+                        format!("represents `{}`", value)
+                    };
                     quote! {
                         #[doc = #doc]
                     }
                 } else {
-                    quote!()
+                    quote! {
+                        #[doc = "custom defined token"]
+                    }
                 };
 
                 if parts[0].starts_with("__") {

@@ -1,7 +1,5 @@
 use std::mem;
 
-pub struct Interner(lasso::Rodeo);
-
 macro_rules! impl_interner {
     ($($keyword:ident => $text:expr,)*) => {
         impl Default for Interner {
@@ -28,6 +26,8 @@ macro_rules! impl_interner {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(lasso::Spur);
+
+pub struct Interner(lasso::Rodeo);
 
 impl_interner! {
     void => "void",

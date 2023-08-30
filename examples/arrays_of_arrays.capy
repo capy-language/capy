@@ -35,7 +35,11 @@ edit :: (arr: ^mut [3][3][3]i8) {
     arr^[1][1] = [3]i8{ 127, 0, 42 };
 }
 
-// since the array is passed by value, it is memcpy'd into the stack of this function
+// While an array is internally a pointer, a pointer to an array doesn't actually get
+// compiled as a pointer to a pointer. The only machine code difference between the
+// following two functions is that print_array_by_value memcopies the array into
+// it's stack before using it
+
 print_array_by_value :: (arr: [3][3][3]i8, name: string) {
     x : usize = 0;
     while x < 3 {
@@ -52,8 +56,6 @@ print_array_by_value :: (arr: [3][3][3]i8, name: string) {
     }
 }
 
-// While [] is internally a pointer, ^[] doesn't mean a pointer to a pointer. It means pass-by-reference.
-// In other words, the only difference between this function and the one above is the lack of a memcpy.
 print_array_by_ref :: (arr: ^[3][3][3]i8, name: string) {
     x : usize = 0;
     while x < 3 {

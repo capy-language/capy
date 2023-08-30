@@ -360,9 +360,12 @@ def_multi_node! {
     FloatLiteral -> FloatLiteral
     BoolLiteral -> BoolLiteral
     StringLiteral -> StringLiteral
+    StructDecl -> StructDeclaration
+    StructLiteral -> StructLiteral
     Array -> Array
     IndexExpr -> IndexExpr
-    VarRef -> VarRef // a reference to a local, global, or parameter. e.g. `foo` in `foo * 2`
+    VarRef -> VarRef    // `foo` in `foo.bar`
+    Path -> Path        // `foo.bar`
     Call -> Call
     Block -> Block
     If -> IfExpr
@@ -485,6 +488,50 @@ impl Condition {
     }
 }
 
+def_ast_node!(StructDeclaration);
+
+impl StructDeclaration {
+    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldDeclaration> + '_ {
+        nodes(self, tree)
+    }
+}
+
+def_ast_node!(FieldDeclaration);
+
+impl FieldDeclaration {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(StructLiteral);
+
+impl StructLiteral {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+
+    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldLiteral> + '_ {
+        nodes(self, tree)
+    }
+}
+
+def_ast_node!(FieldLiteral);
+
+impl FieldLiteral {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
 def_ast_node!(Array);
 
 impl Array {
@@ -556,8 +603,8 @@ impl Source {
 def_ast_node!(VarRef);
 
 impl VarRef {
-    pub fn name(self, tree: &SyntaxTree) -> Option<Path> {
-        node(self, tree)
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
     }
 }
 
@@ -576,12 +623,12 @@ impl Call {
 def_ast_node!(Path);
 
 impl Path {
-    pub fn top_level_name(self, tree: &SyntaxTree) -> Option<Ident> {
+    pub fn field_name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
 
-    pub fn nested_name(self, tree: &SyntaxTree) -> Option<Ident> {
-        tokens(self, tree).nth(1)
+    pub fn previous_part(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
     }
 }
 
@@ -829,10 +876,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let path = ty_ref.name(&tree).unwrap();
-
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "string");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(ty_ref.name(&tree).unwrap().text(&tree), "string");
     }
 
     #[test]
@@ -868,10 +912,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let sub_path = sub_ty.name(&tree).unwrap();
-
-        assert_eq!(sub_path.top_level_name(&tree).unwrap().text(&tree), "i32");
-        assert!(sub_path.nested_name(&tree).is_none());
+        assert_eq!(sub_ty.name(&tree).unwrap().text(&tree), "i32");
     }
 
     #[test]
@@ -1086,10 +1127,8 @@ mod tests {
             Some(Expr::VarRef(array_ref)) => array_ref,
             _ => unreachable!(),
         };
-        let path = array_ref.name(&tree).unwrap();
 
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "my_array");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(array_ref.name(&tree).unwrap().text(&tree), "my_array");
     }
 
     #[test]
@@ -1132,10 +1171,8 @@ mod tests {
             Some(Expr::VarRef(index_index)) => index_index,
             _ => unreachable!(),
         };
-        let path = index_ref.name(&tree).unwrap();
 
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "idx");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(index_ref.name(&tree).unwrap().text(&tree), "idx");
     }
 
     #[test]
@@ -1151,10 +1188,42 @@ mod tests {
             Some(Expr::VarRef(var_ref)) => var_ref,
             _ => unreachable!(),
         };
-        let path = var_ref.name(&tree).unwrap();
 
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "idx");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "idx");
+    }
+
+    #[test]
+    fn get_full_path_of_var_refs() {
+        let (tree, root) = parse("some_place.some_thing_in_there.inception;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        // last part of the path
+        let path = match expr {
+            Some(Expr::Path(path)) => path,
+            _ => unreachable!(),
+        };
+        assert_eq!(path.field_name(&tree).unwrap().text(&tree), "inception");
+
+        // middle of the path
+        let path = match path.previous_part(&tree) {
+            Some(Expr::Path(path)) => path,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            path.field_name(&tree).unwrap().text(&tree),
+            "some_thing_in_there"
+        );
+
+        // beginning of the path
+        let var_ref = match path.previous_part(&tree) {
+            Some(Expr::VarRef(path)) => path,
+            _ => unreachable!(),
+        };
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "some_place");
     }
 
     #[test]
@@ -1171,15 +1240,12 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let var = match call.callee(&tree) {
-            Some(Expr::VarRef(var)) => var,
+        let var_ref = match call.callee(&tree) {
+            Some(Expr::VarRef(var_ref)) => var_ref,
             _ => unreachable!(),
         };
 
-        let path = var.name(&tree).unwrap();
-
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "print");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "print");
     }
 
     #[test]
@@ -1200,10 +1266,8 @@ mod tests {
             Some(Expr::VarRef(ref_expr)) => ref_expr,
             _ => unreachable!(),
         };
-        let path = var_ref.name(&tree).unwrap();
 
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "foo");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "foo");
         assert!(ref_expr.mutable(&tree).is_none());
     }
 
@@ -1225,10 +1289,8 @@ mod tests {
             Some(Expr::VarRef(ref_expr)) => ref_expr,
             _ => unreachable!(),
         };
-        let path = var_ref.name(&tree).unwrap();
 
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "foo");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "foo");
         assert!(ref_expr.mutable(&tree).is_some());
     }
 
@@ -1560,15 +1622,12 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let ty_ref = match lambda.return_ty(&tree).unwrap().expr(&tree) {
+        let var_ref = match lambda.return_ty(&tree).unwrap().expr(&tree) {
             Some(Expr::VarRef(ty_ref)) => ty_ref,
             _ => unreachable!(),
         };
 
-        let path = ty_ref.name(&tree).unwrap();
-
-        assert_eq!(path.top_level_name(&tree).unwrap().text(&tree), "i32");
-        assert!(path.nested_name(&tree).is_none());
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "i32");
     }
 
     #[test]
@@ -1626,5 +1685,69 @@ mod tests {
         };
 
         assert!(lambda.body(&tree).is_none());
+    }
+
+    #[test]
+    fn struct_decl_get_fields() {
+        let (tree, root) = parse("struct { foo: i32, bar: string };");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let struct_decl = match expr {
+            Some(Expr::StructDecl(struct_decl)) => struct_decl,
+            _ => unreachable!(),
+        };
+
+        let mut fields = struct_decl.fields(&tree);
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "foo");
+        assert_eq!(field.unwrap().ty(&tree).unwrap().text(&tree), "i32");
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "bar");
+        assert_eq!(field.unwrap().ty(&tree).unwrap().text(&tree), "string");
+
+        assert!(fields.next().is_none());
+    }
+
+    #[test]
+    fn struct_literal_get_fields() {
+        let (tree, root) = parse(r#"Some_Record_Type { foo: 123, bar: "hello" };"#);
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let struct_lit = match expr {
+            Some(Expr::StructLiteral(struct_lit)) => struct_lit,
+            _ => unreachable!(),
+        };
+
+        let mut fields = struct_lit.fields(&tree);
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "foo");
+        assert!(matches!(
+            field.unwrap().value(&tree),
+            Some(Expr::IntLiteral(_))
+        ));
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "bar");
+        assert!(matches!(
+            field.unwrap().value(&tree),
+            Some(Expr::StringLiteral(_))
+        ));
+
+        assert!(fields.next().is_none());
     }
 }

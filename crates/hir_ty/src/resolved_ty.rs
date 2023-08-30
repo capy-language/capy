@@ -34,6 +34,9 @@ pub enum ResolvedTy {
         params: Vec<Idx<ResolvedTy>>,
         return_ty: Idx<ResolvedTy>,
     },
+    Struct {
+        fields: Vec<(Option<hir::Name>, Idx<ResolvedTy>)>,
+    },
     Void,
 }
 
@@ -43,11 +46,15 @@ pub(crate) struct BinaryOutputTy {
 }
 
 impl ResolvedTy {
-    pub fn is_array(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    /// If self is a struct, this returns the fields
+    pub fn as_struct(
+        &self,
+        resolved_arena: &Arena<ResolvedTy>,
+    ) -> Option<Vec<(Option<hir::Name>, Idx<ResolvedTy>)>> {
         match self {
-            ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
-            _ => false,
+            ResolvedTy::Struct { fields } => Some(fields.clone()),
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_struct(resolved_arena),
+            _ => None,
         }
     }
 
@@ -84,14 +91,37 @@ impl ResolvedTy {
         }
     }
 
+    pub fn is_aggregate(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Struct { .. } => true,
+            ResolvedTy::Array { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            _ => false,
+        }
+    }
+
+    pub fn is_array(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Array { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            _ => false,
+        }
+    }
+
+    pub fn is_struct(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+        match self {
+            ResolvedTy::Struct { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            _ => false,
+        }
+    }
+
     /// returns true if the type is void, or contains void, or is an empty array, etc.
     pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
         match self {
             ResolvedTy::Void => true,
+            ResolvedTy::Type => true,
             ResolvedTy::Pointer { sub_ty, .. } => resolved_arena[*sub_ty].is_empty(resolved_arena),
-            ResolvedTy::Array { size, sub_ty } => {
-                *size == 0 || resolved_arena[*sub_ty].is_empty(resolved_arena)
-            }
             ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_empty(resolved_arena),
             _ => false,
         }
@@ -440,6 +470,23 @@ impl ResolvedTy {
                         .can_fit_into(&resolved_arena[*expected_ty], resolved_arena)
             }
             (
+                ResolvedTy::Struct {
+                    fields: found_fields,
+                },
+                ResolvedTy::Struct {
+                    fields: expected_fields,
+                },
+            ) => {
+                found_fields.len() == expected_fields.len()
+                    && found_fields.iter().zip(expected_fields.iter()).all(
+                        |((found_name, found_ty), (expected_name, expected_ty))| {
+                            found_name == expected_name
+                                && resolved_arena[*found_ty]
+                                    .can_fit_into(&resolved_arena[*expected_ty], resolved_arena)
+                        },
+                    )
+            }
+            (
                 ResolvedTy::Distinct { uid: found_uid, .. },
                 ResolvedTy::Distinct {
                     uid: expected_uid, ..
@@ -559,6 +606,24 @@ impl ResolvedTy {
                     (true, _) | (false, false)
                 ) && resolved_arena[*found_sub_ty]
                     .is_weak_type_replaceable_by(&resolved_arena[*expected_sub_ty], resolved_arena)
+            }
+            (
+                ResolvedTy::Struct {
+                    fields: found_fields,
+                },
+                ResolvedTy::Struct {
+                    fields: expected_fields,
+                },
+            ) => {
+                self.can_fit_into(expected, resolved_arena)
+                    && found_fields.iter().zip(expected_fields.iter()).any(
+                        |((_, found_ty), (_, expected_ty))| {
+                            resolved_arena[*found_ty].is_weak_type_replaceable_by(
+                                &resolved_arena[*expected_ty],
+                                resolved_arena,
+                            )
+                        },
+                    )
             }
             (
                 ResolvedTy::Distinct { uid: found_uid, .. },

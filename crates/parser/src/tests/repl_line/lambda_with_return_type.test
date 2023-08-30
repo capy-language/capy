@@ -11,8 +11,7 @@ Root@0..13
       Whitespace@5..6 " "
       Ty@6..9
         VarRef@6..9
-          Path@6..9
-            Ident@6..9 "i32"
+          Ident@6..9 "i32"
       Whitespace@9..10 " "
       Block@10..12
         LBrace@10..11 "{"

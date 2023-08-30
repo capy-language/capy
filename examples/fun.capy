@@ -1,0 +1,10 @@
+
+main :: () {
+    puts("\e[32mHello!\v\e[34mWorld\e[0m\n");
+    puts("Joe\b\b\bP");
+    puts("ALERT!\a");
+    puts("\fAnd\r\n\tnow..");
+    puts("\e[1;90mC\e[91mO\e[92mL\e[93m\e[94mO\e[95mR\e[96mS\e[97m!\e[0m");
+}
+
+puts :: (s: string) extern;

@@ -61,11 +61,6 @@ enum BuildAction {
     },
 }
 
-const ANSI_RED: &str = "\x1B[1;91m";
-const ANSI_GREEN: &str = "\x1B[1;92m";
-const ANSI_WHITE: &str = "\x1B[1;97m";
-const ANSI_RESET: &str = "\x1B[0m";
-
 macro_rules! get_build_config {
     (
         $action:expr => $($property:ident),+
@@ -108,13 +103,25 @@ enum CompilationConfig {
     Jit,
 }
 
+const ANSI_RED: &str = "\x1B[1;91m";
+const ANSI_GREEN: &str = "\x1B[1;92m";
+const ANSI_WHITE: &str = "\x1B[1;97m";
+const ANSI_RESET: &str = "\x1B[0m";
+
 fn compile_files(
     files: Vec<(String, String)>,
     entry_point: String,
     config: CompilationConfig,
     verbose: u8,
 ) -> io::Result<()> {
-    println!("{ANSI_GREEN}Compiling{ANSI_RESET}  ...");
+    let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
+    let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
+        (ANSI_RED, ANSI_GREEN, ANSI_WHITE, ANSI_RESET)
+    } else {
+        ("", "", "", "")
+    };
+
+    println!("{ansi_green}Compiling{ansi_reset}  ...");
     let compilation_start = Instant::now();
 
     let interner = Rc::new(RefCell::new(interner::Interner::default()));
@@ -186,7 +193,7 @@ fn compile_files(
         || source_files.iter().any(|(_, source)| source.has_errors());
     source_files
         .iter()
-        .for_each(|(_, source)| source.print_diagnostics());
+        .for_each(|(_, source)| source.print_diagnostics(with_color));
     for d in ty_diagnostics {
         let line_index = &line_indexes[&d.module];
         let source_file = &source_files[&d.module];
@@ -200,6 +207,7 @@ fn compile_files(
                     &resolved_arena.borrow(),
                     &interner.borrow(),
                     line_index,
+                    with_color,
                 )
                 .join("\n")
         )
@@ -212,13 +220,13 @@ fn compile_files(
 
     if main_modules.is_empty() {
         println!(
-            "{ANSI_RED}error{ANSI_WHITE}: there is no `{}` function{ANSI_RESET}",
+            "{ansi_red}error{ansi_white}: there is no `{}` function{ansi_reset}",
             interner.borrow().lookup(main_fn.0)
         );
         std::process::exit(1);
     } else if main_modules.len() > 1 {
         println!(
-            "{ANSI_RED}error{ANSI_WHITE}: there are multiple `{}` functions{ANSI_RESET}",
+            "{ansi_red}error{ansi_white}: there are multiple `{}` functions{ansi_reset}",
             interner.borrow().lookup(main_fn.0)
         );
         std::process::exit(1);
@@ -230,7 +238,7 @@ fn compile_files(
     // now we can actually compile it
 
     println!(
-        "{ANSI_GREEN}Finalizing{ANSI_RESET} (parsed in {:.2}s)",
+        "{ansi_green}Finalizing{ansi_reset} (parsed in {:.2}s)",
         parse_finish.as_secs_f32()
     );
     let interner = interner.borrow();
@@ -250,12 +258,12 @@ fn compile_files(
         );
 
         println!(
-            "{ANSI_GREEN}Finished{ANSI_RESET}   {} (JIT) in {:.2}s",
+            "{ansi_green}Finished{ansi_reset}   {} (JIT) in {:.2}s",
             interner.lookup(main_module.0),
             compilation_start.elapsed().as_secs_f32(),
         );
         println!(
-            "{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n",
+            "{ansi_green}Running{ansi_reset}    `{}`\n",
             interner.lookup(main_module.0)
         );
         let status = jit_fn(0, 0);
@@ -298,7 +306,7 @@ fn compile_files(
 
     if let CompilationConfig::Compile(Some(target)) = config {
         println!(
-            "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
+            "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
             file.display(),
             target,
             compilation_start.elapsed().as_secs_f32(),
@@ -308,7 +316,7 @@ fn compile_files(
 
     let exec = codegen::link_to_exec(&file);
     println!(
-        "{ANSI_GREEN}Finished{ANSI_RESET}   {} ({}) in {:.2}s",
+        "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
         interner.lookup(main_module.0),
         exec.display(),
         compilation_start.elapsed().as_secs_f32(),
@@ -318,7 +326,7 @@ fn compile_files(
         return Ok(());
     }
 
-    println!("{ANSI_GREEN}Running{ANSI_RESET}    `{}`\n", exec.display());
+    println!("{ansi_green}Running{ansi_reset}    `{}`\n", exec.display());
     match std::process::Command::new(exec).status() {
         Ok(status) => {
             println!("\nProcess exited with {}", status);
