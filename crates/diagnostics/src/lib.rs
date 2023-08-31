@@ -554,10 +554,15 @@ fn ty_diagnostic_message(
             interner.lookup(fqn.name.0),
             interner.lookup(fqn.module.0)
         ),
-        hir_ty::TyDiagnosticKind::NonExistentField { field, found } => format!(
+        hir_ty::TyDiagnosticKind::NonExistentField { field, found_ty } => format!(
             "there is no field `{}` within `{}`",
             interner.lookup(*field),
-            found.display(resolved_arena, interner)
+            found_ty.display(resolved_arena, interner)
+        ),
+        hir_ty::TyDiagnosticKind::StructLiteralMissingField { field, expected_ty } => format!(
+            "`{}` struct literal is missing the field `{}`",
+            expected_ty.display(resolved_arena, interner),
+            interner.lookup(*field)
         ),
     }
 }

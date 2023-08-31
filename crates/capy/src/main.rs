@@ -4,6 +4,7 @@ use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
 
 use clap::{Parser, Subcommand};
 use hir::{UIDGenerator, WorldIndex};
+use itertools::Itertools;
 use la_arena::Arena;
 use line_index::LineIndex;
 use rustc_hash::FxHashMap;
@@ -84,6 +85,7 @@ fn main() -> io::Result<()> {
 
     let files = files
         .iter()
+        .unique()
         .map(|filename| match fs::read_to_string(filename) {
             Ok(contents) => (filename.clone(), contents),
             Err(why) => {

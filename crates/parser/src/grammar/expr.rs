@@ -346,10 +346,12 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     param_list_m.complete(p, NodeKind::ParamList);
 
-    if !p.at_set(TokenSet::new([TokenKind::LBrace, TokenKind::Extern])) {
+    const BEGINNING_OF_BLOCK: TokenSet = TokenSet::new([TokenKind::LBrace, TokenKind::Extern]);
+
+    if !p.at_set(BEGINNING_OF_BLOCK) {
         p.expect_with_no_skip(TokenKind::Arrow);
 
-        if p.at(TokenKind::Ident) || p.at(TokenKind::LBrack) || p.at(TokenKind::Caret) {
+        if !p.at_set(BEGINNING_OF_BLOCK) {
             parse_ty(
                 p,
                 "return type",

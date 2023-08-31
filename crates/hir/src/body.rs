@@ -10,7 +10,7 @@ use text_size::TextRange;
 use crate::{
     nameres::{Path, PathWithRange},
     world_index::WorldIndex,
-    Fqn, Function, Name, Param, TyParseError, TyWithRange, UIDGenerator,
+    Fqn, Function, Name, NameWithRange, Param, TyParseError, TyWithRange, UIDGenerator,
 };
 
 #[derive(Clone)]
@@ -36,7 +36,7 @@ pub enum Expr {
     StringLiteral(String),
     Cast {
         expr: Idx<Expr>,
-        ty: Idx<TyWithRange>,
+        ty: Idx<Expr>,
     },
     Ref {
         mutable: bool,
@@ -57,7 +57,7 @@ pub enum Expr {
     Array {
         size: Option<u64>,
         items: Vec<Idx<Expr>>,
-        ty: Idx<TyWithRange>, // todo: change some places with TyWithRange to Idx<Expr>, so local types can be used
+        ty: Idx<Expr>,
     },
     Index {
         array: Idx<Expr>,
@@ -84,8 +84,7 @@ pub enum Expr {
     },
     Path {
         previous: Idx<Expr>,
-        field: Name,
-        field_range: TextRange,
+        field: NameWithRange,
     },
     Call {
         callee: Idx<Expr>,
@@ -99,7 +98,7 @@ pub enum Expr {
     },
     StructLiteral {
         ty: Idx<Expr>,
-        fields: Vec<(Option<Name>, Idx<Expr>)>,
+        fields: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
 }
 
@@ -495,14 +494,10 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_cast_expr(&mut self, cast_expr: ast::CastExpr) -> Expr {
-        let ty = self.lower_ty(cast_expr.ty(self.tree));
-
         let expr = self.lower_expr(cast_expr.expr(self.tree));
+        let ty = self.lower_expr(cast_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-        Expr::Cast {
-            expr,
-            ty: self.twr_arena.alloc(ty),
-        }
+        Expr::Cast { expr, ty }
     }
 
     fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
@@ -611,9 +606,10 @@ impl<'a> Ctx<'a> {
         let mut fields = Vec::new();
 
         for field in struct_lit.fields(self.tree) {
-            let name = field
-                .name(self.tree)
-                .map(|ident| Name(self.interner.intern(ident.text(self.tree))));
+            let name = field.name(self.tree).map(|ident| NameWithRange {
+                name: Name(self.interner.intern(ident.text(self.tree))),
+                range: ident.range(self.tree),
+            });
 
             let value = self.lower_expr(field.value(self.tree));
 
@@ -661,6 +657,8 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
+        let ty = self.lower_expr(array_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+
         let items = match array_expr.body(self.tree) {
             Some(body) => body
                 .items(self.tree)
@@ -694,8 +692,6 @@ impl<'a> Ctx<'a> {
             }
         };
 
-        let ty = self.lower_ty(array_expr.ty(self.tree));
-
         let size = array_expr
             .size(self.tree)
             .and_then(|size| size.size(self.tree))
@@ -722,11 +718,7 @@ impl<'a> Ctx<'a> {
                 }
             });
 
-        Expr::Array {
-            size,
-            items,
-            ty: self.twr_arena.alloc(ty),
-        }
+        Expr::Array { size, items, ty }
     }
 
     fn lower_block(&mut self, block: ast::Block) -> Expr {
@@ -816,8 +808,10 @@ impl<'a> Ctx<'a> {
 
         Expr::Path {
             previous: self.lower_expr(previous),
-            field: Name(field_name),
-            field_range: field.range(self.tree),
+            field: NameWithRange {
+                name: Name(field_name),
+                range: field.range(self.tree),
+            },
         }
     }
 
@@ -1196,7 +1190,7 @@ impl Bodies {
                         s.push_str(&size.to_string());
                     }
                     s.push(']');
-                    s.push_str(twr_arena[*ty].display(twr_arena, interner).as_str());
+                    write_expr(*ty, show_idx, bodies, s, twr_arena, interner, indentation);
 
                     s.push('{');
 
@@ -1239,7 +1233,7 @@ impl Bodies {
 
                     s.push_str(" as ");
 
-                    s.push_str(twr_arena[*ty].display(twr_arena, interner).as_str());
+                    write_expr(*ty, show_idx, bodies, s, twr_arena, interner, indentation);
                 }
 
                 Expr::Ref { mutable, expr } => {
@@ -1470,7 +1464,7 @@ impl Bodies {
 
                     s.push('.');
 
-                    s.push_str(interner.lookup(field.0));
+                    s.push_str(interner.lookup(field.name.0));
                 }
 
                 Expr::Lambda(lambda) => {
@@ -1509,7 +1503,7 @@ impl Bodies {
 
                     for (idx, (name, value)) in fields.iter().enumerate() {
                         if let Some(name) = name {
-                            s.push_str(interner.lookup(name.0));
+                            s.push_str(interner.lookup(name.name.0));
                             s.push_str(": ");
                         }
 

@@ -1,4 +1,4 @@
-// include io.capy
+// run with `capy run examples/fib.capy examples/io.capy`
 
 target :: 28;
 repeat :: 5;
@@ -25,6 +25,6 @@ main :: () {
     io.printf("Fibonacci number #%d = %d\n", target, result);
 
     if result != answer {
-        io.printf("The answer is WRONG! Should be %d\n", answer, 0);
+        io.print_one("The answer is WRONG! Should be %d\n", answer);
     }
 }

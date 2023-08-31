@@ -886,7 +886,7 @@ impl FunctionCompiler<'_> {
                         hir::Expr::Module(module) => {
                             let fqn = hir::Fqn {
                                 module: *module,
-                                name: field,
+                                name: field.name,
                             };
 
                             let local_func = self.get_local_func(fqn);
@@ -1116,7 +1116,7 @@ impl FunctionCompiler<'_> {
                 hir::Expr::Module(module) => {
                     let fqn = hir::Fqn {
                         module: *module,
-                        name: field,
+                        name: field.name,
                     };
 
                     match &self.tys[fqn] {
@@ -1172,7 +1172,7 @@ impl FunctionCompiler<'_> {
                     let field_idx = field_tys
                         .iter()
                         .enumerate()
-                        .find(|(_, (name, _))| name == &Some(field))
+                        .find(|(_, (name, _))| name == &Some(field.name))
                         .map(|(idx, _)| idx)
                         .unwrap();
 

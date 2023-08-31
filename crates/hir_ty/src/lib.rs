@@ -162,7 +162,11 @@ pub enum TyDiagnosticKind {
     },
     NonExistentField {
         field: Key,
-        found: ResolvedTy,
+        found_ty: ResolvedTy,
+    },
+    StructLiteralMissingField {
+        field: Key,
+        expected_ty: ResolvedTy,
     },
 }
 
@@ -537,13 +541,17 @@ impl<'a> InferenceCtx<'a> {
 
                     match actual_ty {
                         ResolvedTy::Distinct {
-                            fqn: distinct_fqn,
+                            fqn: None,
                             uid,
                             ty: distinct_ty,
-                        } if distinct_fqn.is_none() => ResolvedTy::Distinct {
+                        } => ResolvedTy::Distinct {
                             fqn: Some(fqn),
                             uid,
                             ty: distinct_ty,
+                        },
+                        ResolvedTy::Struct { fqn: None, fields } => ResolvedTy::Struct {
+                            fqn: Some(fqn),
+                            fields,
                         },
                         _ => actual_ty,
                     }
@@ -660,46 +668,44 @@ impl<'a> InferenceCtx<'a> {
 
                 ResolvedTy::Unknown
             }
-            hir::Expr::Path {
-                previous,
-                field,
-                field_range,
-            } => match &self.bodies_map[&self.current_module.unwrap()][*previous] {
-                hir::Expr::Module(module) => {
-                    let path = hir::PathWithRange::OtherModule {
-                        fqn: hir::Fqn {
-                            module: *module,
-                            name: *field,
-                        },
-                        module_range: self.bodies_map[&self.current_module.unwrap()]
-                            .range_for_expr(*previous),
-                        name_range: *field_range,
-                    };
-
-                    self.path_with_range_to_ty(path)
-                }
-                _ => {
-                    let expr_ty = self.modules[&self.current_module.unwrap()]
-                        .expr_tys
-                        .get(expr)
-                        .cloned();
-                    let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
-                    if !expr_ty.is_unknown(self.resolved_arena) {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::Mismatch {
-                                expected: ResolvedTy::Type,
-                                found: expr_ty,
+            hir::Expr::Path { previous, field } => {
+                match &self.bodies_map[&self.current_module.unwrap()][*previous] {
+                    hir::Expr::Module(module) => {
+                        let path = hir::PathWithRange::OtherModule {
+                            fqn: hir::Fqn {
+                                module: *module,
+                                name: field.name,
                             },
-                            module: self.current_module.unwrap(),
-                            range: self.bodies_map[&self.current_module.unwrap()]
-                                .range_for_expr(expr),
-                            help: None,
-                        });
-                    }
+                            module_range: self.bodies_map[&self.current_module.unwrap()]
+                                .range_for_expr(*previous),
+                            name_range: field.range,
+                        };
 
-                    ResolvedTy::Unknown
+                        self.path_with_range_to_ty(path)
+                    }
+                    _ => {
+                        let expr_ty = self.modules[&self.current_module.unwrap()]
+                            .expr_tys
+                            .get(expr)
+                            .cloned();
+                        let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
+                        if !expr_ty.is_unknown(self.resolved_arena) {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::Mismatch {
+                                    expected: ResolvedTy::Type,
+                                    found: expr_ty,
+                                },
+                                module: self.current_module.unwrap(),
+                                range: self.bodies_map[&self.current_module.unwrap()]
+                                    .range_for_expr(expr),
+                                help: None,
+                            });
+                        }
+
+                        ResolvedTy::Unknown
+                    }
                 }
-            },
+            }
             hir::Expr::PrimitiveTy { ty } => self.resolve_ty(*ty),
             _ => {
                 let expr_ty = self.modules[&self.current_module.unwrap()]
@@ -774,6 +780,7 @@ impl<'a> InferenceCtx<'a> {
                 },
             },
             hir::TyWithRange::Struct { fields, .. } => ResolvedTy::Struct {
+                fqn: None,
                 fields: fields
                     .iter()
                     .cloned()
@@ -925,18 +932,18 @@ impl ResolvedTy {
                     resolved_arena[*sub_ty].display(resolved_arena, interner)
                 )
             }
-            Self::Distinct { fqn, uid, ty } => match fqn {
-                Some(fqn) => format!(
-                    "{}.{}",
-                    interner.lookup(fqn.module.0),
-                    interner.lookup(fqn.name.0)
-                ),
-                None => format!(
+            Self::Distinct { fqn: Some(fqn), .. } => format!(
+                "{}.{}",
+                interner.lookup(fqn.module.0),
+                interner.lookup(fqn.name.0)
+            ),
+            Self::Distinct { fqn: None, uid, ty } => {
+                format!(
                     "distinct'{} {}",
                     uid,
                     resolved_arena[*ty].display(resolved_arena, interner)
-                ),
-            },
+                )
+            }
             Self::Function { params, return_ty } => {
                 let mut res = "(".to_string();
 
@@ -952,7 +959,12 @@ impl ResolvedTy {
 
                 res
             }
-            Self::Struct { fields } => {
+            Self::Struct { fqn: Some(fqn), .. } => format!(
+                "{}.{}",
+                interner.lookup(fqn.module.0),
+                interner.lookup(fqn.name.0)
+            ),
+            Self::Struct { fqn: None, fields } => {
                 let mut res = "struct {".to_string();
 
                 for (idx, (name, ty)) in fields.iter().enumerate() {
@@ -1231,13 +1243,13 @@ mod tests {
             expect![[r#"
                 main.calc : () -> isize
                 1 : i128
-                2 : i128
-                4 : u16
+                3 : i128
                 5 : u16
-                6 : i128
                 7 : u16
                 8 : i128
-                9 : i128
+                9 : u16
+                10 : i128
+                11 : i128
                 l0 : i128
                 l1 : u16
             "#]],
@@ -1257,11 +1269,11 @@ mod tests {
             expect![[r#"
                 main.calc : () -> u128
                 1 : u16
-                2 : u16
                 3 : u16
                 4 : u16
                 5 : u16
                 6 : u16
+                7 : u16
                 l0 : u16
             "#]],
             |_| [],
@@ -1315,9 +1327,9 @@ mod tests {
                 main.check : () -> bool
                 1 : {uint}
                 3 : {uint}
-                4 : bool
                 5 : bool
                 6 : bool
+                7 : bool
                 l0 : {uint}
                 l1 : bool
             "#]],
@@ -1339,9 +1351,9 @@ mod tests {
                 main.how_old : () -> usize
                 1 : string
                 3 : string
-                4 : usize
                 5 : usize
                 6 : usize
+                7 : usize
                 l0 : string
                 l1 : usize
             "#]],
@@ -1526,14 +1538,14 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> void
-                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
-                8 : void
+                7 : i32
+                8 : [6]i32
+                9 : void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1550,14 +1562,14 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> void
-                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
-                8 : void
+                7 : i32
+                8 : [6]i32
+                9 : void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1574,14 +1586,14 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> void
-                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [7]i32
-                8 : void
+                7 : i32
+                8 : [7]i32
+                9 : void
                 l0 : [7]i32
             "#]],
             |_| [],
@@ -1600,17 +1612,17 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> i32
-                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
+                7 : i32
                 8 : [6]i32
-                9 : usize
-                10 : i32
+                9 : [6]i32
+                10 : usize
                 11 : i32
+                12 : i32
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1629,17 +1641,17 @@ mod tests {
             "#,
             expect![[r#"
                 main.main : () -> i32
-                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
+                7 : i32
                 8 : [6]i32
-                9 : usize
-                10 : i32
+                9 : [6]i32
+                10 : usize
                 11 : i32
+                12 : i32
                 l0 : [6]i32
             "#]],
             |_| {
@@ -2724,10 +2736,10 @@ mod tests {
                 2 : i32
                 3 : main.something_far_away
                 4 : main.something_far_away
-                5 : ^i32
                 6 : ^i32
-                7 : i32
+                7 : ^i32
                 8 : i32
+                9 : i32
                 l0 : main.something_far_away
             "#]],
             |_| [],
@@ -2759,10 +2771,10 @@ mod tests {
                 5 : main.imaginary
                 6 : main.imaginary_far_away
                 7 : main.imaginary_far_away
-                8 : ^main.imaginary
-                9 : ^main.imaginary
-                10 : main.imaginary
-                11 : main.imaginary
+                10 : ^main.imaginary
+                11 : ^main.imaginary
+                12 : main.imaginary
+                13 : main.imaginary
                 l0 : main.imaginary
                 l1 : main.imaginary_far_away
             "#]],
@@ -2788,20 +2800,20 @@ mod tests {
                 main.Vector3 : type
                 main.main : () -> void
                 0 : type
-                2 : i32
                 3 : i32
                 4 : i32
-                5 : [3]i32
-                7 : main.Vector3
-                8 : usize
-                9 : i32
-                11 : main.Vector3
-                12 : usize
-                13 : i32
-                15 : main.Vector3
-                16 : usize
-                17 : i32
-                18 : void
+                5 : i32
+                6 : [3]i32
+                8 : main.Vector3
+                9 : usize
+                10 : i32
+                12 : main.Vector3
+                13 : usize
+                14 : i32
+                16 : main.Vector3
+                17 : usize
+                18 : i32
+                19 : void
                 l0 : main.Vector3
                 l1 : i32
                 l2 : i32
@@ -3051,6 +3063,404 @@ mod tests {
     }
 
     #[test]
+    fn mutable_struct() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () {
+                    bob := Person {
+                        name: "Bob",
+                        age: 26,
+                    };
+
+                    bob.age = bob.age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                3 : string
+                4 : i32
+                5 : main.Person
+                6 : main.Person
+                7 : i32
+                8 : main.Person
+                9 : i32
+                10 : i32
+                11 : i32
+                12 : void
+                l0 : main.Person
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn immutable_struct() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () {
+                    bob :: Person {
+                        name: "Bob",
+                        age: 26,
+                    };
+
+                    bob.age = bob.age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                3 : string
+                4 : i32
+                5 : main.Person
+                6 : main.Person
+                7 : i32
+                8 : main.Person
+                9 : i32
+                10 : i32
+                11 : i32
+                12 : void
+                l0 : main.Person
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    297..318,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 167..274)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mutable_field_index() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                Company :: struct {
+                    employees: [3]Person,
+                };
+
+                foo :: () {
+                    my_company := Company {
+                        employees: [] Person {
+                            Person {
+                                name: "Bob",
+                                age: 26,
+                            },
+                            Person {
+                                name: "Kyle",
+                                age: 30,
+                            },
+                            Person {
+                                name: "John",
+                                age: 23,
+                            }
+                        },
+                    };
+
+                    my_company.employees[1].age = my_company.employees[1].age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Company : type
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                1 : type
+                6 : string
+                7 : i32
+                8 : main.Person
+                10 : string
+                11 : i32
+                12 : main.Person
+                14 : string
+                15 : i32
+                16 : main.Person
+                17 : [3]main.Person
+                18 : main.Company
+                19 : main.Company
+                20 : [3]main.Person
+                21 : usize
+                22 : main.Person
+                23 : i32
+                24 : main.Company
+                25 : [3]main.Person
+                26 : usize
+                27 : main.Person
+                28 : i32
+                29 : i32
+                30 : i32
+                31 : void
+                l0 : main.Company
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn immutable_field_index() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                Company :: struct {
+                    employees: [3]Person,
+                };
+
+                foo :: () {
+                    my_company :: Company {
+                        employees: [] Person {
+                            Person {
+                                name: "Bob",
+                                age: 26,
+                            },
+                            Person {
+                                name: "Kyle",
+                                age: 30,
+                            },
+                            Person {
+                                name: "John",
+                                age: 23,
+                            }
+                        },
+                    };
+
+                    my_company.employees[1].age = my_company.employees[1].age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Company : type
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                1 : type
+                6 : string
+                7 : i32
+                8 : main.Person
+                10 : string
+                11 : i32
+                12 : main.Person
+                14 : string
+                15 : i32
+                16 : main.Person
+                17 : [3]main.Person
+                18 : main.Company
+                19 : main.Company
+                20 : [3]main.Person
+                21 : usize
+                22 : main.Person
+                23 : i32
+                24 : main.Company
+                25 : [3]main.Person
+                26 : usize
+                27 : main.Person
+                28 : i32
+                29 : i32
+                30 : i32
+                31 : void
+                l0 : main.Company
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    870..931,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 265..847)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn immutable_field_ptr() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                Ref_To_Person :: struct {
+                    person: ^Person,
+                };
+
+                foo :: () {
+                    ref :: Ref_To_Person {
+                        person: ^Person {
+                            name: "Bob",
+                            age: 26,
+                        },
+                    };
+
+                    ref.person^.age = ref.person^.age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.Ref_To_Person : type
+                main.foo : () -> void
+                0 : type
+                1 : type
+                5 : string
+                6 : i32
+                7 : main.Person
+                8 : ^main.Person
+                9 : main.Ref_To_Person
+                10 : main.Ref_To_Person
+                11 : ^main.Person
+                12 : main.Person
+                13 : i32
+                14 : main.Ref_To_Person
+                15 : ^main.Person
+                16 : main.Person
+                17 : i32
+                18 : i32
+                19 : i32
+                20 : void
+                l0 : main.Ref_To_Person
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    480..517,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 484..490)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mutable_field_ptr() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                Ref_To_Person :: struct {
+                    person: ^mut Person,
+                };
+
+                foo :: () {
+                    ref :: Ref_To_Person {
+                        person: ^mut Person {
+                            name: "Bob",
+                            age: 26,
+                        },
+                    };
+
+                    ref.person^.age = ref.person^.age + 1;
+                }
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.Ref_To_Person : type
+                main.foo : () -> void
+                0 : type
+                1 : type
+                5 : string
+                6 : i32
+                7 : main.Person
+                8 : ^mut main.Person
+                9 : main.Ref_To_Person
+                10 : main.Ref_To_Person
+                11 : ^mut main.Person
+                12 : main.Person
+                13 : i32
+                14 : main.Ref_To_Person
+                15 : ^mut main.Person
+                16 : main.Person
+                17 : i32
+                18 : i32
+                19 : i32
+                20 : void
+                l0 : main.Ref_To_Person
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn mutable_index() {
+        check(
+            r#"
+                foo :: () {
+                    array := []i32 { 1, 2, 3 };
+
+                    array[0] = 100;
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                6 : [3]i32
+                7 : usize
+                8 : i32
+                9 : i32
+                10 : void
+                l0 : [3]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn immutable_index() {
+        check(
+            r#"
+                foo :: () {
+                    array :: []i32 { 1, 2, 3 };
+
+                    array[0] = 100;
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                6 : [3]i32
+                7 : usize
+                8 : i32
+                9 : i32
+                10 : void
+                l0 : [3]i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    98..112,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..75)),
+                )]
+            },
+        );
+    }
+
+    #[test]
     fn reinfer_usages() {
         check(
             r#"
@@ -3159,7 +3569,7 @@ mod tests {
     }
 
     #[test]
-    fn function_with_ty_annotation_ok() {
+    fn fn_with_ty_annotation_ok() {
         check(
             r#"
                 foo : (arg: i32) -> void : (x: i32) {
@@ -3436,11 +3846,85 @@ mod tests {
                 0 : type
                 3 : string
                 4 : i32
-                5 : struct {name: string, age: i32}
+                5 : main.Person
                 6 : void
-                l0 : struct {name: string, age: i32}
+                l0 : main.Person
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn struct_literal_wrong_fields() {
+        check(
+            r#"
+                Person :: struct {
+                    name: string,
+                    age: i32
+                };
+
+                foo :: () {
+                    some_guy := Person {
+                        name: false,
+                        height: "5'9\""
+                    };
+                };
+            "#,
+            expect![[r#"
+                main.Person : type
+                main.foo : () -> void
+                0 : type
+                3 : bool
+                4 : string
+                5 : main.Person
+                6 : void
+                l0 : main.Person
+            "#]],
+            |i| {
+                let person_ty = ResolvedTy::Struct {
+                    fqn: Some(hir::Fqn {
+                        module: hir::Name(i.intern("main")),
+                        name: hir::Name(i.intern("Person")),
+                    }),
+                    fields: vec![
+                        (
+                            Some(hir::Name(i.intern("name"))),
+                            Idx::from_raw(RawIdx::from(0)),
+                        ),
+                        (
+                            Some(hir::Name(i.intern("age"))),
+                            Idx::from_raw(RawIdx::from(1)),
+                        ),
+                    ],
+                };
+
+                [
+                    (
+                        TyDiagnosticKind::NonExistentField {
+                            field: i.intern("height"),
+                            found_ty: person_ty.clone(),
+                        },
+                        249..255,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::String,
+                            found: ResolvedTy::Bool,
+                        },
+                        218..223,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::StructLiteralMissingField {
+                            field: i.intern("age"),
+                            expected_ty: person_ty,
+                        },
+                        179..286,
+                        None,
+                    ),
+                ]
+            },
         );
     }
 
@@ -3468,11 +3952,11 @@ mod tests {
                 0 : type
                 3 : string
                 4 : i32
-                5 : struct {name: string, age: i32}
-                6 : struct {name: string, age: i32}
+                5 : main.Person
+                6 : main.Person
                 7 : i32
                 8 : i32
-                l0 : struct {name: string, age: i32}
+                l0 : main.Person
             "#]],
             |_| [],
         );
@@ -3502,17 +3986,21 @@ mod tests {
                 0 : type
                 3 : string
                 4 : i32
-                5 : struct {name: string, age: i32}
-                6 : struct {name: string, age: i32}
+                5 : main.Person
+                6 : main.Person
                 7 : <unknown>
                 8 : <unknown>
-                l0 : struct {name: string, age: i32}
+                l0 : main.Person
             "#]],
             |i| {
                 [(
                     TyDiagnosticKind::NonExistentField {
                         field: i.intern("height"),
-                        found: ResolvedTy::Struct {
+                        found_ty: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::Name(i.intern("main")),
+                                name: hir::Name(i.intern("Person")),
+                            }),
                             fields: vec![
                                 (
                                     Some(hir::Name(i.intern("name"))),
@@ -3708,6 +4196,57 @@ mod tests {
                 l0 : string
             "#]],
             |_| [(TyDiagnosticKind::ParamNotATy, 62..63, None)],
+        );
+    }
+
+    #[test]
+    fn cast_as_local_ty() {
+        check(
+            r#"
+                foo :: () {
+                    imaginary :: distinct i32;
+
+                    real : i32 = 5;
+
+                    real as imaginary;
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : type
+                3 : i32
+                4 : i32
+                6 : distinct'0 i32
+                7 : void
+                l0 : type
+                l1 : i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_local_ty() {
+        check(
+            r#"
+                foo :: () {
+                    imaginary :: distinct i32;
+
+                    array := [] imaginary { 1, 2, 3 };
+                }
+            "#,
+            expect![[r#"
+                main.foo : () -> void
+                1 : type
+                4 : {uint}
+                5 : {uint}
+                6 : {uint}
+                7 : [3]distinct'0 i32
+                8 : void
+                l0 : type
+                l1 : [3]distinct'0 i32
+            "#]],
+            |_| [],
         );
     }
 }

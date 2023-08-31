@@ -1,5 +1,5 @@
+// run with `capy run examples/entry_point.capy --entry-point _start`
 
-// run with `capy entry_point.capy --entry-point _start`
 _start :: () {
     printf("_start\n", 0);
 

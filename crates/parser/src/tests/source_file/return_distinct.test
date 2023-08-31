@@ -1,0 +1,27 @@
+foo :: () -> distinct i32 {}
+===
+Root@0..28
+  Binding@0..28
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Colon@5..6 ":"
+    Whitespace@6..7 " "
+    Lambda@7..28
+      ParamList@7..9
+        LParen@7..8 "("
+        RParen@8..9 ")"
+      Whitespace@9..10 " "
+      Arrow@10..12 "->"
+      Whitespace@12..13 " "
+      Ty@13..25
+        Distinct@13..25
+          Distinct@13..21 "distinct"
+          Whitespace@21..22 " "
+          Ty@22..25
+            VarRef@22..25
+              Ident@22..25 "i32"
+      Whitespace@25..26 " "
+      Block@26..28
+        LBrace@26..27 "{"
+        RBrace@27..28 "}"

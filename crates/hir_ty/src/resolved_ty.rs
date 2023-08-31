@@ -35,6 +35,7 @@ pub enum ResolvedTy {
         return_ty: Idx<ResolvedTy>,
     },
     Struct {
+        fqn: Option<hir::Fqn>,
         fields: Vec<(Option<hir::Name>, Idx<ResolvedTy>)>,
     },
     Void,
@@ -52,7 +53,7 @@ impl ResolvedTy {
         resolved_arena: &Arena<ResolvedTy>,
     ) -> Option<Vec<(Option<hir::Name>, Idx<ResolvedTy>)>> {
         match self {
-            ResolvedTy::Struct { fields } => Some(fields.clone()),
+            ResolvedTy::Struct { fields, .. } => Some(fields.clone()),
             ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_struct(resolved_arena),
             _ => None,
         }
@@ -138,6 +139,9 @@ impl ResolvedTy {
             ResolvedTy::Array { size, sub_ty } => {
                 *size == 0 || resolved_arena[*sub_ty].is_unknown(resolved_arena)
             }
+            ResolvedTy::Struct { fields, .. } => fields
+                .iter()
+                .any(|(name, ty)| name.is_none() || resolved_arena[*ty].is_unknown(resolved_arena)),
             ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_unknown(resolved_arena),
             _ => false,
         }
@@ -472,9 +476,11 @@ impl ResolvedTy {
             (
                 ResolvedTy::Struct {
                     fields: found_fields,
+                    ..
                 },
                 ResolvedTy::Struct {
                     fields: expected_fields,
+                    ..
                 },
             ) => {
                 found_fields.len() == expected_fields.len()
@@ -610,9 +616,11 @@ impl ResolvedTy {
             (
                 ResolvedTy::Struct {
                     fields: found_fields,
+                    ..
                 },
                 ResolvedTy::Struct {
                     fields: expected_fields,
+                    ..
                 },
             ) => {
                 self.can_fit_into(expected, resolved_arena)

@@ -12,6 +12,7 @@ interner = {path = "../interner"}
 rustc-hash = "1.1"
 text-size = "1.1"
 backtrace = "0.3.68"
+internment = "0.7.1"
 
 [dev-dependencies]
 ast = {path = "../ast"}

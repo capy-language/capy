@@ -286,7 +286,7 @@ impl ToCompSize for ResolvedTy {
                 resolved_arena[*ty].get_size_in_bytes(module, resolved_arena)
             }
             ResolvedTy::Function { .. } => module.target_config().pointer_bytes() as u32,
-            ResolvedTy::Struct { fields } => {
+            ResolvedTy::Struct { fields, .. } => {
                 let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
                 StructMemory::new(fields, module, resolved_arena).size
             }
@@ -307,7 +307,7 @@ impl ToCompSize for ResolvedTy {
             | ResolvedTy::Pointer { .. }
             | ResolvedTy::Distinct { .. }
             | ResolvedTy::Function { .. } => self.get_size_in_bytes(module, resolved_arena),
-            ResolvedTy::Struct { fields } => fields
+            ResolvedTy::Struct { fields, .. } => fields
                 .iter()
                 .map(|(_, ty)| resolved_arena[*ty].get_align_in_bytes(module, resolved_arena))
                 .max()

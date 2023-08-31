@@ -17,6 +17,12 @@ use interner::{Interner, Key};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(pub Key);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NameWithRange {
+    pub name: Name,
+    pub range: TextRange,
+}
+
 // short for Fully Qualified Name
 // not only the name of whatever we're referring to, but also the module it's contained in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

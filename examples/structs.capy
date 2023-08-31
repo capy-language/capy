@@ -3,32 +3,38 @@ Person :: struct {
     age: i32
 };
 
+Company :: struct {
+    employees: [3]Person,
+};
+
 main :: () {
     some_guy := Person {
         name: "Terry",
         age: 48,
     };
 
-    people := [] Person {
-        Person {
-            name: "Bob",
-            age: 32,
-        },
-        some_guy, // copied into the array
-        Person {
-            name: "Walter",
-            age: 52,
+    my_company := Company {
+        employees: [] Person {
+            Person {
+                name: "Bob",
+                age: 32,
+            },
+            some_guy, // copied into the array
+            Person {
+                name: "Walter",
+                age: 52,
+            },
         },
     };
 
     some_guy.age = 1000;
 
-    people[0].age = 3;
+    my_company.employees[0].age = 3;
 
     puts("people:");
     idx := 0;
     while idx < 3 {
-        print_person_by_ref(^people[idx]);
+        print_person_by_ref(^my_company.employees[idx]);
         idx = idx + 1;
     }
 
