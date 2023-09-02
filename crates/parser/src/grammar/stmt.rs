@@ -64,12 +64,6 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     res
 }
 
-#[derive(PartialEq)]
-enum DefMutability {
-    Binding,
-    Variable,
-}
-
 /// returns the completed marker for the definition, and a bool if it is a top level lambda definition
 pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> (CompletedMarker, bool) {
     let _guard = p.expected_syntax_name("statement");
@@ -85,24 +79,18 @@ pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> (CompletedMarker, bo
         expr::parse_ty(p, "type annotation", DEF_SET);
     }
 
-    let def = if p.at(TokenKind::Colon) {
+    let def_kind = if p.at(TokenKind::Colon) {
         p.expect(TokenKind::Colon);
-        DefMutability::Binding
+        NodeKind::Binding
     } else {
         p.expect(TokenKind::Equals);
-        DefMutability::Variable
+        NodeKind::VarDef
     };
 
     let value = expr::parse_expr(p, "value");
 
     (
-        m.complete(
-            p,
-            match def {
-                DefMutability::Binding => NodeKind::Binding,
-                DefMutability::Variable => NodeKind::VarDef,
-            },
-        ),
+        m.complete(p, def_kind),
         top_level
             && value
                 .map(|value| value.kind() == NodeKind::Lambda)

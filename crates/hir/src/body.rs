@@ -1,16 +1,16 @@
-use std::vec;
+use std::{env, vec};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
+use path_clean::PathClean;
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
 use crate::{
-    nameres::{Path, PathWithRange},
-    world_index::WorldIndex,
-    Fqn, Function, Name, NameWithRange, Param, TyParseError, TyWithRange, UIDGenerator,
+    nameres::Path, FileName, Fqn, Function, Index, Name, NameWithRange, Param, TyParseError,
+    TyWithRange, UIDGenerator,
 };
 
 #[derive(Clone)]
@@ -23,8 +23,7 @@ pub struct Bodies {
     function_bodies: FxHashMap<Name, Idx<Expr>>,
     globals: FxHashMap<Name, Idx<Expr>>,
     lambdas: Arena<Lambda>,
-    other_module_references: FxHashSet<Fqn>,
-    symbol_map: FxHashMap<ast::Ident, Symbol>,
+    imports: FxHashSet<FileName>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +76,10 @@ pub enum Expr {
         body: Idx<Expr>,
     },
     Local(Idx<LocalDef>),
-    Global(PathWithRange),
-    Module(Name),
+    SelfGlobal(NameWithRange),
     Param {
         idx: u32,
+        range: TextRange,
     },
     Path {
         previous: Idx<Expr>,
@@ -100,6 +99,7 @@ pub enum Expr {
         ty: Idx<Expr>,
         fields: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
+    Import(FileName),
 }
 
 #[derive(Debug, Clone)]
@@ -185,8 +185,10 @@ pub enum LoweringDiagnosticKind {
     UndefinedRef { name: Key },
     NonGlobalExtern,
     ArraySizeMismatch { found: u32, expected: u32 },
-    TyParseError(TyParseError),
     InvalidEscape,
+    ImportMustEndInDotCapy,
+    ImportDoesNotExist { file: String },
+    TyParseError(TyParseError),
 }
 
 #[derive(Clone, Copy)]
@@ -200,16 +202,26 @@ pub enum Symbol {
     Unknown,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn lower(
     root: ast::Root,
     tree: &SyntaxTree,
-    module: Name,
-    world_index: &WorldIndex,
+    file_name: &std::path::Path,
+    index: &Index,
     uid_gen: &mut UIDGenerator,
     twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
+    fake_file_system: bool,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(module, world_index, uid_gen, twr_arena, interner, tree);
+    let mut ctx = Ctx::new(
+        file_name,
+        index,
+        uid_gen,
+        twr_arena,
+        interner,
+        tree,
+        fake_file_system,
+    );
 
     for def in root.defs(tree) {
         let (name, value) = match def {
@@ -229,8 +241,8 @@ pub fn lower(
 
 struct Ctx<'a> {
     bodies: Bodies,
-    module: Name,
-    world_index: &'a WorldIndex,
+    file_name: &'a std::path::Path,
+    index: &'a Index,
     uid_gen: &'a mut UIDGenerator,
     twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
@@ -238,16 +250,18 @@ struct Ctx<'a> {
     diagnostics: Vec<LoweringDiagnostic>,
     scopes: Vec<FxHashMap<Key, Idx<LocalDef>>>,
     params: FxHashMap<Key, (u32, ast::Param)>,
+    fake_file_system: bool, // used for importing files in tests
 }
 
 impl<'a> Ctx<'a> {
     fn new(
-        module: Name,
-        world_index: &'a WorldIndex,
+        file_name: &'a std::path::Path,
+        index: &'a Index,
         uid_gen: &'a mut UIDGenerator,
         twr_arena: &'a mut Arena<TyWithRange>,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
+        fake_file_system: bool,
     ) -> Self {
         Self {
             bodies: Bodies {
@@ -259,11 +273,10 @@ impl<'a> Ctx<'a> {
                 function_bodies: FxHashMap::default(),
                 globals: FxHashMap::default(),
                 lambdas: Arena::new(),
-                other_module_references: FxHashSet::default(),
-                symbol_map: FxHashMap::default(),
+                imports: FxHashSet::default(),
             },
-            module,
-            world_index,
+            file_name,
+            index,
             uid_gen,
             twr_arena,
             interner,
@@ -271,6 +284,7 @@ impl<'a> Ctx<'a> {
             diagnostics: Vec::new(),
             scopes: vec![FxHashMap::default()],
             params: FxHashMap::default(),
+            fake_file_system,
         }
     }
 
@@ -400,7 +414,6 @@ impl<'a> Ctx<'a> {
                 params,
                 return_ty: self.twr_arena.alloc(return_ty),
                 ty_annotation: self.twr_arena.alloc(TyWithRange::Unknown),
-                full_range: lambda.range(self.tree),
                 is_extern: lambda.r#extern(self.tree).is_some(), // this doesn't matter since lambdas can't be extern
             },
             body,
@@ -490,6 +503,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::Lambda(lambda) => self.lower_lambda(lambda),
             ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
             ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
+            ast::Expr::Import(import_expr) => self.lower_import(import_expr),
         }
     }
 
@@ -617,6 +631,64 @@ impl<'a> Ctx<'a> {
         }
 
         Expr::StructLiteral { ty, fields }
+    }
+
+    fn lower_import(&mut self, import: ast::ImportExpr) -> Expr {
+        let file_name = match import.file(self.tree) {
+            Some(file_name) => file_name,
+            None => return Expr::Missing,
+        };
+        let old_diags_len = self.diagnostics.len();
+        let file = match self.lower_string_literal(file_name) {
+            Expr::StringLiteral(text) => text.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR),
+            _ => unreachable!(),
+        };
+        if self.diagnostics.len() != old_diags_len {
+            return Expr::Missing;
+        }
+        if !file.ends_with(".capy") {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::ImportMustEndInDotCapy,
+                range: file_name.range(self.tree),
+            });
+            return Expr::Missing;
+        }
+
+        let file = if !self.fake_file_system {
+            let file = std::path::Path::new(&file);
+
+            let file = env::current_dir()
+                .unwrap()
+                .join(self.file_name)
+                .join("..")
+                .join(file)
+                .clean();
+
+            if !file.exists() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ImportDoesNotExist {
+                        file: file.to_string_lossy().to_string(),
+                    },
+                    range: file_name.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            file
+        } else {
+            file.into()
+        };
+
+        let file_name = FileName(self.interner.intern(&file.to_string_lossy()));
+
+        // println!(
+        //     r#"{:?} = "{}""#,
+        //     file_name,
+        //     self.interner.lookup(file_name.0)
+        // );
+
+        self.bodies.imports.insert(file_name);
+        Expr::Import(file_name)
     }
 
     fn lower_binary_expr(&mut self, binary_expr: ast::BinaryExpr) -> Expr {
@@ -824,50 +896,26 @@ impl<'a> Ctx<'a> {
 
         // only have one ident as path
         if let Some(def) = self.look_up_in_current_scope(ident_name) {
-            self.bodies.symbol_map.insert(ident, Symbol::Local(def));
             return Expr::Local(def);
         }
 
         if let Some((idx, ast)) = self.look_up_param(ident_name) {
-            self.bodies.symbol_map.insert(ident, Symbol::Param(ast));
-            return Expr::Param { idx };
+            return Expr::Param {
+                idx,
+                range: ast.range(self.tree),
+            };
         }
 
         let name = Name(ident_name);
-        if self
-            .world_index
-            .get_definition(Fqn {
-                module: self.module,
-                name,
-            })
-            .is_ok()
-        {
-            let path = PathWithRange::ThisModule {
+        if self.index.get_definition(name).is_some() {
+            return Expr::SelfGlobal(NameWithRange {
                 name,
                 range: ident.range(self.tree),
-            };
-
-            self.bodies
-                .symbol_map
-                .insert(ident, Symbol::Global(path.path()));
-
-            return Expr::Global(path);
-        }
-
-        if self.world_index.get_module(Name(ident_name)).is_some() {
-            self.bodies
-                .symbol_map
-                .insert(ident, Symbol::Module(Name(ident_name)));
-
-            return Expr::Module(Name(ident_name));
+            });
         }
 
         if let Some(ty) = TyWithRange::from_key(name.0, ident.range(self.tree)) {
             let ty = self.twr_arena.alloc(ty);
-
-            self.bodies
-                .symbol_map
-                .insert(ident, Symbol::PrimitiveTy(ty));
 
             return Expr::PrimitiveTy { ty };
         }
@@ -876,8 +924,6 @@ impl<'a> Ctx<'a> {
             kind: LoweringDiagnosticKind::UndefinedRef { name: name.0 },
             range: ident.range(self.tree),
         });
-
-        self.bodies.symbol_map.insert(ident, Symbol::Unknown);
 
         Expr::Missing
     }
@@ -1013,13 +1059,8 @@ impl Bodies {
         self.expr_ranges[expr]
     }
 
-    pub fn other_module_references(&self) -> &FxHashSet<Fqn> {
-        &self.other_module_references
-    }
-
-    // todo: use this in a LSP
-    pub fn symbol(&self, ident: ast::Ident) -> Option<Symbol> {
-        self.symbol_map.get(&ident).copied()
+    pub fn imports(&self) -> &FxHashSet<FileName> {
+        &self.imports
     }
 
     fn shrink_to_fit(&mut self) {
@@ -1028,18 +1069,21 @@ impl Bodies {
             stmts,
             exprs,
             function_bodies,
-            other_module_references,
-            symbol_map,
-            ..
+            assigns,
+            expr_ranges: _,
+            globals,
+            lambdas,
+            imports,
         } = self;
 
         local_defs.shrink_to_fit();
         stmts.shrink_to_fit();
         exprs.shrink_to_fit();
-        //expr_ranges.shrink_to_fit();
         function_bodies.shrink_to_fit();
-        other_module_references.shrink_to_fit();
-        symbol_map.shrink_to_fit();
+        assigns.shrink_to_fit();
+        globals.shrink_to_fit();
+        lambdas.shrink_to_fit();
+        imports.shrink_to_fit();
     }
 }
 
@@ -1086,8 +1130,9 @@ impl std::ops::Index<Idx<Expr>> for Bodies {
 impl Bodies {
     pub fn debug(
         &self,
-        module_name: &str,
+        module: FileName,
         twr_arena: &Arena<TyWithRange>,
+        project_root: &std::path::Path,
         interner: &Interner,
         show_expr_idx: bool,
     ) -> String {
@@ -1098,16 +1143,20 @@ impl Bodies {
 
         for (name, expr_id) in globals {
             s.push_str(&format!(
-                "\n{}.{} := ",
-                module_name,
-                interner.lookup(name.0)
+                "\n{} := ",
+                Fqn {
+                    module,
+                    name: *name,
+                }
+                .to_string(project_root, interner)
             ));
             write_expr(
+                &mut s,
                 *expr_id,
                 show_expr_idx,
                 self,
-                &mut s,
                 twr_arena,
+                project_root,
                 interner,
                 0,
             );
@@ -1119,53 +1168,36 @@ impl Bodies {
 
         for (name, expr_id) in function_bodies {
             s.push_str(&format!(
-                "\n{}.{} := () -> ",
-                module_name,
-                interner.lookup(name.0)
+                "\n{} := () -> ",
+                Fqn {
+                    module,
+                    name: *name,
+                }
+                .to_string(project_root, interner)
             ));
             write_expr(
+                &mut s,
                 *expr_id,
                 show_expr_idx,
                 self,
-                &mut s,
                 twr_arena,
+                project_root,
                 interner,
                 0,
             );
             s.push(';');
         }
 
-        if !self.other_module_references.is_empty() {
-            let mut other_module_references: Vec<_> = self.other_module_references.iter().collect();
-            other_module_references.sort_by_key(|fqn| {
-                format!(
-                    "{}.{}",
-                    interner.lookup(fqn.module.0),
-                    interner.lookup(fqn.name.0),
-                )
-            });
-
-            s.push_str(&format!(
-                "\nReferences to other modules in {}:",
-                module_name
-            ));
-            for fqn in &other_module_references {
-                s.push_str(&format!(
-                    "\n- {}.{}",
-                    interner.lookup(fqn.module.0),
-                    interner.lookup(fqn.name.0)
-                ));
-            }
-        }
-
         return s.trim().to_string();
 
+        #[allow(clippy::too_many_arguments)]
         fn write_expr(
+            s: &mut String,
             idx: Idx<Expr>,
             show_idx: bool,
             bodies: &Bodies,
-            s: &mut String,
             twr_arena: &Arena<TyWithRange>,
+            project_root: &std::path::Path,
             interner: &Interner,
             mut indentation: usize,
         ) {
@@ -1190,13 +1222,31 @@ impl Bodies {
                         s.push_str(&size.to_string());
                     }
                     s.push(']');
-                    write_expr(*ty, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
 
                     s.push('{');
 
                     for (idx, item) in items.iter().enumerate() {
                         s.push(' ');
-                        write_expr(*item, show_idx, bodies, s, twr_arena, interner, indentation);
+                        write_expr(
+                            s,
+                            *item,
+                            show_idx,
+                            bodies,
+                            twr_arena,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
                         if idx != items.len() - 1 {
                             s.push(',');
                         }
@@ -1207,21 +1257,23 @@ impl Bodies {
 
                 Expr::Index { array, index } => {
                     write_expr(
+                        s,
                         *array,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
                     s.push('[');
                     write_expr(
+                        s,
                         *index,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1229,11 +1281,29 @@ impl Bodies {
                 }
 
                 Expr::Cast { expr, ty } => {
-                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
 
                     s.push_str(" as ");
 
-                    write_expr(*ty, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Ref { mutable, expr } => {
@@ -1243,16 +1313,26 @@ impl Bodies {
                         s.push_str("mut ");
                     }
 
-                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Deref { pointer } => {
                     write_expr(
+                        s,
                         *pointer,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1261,7 +1341,16 @@ impl Bodies {
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(*lhs, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *lhs,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
 
                     s.push(' ');
 
@@ -1283,7 +1372,16 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(*rhs, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *rhs,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Unary { expr, op } => {
@@ -1293,7 +1391,16 @@ impl Bodies {
                         UnaryOp::Not => s.push('!'),
                     }
 
-                    write_expr(*expr, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Block {
@@ -1309,11 +1416,12 @@ impl Bodies {
                 } if stmts.is_empty() => {
                     let mut inner = String::new();
                     write_expr(
+                        &mut inner,
                         *tail_expr,
                         show_idx,
                         bodies,
-                        &mut inner,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation + 4,
                     );
@@ -1345,18 +1453,28 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(stmt, show_idx, bodies, s, twr_arena, interner, indentation);
+                        write_stmt(
+                            s,
+                            stmt,
+                            show_idx,
+                            bodies,
+                            twr_arena,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
                         s.push('\n');
                     }
 
                     if let Some(tail_expr) = tail_expr {
                         s.push_str(&" ".repeat(indentation));
                         write_expr(
+                            s,
                             *tail_expr,
                             show_idx,
                             bodies,
-                            s,
                             twr_arena,
+                            project_root,
                             interner,
                             indentation,
                         );
@@ -1376,24 +1494,35 @@ impl Bodies {
                 } => {
                     s.push_str("if ");
                     write_expr(
+                        s,
                         *condition,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
                     s.push(' ');
-                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *body,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
                         write_expr(
+                            s,
                             *else_branch,
                             show_idx,
                             bodies,
-                            s,
                             twr_arena,
+                            project_root,
                             interner,
                             indentation,
                         );
@@ -1404,11 +1533,12 @@ impl Bodies {
                     if let Some(condition) = condition {
                         s.push_str("while ");
                         write_expr(
+                            s,
                             *condition,
                             show_idx,
                             bodies,
-                            s,
                             twr_arena,
+                            project_root,
                             interner,
                             indentation,
                         );
@@ -1416,20 +1546,30 @@ impl Bodies {
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *body,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
 
-                Expr::Param { idx } => s.push_str(&format!("p{}", idx)),
+                Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
                 Expr::Call { callee, args } => {
                     write_expr(
+                        s,
                         *callee,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1440,24 +1580,32 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(*arg, show_idx, bodies, s, twr_arena, interner, indentation);
+                        write_expr(
+                            s,
+                            *arg,
+                            show_idx,
+                            bodies,
+                            twr_arena,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(')');
                 }
 
-                Expr::Global(path) => s.push_str(&path.path().display(interner)),
-
-                Expr::Module(module) => s.push_str(interner.lookup(module.0)),
+                Expr::SelfGlobal(name) => s.push_str(interner.lookup(name.name.0)),
 
                 Expr::Path {
                     previous, field, ..
                 } => {
                     write_expr(
+                        s,
                         *previous,
                         show_idx,
                         bodies,
-                        s,
                         twr_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1477,7 +1625,11 @@ impl Bodies {
                             s.push_str(": ");
                         }
 
-                        s.push_str(twr_arena[param.ty].display(twr_arena, interner).as_str());
+                        s.push_str(
+                            twr_arena[param.ty]
+                                .display(twr_arena, project_root, interner)
+                                .as_str(),
+                        );
 
                         if idx != function.params.len() - 1 {
                             s.push_str(", ");
@@ -1487,17 +1639,35 @@ impl Bodies {
 
                     s.push_str(
                         twr_arena[function.return_ty]
-                            .display(twr_arena, interner)
+                            .display(twr_arena, project_root, interner)
                             .as_str(),
                     );
 
                     s.push(' ');
 
-                    write_expr(*body, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *body,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::StructLiteral { ty, fields } => {
-                    write_expr(*ty, show_idx, bodies, s, twr_arena, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
 
                     s.push_str(" {");
 
@@ -1508,11 +1678,12 @@ impl Bodies {
                         }
 
                         write_expr(
+                            s,
                             *value,
                             show_idx,
                             bodies,
-                            s,
                             twr_arena,
+                            project_root,
                             interner,
                             indentation,
                         );
@@ -1526,7 +1697,11 @@ impl Bodies {
                 }
 
                 Expr::PrimitiveTy { ty } => {
-                    s.push_str(&twr_arena[*ty].display(twr_arena, interner))
+                    s.push_str(&twr_arena[*ty].display(twr_arena, project_root, interner))
+                }
+
+                Expr::Import(file_name) => {
+                    s.push_str(&format!("import {:?}", interner.lookup(file_name.0)))
                 }
             }
 
@@ -1537,23 +1712,26 @@ impl Bodies {
             }
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn write_stmt(
+            s: &mut String,
             expr: Idx<Stmt>,
             show_idx: bool,
             bodies: &Bodies,
-            s: &mut String,
             ty_arena: &Arena<TyWithRange>,
+            project_root: &std::path::Path,
             interner: &Interner,
             indentation: usize,
         ) {
             match &bodies[expr] {
                 Stmt::Expr(expr_id) => {
                     write_expr(
+                        s,
                         *expr_id,
                         show_idx,
                         bodies,
-                        s,
                         ty_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1562,11 +1740,12 @@ impl Bodies {
                 Stmt::LocalDef(local_def_id) => {
                     s.push_str(&format!("l{} := ", local_def_id.into_raw()));
                     write_expr(
+                        s,
                         bodies[*local_def_id].value,
                         show_idx,
                         bodies,
-                        s,
                         ty_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
@@ -1574,21 +1753,23 @@ impl Bodies {
                 }
                 Stmt::Assign(local_set_id) => {
                     write_expr(
+                        s,
                         bodies[*local_set_id].source,
                         show_idx,
                         bodies,
-                        s,
                         ty_arena,
+                        project_root,
                         interner,
                         indentation,
                     );
                     s.push_str(" = ");
                     write_expr(
+                        s,
                         bodies[*local_set_id].value,
                         show_idx,
                         bodies,
-                        s,
                         ty_arena,
+                        project_root,
                         interner,
                         indentation,
                     );

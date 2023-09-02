@@ -1,4 +1,4 @@
-use la_arena::{Arena, Idx};
+use internment::Intern;
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum ResolvedTy {
@@ -17,26 +17,27 @@ pub enum ResolvedTy {
     String,
     Array {
         size: u64,
-        sub_ty: Idx<ResolvedTy>,
+        sub_ty: Intern<ResolvedTy>,
     },
     Pointer {
         mutable: bool,
-        sub_ty: Idx<ResolvedTy>,
+        sub_ty: Intern<ResolvedTy>,
     },
     Distinct {
         fqn: Option<hir::Fqn>,
         uid: u32,
-        ty: Idx<ResolvedTy>,
+        ty: Intern<ResolvedTy>,
     },
     Type,
+    Module(hir::FileName),
     // this is only ever used for functions defined locally
     Function {
-        params: Vec<Idx<ResolvedTy>>,
-        return_ty: Idx<ResolvedTy>,
+        params: Vec<Intern<ResolvedTy>>,
+        return_ty: Intern<ResolvedTy>,
     },
     Struct {
         fqn: Option<hir::Fqn>,
-        fields: Vec<(Option<hir::Name>, Idx<ResolvedTy>)>,
+        fields: Vec<(hir::Name, Intern<ResolvedTy>)>,
     },
     Void,
 }
@@ -48,107 +49,92 @@ pub(crate) struct BinaryOutputTy {
 
 impl ResolvedTy {
     /// If self is a struct, this returns the fields
-    pub fn as_struct(
-        &self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<Vec<(Option<hir::Name>, Idx<ResolvedTy>)>> {
+    pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<ResolvedTy>)>> {
         match self {
             ResolvedTy::Struct { fields, .. } => Some(fields.clone()),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_struct(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.as_struct(),
             _ => None,
         }
     }
 
     /// If self is a function, this returns the parameters and return type
-    pub fn as_function(
-        &self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<(Vec<Idx<ResolvedTy>>, Idx<ResolvedTy>)> {
+    pub fn as_function(&self) -> Option<(Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>)> {
         match self {
             ResolvedTy::Function { params, return_ty } => Some((params.clone(), *return_ty)),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_function(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.as_function(),
             _ => None,
         }
     }
 
     /// If self is a pointer, this returns the mutability and sub type
-    pub fn as_pointer(
-        &self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<(bool, Idx<ResolvedTy>)> {
+    pub fn as_pointer(&self) -> Option<(bool, Intern<ResolvedTy>)> {
         match self {
             ResolvedTy::Pointer { mutable, sub_ty } => Some((*mutable, *sub_ty)),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_pointer(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.as_pointer(),
             _ => None,
         }
     }
 
     /// If self is an array, this returns the length and sub type
-    pub fn as_array(&self, resolved_arena: &Arena<ResolvedTy>) -> Option<(u64, Idx<ResolvedTy>)> {
+    pub fn as_array(&self) -> Option<(u64, Intern<ResolvedTy>)> {
         match self {
             ResolvedTy::Array { size, sub_ty } => Some((*size, *sub_ty)),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].as_array(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.as_array(),
             _ => None,
         }
     }
 
-    pub fn is_aggregate(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_aggregate(&self) -> bool {
         match self {
             ResolvedTy::Struct { .. } => true,
             ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.is_aggregate(),
             _ => false,
         }
     }
 
-    pub fn is_array(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_array(&self) -> bool {
         match self {
             ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.is_array(),
             _ => false,
         }
     }
 
-    pub fn is_struct(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_struct(&self) -> bool {
         match self {
             ResolvedTy::Struct { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_array(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.is_struct(),
             _ => false,
         }
     }
 
     /// returns true if the type is void, or contains void, or is an empty array, etc.
-    pub fn is_empty(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_empty(&self) -> bool {
         match self {
             ResolvedTy::Void => true,
             ResolvedTy::Type => true,
-            ResolvedTy::Pointer { sub_ty, .. } => resolved_arena[*sub_ty].is_empty(resolved_arena),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_empty(resolved_arena),
+            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_empty(),
+            ResolvedTy::Distinct { ty, .. } => ty.is_empty(),
             _ => false,
         }
     }
 
     /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
-    pub fn is_unknown(&self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_unknown(&self) -> bool {
         match self {
             ResolvedTy::NotYetResolved => true,
             ResolvedTy::Unknown => true,
-            ResolvedTy::Pointer { sub_ty, .. } => {
-                resolved_arena[*sub_ty].is_unknown(resolved_arena)
-            }
-            ResolvedTy::Array { size, sub_ty } => {
-                *size == 0 || resolved_arena[*sub_ty].is_unknown(resolved_arena)
-            }
-            ResolvedTy::Struct { fields, .. } => fields
-                .iter()
-                .any(|(name, ty)| name.is_none() || resolved_arena[*ty].is_unknown(resolved_arena)),
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].is_unknown(resolved_arena),
+            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
+            ResolvedTy::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
+            ResolvedTy::Struct { fields, .. } => fields.iter().any(|(_, ty)| ty.is_unknown()),
+            ResolvedTy::Distinct { ty, .. } => ty.is_unknown(),
             _ => false,
         }
     }
 
     /// A true equality check
-    pub fn is_equal_to(&self, other: &Self, resolved_arena: &Arena<ResolvedTy>) -> bool {
+    pub fn is_equal_to(&self, other: &Self) -> bool {
         if self == other {
             return true;
         }
@@ -164,11 +150,7 @@ impl ResolvedTy {
                     sub_ty: second_sub_ty,
                     ..
                 },
-            ) => {
-                first_size == second_size
-                    && resolved_arena[*first_sub_ty]
-                        .is_equal_to(&resolved_arena[*second_sub_ty], resolved_arena)
-            }
+            ) => first_size == second_size && first_sub_ty.is_equal_to(second_sub_ty),
             (
                 ResolvedTy::Pointer {
                     mutable: first_mutable,
@@ -178,11 +160,7 @@ impl ResolvedTy {
                     mutable: second_mutable,
                     sub_ty: second_sub_ty,
                 },
-            ) => {
-                first_mutable == second_mutable
-                    && resolved_arena[*first_sub_ty]
-                        .is_equal_to(&resolved_arena[*second_sub_ty], resolved_arena)
-            }
+            ) => first_mutable == second_mutable && first_sub_ty.is_equal_to(second_sub_ty),
             (ResolvedTy::Distinct { uid: first, .. }, ResolvedTy::Distinct { uid: second, .. }) => {
                 first == second
             }
@@ -196,15 +174,12 @@ impl ResolvedTy {
                     return_ty: second_return_ty,
                 },
             ) => {
-                resolved_arena[*first_return_ty]
-                    .is_equal_to(&resolved_arena[*second_return_ty], resolved_arena)
+                first_return_ty.is_equal_to(second_return_ty)
                     && first_params.len() == second_params.len()
-                    && first_params.iter().zip(second_params.iter()).all(
-                        |(first_param, second_param)| {
-                            resolved_arena[*first_param]
-                                .is_equal_to(&resolved_arena[*second_param], resolved_arena)
-                        },
-                    )
+                    && first_params
+                        .iter()
+                        .zip(second_params.iter())
+                        .all(|(first_param, second_param)| first_param.is_equal_to(second_param))
             }
             _ => false,
         }
@@ -212,11 +187,7 @@ impl ResolvedTy {
 
     /// an equality check that ignores distinct types.
     /// All other types must be exactly equal (i32 == i32, i32 != i64)
-    pub fn is_functionally_equivalent_to(
-        &self,
-        other: &Self,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
+    pub fn is_functionally_equivalent_to(&self, other: &Self) -> bool {
         match (self, other) {
             (
                 ResolvedTy::Array {
@@ -230,10 +201,7 @@ impl ResolvedTy {
                 },
             ) => {
                 first_size == second_size
-                    && resolved_arena[*first_sub_ty].is_functionally_equivalent_to(
-                        &resolved_arena[*second_sub_ty],
-                        resolved_arena,
-                    )
+                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
             }
             (
                 ResolvedTy::Pointer {
@@ -246,25 +214,31 @@ impl ResolvedTy {
                 },
             ) => {
                 first_mutable == second_mutable
-                    && resolved_arena[*first_sub_ty].is_functionally_equivalent_to(
-                        &resolved_arena[*second_sub_ty],
-                        resolved_arena,
-                    )
+                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
             }
             (ResolvedTy::Distinct { ty: first, .. }, ResolvedTy::Distinct { ty: second, .. }) => {
-                resolved_arena[*first]
-                    .is_functionally_equivalent_to(&resolved_arena[*second], resolved_arena)
+                first.is_functionally_equivalent_to(second)
             }
-            (ResolvedTy::Distinct { ty: distinct, .. }, other)
-            | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
+            (
+                ResolvedTy::Distinct {
+                    ty: distinct_inner, ..
+                },
+                other,
+            )
+            | (
+                other,
+                ResolvedTy::Distinct {
+                    ty: distinct_inner, ..
+                },
+            ) => {
                 // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
-                resolved_arena[*distinct].is_functionally_equivalent_to(other, resolved_arena)
+                distinct_inner.is_functionally_equivalent_to(other)
             }
-            (first, second) => first.is_equal_to(second, resolved_arena),
+            (first, second) => first.is_equal_to(second),
         }
     }
 
-    pub(crate) fn get_max_int_size(&self, resolved_arena: &Arena<ResolvedTy>) -> Option<u64> {
+    pub(crate) fn get_max_int_size(&self) -> Option<u64> {
         match self {
             ResolvedTy::IInt(bit_width) => match bit_width {
                 8 => Some(i8::MAX as u64),
@@ -280,7 +254,7 @@ impl ResolvedTy {
                 64 | 128 => Some(u64::MAX),
                 _ => None,
             },
-            ResolvedTy::Distinct { ty, .. } => resolved_arena[*ty].get_max_int_size(resolved_arena),
+            ResolvedTy::Distinct { ty, .. } => ty.get_max_int_size(),
             _ => None,
         }
     }
@@ -300,11 +274,7 @@ impl ResolvedTy {
     /// ```
     ///
     /// diagram stolen from vlang docs bc i liked it
-    pub(crate) fn max(
-        &self,
-        other: &ResolvedTy,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Option<ResolvedTy> {
+    pub(crate) fn max(&self, other: &ResolvedTy) -> Option<ResolvedTy> {
         if self == other {
             return Some(self.clone());
         }
@@ -380,7 +350,7 @@ impl ResolvedTy {
                     uid: *uid,
                     ty: *distinct_ty,
                 };
-                if distinct.has_semantics_of(other, resolved_arena) {
+                if distinct.has_semantics_of(other) {
                     Some(distinct)
                 } else {
                     None
@@ -412,11 +382,7 @@ impl ResolvedTy {
     /// Any int can fit into a wildcard int type (bit-width of 0)
     ///
     /// diagram stolen from vlang docs bc i liked it
-    pub(crate) fn can_fit_into(
-        &self,
-        expected: &ResolvedTy,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
+    pub(crate) fn can_fit_into(&self, expected: &ResolvedTy) -> bool {
         assert_ne!(*self, ResolvedTy::Unknown);
         assert_ne!(*expected, ResolvedTy::Unknown);
 
@@ -456,8 +422,7 @@ impl ResolvedTy {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && resolved_arena[*found_ty]
-                    .can_fit_into(&resolved_arena[*expected_ty], resolved_arena)
+                ) && found_ty.can_fit_into(expected_ty)
             }
             (
                 ResolvedTy::Array {
@@ -468,11 +433,7 @@ impl ResolvedTy {
                     sub_ty: expected_ty,
                     size: expected_size,
                 },
-            ) => {
-                found_size == expected_size
-                    && resolved_arena[*found_ty]
-                        .can_fit_into(&resolved_arena[*expected_ty], resolved_arena)
-            }
+            ) => found_size == expected_size && found_ty.can_fit_into(expected_ty),
             (
                 ResolvedTy::Struct {
                     fields: found_fields,
@@ -486,9 +447,7 @@ impl ResolvedTy {
                 found_fields.len() == expected_fields.len()
                     && found_fields.iter().zip(expected_fields.iter()).all(
                         |((found_name, found_ty), (expected_name, expected_ty))| {
-                            found_name == expected_name
-                                && resolved_arena[*found_ty]
-                                    .can_fit_into(&resolved_arena[*expected_ty], resolved_arena)
+                            found_name == expected_name && found_ty.can_fit_into(expected_ty)
                         },
                     )
             }
@@ -498,45 +457,33 @@ impl ResolvedTy {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, ResolvedTy::Distinct { ty, .. }) => {
-                found.can_fit_into(&resolved_arena[*ty], resolved_arena)
-            }
-            (found, expected) => found.is_equal_to(expected, resolved_arena),
+            (found, ResolvedTy::Distinct { ty, .. }) => found.can_fit_into(ty),
+            (found, expected) => found.is_equal_to(expected),
         }
     }
 
     /// This is used for the `as` operator to see whether something can be casted into something else
     ///
     /// This only allows primitives to be casted to each other, or types that are already equal
-    pub(crate) fn primitive_castable(
-        &self,
-        primitive_ty: &ResolvedTy,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
+    pub(crate) fn primitive_castable(&self, primitive_ty: &ResolvedTy) -> bool {
         match (self, primitive_ty) {
             (
                 ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
                 ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
             ) => true,
             (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
-                resolved_arena[*from].primitive_castable(&resolved_arena[*to], resolved_arena)
+                from.primitive_castable(to)
             }
-            (ResolvedTy::Distinct { ty: from, .. }, to) => {
-                resolved_arena[*from].primitive_castable(to, resolved_arena)
-            }
-            _ => self.can_fit_into(primitive_ty, resolved_arena),
+            (ResolvedTy::Distinct { ty: from, .. }, to) => from.primitive_castable(to),
+            _ => self.can_fit_into(primitive_ty),
         }
     }
 
     /// allows `distinct` types to have the same semantics as other types as long as the inner type matches
-    pub(crate) fn has_semantics_of(
-        &self,
-        expected: &ResolvedTy,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
+    pub(crate) fn has_semantics_of(&self, expected: &ResolvedTy) -> bool {
         match (self, expected) {
             (ResolvedTy::Distinct { ty, .. }, ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
-                if resolved_arena[*ty].has_semantics_of(expected, resolved_arena) {
+                if ty.has_semantics_of(expected) {
                     return true;
                 }
             }
@@ -553,22 +500,18 @@ impl ResolvedTy {
                     return true;
                 }
             }
-            (ResolvedTy::Distinct { ty, .. }, expected) => {
-                if resolved_arena[*ty].has_semantics_of(expected, resolved_arena) {
+            (ResolvedTy::Distinct { ty: inner_ty, .. }, expected) => {
+                if inner_ty.has_semantics_of(expected) {
                     return true;
                 }
             }
             _ => {}
         }
 
-        self.can_fit_into(expected, resolved_arena)
+        self.can_fit_into(expected)
     }
 
-    pub(crate) fn is_weak_type_replaceable_by(
-        &self,
-        expected: &ResolvedTy,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> bool {
+    pub(crate) fn is_weak_type_replaceable_by(&self, expected: &ResolvedTy) -> bool {
         // println!("  is_weak_type_replaceable({:?}, {:?})", found, expected);
         match (self, expected) {
             // weak signed to strong signed, or weak unsigned to strong unsigned
@@ -592,10 +535,7 @@ impl ResolvedTy {
                 },
             ) => {
                 found_size == expected_size
-                    && resolved_arena[*found_sub_ty].is_weak_type_replaceable_by(
-                        &resolved_arena[*expected_sub_ty],
-                        resolved_arena,
-                    )
+                    && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
             }
             (
                 ResolvedTy::Pointer {
@@ -610,8 +550,7 @@ impl ResolvedTy {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && resolved_arena[*found_sub_ty]
-                    .is_weak_type_replaceable_by(&resolved_arena[*expected_sub_ty], resolved_arena)
+                ) && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
             }
             (
                 ResolvedTy::Struct {
@@ -623,13 +562,10 @@ impl ResolvedTy {
                     ..
                 },
             ) => {
-                self.can_fit_into(expected, resolved_arena)
+                self.can_fit_into(expected)
                     && found_fields.iter().zip(expected_fields.iter()).any(
                         |((_, found_ty), (_, expected_ty))| {
-                            resolved_arena[*found_ty].is_weak_type_replaceable_by(
-                                &resolved_arena[*expected_ty],
-                                resolved_arena,
-                            )
+                            found_ty.is_weak_type_replaceable_by(expected_ty)
                         },
                     )
             }
@@ -639,20 +575,18 @@ impl ResolvedTy {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, ResolvedTy::Distinct { ty, .. }) => {
-                found.is_weak_type_replaceable_by(&resolved_arena[*ty], resolved_arena)
-            }
+            (found, ResolvedTy::Distinct { ty, .. }) => found.is_weak_type_replaceable_by(ty),
             _ => false,
         }
     }
 }
 
 pub(crate) trait TypedBinaryOp {
-    fn can_perform(&self, resolved_arena: &Arena<ResolvedTy>, ty: &ResolvedTy) -> bool;
+    fn can_perform(&self, ty: &ResolvedTy) -> bool;
 
     fn get_possible_output_ty(
         &self,
-        resolved_arena: &Arena<ResolvedTy>,
+
         first: &ResolvedTy,
         second: &ResolvedTy,
     ) -> Option<BinaryOutputTy>;
@@ -664,33 +598,30 @@ impl TypedBinaryOp for hir::BinaryOp {
     /// should check with `can_perform` before actually using the type emitted from this function
     fn get_possible_output_ty(
         &self,
-        resolved_arena: &Arena<ResolvedTy>,
         first: &ResolvedTy,
         second: &ResolvedTy,
     ) -> Option<BinaryOutputTy> {
-        first
-            .max(second, resolved_arena)
-            .map(|max_ty| BinaryOutputTy {
-                max_ty: max_ty.clone(),
-                final_output_ty: match self {
-                    hir::BinaryOp::Add
-                    | hir::BinaryOp::Sub
-                    | hir::BinaryOp::Mul
-                    | hir::BinaryOp::Div
-                    | hir::BinaryOp::Mod => max_ty,
-                    hir::BinaryOp::Lt
-                    | hir::BinaryOp::Gt
-                    | hir::BinaryOp::Le
-                    | hir::BinaryOp::Ge
-                    | hir::BinaryOp::Eq
-                    | hir::BinaryOp::Ne
-                    | hir::BinaryOp::And
-                    | hir::BinaryOp::Or => ResolvedTy::Bool,
-                },
-            })
+        first.max(second).map(|max_ty| BinaryOutputTy {
+            max_ty: max_ty.clone(),
+            final_output_ty: match self {
+                hir::BinaryOp::Add
+                | hir::BinaryOp::Sub
+                | hir::BinaryOp::Mul
+                | hir::BinaryOp::Div
+                | hir::BinaryOp::Mod => max_ty,
+                hir::BinaryOp::Lt
+                | hir::BinaryOp::Gt
+                | hir::BinaryOp::Le
+                | hir::BinaryOp::Ge
+                | hir::BinaryOp::Eq
+                | hir::BinaryOp::Ne
+                | hir::BinaryOp::And
+                | hir::BinaryOp::Or => ResolvedTy::Bool,
+            },
+        })
     }
 
-    fn can_perform(&self, resolved_arena: &Arena<ResolvedTy>, found: &ResolvedTy) -> bool {
+    fn can_perform(&self, found: &ResolvedTy) -> bool {
         let expected: &[ResolvedTy] = match self {
             hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
                 &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
@@ -707,7 +638,7 @@ impl TypedBinaryOp for hir::BinaryOp {
 
         expected
             .iter()
-            .any(|expected| found.has_semantics_of(expected, resolved_arena))
+            .any(|expected| found.has_semantics_of(expected))
     }
 
     fn default_ty(&self) -> ResolvedTy {

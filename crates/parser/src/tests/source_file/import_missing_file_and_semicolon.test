@@ -1,0 +1,41 @@
+foo :: import
+bar :: 32;
+baz :: 51;
+===
+Root@0..35
+  Binding@0..17
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Colon@5..6 ":"
+    Whitespace@6..7 " "
+    ImportExpr@7..17
+      Import@7..13 "import"
+      Whitespace@13..14 "\n"
+      Error@14..17
+        Ident@14..17 "bar"
+  Whitespace@17..18 " "
+  VarDef@18..23
+    Error@18..19
+      Colon@18..19 ":"
+    Colon@19..20 ":"
+    Whitespace@20..21 " "
+    Ty@21..23
+      IntLiteral@21..23
+        Int@21..23 "32"
+  Semicolon@23..24 ";"
+  Whitespace@24..25 "\n"
+  Binding@25..34
+    Ident@25..28 "baz"
+    Whitespace@28..29 " "
+    Colon@29..30 ":"
+    Colon@30..31 ":"
+    Whitespace@31..32 " "
+    IntLiteral@32..34
+      Int@32..34 "51"
+  Semicolon@34..35 ";"
+error at 14..17: expected file name string but found Ident
+error at 17: missing Semicolon
+error at 18..19: expected statement but found Colon
+error at 23: missing Equals
+error at 23: missing value

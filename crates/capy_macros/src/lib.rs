@@ -89,6 +89,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         }
     };
 
+    let mut at_end = false;
     let mut entries = quote!();
     for line in file
         .lines()
@@ -104,6 +105,15 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         }
 
         let name = format_ident!("{}", parts[0]);
+
+        if parts[0].starts_with("__") {
+            at_end = true
+        } else if at_end {
+            return quote_spanned! {
+                input[4].span().into() => compile_error!("Tokens that start with `__` must be at the very end of the file")
+            }
+            .into();
+        }
 
         match enum_ty {
             EnumTy::Full if parts.len() == 3 => {

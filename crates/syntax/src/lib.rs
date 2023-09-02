@@ -59,6 +59,7 @@ pub enum NodeKind {
     FieldDeclaration,  // `foo: i32`
     StructLiteral,     // `My_Struct { foo: 123 }`
     FieldLiteral,      // `foo: 123`
+    ImportExpr,
     Ty,
     Path,
     Comment,

@@ -81,6 +81,7 @@ pow :: (base: i32, exp: i32) -> i32 {
 }
 
 main :: () {
+    // it'd be easier to do a malloc and free here, but there is currently no pointer math
     buf := [20]u8 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     ftoa(12.5, ^mut buf, 3);

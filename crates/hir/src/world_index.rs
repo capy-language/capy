@@ -1,9 +1,9 @@
 use rustc_hash::FxHashMap;
 
-use crate::{Definition, Fqn, Index, Name, RangeInfo};
+use crate::{Definition, FileName, Fqn, Index, RangeInfo};
 
 #[derive(Default)]
-pub struct WorldIndex(FxHashMap<Name, Index>);
+pub struct WorldIndex(FxHashMap<FileName, Index>);
 
 impl WorldIndex {
     pub fn get_definition(&self, fqn: Fqn) -> Result<&Definition, GetDefinitionError> {
@@ -20,22 +20,22 @@ impl WorldIndex {
         &self.0[&fqn.module].range_info[&fqn.name]
     }
 
-    pub fn get_all_modules(&self) -> Vec<(Name, &Index)> {
+    pub fn get_all_modules(&self) -> Vec<(FileName, &Index)> {
         self.0
             .iter()
             .map(|(module, index)| (*module, index))
             .collect()
     }
 
-    pub fn get_module(&self, module: Name) -> Option<&Index> {
+    pub fn get_module(&self, module: FileName) -> Option<&Index> {
         self.0.get(&module)
     }
 
-    pub fn add_module(&mut self, module: Name, index: Index) {
+    pub fn add_module(&mut self, module: FileName, index: Index) {
         assert!(self.0.insert(module, index).is_none());
     }
 
-    pub fn update_module(&mut self, module: Name, index: Index) {
+    pub fn update_module(&mut self, module: FileName, index: Index) {
         *self.0.get_mut(&module).unwrap() = index;
     }
 

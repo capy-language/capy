@@ -1,0 +1,28 @@
+foo :: import "foo.capy";
+bar :: 32;
+===
+Root@0..36
+  Binding@0..24
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Colon@5..6 ":"
+    Whitespace@6..7 " "
+    ImportExpr@7..24
+      Import@7..13 "import"
+      Whitespace@13..14 " "
+      StringLiteral@14..24
+        Quote@14..15 "\""
+        StringContents@15..23 "foo.capy"
+        Quote@23..24 "\""
+  Semicolon@24..25 ";"
+  Whitespace@25..26 "\n"
+  Binding@26..35
+    Ident@26..29 "bar"
+    Whitespace@29..30 " "
+    Colon@30..31 ":"
+    Colon@31..32 ":"
+    Whitespace@32..33 " "
+    IntLiteral@33..35
+      Int@33..35 "32"
+  Semicolon@35..36 ";"

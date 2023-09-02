@@ -8,11 +8,9 @@ use cranelift::prelude::{settings, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_object::object::write;
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use hir_ty::ResolvedTy;
 
 use gen::CodeGen;
 use interner::Interner;
-use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use std::mem;
 use std::path::PathBuf;
@@ -26,9 +24,9 @@ pub(crate) type CapyFnSignature = hir_ty::FunctionSignature;
 pub fn compile_jit(
     verbose: bool,
     entry_point: hir::Fqn,
-    resolved_arena: &Arena<ResolvedTy>,
+    project_root: &std::path::Path,
     interner: &Interner,
-    bodies_map: &FxHashMap<hir::Name, hir::Bodies>,
+    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
 ) -> fn(usize, usize) -> usize {
     let mut flag_builder = settings::builder();
@@ -47,7 +45,7 @@ pub fn compile_jit(
     let cmain = CodeGen::new(
         verbose,
         entry_point,
-        resolved_arena,
+        project_root,
         interner,
         bodies_map,
         tys,
@@ -69,9 +67,9 @@ pub fn compile_jit(
 pub fn compile_obj(
     verbose: bool,
     entry_point: hir::Fqn,
-    resolved_arena: &Arena<ResolvedTy>,
+    project_root: &std::path::Path,
     interner: &Interner,
-    bodies_map: &FxHashMap<hir::Name, hir::Bodies>,
+    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
     target: Option<&str>,
 ) -> Result<Vec<u8>, write::Error> {
@@ -109,7 +107,7 @@ pub fn compile_obj(
     CodeGen::new(
         verbose,
         entry_point,
-        resolved_arena,
+        project_root,
         interner,
         bodies_map,
         tys,
@@ -146,9 +144,11 @@ mod tests {
 
     use ast::AstNode;
     use expect_test::{expect, Expect};
-    use hir::UIDGenerator;
     use hir_ty::InferenceCtx;
+    use la_arena::Arena;
+    use path_clean::PathClean;
     use regex::Regex;
+    use uid_gen::UIDGenerator;
 
     use super::*;
 
@@ -159,7 +159,8 @@ mod tests {
         stdout_expect: Expect,
         expected_status: i32,
     ) {
-        env::set_current_dir(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let current_dir = env!("CARGO_MANIFEST_DIR");
+        env::set_current_dir(current_dir).unwrap();
 
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
@@ -169,8 +170,9 @@ mod tests {
         let mut bodies_map = FxHashMap::default();
 
         for file in other_files {
-            let module_name = Path::new(file).file_stem().unwrap().to_str().unwrap();
-            let text = &fs::read_to_string(file).unwrap();
+            let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
+            let file_path = Path::new(current_dir).join(file).clean();
+            let text = &fs::read_to_string(&file_path).unwrap();
 
             let tokens = lexer::lex(text);
             let parse = parser::parse_source_file(&tokens, text);
@@ -191,18 +193,17 @@ mod tests {
             }
             }
 
-            let module = hir::Name(interner.intern(module_name));
-
-            world_index.add_module(module, index);
+            let module = hir::FileName(interner.intern(&file_path.to_string_lossy()));
 
             let (bodies, diagnostics) = hir::lower(
                 root,
                 &tree,
-                module,
-                &world_index,
+                &file_path,
+                &index,
                 &mut uid_gen,
                 &mut twr_arena,
                 &mut interner,
+                false,
             );
             cfg_if::cfg_if! {
             if #[cfg(not(feature = "disable_codegen_checks"))] {
@@ -210,12 +211,14 @@ mod tests {
             }
             }
 
+            world_index.add_module(module, index);
             bodies_map.insert(module, bodies);
         }
 
-        let main_name = Path::new(main_file).file_stem().unwrap().to_str().unwrap();
-        let text = &fs::read_to_string(main_file).unwrap();
-        let module = hir::Name(interner.intern(main_name));
+        let main_file = main_file.replace('/', std::path::MAIN_SEPARATOR_STR);
+        let main_file_path = Path::new(current_dir).join(main_file).clean();
+        let text = &fs::read_to_string(&main_file_path).unwrap();
+        let module = hir::FileName(interner.intern(&main_file_path.to_string_lossy()));
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
         cfg_if::cfg_if! {
@@ -235,28 +238,26 @@ mod tests {
         }
         }
 
-        world_index.add_module(module, index);
-
         let (bodies, diagnostics) = hir::lower(
             root,
             &tree,
-            module,
-            &world_index,
+            &main_file_path,
+            &index,
             &mut uid_gen,
             &mut twr_arena,
             &mut interner,
+            false,
         );
         cfg_if::cfg_if! {
         if #[cfg(not(feature = "disable_codegen_checks"))] {
             assert_eq!(diagnostics, vec![]);
         }
         }
+        world_index.add_module(module, index);
         bodies_map.insert(module, bodies);
 
-        let mut resolved_arena = Arena::new();
-
         let (inference_result, diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena).finish();
+            InferenceCtx::new(&bodies_map, &world_index, &twr_arena).finish();
         cfg_if::cfg_if! {
         if #[cfg(not(feature = "disable_codegen_checks"))] {
             assert_eq!(diagnostics, vec![]);
@@ -269,7 +270,7 @@ mod tests {
                 module,
                 name: hir::Name(interner.intern(entry_point)),
             },
-            &resolved_arena,
+            Path::new(""),
             &interner,
             &bodies_map,
             &inference_result,
@@ -281,6 +282,7 @@ mod tests {
 
         let _ = fs::create_dir(&output_folder);
 
+        let main_name = main_file_path.file_stem().unwrap().to_string_lossy();
         let file = output_folder.join(format!("{}.o", main_name));
         fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
             panic!("{}: {why}", file.display());
@@ -290,14 +292,14 @@ mod tests {
 
         let output = std::process::Command::new(exec.clone())
             .output()
-            .expect(&format!("{} did not run successfully", exec.display()));
+            .unwrap_or_else(|_| panic!("{} did not run successfully", exec.display()));
 
         assert_eq!(output.status.code().unwrap(), expected_status);
 
-        let re = Regex::new(r#"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><{}]"#).unwrap();
+        let re = Regex::new(r"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><{}]").unwrap();
         let stdout = std::str::from_utf8(&output.stdout)
             .unwrap()
-            .replace("\r", "");
+            .replace('\r', "");
         let stdout = re.replace_all(&stdout, "");
 
         let trim_expect_data = trim_indent(stdout_expect.data());
@@ -379,14 +381,13 @@ mod tests {
     }
 
     #[test]
-    fn readme() {
+    fn hello_world() {
         check(
-            "../../examples/readme.capy",
-            &[],
+            "../../examples/hello_world.capy",
+            &["../../examples/std/libc.capy"],
             "main",
             expect![[r#"
             Hello, World!
-
 
             "#]],
             0,
@@ -543,7 +544,7 @@ mod tests {
     fn files() {
         check(
             "../../examples/files.capy",
-            &[],
+            &["../../examples/std/libc.capy"],
             "main",
             expect![[r#"
             writing to hello.txt

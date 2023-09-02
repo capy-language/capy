@@ -8,20 +8,20 @@ Compile-time evaluation coming soon.
 Now on all your favorite Operating Systems! Thanks [cranelift](https://cranelift.dev/)!
 
 ```capy
-to_print :: "Hello, World!\n";
+libc :: import "std/libc.capy";
+
+to_print :: "Hello, World!";
 
 main :: () -> i32 {
     // prints "Hello, World!" to the screen
-    puts(to_print);
+    libc.puts(to_print);
 
     // exit with code 0
     0
 }
-
-puts :: (some_text: string) extern; // libc defined
 ```
 
-*From [`examples/readme.capy`](./examples/readme.capy)*
+*From [`examples/hello_world.capy`](./examples/hello_world.capy)*
 
 ## Features
 
@@ -114,8 +114,8 @@ Only Windows and Linux have been tested, so tell me if you get it working on Mac
 
 ## Limitations
 
-You have to manually include all the files your code references in the `capy` command, although this might change in the future.
-Frankly, a lot of this might change in the future.
+Currently, `gcc` must be installed for the compiler to work.
+It is used for linking to libc and producing a proper executable.
 
 If you want to use libc functions, define them with `extern` as above.
 Variadic functions do not work. You *could* try explicitly defining `printf`
@@ -123,9 +123,6 @@ to take 3 arguments, but this won't work for floats, which are passed into
 variadic functions differently depending on the calling convention.
 Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030),
 so that might be added in the future.
-
-Currently, `gcc` must be installed for the compiler to work.
-It is only used for linking to libc and producing a proper executable.
 
 ## Shout Outs
 

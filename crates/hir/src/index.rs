@@ -85,7 +85,6 @@ pub struct Function {
     pub params: Vec<Param>,
     pub return_ty: Idx<TyWithRange>,
     pub ty_annotation: Idx<TyWithRange>,
-    pub full_range: TextRange,
     pub is_extern: bool,
 }
 
@@ -98,6 +97,7 @@ pub struct Global {
 pub struct RangeInfo {
     pub whole: TextRange,
     pub name: TextRange,
+    pub value: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,11 +175,12 @@ impl Ctx<'_> {
     }
 
     fn index_def(&mut self, def: ast::Define) {
-        let result = match def.value(self.tree) {
-            Some(ast::Expr::Lambda(lambda)) => {
-                self.index_lambda(def.name(self.tree), def.ty(self.tree), lambda)
-            }
-            Some(_) => self.index_global(def),
+        let (result, value_range) = match def.value(self.tree) {
+            Some(ast::Expr::Lambda(lambda)) => (
+                self.index_lambda(def.name(self.tree), def.ty(self.tree), lambda),
+                lambda.range(self.tree),
+            ),
+            Some(expr) => (self.index_global(def), expr.range(self.tree)),
             _ => return,
         };
 
@@ -204,6 +205,7 @@ impl Ctx<'_> {
                     RangeInfo {
                         whole: def.range(self.tree),
                         name: name_token.range(self.tree),
+                        value: value_range,
                     },
                 );
             }
@@ -257,7 +259,6 @@ impl Ctx<'_> {
                 params,
                 return_ty: self.twr_arena.alloc(return_ty),
                 ty_annotation,
-                full_range: lambda.range(self.tree),
                 is_extern: lambda.r#extern(self.tree).is_some(),
             }),
             name,

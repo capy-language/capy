@@ -1,6 +1,7 @@
 use crate::Parse;
 use core::panic;
 use expect_test::expect_file;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::{env, fs, thread};
@@ -50,12 +51,12 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
         let tx_ = tx.clone();
         thread::spawn(move || {
             let panic = std::panic::catch_unwind(|| {
-                let test_content = fs::read_to_string(&path).unwrap().replace("\r", "");
+                let test_content = fs::read_to_string(&path).unwrap().replace('\r', "");
                 let (input, _expected_parse) = test_content.split_once("\n===\n").unwrap();
 
                 let actual_parse = {
                     let tokens = &lexer::lex(input);
-                    parsing_fn(&tokens, input)
+                    parsing_fn(tokens, input)
                 };
 
                 let expected_test_content = format!("{}\n===\n{:?}\n", input, actual_parse);
@@ -98,7 +99,7 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
         };
         println!(
             "{: <longest_name$} ... {}{}{}",
-            path.to_str().unwrap().split_once(".").unwrap().0,
+            path.to_string_lossy().split_once('.').unwrap().0,
             color,
             name,
             ANSI_RESET
@@ -108,9 +109,9 @@ fn run_parser_tests(tests_dir: &str, parsing_fn: fn(&Tokens, &str) -> Parse) {
         }
     }
     println!();
-    if fails == 1 {
-        panic!("1 parser test failed");
-    } else if fails > 1 {
-        panic!("{} parser tests failed", fails);
+    match fails.cmp(&1) {
+        Ordering::Less => {}
+        Ordering::Equal => panic!("1 parser test failed"),
+        Ordering::Greater => panic!("{} parser tests failed", fails),
     }
 }

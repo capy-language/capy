@@ -1,4 +1,3 @@
-// run with `capy run examples/fib.capy examples/io.capy`
 
 target :: 28;
 repeat :: 5;
@@ -13,6 +12,8 @@ fib :: (n: i32) -> i32 {
 }
 
 main :: () {
+    io :: import "io.capy";
+    
     io.printf("Running Fibonacci(%d) x %d times...\nReady... Go!\n", target, repeat);
 
     result := 0;

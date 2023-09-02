@@ -10,37 +10,61 @@ use la_arena::{Arena, Idx};
 pub use nameres::*;
 use syntax::SyntaxTree;
 use text_size::TextRange;
+use uid_gen::UIDGenerator;
 pub use world_index::*;
 
 use interner::{Interner, Key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Name(pub Key);
+pub struct FileName(pub Key);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NameWithRange {
-    pub name: Name,
-    pub range: TextRange,
+impl FileName {
+    pub fn to_string(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+        let mut res = String::new();
+
+        let file_name = interner.lookup(self.0);
+        let relative_path = pathdiff::diff_paths(file_name, project_root).unwrap();
+
+        let components = relative_path.components().collect::<Vec<_>>();
+        for (idx, component) in components.iter().enumerate() {
+            let component = component.as_os_str().to_string_lossy();
+
+            if idx < components.len() - 1 {
+                res.push_str(&component);
+
+                res.push('.');
+            } else {
+                res.push_str(
+                    &component
+                        .rsplit_once('.')
+                        .map(|(name, _)| name.replace('.', "-"))
+                        .unwrap_or(component.to_string()),
+                );
+            }
+        }
+
+        res
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Name(pub Key);
 
 // short for Fully Qualified Name
 // not only the name of whatever we're referring to, but also the module it's contained in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fqn {
-    pub module: Name,
+    pub module: FileName,
     pub name: Name,
 }
 
-#[derive(Default)]
-pub struct UIDGenerator {
-    inner: u32,
-}
-
-impl UIDGenerator {
-    pub fn generate_unique_id(&mut self) -> u32 {
-        let id = self.inner;
-        self.inner += 1;
-        id
+impl Fqn {
+    pub fn to_string(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+        format!(
+            r#"{}::{}"#,
+            self.module.to_string(project_root, interner),
+            interner.lookup(self.name.0),
+        )
     }
 }
 
@@ -130,7 +154,7 @@ impl TyWithRange {
             | TyWithRange::Type { range } => Some(*range),
             TyWithRange::Void { range } => *range,
             TyWithRange::Named { path } => match path {
-                PathWithRange::ThisModule { range, .. } => Some(*range),
+                PathWithRange::ThisModule(NameWithRange { range, .. }) => Some(*range),
                 PathWithRange::OtherModule {
                     module_range,
                     name_range,
@@ -254,47 +278,47 @@ impl TyWithRange {
                             Err((TyParseError::NonPrimitive, var_ref.range(tree)))
                         } else {
                             Ok(TyWithRange::Named {
-                                path: PathWithRange::ThisModule {
+                                path: PathWithRange::ThisModule(NameWithRange {
                                     name: Name(key),
                                     range,
-                                },
+                                }),
                             })
                         }
                     }
                 }
             }
-            ast::Expr::Path(path) => {
-                if primitives_only {
-                    return Err((TyParseError::NonPrimitive, path.range(tree)));
-                }
+            // ast::Expr::Path(path) => {
+            //     if primitives_only {
+            //         return Err((TyParseError::NonPrimitive, path.range(tree)));
+            //     }
 
-                match path.previous_part(tree) {
-                    Some(ast::Expr::VarRef(var_ref)) => {
-                        let module = var_ref.name(tree).unwrap();
-                        let module_name = interner.intern(module.text(tree));
+            //     match path.previous_part(tree) {
+            //         Some(ast::Expr::VarRef(var_ref)) => {
+            //             let module = var_ref.name(tree).unwrap();
+            //             let module_name = interner.intern(module.text(tree));
 
-                        let global = match path.field_name(tree) {
-                            Some(name) => name,
-                            None => return Ok(TyWithRange::Unknown),
-                        };
-                        let global_name = interner.intern(global.text(tree));
+            //             let global = match path.field_name(tree) {
+            //                 Some(name) => name,
+            //                 None => return Ok(TyWithRange::Unknown),
+            //             };
+            //             let global_name = interner.intern(global.text(tree));
 
-                        let fqn = Fqn {
-                            module: Name(module_name),
-                            name: Name(global_name),
-                        };
+            //             let fqn = Fqn {
+            //                 file_name: module_name,
+            //                 name: Name(global_name),
+            //             };
 
-                        Ok(TyWithRange::Named {
-                            path: PathWithRange::OtherModule {
-                                fqn,
-                                module_range: module.range(tree),
-                                name_range: global.range(tree),
-                            },
-                        })
-                    }
-                    _ => Err((TyParseError::NotATy, ty.range(tree))),
-                }
-            }
+            //             Ok(TyWithRange::Named {
+            //                 path: PathWithRange::OtherModule {
+            //                     fqn,
+            //                     module_range: module.range(tree),
+            //                     name_range: global.range(tree),
+            //                 },
+            //             })
+            //         }
+            //         _ => Err((TyParseError::NotATy, ty.range(tree))),
+            //     }
+            // }
             ast::Expr::Distinct(distinct) => {
                 let ty = Self::parse(
                     distinct.ty(tree).and_then(|ty| ty.expr(tree)),
@@ -461,7 +485,12 @@ impl TyWithRange {
         })
     }
 
-    pub fn display(&self, twr_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
+    pub fn display(
+        &self,
+        twr_arena: &Arena<TyWithRange>,
+        project_root: &std::path::Path,
+        interner: &Interner,
+    ) -> String {
         match self {
             Self::Unknown { .. } => "?".to_string(),
             Self::IInt { bit_width, .. } => {
@@ -484,28 +513,31 @@ impl TyWithRange {
             Self::Array { size, sub_ty, .. } => {
                 format!(
                     "[{size}]{}",
-                    twr_arena[*sub_ty].display(twr_arena, interner)
+                    twr_arena[*sub_ty].display(twr_arena, project_root, interner)
                 )
             }
             Self::Pointer { sub_ty, .. } => {
-                format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
+                format!(
+                    "^{}",
+                    twr_arena[*sub_ty].display(twr_arena, project_root, interner)
+                )
             }
             Self::Type { .. } => "type".to_string(),
             Self::Distinct { uid, ty, .. } => {
                 format!(
                     "distinct'{} {}",
                     uid,
-                    twr_arena[*ty].display(twr_arena, interner)
+                    twr_arena[*ty].display(twr_arena, project_root, interner)
                 )
             }
-            Self::Named { path } => path.path().display(interner),
+            Self::Named { path } => path.path().to_string(project_root, interner),
             Self::Function {
                 params, return_ty, ..
             } => {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&twr_arena[*param].display(twr_arena, interner));
+                    res.push_str(&twr_arena[*param].display(twr_arena, project_root, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
@@ -513,7 +545,7 @@ impl TyWithRange {
                 }
                 res.push_str(") -> ");
 
-                res.push_str(&twr_arena[*return_ty].display(twr_arena, interner));
+                res.push_str(&twr_arena[*return_ty].display(twr_arena, project_root, interner));
 
                 res
             }
@@ -526,7 +558,7 @@ impl TyWithRange {
                         res.push_str(": ");
                     }
 
-                    res.push_str(&twr_arena[*ty].display(twr_arena, interner));
+                    res.push_str(&twr_arena[*ty].display(twr_arena, project_root, interner));
 
                     if idx != fields.len() - 1 {
                         res.push_str(", ");

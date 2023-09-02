@@ -6,7 +6,7 @@ pub fn split_multi_module_test_data(input: &str) -> FxHashMap<&str, &str> {
     let has_no_marker_comments = !input.contains(MARKER_COMMENT_START);
     if has_no_marker_comments {
         let mut modules = FxHashMap::default();
-        modules.insert("main", input);
+        modules.insert("main.capy", input);
         return modules;
     }
 
@@ -32,7 +32,7 @@ pub fn split_multi_module_test_data(input: &str) -> FxHashMap<&str, &str> {
         }
 
         module_idxs
-            .get_mut(&current_module_name.unwrap())
+            .get_mut(current_module_name.as_ref().unwrap())
             .unwrap()
             .end = line_end;
     }

@@ -7,17 +7,19 @@ edition = "2021"
 
 [dependencies]
 la-arena = "0.2.0"
-hir = {path = "../hir"}
-interner = {path = "../interner"}
+hir = { path = "../hir" }
+interner = { path = "../interner" }
 rustc-hash = "1.1"
 text-size = "1.1"
 backtrace = "0.3.68"
 internment = "0.7.1"
+indexmap = "2.0.0"
 
 [dev-dependencies]
-ast = {path = "../ast"}
+ast = { path = "../ast" }
 expect-test = "1.1"
-interner = {path = "../interner"}
-lexer = {path = "../lexer"}
-parser = {path = "../parser"}
-test-utils = {path = "../test-utils"}
+interner = { path = "../interner" }
+lexer = { path = "../lexer" }
+parser = { path = "../parser" }
+test-utils = { path = "../test-utils" }
+uid_gen = { path = "../uid_gen" }

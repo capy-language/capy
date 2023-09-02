@@ -1,8 +1,9 @@
 mod ctx;
 mod resolved_ty;
 
-use hir::TyWithRange;
+use hir::{NameWithRange, TyWithRange};
 use interner::{Interner, Key};
+use internment::Intern;
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
@@ -12,13 +13,13 @@ pub use resolved_ty::*;
 #[derive(Clone)]
 pub struct InferenceResult {
     signatures: FxHashMap<hir::Fqn, Signature>,
-    modules: FxHashMap<hir::Name, ModuleInference>,
+    modules: FxHashMap<hir::FileName, ModuleInference>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleInference {
-    expr_tys: ArenaMap<Idx<hir::Expr>, ResolvedTy>,
-    local_tys: ArenaMap<Idx<hir::LocalDef>, ResolvedTy>,
+    expr_tys: ArenaMap<Idx<hir::Expr>, Intern<ResolvedTy>>,
+    local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<ResolvedTy>>,
     lambdas: ArenaMap<Idx<hir::Lambda>, FunctionSignature>,
 }
 
@@ -30,16 +31,16 @@ impl std::ops::Index<hir::Fqn> for InferenceResult {
     }
 }
 
-impl std::ops::Index<hir::Name> for InferenceResult {
+impl std::ops::Index<hir::FileName> for InferenceResult {
     type Output = ModuleInference;
 
-    fn index(&self, module: hir::Name) -> &Self::Output {
+    fn index(&self, module: hir::FileName) -> &Self::Output {
         &self.modules[&module]
     }
 }
 
 impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
-    type Output = ResolvedTy;
+    type Output = Intern<ResolvedTy>;
 
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
         &self.expr_tys[expr]
@@ -47,7 +48,7 @@ impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
 }
 
 impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
-    type Output = ResolvedTy;
+    type Output = Intern<ResolvedTy>;
 
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
         &self.local_tys[local_def]
@@ -78,20 +79,20 @@ impl Signature {
 
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
-    pub return_ty: ResolvedTy,
-    pub param_tys: Vec<Idx<ResolvedTy>>,
+    pub return_ty: Intern<ResolvedTy>,
+    pub param_tys: Vec<Intern<ResolvedTy>>,
     pub is_extern: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct GlobalSignature {
-    pub ty: ResolvedTy,
+    pub ty: Intern<ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
-    pub module: hir::Name,
+    pub module: hir::FileName,
     pub range: TextRange,
     pub help: Option<TyDiagnosticHelp>,
 }
@@ -105,42 +106,42 @@ impl TyDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TyDiagnosticKind {
     Mismatch {
-        expected: ResolvedTy,
-        found: ResolvedTy,
+        expected: Intern<ResolvedTy>,
+        found: Intern<ResolvedTy>,
     },
     Uncastable {
-        from: ResolvedTy,
-        to: ResolvedTy,
+        from: Intern<ResolvedTy>,
+        to: Intern<ResolvedTy>,
     },
     OpMismatch {
         op: hir::BinaryOp,
-        first: ResolvedTy,
-        second: ResolvedTy,
+        first: Intern<ResolvedTy>,
+        second: Intern<ResolvedTy>,
     },
     IfMismatch {
-        found: ResolvedTy,
-        expected: ResolvedTy,
+        found: Intern<ResolvedTy>,
+        expected: Intern<ResolvedTy>,
     },
     IndexNonArray {
-        found: ResolvedTy,
+        found: Intern<ResolvedTy>,
     },
     IndexOutOfBounds {
         index: u64,
         actual_size: u64,
-        array_ty: ResolvedTy,
+        array_ty: Intern<ResolvedTy>,
     },
     MismatchedArgCount {
         found: usize,
         expected: usize,
     },
     CalledNonFunction {
-        found: ResolvedTy,
+        found: Intern<ResolvedTy>,
     },
     DerefNonPointer {
-        found: ResolvedTy,
+        found: Intern<ResolvedTy>,
     },
     MissingElse {
-        expected: ResolvedTy,
+        expected: Intern<ResolvedTy>,
     },
     CannotMutate,
     MutableRefToImmutableData,
@@ -152,21 +153,21 @@ pub enum TyDiagnosticKind {
     IntTooBigForType {
         found: u64,
         max: u64,
-        ty: ResolvedTy,
+        ty: Intern<ResolvedTy>,
     },
     UnknownModule {
-        name: Key,
+        name: hir::FileName,
     },
     UnknownFqn {
         fqn: hir::Fqn,
     },
     NonExistentField {
         field: Key,
-        found_ty: ResolvedTy,
+        found_ty: Intern<ResolvedTy>,
     },
     StructLiteralMissingField {
         field: Key,
-        expected_ty: ResolvedTy,
+        expected_ty: Intern<ResolvedTy>,
     },
 }
 
@@ -181,22 +182,22 @@ pub enum TyDiagnosticHelpKind {
     FoundToBeImmutable,
     ImmutableBinding,
     ImmutableRef,
-    ImmutableParam,
+    ImmutableParam { assignment: bool },
     ImmutableGlobal,
-    IfReturnsTypeHere { found: ResolvedTy },
+    NotMutatingRefThroughDeref,
+    IfReturnsTypeHere { found: Intern<ResolvedTy> },
     MutableVariable,
 }
 
 pub struct InferenceCtx<'a> {
-    current_module: Option<hir::Name>,
-    bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+    current_module: Option<hir::FileName>,
+    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     world_index: &'a hir::WorldIndex,
     twr_arena: &'a Arena<TyWithRange>,
-    resolved_arena: &'a mut Arena<ResolvedTy>,
-    local_usages: FxHashMap<hir::Name, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
-    param_tys: Option<Vec<Idx<ResolvedTy>>>,
+    local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
+    param_tys: Option<Vec<Intern<ResolvedTy>>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
-    modules: FxHashMap<hir::Name, ModuleInference>,
+    modules: FxHashMap<hir::FileName, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
 }
 
@@ -209,17 +210,15 @@ pub(crate) enum LocalUsage {
 
 impl<'a> InferenceCtx<'a> {
     pub fn new(
-        bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+        bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
         world_index: &'a hir::WorldIndex,
         twr_arena: &'a Arena<TyWithRange>,
-        resolved_arena: &'a mut Arena<ResolvedTy>,
     ) -> InferenceCtx<'a> {
         Self {
             current_module: None,
             bodies_map,
             world_index,
             twr_arena,
-            resolved_arena,
             local_usages: FxHashMap::default(),
             param_tys: None,
             diagnostics: Vec::new(),
@@ -300,7 +299,7 @@ impl<'a> InferenceCtx<'a> {
                 self.signatures.insert(
                     fqn,
                     Signature::Global(GlobalSignature {
-                        ty: ResolvedTy::NotYetResolved,
+                        ty: Intern::new(ResolvedTy::NotYetResolved),
                     }),
                 );
 
@@ -319,7 +318,7 @@ impl<'a> InferenceCtx<'a> {
                 self.finish_body_known(
                     self.bodies_map[&fqn.module].global(fqn.name),
                     None,
-                    sig.as_global().unwrap().ty.clone(),
+                    sig.as_global().unwrap().ty,
                 );
 
                 sig
@@ -343,20 +342,17 @@ impl<'a> InferenceCtx<'a> {
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| {
-                let ty = self.resolve_ty(param.ty);
-                self.resolved_arena.alloc(ty)
-            })
+            .map(|param| self.resolve_ty(param.ty))
             .collect();
 
         let return_ty = self.resolve_ty(function.return_ty);
 
         let ty_annotation = self.resolve_ty(function.ty_annotation);
-        let sig = match &ty_annotation {
+        let sig = match ty_annotation.as_ref() {
             ResolvedTy::Unknown => {
                 let sig = Signature::Function(FunctionSignature {
                     param_tys: param_tys.clone(),
-                    return_ty: return_ty.clone(),
+                    return_ty,
                     is_extern: function.is_extern,
                 });
 
@@ -373,32 +369,29 @@ impl<'a> InferenceCtx<'a> {
                 sig
             }
             ResolvedTy::Function { .. } => {
-                let actual_ty = ResolvedTy::Function {
+                let found_ty = Intern::new(ResolvedTy::Function {
                     params: param_tys.clone(),
-                    return_ty: self.resolved_arena.alloc(return_ty.clone()),
-                };
+                    return_ty,
+                });
 
-                let correct_signature = actual_ty.is_equal_to(&ty_annotation, self.resolved_arena);
-                if !correct_signature {
+                if found_ty != ty_annotation {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::Mismatch {
-                            expected: ty_annotation.clone(),
-                            found: actual_ty,
+                            expected: ty_annotation,
+                            found: found_ty,
                         },
                         module: self.current_module.unwrap(),
-                        // the type annotation is not unknown, so we can assume that
-                        // there is something with some kind of range
-                        range: function.full_range,
+                        range: self.world_index.range_info(fqn).value,
                         help: None,
                     });
                 }
 
                 let (annotation_param_tys, annotation_return_ty) =
-                    ty_annotation.as_function(self.resolved_arena).unwrap();
+                    ty_annotation.as_function().unwrap();
 
                 let annotation_sig = Signature::Function(FunctionSignature {
                     param_tys: annotation_param_tys,
-                    return_ty: self.resolved_arena[annotation_return_ty].clone(),
+                    return_ty: annotation_return_ty,
                     is_extern: function.is_extern,
                 });
 
@@ -417,16 +410,14 @@ impl<'a> InferenceCtx<'a> {
             _ => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
-                        expected: ty_annotation.clone(),
-                        found: ResolvedTy::Function {
+                        expected: ty_annotation,
+                        found: Intern::new(ResolvedTy::Function {
                             params: param_tys.clone(),
-                            return_ty: self.resolved_arena.alloc(return_ty.clone()),
-                        },
+                            return_ty,
+                        }),
                     },
                     module: self.current_module.unwrap(),
-                    // the type annotation is not unknown, so we can assume that
-                    // there is something with some kind of range
-                    range: function.full_range,
+                    range: self.world_index.range_info(fqn).value,
                     help: None,
                 });
 
@@ -465,10 +456,7 @@ impl<'a> InferenceCtx<'a> {
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| {
-                let ty = self.resolve_ty(param.ty);
-                self.resolved_arena.alloc(ty)
-            })
+            .map(|param| self.resolve_ty(param.ty))
             .collect();
 
         let sig = FunctionSignature {
@@ -484,17 +472,17 @@ impl<'a> InferenceCtx<'a> {
             .insert(lambda, sig.clone());
 
         if !function.is_extern {
-            self.finish_body_known(*body, Some(sig.param_tys.clone()), sig.return_ty.clone());
+            self.finish_body_known(*body, Some(sig.param_tys.clone()), sig.return_ty);
         }
 
         sig
     }
 
-    fn path_with_range_to_ty(&mut self, path: hir::PathWithRange) -> ResolvedTy {
+    fn path_with_range_to_ty(&mut self, path: hir::PathWithRange) -> Intern<ResolvedTy> {
         let (fqn, module_range, name_range) = match path {
-            hir::PathWithRange::ThisModule { name, range } => (
+            hir::PathWithRange::ThisModule(NameWithRange { name, range }) => (
                 hir::Fqn {
-                    module: self.current_module.expect("there is no current module"),
+                    module: self.current_module.unwrap(),
                     name,
                 },
                 None,
@@ -512,15 +500,15 @@ impl<'a> InferenceCtx<'a> {
                 hir::Definition::Global(global) => {
                     let global_ty = self.singleton_global_signature(global, fqn).ty;
 
-                    if global_ty == ResolvedTy::Unknown {
-                        return ResolvedTy::Unknown;
+                    if *global_ty == ResolvedTy::Unknown {
+                        return ResolvedTy::Unknown.into();
                     }
 
-                    if global_ty != ResolvedTy::Type {
-                        if !global_ty.is_unknown(self.resolved_arena) {
+                    if *global_ty != ResolvedTy::Type {
+                        if !global_ty.is_unknown() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::Mismatch {
-                                    expected: ResolvedTy::Type,
+                                    expected: ResolvedTy::Type.into(),
                                     found: global_ty,
                                 },
                                 module: self.current_module.unwrap(),
@@ -528,7 +516,7 @@ impl<'a> InferenceCtx<'a> {
                                 help: None,
                             });
                         }
-                        return ResolvedTy::Unknown;
+                        return ResolvedTy::Unknown.into();
                     }
 
                     let global_body = self.bodies_map[&fqn.module].global(fqn.name);
@@ -539,20 +527,23 @@ impl<'a> InferenceCtx<'a> {
 
                     self.current_module = old_module;
 
-                    match actual_ty {
+                    // todo: here the intern ptr changes, even though the type is really still the same
+                    match actual_ty.as_ref() {
                         ResolvedTy::Distinct {
                             fqn: None,
                             uid,
                             ty: distinct_ty,
                         } => ResolvedTy::Distinct {
                             fqn: Some(fqn),
-                            uid,
-                            ty: distinct_ty,
-                        },
+                            uid: *uid,
+                            ty: *distinct_ty,
+                        }
+                        .into(),
                         ResolvedTy::Struct { fqn: None, fields } => ResolvedTy::Struct {
                             fqn: Some(fqn),
-                            fields,
-                        },
+                            fields: fields.clone(),
+                        }
+                        .into(),
                         _ => actual_ty,
                     }
                 }
@@ -563,31 +554,32 @@ impl<'a> InferenceCtx<'a> {
                         Signature::Function(func) => {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::Mismatch {
-                                    expected: ResolvedTy::Type,
+                                    expected: ResolvedTy::Type.into(),
                                     found: ResolvedTy::Function {
                                         params: func.param_tys,
-                                        return_ty: self.resolved_arena.alloc(func.return_ty),
-                                    },
+                                        return_ty: func.return_ty,
+                                    }
+                                    .into(),
                                 },
                                 module: self.current_module.unwrap(),
                                 range: name_range,
                                 help: None,
                             });
 
-                            ResolvedTy::Unknown
+                            ResolvedTy::Unknown.into()
                         }
-                        Signature::Global(_) => ResolvedTy::Unknown,
+                        Signature::Global(_) => ResolvedTy::Unknown.into(),
                     }
                 }
             },
             Err(hir::GetDefinitionError::UnknownModule) => {
                 self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownModule { name: fqn.module.0 },
+                    kind: TyDiagnosticKind::UnknownModule { name: fqn.module },
                     module: self.current_module.unwrap(),
                     range: module_range.unwrap(),
                     help: None,
                 });
-                ResolvedTy::Unknown
+                ResolvedTy::Unknown.into()
             }
             Err(hir::GetDefinitionError::UnknownDefinition) => {
                 self.diagnostics.push(TyDiagnostic {
@@ -596,38 +588,37 @@ impl<'a> InferenceCtx<'a> {
                     range: name_range,
                     help: None,
                 });
-                ResolvedTy::Unknown
+                ResolvedTy::Unknown.into()
             }
         }
     }
 
-    fn parse_expr_to_ty(&mut self, expr: Idx<hir::Expr>) -> ResolvedTy {
+    fn parse_expr_to_ty(&mut self, expr: Idx<hir::Expr>) -> Intern<ResolvedTy> {
         match &self.bodies_map[&self.current_module.unwrap()][expr] {
-            hir::Expr::Missing => ResolvedTy::Unknown,
+            hir::Expr::Missing => ResolvedTy::Unknown.into(),
             hir::Expr::Ref { mutable, expr } => {
                 let sub_ty = self.parse_expr_to_ty(*expr);
 
                 ResolvedTy::Pointer {
                     mutable: *mutable,
-                    sub_ty: self.resolved_arena.alloc(sub_ty),
+                    sub_ty,
                 }
+                .into()
             }
             hir::Expr::Local(local_def) => {
-                let local_ty =
-                    self.modules[&self.current_module.unwrap()].local_tys[*local_def].clone();
+                let local_ty = self.modules[&self.current_module.unwrap()].local_tys[*local_def];
 
-                if local_ty == ResolvedTy::Unknown {
-                    return ResolvedTy::Unknown;
+                if *local_ty == ResolvedTy::Unknown {
+                    return ResolvedTy::Unknown.into();
                 }
 
-                if local_ty != ResolvedTy::Type {
-                    if !local_ty.is_unknown(self.resolved_arena) {
+                if *local_ty != ResolvedTy::Type {
+                    if !local_ty.is_unknown() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::Mismatch {
-                                expected: ResolvedTy::Type,
+                                expected: ResolvedTy::Type.into(),
                                 found: self.modules[&self.current_module.unwrap()].local_tys
-                                    [*local_def]
-                                    .clone(),
+                                    [*local_def],
                             },
                             module: self.current_module.unwrap(),
                             range: self.bodies_map[&self.current_module.unwrap()]
@@ -636,7 +627,7 @@ impl<'a> InferenceCtx<'a> {
                         });
                     }
 
-                    return ResolvedTy::Unknown;
+                    return ResolvedTy::Unknown.into();
                 }
 
                 let local_def = &self.bodies_map[&self.current_module.unwrap()][*local_def];
@@ -652,12 +643,14 @@ impl<'a> InferenceCtx<'a> {
                         }),
                     });
 
-                    return ResolvedTy::Unknown;
+                    return ResolvedTy::Unknown.into();
                 }
 
                 self.parse_expr_to_ty(local_def.value)
             }
-            hir::Expr::Global(path) => self.path_with_range_to_ty(*path),
+            hir::Expr::SelfGlobal(name) => {
+                self.path_with_range_to_ty(hir::PathWithRange::ThisModule(*name))
+            }
             hir::Expr::Param { .. } => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::ParamNotATy,
@@ -666,11 +659,12 @@ impl<'a> InferenceCtx<'a> {
                     help: None,
                 });
 
-                ResolvedTy::Unknown
+                ResolvedTy::Unknown.into()
             }
             hir::Expr::Path { previous, field } => {
-                match &self.bodies_map[&self.current_module.unwrap()][*previous] {
-                    hir::Expr::Module(module) => {
+                let previous_ty = self.infer_expr(*previous);
+                match previous_ty.as_ref() {
+                    ResolvedTy::Module(module) => {
                         let path = hir::PathWithRange::OtherModule {
                             fqn: hir::Fqn {
                                 module: *module,
@@ -684,15 +678,11 @@ impl<'a> InferenceCtx<'a> {
                         self.path_with_range_to_ty(path)
                     }
                     _ => {
-                        let expr_ty = self.modules[&self.current_module.unwrap()]
-                            .expr_tys
-                            .get(expr)
-                            .cloned();
-                        let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
-                        if !expr_ty.is_unknown(self.resolved_arena) {
+                        let expr_ty = self.infer_expr(expr);
+                        if !expr_ty.is_unknown() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::Mismatch {
-                                    expected: ResolvedTy::Type,
+                                    expected: ResolvedTy::Type.into(),
                                     found: expr_ty,
                                 },
                                 module: self.current_module.unwrap(),
@@ -702,20 +692,16 @@ impl<'a> InferenceCtx<'a> {
                             });
                         }
 
-                        ResolvedTy::Unknown
+                        ResolvedTy::Unknown.into()
                     }
                 }
             }
             hir::Expr::PrimitiveTy { ty } => self.resolve_ty(*ty),
             _ => {
-                let expr_ty = self.modules[&self.current_module.unwrap()]
-                    .expr_tys
-                    .get(expr)
-                    .cloned();
-                let expr_ty = expr_ty.unwrap_or_else(|| self.infer_expr(expr));
+                let expr_ty = self.infer_expr(expr);
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Type,
+                        expected: ResolvedTy::Type.into(),
                         found: expr_ty,
                     },
                     module: self.current_module.unwrap(),
@@ -723,73 +709,59 @@ impl<'a> InferenceCtx<'a> {
                     help: None,
                 });
 
-                ResolvedTy::Unknown
+                ResolvedTy::Unknown.into()
             }
         }
     }
 
-    fn resolve_ty(&mut self, ty: Idx<hir::TyWithRange>) -> ResolvedTy {
+    fn resolve_ty(&mut self, ty: Idx<hir::TyWithRange>) -> Intern<ResolvedTy> {
         match self.twr_arena[ty].clone() {
-            hir::TyWithRange::Unknown => ResolvedTy::Unknown,
-            hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width),
-            hir::TyWithRange::UInt { bit_width, .. } => ResolvedTy::UInt(bit_width),
-            hir::TyWithRange::Float { bit_width, .. } => ResolvedTy::Float(bit_width),
-            hir::TyWithRange::Bool { .. } => ResolvedTy::Bool,
-            hir::TyWithRange::String { .. } => ResolvedTy::String,
+            hir::TyWithRange::Unknown => ResolvedTy::Unknown.into(),
+            hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width).into(),
+            hir::TyWithRange::UInt { bit_width, .. } => ResolvedTy::UInt(bit_width).into(),
+            hir::TyWithRange::Float { bit_width, .. } => ResolvedTy::Float(bit_width).into(),
+            hir::TyWithRange::Bool { .. } => ResolvedTy::Bool.into(),
+            hir::TyWithRange::String { .. } => ResolvedTy::String.into(),
             hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
                 size,
-                sub_ty: {
-                    let ty = self.resolve_ty(sub_ty);
-                    self.resolved_arena.alloc(ty)
-                },
-            },
+                sub_ty: self.resolve_ty(sub_ty),
+            }
+            .into(),
             hir::TyWithRange::Pointer {
                 mutable, sub_ty, ..
             } => ResolvedTy::Pointer {
                 mutable,
-                sub_ty: {
-                    let ty = self.resolve_ty(sub_ty);
-                    self.resolved_arena.alloc(ty)
-                },
-            },
+                sub_ty: self.resolve_ty(sub_ty),
+            }
+            .into(),
             hir::TyWithRange::Distinct { uid, ty, .. } => ResolvedTy::Distinct {
                 fqn: None,
                 uid,
-                ty: {
-                    let ty = self.resolve_ty(ty);
-                    self.resolved_arena.alloc(ty)
-                },
-            },
-            hir::TyWithRange::Type { .. } => ResolvedTy::Type,
+                ty: self.resolve_ty(ty),
+            }
+            .into(),
+            hir::TyWithRange::Type { .. } => ResolvedTy::Type.into(),
             hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path),
-            hir::TyWithRange::Void { .. } => ResolvedTy::Void,
+            hir::TyWithRange::Void { .. } => ResolvedTy::Void.into(),
             hir::TyWithRange::Function {
                 params, return_ty, ..
             } => ResolvedTy::Function {
                 params: params
                     .into_iter()
-                    .map(|param| {
-                        let ty = self.resolve_ty(param);
-                        self.resolved_arena.alloc(ty)
-                    })
+                    .map(|param| self.resolve_ty(param))
                     .collect(),
-                return_ty: {
-                    let resolved = self.resolve_ty(return_ty);
-
-                    self.resolved_arena.alloc(resolved)
-                },
-            },
+                return_ty: self.resolve_ty(return_ty),
+            }
+            .into(),
             hir::TyWithRange::Struct { fields, .. } => ResolvedTy::Struct {
                 fqn: None,
                 fields: fields
                     .iter()
                     .cloned()
-                    .map(|(name, ty)| {
-                        let field_ty = self.resolve_ty(ty);
-                        (name, self.resolved_arena.alloc(field_ty))
-                    })
+                    .filter_map(|(name, ty)| name.map(|name| (name, self.resolve_ty(ty))))
                     .collect(),
-            },
+            }
+            .into(),
         }
     }
 }
@@ -806,21 +778,19 @@ impl InferenceResult {
 impl InferenceResult {
     pub fn debug(
         &self,
-        resolved_arena: &Arena<ResolvedTy>,
+        project_root: &std::path::Path,
         interner: &Interner,
         fancy: bool,
     ) -> String {
         let mut s = String::new();
 
-        let mut signatures = self.signatures.iter().collect::<Vec<_>>();
+        let mut signatures = self
+            .signatures
+            .iter()
+            .map(|(fqn, sig)| (fqn.to_string(project_root, interner), sig))
+            .collect::<Vec<_>>();
 
-        signatures.sort_by_key(|(fqn, _)| {
-            format!(
-                "{}.{}",
-                interner.lookup(fqn.module.0),
-                interner.lookup(fqn.name.0)
-            )
-        });
+        signatures.sort_by(|(fqn1, _), (fqn2, _)| fqn1.cmp(fqn2));
 
         for (fqn, signature) in signatures {
             match signature {
@@ -829,11 +799,8 @@ impl InferenceResult {
                     param_tys,
                     is_extern,
                 }) => {
-                    s.push_str(&format!(
-                        "{}.{} : ",
-                        interner.lookup(fqn.module.0),
-                        interner.lookup(fqn.name.0)
-                    ));
+                    s.push_str(&fqn);
+                    s.push_str(" : ");
 
                     if *is_extern {
                         s.push_str("extern ");
@@ -843,22 +810,19 @@ impl InferenceResult {
                         if idx != 0 {
                             s.push_str(", ");
                         }
-                        s.push_str(&resolved_arena[*param_ty].display(resolved_arena, interner));
+                        s.push_str(&param_ty.display(project_root, interner));
                     }
                     s.push(')');
 
                     s.push_str(&format!(
                         " -> {}\n",
-                        return_ty.display(resolved_arena, interner)
+                        return_ty.display(project_root, interner)
                     ));
                 }
                 Signature::Global(GlobalSignature { ty }) => {
-                    s.push_str(&format!(
-                        "{}.{} : ",
-                        interner.lookup(fqn.module.0),
-                        interner.lookup(fqn.name.0)
-                    ));
-                    s.push_str(&format!("{}\n", ty.display(resolved_arena, interner)));
+                    s.push_str(&fqn);
+                    s.push_str(" : ");
+                    s.push_str(&format!("{}\n", ty.display(project_root, interner)));
                 }
             }
         }
@@ -868,7 +832,7 @@ impl InferenceResult {
 
         for (name, module) in modules {
             if fancy || self.modules.len() > 1 {
-                s.push_str(&format!("{}:\n", interner.lookup(name.0)));
+                s.push_str(&format!("{}:\n", name.to_string(project_root, interner)));
             }
             for (expr_idx, ty) in module.expr_tys.iter() {
                 if fancy {
@@ -879,7 +843,7 @@ impl InferenceResult {
                     }
                     s.push_str(&format!("{}", expr_idx.into_raw(),));
                 }
-                s.push_str(&format!(" : {}\n", ty.display(resolved_arena, interner)));
+                s.push_str(&format!(" : {}\n", ty.display(project_root, interner)));
             }
 
             for (local_def_idx, ty) in module.local_tys.iter() {
@@ -889,7 +853,7 @@ impl InferenceResult {
                 s.push_str(&format!(
                     "l{} : {}\n",
                     local_def_idx.into_raw(),
-                    ty.display(resolved_arena, interner)
+                    ty.display(project_root, interner)
                 ));
             }
         }
@@ -899,7 +863,7 @@ impl InferenceResult {
 }
 
 impl ResolvedTy {
-    pub fn display(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+    pub fn display(&self, project_root: &std::path::Path, interner: &Interner) -> String {
         match self {
             Self::NotYetResolved => "!".to_string(),
             Self::Unknown => "<unknown>".to_string(),
@@ -920,60 +884,43 @@ impl ResolvedTy {
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
             Self::Array { size, sub_ty } => {
-                format!(
-                    "[{size}]{}",
-                    resolved_arena[*sub_ty].display(resolved_arena, interner)
-                )
+                format!("[{size}]{}", sub_ty.display(project_root, interner))
             }
             Self::Pointer { mutable, sub_ty } => {
                 format!(
                     "^{}{}",
                     if *mutable { "mut " } else { "" },
-                    resolved_arena[*sub_ty].display(resolved_arena, interner)
+                    sub_ty.display(project_root, interner)
                 )
             }
-            Self::Distinct { fqn: Some(fqn), .. } => format!(
-                "{}.{}",
-                interner.lookup(fqn.module.0),
-                interner.lookup(fqn.name.0)
-            ),
+            Self::Distinct { fqn: Some(fqn), .. } => fqn.to_string(project_root, interner),
             Self::Distinct { fqn: None, uid, ty } => {
-                format!(
-                    "distinct'{} {}",
-                    uid,
-                    resolved_arena[*ty].display(resolved_arena, interner)
-                )
+                format!("distinct'{} {}", uid, ty.display(project_root, interner))
             }
             Self::Function { params, return_ty } => {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&resolved_arena[*param].display(resolved_arena, interner));
+                    res.push_str(&param.display(project_root, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
                     }
                 }
                 res.push_str(") -> ");
-                res.push_str(&resolved_arena[*return_ty].display(resolved_arena, interner));
+                res.push_str(&return_ty.display(project_root, interner));
 
                 res
             }
-            Self::Struct { fqn: Some(fqn), .. } => format!(
-                "{}.{}",
-                interner.lookup(fqn.module.0),
-                interner.lookup(fqn.name.0)
-            ),
+            Self::Struct { fqn: Some(fqn), .. } => fqn.to_string(project_root, interner),
             Self::Struct { fqn: None, fields } => {
                 let mut res = "struct {".to_string();
 
                 for (idx, (name, ty)) in fields.iter().enumerate() {
-                    if let Some(name) = name {
-                        res.push_str(interner.lookup(name.0));
-                        res.push_str(": ");
-                    }
+                    res.push_str(interner.lookup(name.0));
+                    res.push_str(": ");
 
-                    res.push_str(&resolved_arena[*ty].display(resolved_arena, interner));
+                    res.push_str(&ty.display(project_root, interner));
 
                     if idx != fields.len() - 1 {
                         res.push_str(", ");
@@ -986,20 +933,22 @@ impl ResolvedTy {
             }
             Self::Type => "type".to_string(),
             Self::Void => "void".to_string(),
+            Self::Module(file_name) => {
+                format!("module {}", file_name.to_string(project_root, interner))
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
+    use std::{path::Path, vec};
 
     use super::*;
     use ast::AstNode;
     use expect_test::{expect, Expect};
-    use hir::UIDGenerator;
     use interner::Interner;
-    use la_arena::RawIdx;
+    use uid_gen::UIDGenerator;
 
     #[track_caller]
     fn check<const N: usize>(
@@ -1022,7 +971,7 @@ mod tests {
         let mut bodies_map = FxHashMap::default();
 
         for (name, text) in &modules {
-            if *name == "main" {
+            if *name == "main.capy" {
                 continue;
             }
 
@@ -1031,47 +980,46 @@ mod tests {
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
             let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-            let module = hir::Name(interner.intern(name));
-
-            world_index.add_module(module, index);
+            let module = hir::FileName(interner.intern(name));
 
             let (bodies, _) = hir::lower(
                 root,
                 &tree,
-                module,
-                &world_index,
+                Path::new(name),
+                &index,
                 &mut uid_gen,
                 &mut twr_arena,
                 &mut interner,
+                true,
             );
+            world_index.add_module(module, index);
             bodies_map.insert(module, bodies);
         }
 
-        let text = &modules["main"];
-        let module = hir::Name(interner.intern("main"));
+        let text = &modules["main.capy"];
+        let module = hir::FileName(interner.intern("main.capy"));
         let tokens = lexer::lex(text);
         let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
         let (index, _) = hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
-        world_index.add_module(module, index);
 
         let (bodies, _) = hir::lower(
             root,
             &tree,
-            module,
-            &world_index,
+            Path::new("main"),
+            &index,
             &mut uid_gen,
             &mut twr_arena,
             &mut interner,
+            true,
         );
+        world_index.add_module(module, index);
         bodies_map.insert(module, bodies);
 
-        let mut resolved_arena = Arena::new();
-
         let (inference_result, actual_diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &twr_arena, &mut resolved_arena).finish();
+            InferenceCtx::new(&bodies_map, &world_index, &twr_arena).finish();
 
-        expect.assert_eq(&inference_result.debug(&resolved_arena, &interner, false));
+        expect.assert_eq(&inference_result.debug(Path::new(""), &interner, false));
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
@@ -1096,7 +1044,7 @@ mod tests {
                 foo :: () {};
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 0 : void
             "#]],
             |_| [],
@@ -1110,7 +1058,7 @@ mod tests {
                 one :: () -> i32 { 1 };
             "#,
             expect![[r#"
-                main.one : () -> i32
+                main::one : () -> i32
                 0 : i32
                 1 : i32
             "#]],
@@ -1125,7 +1073,7 @@ mod tests {
                 one :: () -> f32 { 1.0 };
             "#,
             expect![[r#"
-                main.one : () -> f32
+                main::one : () -> f32
                 0 : f32
                 1 : f32
             "#]],
@@ -1140,7 +1088,7 @@ mod tests {
                 one :: () -> f32 { 1 };
             "#,
             expect![[r#"
-                main.one : () -> f32
+                main::one : () -> f32
                 0 : f32
                 1 : f32
             "#]],
@@ -1156,8 +1104,8 @@ mod tests {
                 two :: () -> bar.baz {};
             "#,
             expect![[r#"
-                main.one : () -> <unknown>
-                main.two : () -> <unknown>
+                main::one : () -> <unknown>
+                main::two : () -> <unknown>
                 0 : void
                 1 : void
             "#]],
@@ -1166,20 +1114,20 @@ mod tests {
                     (
                         TyDiagnosticKind::UnknownFqn {
                             fqn: hir::Fqn {
-                                module: hir::Name(i.intern("main")),
+                                module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("foo")),
                             },
                         },
                         30..33,
                         None,
                     ),
-                    (
-                        TyDiagnosticKind::UnknownModule {
-                            name: i.intern("bar"),
-                        },
-                        67..70,
-                        None,
-                    ),
+                    // (
+                    //     TyDiagnosticKind::UnknownModule {
+                    //         name: hir::FileName(i.intern("bar")),
+                    //     },
+                    //     67..70,
+                    //     None,
+                    // ),
                 ]
             },
         );
@@ -1189,25 +1137,53 @@ mod tests {
     fn ty_in_other_module() {
         check(
             r#"
-                #- main
-                fun :: () -> numbers.imaginary {
+                #- main.capy
+                numbers :: import "numbers.capy";
+
+                // todo: allow functions to return types defined in other modules w/o having to do this
+                imaginary :: numbers.imaginary;
+
+                fun :: () -> imaginary {
                     foo : numbers.imaginary = 0;
 
-                    foo
+                    my_magic := numbers.Magic_Struct {
+                        mystical_field: 123 as numbers.imaginary,
+                    }
+
+                    my_magic.mystical_field
                 }
-                #- numbers
+                #- numbers.capy
                 imaginary :: distinct i32;
+
+                Magic_Struct :: struct {
+                    mystical_field: imaginary,
+                };
             "#,
             expect![[r#"
-                main.fun : () -> numbers.imaginary
-                numbers.imaginary : type
+                main::fun : () -> numbers::imaginary
+                main::imaginary : type
+                main::numbers : module numbers
+                numbers::Magic_Struct : type
+                numbers::imaginary : type
                 main:
-                  2 : numbers.imaginary
-                  3 : numbers.imaginary
-                  4 : numbers.imaginary
-                  l0 : numbers.imaginary
+                  0 : module numbers
+                  1 : module numbers
+                  2 : type
+                  3 : module numbers
+                  5 : numbers::imaginary
+                  7 : module numbers
+                  9 : numbers::imaginary
+                  10 : module numbers
+                  12 : numbers::imaginary
+                  13 : numbers::Magic_Struct
+                  14 : numbers::Magic_Struct
+                  15 : numbers::imaginary
+                  16 : numbers::imaginary
+                  l0 : numbers::imaginary
+                  l1 : numbers::Magic_Struct
                 numbers:
                   0 : type
+                  1 : type
             "#]],
             |_| [],
         );
@@ -1220,7 +1196,7 @@ mod tests {
                 twenty :: () -> u8 { 10 + 10 };
             "#,
             expect![[r#"
-                main.twenty : () -> u8
+                main::twenty : () -> u8
                 0 : u8
                 1 : u8
                 2 : u8
@@ -1241,7 +1217,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.calc : () -> isize
+                main::calc : () -> isize
                 1 : i128
                 3 : i128
                 5 : u16
@@ -1267,7 +1243,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.calc : () -> u128
+                main::calc : () -> u128
                 1 : u16
                 3 : u16
                 4 : u16
@@ -1290,7 +1266,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.calc : () -> i128
+                main::calc : () -> i128
                 1 : u16
                 2 : u16
                 3 : i128
@@ -1303,8 +1279,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::UInt(16),
-                        second: ResolvedTy::IInt(0),
+                        first: ResolvedTy::UInt(16).into(),
+                        second: ResolvedTy::IInt(0).into(),
                     },
                     93..102,
                     None,
@@ -1324,7 +1300,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.check : () -> bool
+                main::check : () -> bool
                 1 : {uint}
                 3 : {uint}
                 5 : bool
@@ -1348,7 +1324,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.how_old : () -> usize
+                main::how_old : () -> usize
                 1 : string
                 3 : string
                 5 : usize
@@ -1360,8 +1336,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::String,
-                        to: ResolvedTy::UInt(u32::MAX),
+                        from: ResolvedTy::String.into(),
+                        to: ResolvedTy::UInt(u32::MAX).into(),
                     },
                     108..121,
                     None,
@@ -1381,7 +1357,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : u16
                 3 : u16
                 4 : void
@@ -1401,7 +1377,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : f32
                 2 : void
                 l0 : f32
@@ -1422,7 +1398,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : f32
                 3 : f64
                 4 : f32
@@ -1448,7 +1424,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : i32
                 3 : f64
                 4 : i32
@@ -1473,7 +1449,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : f64
                 2 : f64
                 3 : f64
@@ -1494,7 +1470,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 0 : {float}
                 1 : {float}
                 2 : {float}
@@ -1515,7 +1491,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : usize
                 3 : usize
                 5 : usize
@@ -1537,7 +1513,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 2 : i32
                 3 : i32
                 4 : i32
@@ -1561,7 +1537,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 2 : i32
                 3 : i32
                 4 : i32
@@ -1585,7 +1561,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 2 : i32
                 3 : i32
                 4 : i32
@@ -1611,7 +1587,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> i32
+                main::main : () -> i32
                 2 : i32
                 3 : i32
                 4 : i32
@@ -1640,7 +1616,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> i32
+                main::main : () -> i32
                 2 : i32
                 3 : i32
                 4 : i32
@@ -1661,8 +1637,9 @@ mod tests {
                         actual_size: 6,
                         array_ty: ResolvedTy::Array {
                             size: 6,
-                            sub_ty: Idx::from_raw(RawIdx::from(0)),
-                        },
+                            sub_ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
                     },
                     123..137,
                     None,
@@ -1687,7 +1664,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 2 : i16
                 3 : bool
                 4 : i16
@@ -1716,7 +1693,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> usize
+                main::main : () -> usize
                 1 : usize
                 3 : usize
                 4 : usize
@@ -1745,7 +1722,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> i8
+                main::main : () -> i8
                 2 : i8
                 3 : bool
                 4 : i8
@@ -1781,7 +1758,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> u8
+                main::main : () -> u8
                 2 : u8
                 3 : bool
                 4 : u8
@@ -1799,8 +1776,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8),
-                        found: ResolvedTy::IInt(0),
+                        expected: ResolvedTy::UInt(8).into(),
+                        found: ResolvedTy::IInt(0).into(),
                     },
                     300..303,
                     None,
@@ -1816,7 +1793,7 @@ mod tests {
                 add :: (x: i32, y: i32) -> i32 { x + y };
             "#,
             expect![[r#"
-                main.add : (i32, i32) -> i32
+                main::add : (i32, i32) -> i32
                 0 : i32
                 1 : i32
                 2 : i32
@@ -1836,7 +1813,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 2 : {uint}
                 3 : void
@@ -1857,7 +1834,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : {uint}
                 3 : string
                 4 : string
@@ -1880,7 +1857,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : string
                 2 : string
                 3 : string
@@ -1903,7 +1880,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> i16
+                main::foo : () -> i16
                 1 : i8
                 3 : i8
                 4 : i16
@@ -1926,7 +1903,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> u8
+                main::foo : () -> u8
                 1 : u16
                 3 : u16
                 4 : u8
@@ -1937,8 +1914,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8),
-                        found: ResolvedTy::UInt(16),
+                        expected: ResolvedTy::UInt(8).into(),
+                        found: ResolvedTy::UInt(16).into(),
                     },
                     102..105,
                     None,
@@ -1958,7 +1935,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> i16
+                main::foo : () -> i16
                 1 : u8
                 3 : u8
                 4 : i16
@@ -1981,7 +1958,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> u16
+                main::foo : () -> u16
                 1 : i8
                 3 : i8
                 4 : u16
@@ -1993,8 +1970,8 @@ mod tests {
                 // should fail due to loss of sign
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(16),
-                        found: ResolvedTy::IInt(8),
+                        expected: ResolvedTy::UInt(16).into(),
+                        found: ResolvedTy::IInt(8).into(),
                     },
                     103..108,
                     None,
@@ -2014,7 +1991,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> u16
+                main::foo : () -> u16
                 1 : i16
                 3 : i16
                 4 : u16
@@ -2025,8 +2002,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(16),
-                        found: ResolvedTy::IInt(16),
+                        expected: ResolvedTy::UInt(16).into(),
+                        found: ResolvedTy::IInt(16).into(),
                     },
                     104..108,
                     None,
@@ -2046,7 +2023,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> u8
+                main::foo : () -> u8
                 1 : i16
                 3 : i16
                 4 : u8
@@ -2057,8 +2034,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8),
-                        found: ResolvedTy::IInt(16),
+                        expected: ResolvedTy::UInt(8).into(),
+                        found: ResolvedTy::IInt(16).into(),
                     },
                     102..105,
                     None,
@@ -2074,7 +2051,7 @@ mod tests {
                 sum :: () -> i32 { "foo" + 1 };
             "#,
             expect![[r#"
-                main.sum : () -> i32
+                main::sum : () -> i32
                 0 : string
                 1 : i32
                 2 : i32
@@ -2084,8 +2061,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::String,
-                        second: ResolvedTy::UInt(0),
+                        first: ResolvedTy::String.into(),
+                        second: ResolvedTy::UInt(0).into(),
                     },
                     36..45,
                     None,
@@ -2101,7 +2078,7 @@ mod tests {
                 f :: () -> i32 { 5 + };
             "#,
             expect![[r#"
-                main.f : () -> i32
+                main::f : () -> i32
                 0 : i32
                 1 : <unknown>
                 2 : i32
@@ -2118,7 +2095,7 @@ mod tests {
                 f :: () -> string { "hello" + };
             "#,
             expect![[r#"
-                main.f : () -> string
+                main::f : () -> string
                 0 : string
                 1 : <unknown>
                 2 : string
@@ -2135,7 +2112,7 @@ mod tests {
                 f :: () -> bool { true < 5 };
             "#,
             expect![[r#"
-                main.f : () -> bool
+                main::f : () -> bool
                 0 : bool
                 1 : {uint}
                 2 : bool
@@ -2145,8 +2122,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::Lt,
-                        first: ResolvedTy::Bool,
-                        second: ResolvedTy::UInt(0),
+                        first: ResolvedTy::Bool.into(),
+                        second: ResolvedTy::UInt(0).into(),
                     },
                     35..43,
                     None,
@@ -2162,7 +2139,7 @@ mod tests {
                 f :: () -> bool { "hello" && "world" };
             "#,
             expect![[r#"
-                main.f : () -> bool
+                main::f : () -> bool
                 0 : string
                 1 : string
                 2 : bool
@@ -2172,8 +2149,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::And,
-                        first: ResolvedTy::String,
-                        second: ResolvedTy::String,
+                        first: ResolvedTy::String.into(),
+                        second: ResolvedTy::String.into(),
                     },
                     35..53,
                     None,
@@ -2189,7 +2166,7 @@ mod tests {
                 both :: () -> bool { true && false };
             "#,
             expect![[r#"
-                main.both : () -> bool
+                main::both : () -> bool
                 0 : bool
                 1 : bool
                 2 : bool
@@ -2206,7 +2183,7 @@ mod tests {
                 either :: () -> bool { true || };
             "#,
             expect![[r#"
-                main.either : () -> bool
+                main::either : () -> bool
                 0 : bool
                 1 : <unknown>
                 2 : bool
@@ -2223,7 +2200,7 @@ mod tests {
                 less :: () -> bool { 5 <= 10 };
             "#,
             expect![[r#"
-                main.less : () -> bool
+                main::less : () -> bool
                 0 : {uint}
                 1 : {uint}
                 2 : bool
@@ -2240,7 +2217,7 @@ mod tests {
                 equality :: () -> bool { 42 == };
             "#,
             expect![[r#"
-                main.equality : () -> bool
+                main::equality : () -> bool
                 0 : {uint}
                 1 : <unknown>
                 2 : bool
@@ -2257,7 +2234,7 @@ mod tests {
                 redundant :: () -> u8 { +4 };
             "#,
             expect![[r#"
-                main.redundant : () -> u8
+                main::redundant : () -> u8
                 0 : u8
                 1 : u8
                 2 : u8
@@ -2273,7 +2250,7 @@ mod tests {
                 neg :: () -> u8 { -4 };
             "#,
             expect![[r#"
-                main.neg : () -> u8
+                main::neg : () -> u8
                 0 : u8
                 1 : u8
                 2 : u8
@@ -2281,8 +2258,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8),
-                        found: ResolvedTy::IInt(0),
+                        expected: ResolvedTy::UInt(8).into(),
+                        found: ResolvedTy::IInt(0).into(),
                     },
                     35..37,
                     None,
@@ -2298,7 +2275,7 @@ mod tests {
                 pos :: () -> i8 { ----4 };
             "#,
             expect![[r#"
-                main.pos : () -> i8
+                main::pos : () -> i8
                 0 : i8
                 1 : i8
                 2 : i8
@@ -2317,7 +2294,7 @@ mod tests {
                 not :: () -> bool { !true };
             "#,
             expect![[r#"
-                main.not : () -> bool
+                main::not : () -> bool
                 0 : bool
                 1 : bool
                 2 : bool
@@ -2333,15 +2310,15 @@ mod tests {
                 s :: () -> string { 92 };
             "#,
             expect![[r#"
-                main.s : () -> string
+                main::s : () -> string
                 0 : {uint}
                 1 : {uint}
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::String,
-                        found: ResolvedTy::UInt(0),
+                        expected: ResolvedTy::String.into(),
+                        found: ResolvedTy::UInt(0).into(),
                     },
                     37..39,
                     None,
@@ -2358,8 +2335,8 @@ mod tests {
                 nothing :: () {};
             "#,
             expect![[r#"
-                main.main : () -> void
-                main.nothing : () -> void
+                main::main : () -> void
+                main::nothing : () -> void
                 0 : () -> void
                 1 : void
                 2 : void
@@ -2377,8 +2354,8 @@ mod tests {
                 number :: () -> i32 { 5 };
             "#,
             expect![[r#"
-                main.main : () -> i32
-                main.number : () -> i32
+                main::main : () -> i32
+                main::number : () -> i32
                 0 : () -> i32
                 1 : i32
                 2 : i32
@@ -2397,8 +2374,8 @@ mod tests {
                 id :: (n: i32) -> i32 { n };
             "#,
             expect![[r#"
-                main.id : (i32) -> i32
-                main.main : () -> i32
+                main::id : (i32) -> i32
+                main::main : () -> i32
                 0 : (i32) -> i32
                 1 : i32
                 2 : i32
@@ -2418,8 +2395,8 @@ mod tests {
                 multiply :: (x: i32, y: i32) -> i32 { x * y };
             "#,
             expect![[r#"
-                main.main : () -> i32
-                main.multiply : (i32, i32) -> i32
+                main::main : () -> i32
+                main::multiply : (i32, i32) -> i32
                 0 : (i32, i32) -> i32
                 1 : void
                 2 : string
@@ -2434,16 +2411,16 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::IInt(32),
-                            found: ResolvedTy::Void,
+                            expected: ResolvedTy::IInt(32).into(),
+                            found: ResolvedTy::Void.into(),
                         },
                         46..48,
                         None,
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::IInt(32),
-                            found: ResolvedTy::String,
+                            expected: ResolvedTy::IInt(32).into(),
+                            found: ResolvedTy::String.into(),
                         },
                         50..53,
                         None,
@@ -2457,22 +2434,29 @@ mod tests {
     fn call_function_from_other_module() {
         check(
             r#"
-                #- main
-                a :: () -> string { greetings.informal(10) };
-                #- greetings
+                #- main.capy
+                a :: () -> string {
+                    greetings := import "greetings.capy"
+
+                    greetings.informal(10)
+                };
+                #- greetings.capy
                 informal :: (n: i32) -> string { "Hello!" };
             "#,
             expect![[r#"
-                greetings.informal : (i32) -> string
-                main.a : () -> string
+                greetings::informal : (i32) -> string
+                main::a : () -> string
                 greetings:
                   0 : string
                   1 : string
                 main:
-                  1 : (i32) -> string
-                  2 : i32
-                  3 : string
-                  4 : string
+                  1 : module greetings
+                  2 : module greetings
+                  3 : (i32) -> string
+                  4 : i32
+                  5 : string
+                  6 : string
+                  l0 : module greetings
             "#]],
             |_| [],
         );
@@ -2492,8 +2476,8 @@ mod tests {
                 take_i32 :: (n: i32) {};
             "#,
             expect![[r#"
-                main.main : () -> void
-                main.take_i32 : (i32) -> void
+                main::main : () -> void
+                main::take_i32 : (i32) -> void
                 0 : (i32) -> void
                 2 : {uint}
                 3 : {uint}
@@ -2508,8 +2492,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::IInt(32),
-                        found: ResolvedTy::String,
+                        expected: ResolvedTy::IInt(32).into(),
+                        found: ResolvedTy::String.into(),
                     },
                     123..128,
                     None,
@@ -2531,26 +2515,27 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.imaginary : type
-                main.main : () -> i32
+                main::imaginary : type
+                main::main : () -> i32
                 0 : type
-                2 : main.imaginary
-                3 : main.imaginary
-                4 : main.imaginary
-                l0 : main.imaginary
+                2 : main::imaginary
+                3 : main::imaginary
+                4 : main::imaginary
+                l0 : main::imaginary
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::IInt(32),
+                        expected: ResolvedTy::IInt(32).into(),
                         found: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::Name(interner.intern("main")),
-                                name: hir::Name(interner.intern("imaginary")),
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Idx::from_raw(RawIdx::from(0)),
-                        },
+                            ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
                     },
                     147..148,
                     None,
@@ -2572,15 +2557,15 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.imaginary : type
-                main.main : () -> main.imaginary
+                main::imaginary : type
+                main::main : () -> main::imaginary
                 0 : type
-                2 : main.imaginary
-                3 : main.imaginary
-                4 : main.imaginary
-                5 : main.imaginary
-                6 : main.imaginary
-                l0 : main.imaginary
+                2 : main::imaginary
+                3 : main::imaginary
+                4 : main::imaginary
+                5 : main::imaginary
+                6 : main::imaginary
+                l0 : main::imaginary
             "#]],
             |_| [],
         );
@@ -2599,15 +2584,15 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.imaginary : type
-                main.main : () -> main.imaginary
+                main::imaginary : type
+                main::main : () -> main::imaginary
                 0 : type
-                2 : main.imaginary
-                3 : main.imaginary
-                4 : main.imaginary
-                5 : main.imaginary
-                6 : main.imaginary
-                l0 : main.imaginary
+                2 : main::imaginary
+                3 : main::imaginary
+                4 : main::imaginary
+                5 : main::imaginary
+                6 : main::imaginary
+                l0 : main::imaginary
             "#]],
             |_| [],
         );
@@ -2627,31 +2612,32 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.imaginary : type
-                main.main : () -> main.imaginary
+                main::imaginary : type
+                main::main : () -> main::imaginary
                 0 : type
-                2 : main.imaginary
+                2 : main::imaginary
                 4 : i32
-                5 : main.imaginary
+                5 : main::imaginary
                 6 : i32
-                7 : main.imaginary
-                8 : main.imaginary
-                l0 : main.imaginary
+                7 : main::imaginary
+                8 : main::imaginary
+                l0 : main::imaginary
                 l1 : i32
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::Name(interner.intern("main")),
-                                name: hir::Name(interner.intern("imaginary")),
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Idx::from_raw(RawIdx::from(1)),
-                        },
-                        second: ResolvedTy::IInt(32),
+                            ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
+                        second: ResolvedTy::IInt(32).into(),
                     },
                     186..191,
                     None,
@@ -2675,40 +2661,42 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.extra_imaginary : type
-                main.imaginary : type
-                main.main : () -> main.imaginary
+                main::extra_imaginary : type
+                main::imaginary : type
+                main::main : () -> main::imaginary
                 0 : type
                 1 : type
-                3 : main.imaginary
-                5 : main.extra_imaginary
-                6 : main.imaginary
-                7 : main.extra_imaginary
-                8 : main.imaginary
-                9 : main.imaginary
-                l0 : main.imaginary
-                l1 : main.extra_imaginary
+                3 : main::imaginary
+                5 : main::extra_imaginary
+                6 : main::imaginary
+                7 : main::extra_imaginary
+                8 : main::imaginary
+                9 : main::imaginary
+                l0 : main::imaginary
+                l1 : main::extra_imaginary
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::OpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::Name(interner.intern("main")),
-                                name: hir::Name(interner.intern("imaginary")),
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Idx::from_raw(RawIdx::from(1)),
-                        },
+                            ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
                         second: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::Name(interner.intern("main")),
-                                name: hir::Name(interner.intern("extra_imaginary")),
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("extra_imaginary")),
                             }),
                             uid: 1,
-                            ty: Idx::from_raw(RawIdx::from(2)),
-                        },
+                            ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
                     },
                     253..258,
                     None,
@@ -2730,17 +2718,17 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> i32
-                main.something_far_away : type
+                main::main : () -> i32
+                main::something_far_away : type
                 0 : type
                 2 : i32
-                3 : main.something_far_away
-                4 : main.something_far_away
+                3 : main::something_far_away
+                4 : main::something_far_away
                 6 : ^i32
                 7 : ^i32
                 8 : i32
                 9 : i32
-                l0 : main.something_far_away
+                l0 : main::something_far_away
             "#]],
             |_| [],
         );
@@ -2762,21 +2750,21 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.imaginary : type
-                main.imaginary_far_away : type
-                main.main : () -> main.imaginary
+                main::imaginary : type
+                main::imaginary_far_away : type
+                main::main : () -> main::imaginary
                 0 : type
                 1 : type
-                3 : main.imaginary
-                5 : main.imaginary
-                6 : main.imaginary_far_away
-                7 : main.imaginary_far_away
-                10 : ^main.imaginary
-                11 : ^main.imaginary
-                12 : main.imaginary
-                13 : main.imaginary
-                l0 : main.imaginary
-                l1 : main.imaginary_far_away
+                3 : main::imaginary
+                5 : main::imaginary
+                6 : main::imaginary_far_away
+                7 : main::imaginary_far_away
+                10 : ^main::imaginary
+                11 : ^main::imaginary
+                12 : main::imaginary
+                13 : main::imaginary
+                l0 : main::imaginary
+                l1 : main::imaginary_far_away
             "#]],
             |_| [],
         );
@@ -2797,24 +2785,24 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.Vector3 : type
-                main.main : () -> void
+                main::Vector3 : type
+                main::main : () -> void
                 0 : type
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : [3]i32
-                8 : main.Vector3
+                8 : main::Vector3
                 9 : usize
                 10 : i32
-                12 : main.Vector3
+                12 : main::Vector3
                 13 : usize
                 14 : i32
-                16 : main.Vector3
+                16 : main::Vector3
                 17 : usize
                 18 : i32
                 19 : void
-                l0 : main.Vector3
+                l0 : main::Vector3
                 l1 : i32
                 l2 : i32
                 l3 : i32
@@ -2834,7 +2822,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> ^i32
+                main::main : () -> ^i32
                 1 : i32
                 2 : i32
                 3 : ^i32
@@ -2854,8 +2842,8 @@ mod tests {
                 bar :: foo;
             "#,
             expect![[r#"
-                main.bar : <unknown>
-                main.foo : <unknown>
+                main::bar : <unknown>
+                main::foo : <unknown>
                 0 : <unknown>
                 1 : <unknown>
             "#]],
@@ -2882,7 +2870,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 2 : {uint}
                 3 : {uint}
@@ -2894,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_binding() {
+    fn assign_to_binding() {
         check(
             r#"
                 main :: () {
@@ -2904,7 +2892,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 2 : {uint}
                 3 : {uint}
@@ -2922,7 +2910,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_non_mut_ptr_to_var() {
+    fn assign_to_immutable_ref() {
         check(
             r#"
                 main :: () {
@@ -2933,7 +2921,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 3 : {uint}
                 4 : ^{uint}
@@ -2955,7 +2943,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_mut_ptr_to_var() {
+    fn assign_to_mut_ref() {
         check(
             r#"
                 main :: () {
@@ -2966,7 +2954,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 3 : {uint}
                 4 : ^mut {uint}
@@ -2982,7 +2970,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_to_immutable_expr() {
+    fn assign_to_binary_expr() {
         check(
             r#"
                 main :: () {
@@ -2990,7 +2978,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 0 : {uint}
                 1 : {uint}
                 2 : {uint}
@@ -3016,7 +3004,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 0 : {uint}
                 1 : ^mut {uint}
                 2 : ^mut {uint}
@@ -3035,7 +3023,7 @@ mod tests {
     }
 
     #[test]
-    fn mut_ptr_to_binding() {
+    fn mut_ref_to_binding() {
         check(
             r#"
                 main :: () {
@@ -3044,7 +3032,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.main : () -> void
+                main::main : () -> void
                 1 : {uint}
                 3 : {uint}
                 4 : ^mut {uint}
@@ -3063,7 +3051,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_struct() {
+    fn assign_to_mut_struct_field() {
         check(
             r#"
                 Person :: struct {
@@ -3081,27 +3069,27 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 3 : string
                 4 : i32
-                5 : main.Person
-                6 : main.Person
+                5 : main::Person
+                6 : main::Person
                 7 : i32
-                8 : main.Person
+                8 : main::Person
                 9 : i32
                 10 : i32
                 11 : i32
                 12 : void
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn immutable_struct() {
+    fn assign_to_immutable_struct_field() {
         check(
             r#"
                 Person :: struct {
@@ -3119,20 +3107,20 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 3 : string
                 4 : i32
-                5 : main.Person
-                6 : main.Person
+                5 : main::Person
+                6 : main::Person
                 7 : i32
-                8 : main.Person
+                8 : main::Person
                 9 : i32
                 10 : i32
                 11 : i32
                 12 : void
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |_| {
                 [(
@@ -3145,7 +3133,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_field_index() {
+    fn assign_to_mut_struct_array_field() {
         check(
             r#"
                 Person :: struct {
@@ -3179,43 +3167,43 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Company : type
-                main.Person : type
-                main.foo : () -> void
+                main::Company : type
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 1 : type
                 6 : string
                 7 : i32
-                8 : main.Person
+                8 : main::Person
                 10 : string
                 11 : i32
-                12 : main.Person
+                12 : main::Person
                 14 : string
                 15 : i32
-                16 : main.Person
-                17 : [3]main.Person
-                18 : main.Company
-                19 : main.Company
-                20 : [3]main.Person
+                16 : main::Person
+                17 : [3]main::Person
+                18 : main::Company
+                19 : main::Company
+                20 : [3]main::Person
                 21 : usize
-                22 : main.Person
+                22 : main::Person
                 23 : i32
-                24 : main.Company
-                25 : [3]main.Person
+                24 : main::Company
+                25 : [3]main::Person
                 26 : usize
-                27 : main.Person
+                27 : main::Person
                 28 : i32
                 29 : i32
                 30 : i32
                 31 : void
-                l0 : main.Company
+                l0 : main::Company
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn immutable_field_index() {
+    fn assign_to_immutable_struct_array_field() {
         check(
             r#"
                 Person :: struct {
@@ -3249,36 +3237,36 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Company : type
-                main.Person : type
-                main.foo : () -> void
+                main::Company : type
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 1 : type
                 6 : string
                 7 : i32
-                8 : main.Person
+                8 : main::Person
                 10 : string
                 11 : i32
-                12 : main.Person
+                12 : main::Person
                 14 : string
                 15 : i32
-                16 : main.Person
-                17 : [3]main.Person
-                18 : main.Company
-                19 : main.Company
-                20 : [3]main.Person
+                16 : main::Person
+                17 : [3]main::Person
+                18 : main::Company
+                19 : main::Company
+                20 : [3]main::Person
                 21 : usize
-                22 : main.Person
+                22 : main::Person
                 23 : i32
-                24 : main.Company
-                25 : [3]main.Person
+                24 : main::Company
+                25 : [3]main::Person
                 26 : usize
-                27 : main.Person
+                27 : main::Person
                 28 : i32
                 29 : i32
                 30 : i32
                 31 : void
-                l0 : main.Company
+                l0 : main::Company
             "#]],
             |_| {
                 [(
@@ -3291,7 +3279,7 @@ mod tests {
     }
 
     #[test]
-    fn immutable_field_ptr() {
+    fn assign_to_struct_immutable_ref_field() {
         check(
             r#"
                 Person :: struct {
@@ -3315,28 +3303,28 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Person : type
-                main.Ref_To_Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::Ref_To_Person : type
+                main::foo : () -> void
                 0 : type
                 1 : type
                 5 : string
                 6 : i32
-                7 : main.Person
-                8 : ^main.Person
-                9 : main.Ref_To_Person
-                10 : main.Ref_To_Person
-                11 : ^main.Person
-                12 : main.Person
+                7 : main::Person
+                8 : ^main::Person
+                9 : main::Ref_To_Person
+                10 : main::Ref_To_Person
+                11 : ^main::Person
+                12 : main::Person
                 13 : i32
-                14 : main.Ref_To_Person
-                15 : ^main.Person
-                16 : main.Person
+                14 : main::Ref_To_Person
+                15 : ^main::Person
+                16 : main::Person
                 17 : i32
                 18 : i32
                 19 : i32
                 20 : void
-                l0 : main.Ref_To_Person
+                l0 : main::Ref_To_Person
             "#]],
             |_| {
                 [(
@@ -3349,7 +3337,7 @@ mod tests {
     }
 
     #[test]
-    fn mutable_field_ptr() {
+    fn assign_to_struct_mut_ref_field() {
         check(
             r#"
                 Person :: struct {
@@ -3373,35 +3361,35 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.Person : type
-                main.Ref_To_Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::Ref_To_Person : type
+                main::foo : () -> void
                 0 : type
                 1 : type
                 5 : string
                 6 : i32
-                7 : main.Person
-                8 : ^mut main.Person
-                9 : main.Ref_To_Person
-                10 : main.Ref_To_Person
-                11 : ^mut main.Person
-                12 : main.Person
+                7 : main::Person
+                8 : ^mut main::Person
+                9 : main::Ref_To_Person
+                10 : main::Ref_To_Person
+                11 : ^mut main::Person
+                12 : main::Person
                 13 : i32
-                14 : main.Ref_To_Person
-                15 : ^mut main.Person
-                16 : main.Person
+                14 : main::Ref_To_Person
+                15 : ^mut main::Person
+                16 : main::Person
                 17 : i32
                 18 : i32
                 19 : i32
                 20 : void
-                l0 : main.Ref_To_Person
+                l0 : main::Ref_To_Person
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn mutable_index() {
+    fn assign_to_mut_array() {
         check(
             r#"
                 foo :: () {
@@ -3411,7 +3399,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 2 : i32
                 3 : i32
                 4 : i32
@@ -3428,7 +3416,7 @@ mod tests {
     }
 
     #[test]
-    fn immutable_index() {
+    fn assign_to_immutable_array() {
         check(
             r#"
                 foo :: () {
@@ -3438,7 +3426,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 2 : i32
                 3 : i32
                 4 : i32
@@ -3446,7 +3434,7 @@ mod tests {
                 6 : [3]i32
                 7 : usize
                 8 : i32
-                9 : i32
+                9 : {uint}
                 10 : void
                 l0 : [3]i32
             "#]],
@@ -3455,6 +3443,500 @@ mod tests {
                     TyDiagnosticKind::CannotMutate,
                     98..112,
                     Some((TyDiagnosticHelpKind::ImmutableBinding, 49..75)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_param() {
+        check(
+            r#"
+                foo :: (x: i32) {
+                    x = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (i32) -> void
+                0 : i32
+                1 : {uint}
+                2 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    55..60,
+                    Some((
+                        TyDiagnosticHelpKind::ImmutableParam { assignment: true },
+                        25..31,
+                    )),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn ref_to_param_ref() {
+        check(
+            r#"
+                foo :: (x: ^i32) {
+                    ^x;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^i32) -> void
+                0 : ^i32
+                1 : ^^i32
+                2 : void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn mut_ref_to_param_ref() {
+        check(
+            r#"
+                foo :: (x: ^i32) {
+                    ^mut x;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^i32) -> void
+                0 : ^i32
+                1 : ^mut ^i32
+                2 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    56..62,
+                    Some((
+                        TyDiagnosticHelpKind::ImmutableParam { assignment: false },
+                        25..32,
+                    )),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mut_ref_to_param_mut_ref() {
+        check(
+            r#"
+                foo :: (x: ^mut i32) {
+                    ^mut x;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^mut i32) -> void
+                0 : ^mut i32
+                1 : ^mut ^mut i32
+                2 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    60..66,
+                    Some((
+                        TyDiagnosticHelpKind::ImmutableParam { assignment: false },
+                        25..36,
+                    )),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_param_array() {
+        check(
+            r#"
+                foo :: (array: [3]i32) {
+                    array[0] = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : ([3]i32) -> void
+                0 : [3]i32
+                1 : usize
+                2 : i32
+                3 : {uint}
+                4 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    62..74,
+                    Some((
+                        TyDiagnosticHelpKind::ImmutableParam { assignment: true },
+                        25..38,
+                    )),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_param_immutable_ref() {
+        check(
+            r#"
+                foo :: (bruh: ^i32) {
+                    bruh^ = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^i32) -> void
+                0 : ^i32
+                1 : i32
+                2 : {uint}
+                3 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    59..68,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 25..35)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_param_mut_ref() {
+        check(
+            r#"
+                foo :: (array: ^mut i32) {
+                    array^ = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^mut i32) -> void
+                0 : ^mut i32
+                1 : i32
+                2 : i32
+                3 : void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn assign_to_param_immutable_ref_no_deref() {
+        check(
+            r#"
+                foo :: (bruh: ^i32) {
+                    bruh = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^i32) -> void
+                0 : ^i32
+                1 : {uint}
+                2 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    59..67,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 25..35)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_param_mut_ref_no_deref() {
+        check(
+            r#"
+                foo :: (bruh: ^mut i32) {
+                    bruh = 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo : (^mut i32) -> void
+                0 : ^mut i32
+                1 : {uint}
+                2 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    63..71,
+                    Some((TyDiagnosticHelpKind::NotMutatingRefThroughDeref, 63..67)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_global() {
+        check(
+            r#"
+                foo :: 5;
+
+                bar :: () {
+                    foo = 5;
+                }
+            "#,
+            expect![[r#"
+                main::bar : () -> void
+                main::foo : {uint}
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    76..83,
+                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..25)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_global_mut_ref_literal() {
+        check(
+            r#"
+                foo :: ^mut 5;
+
+                bar :: () {
+                    foo^ = 5;
+                }
+            "#,
+            expect![[r#"
+                main::bar : () -> void
+                main::foo : ^mut {uint}
+                0 : {uint}
+                1 : ^mut {uint}
+                2 : ^mut {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : void
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::MutableRefToImmutableData,
+                        24..30,
+                        Some((TyDiagnosticHelpKind::FoundToBeImmutable, 29..30)),
+                    ),
+                    (
+                        TyDiagnosticKind::CannotMutate,
+                        81..89,
+                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..30)),
+                    ),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_global_mut_ref_other_global() {
+        check(
+            r#"
+                foo :: 5;
+
+                bar :: ^mut foo;
+
+                baz :: () {
+                    bar^ = 5;
+                }
+            "#,
+            expect![[r#"
+                main::bar : ^mut {uint}
+                main::baz : () -> void
+                main::foo : {uint}
+                0 : {uint}
+                1 : {uint}
+                2 : ^mut {uint}
+                3 : ^mut {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : void
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::MutableRefToImmutableData,
+                        51..59,
+                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..25)),
+                    ),
+                    (
+                        TyDiagnosticKind::CannotMutate,
+                        110..118,
+                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 44..59)),
+                    ),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_global_in_other_module() {
+        check(
+            r#"
+                #- main.capy
+                other_file :: import "other_file.capy";
+
+                func :: () {
+                    other_file.foo = 25;
+                }
+                #- other_file.capy
+                foo :: 5;
+            "#,
+            expect![[r#"
+                main::func : () -> void
+                main::other_file : module other_file
+                other_file::foo : {uint}
+                main:
+                  0 : module other_file
+                  1 : module other_file
+                  2 : {uint}
+                  3 : {uint}
+                  4 : void
+                other_file:
+                  0 : {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    106..125,
+                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 117..120)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_immutable_ref_no_deref() {
+        check(
+            r#"
+                foo :: () {
+                    bar :: 5;
+
+                    baz :: ^bar;
+
+                    baz = 25;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^{uint}
+                5 : ^{uint}
+                6 : {uint}
+                7 : void
+                l0 : {uint}
+                l1 : ^{uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    114..122,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 87..91)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn assign_to_mut_ref_no_deref() {
+        check(
+            r#"
+                foo :: () {
+                    bar := 5;
+
+                    baz :: ^mut bar;
+
+                    baz = 25;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^mut {uint}
+                5 : ^mut {uint}
+                6 : {uint}
+                7 : void
+                l0 : {uint}
+                l1 : ^mut {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    118..126,
+                    Some((TyDiagnosticHelpKind::NotMutatingRefThroughDeref, 118..121)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mut_ref_to_immutable_ref() {
+        check(
+            r#"
+                foo :: () {
+                    bar := 5;
+
+                    baz :: ^bar;
+
+                    ^mut baz;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^{uint}
+                5 : ^{uint}
+                6 : ^mut ^{uint}
+                7 : void
+                l0 : {uint}
+                l1 : ^{uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    114..122,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..91)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mut_ref_to_mut_ref_binding() {
+        check(
+            r#"
+                foo :: () {
+                    bar := 5;
+
+                    baz :: ^mut bar;
+
+                    ^mut baz;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^mut {uint}
+                5 : ^mut {uint}
+                6 : ^mut ^mut {uint}
+                7 : void
+                l0 : {uint}
+                l1 : ^mut {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MutableRefToImmutableData,
+                    118..126,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
                 )]
             },
         );
@@ -3477,8 +3959,8 @@ mod tests {
                 bar :: (x: usize) {};
             "#,
             expect![[r#"
-                main.bar : (usize) -> void
-                main.main : () -> void
+                main::bar : (usize) -> void
+                main::main : () -> void
                 1 : usize
                 3 : usize
                 4 : usize
@@ -3510,8 +3992,8 @@ mod tests {
                 bar :: (x: ^i32) {};
             "#,
             expect![[r#"
-                main.bar : (^i32) -> void
-                main.main : () -> void
+                main::bar : (^i32) -> void
+                main::main : () -> void
                 1 : i32
                 2 : (^i32) -> void
                 3 : i32
@@ -3538,8 +4020,8 @@ mod tests {
                 bar :: (x: ^mut i32) {};
             "#,
             expect![[r#"
-                main.bar : (^mut i32) -> void
-                main.main : () -> void
+                main::bar : (^mut i32) -> void
+                main::main : () -> void
                 1 : {uint}
                 2 : (^mut i32) -> void
                 3 : {uint}
@@ -3554,12 +4036,14 @@ mod tests {
                     TyDiagnosticKind::Mismatch {
                         expected: ResolvedTy::Pointer {
                             mutable: true,
-                            sub_ty: Idx::from_raw(RawIdx::from(0)),
-                        },
+                            sub_ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
                         found: ResolvedTy::Pointer {
                             mutable: false,
-                            sub_ty: Idx::from_raw(RawIdx::from(3)),
-                        },
+                            sub_ty: ResolvedTy::UInt(0).into(),
+                        }
+                        .into(),
                     },
                     101..105,
                     None,
@@ -3577,7 +4061,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : (i32) -> void
+                main::foo : (i32) -> void
                 0 : void
             "#]],
             |_| [],
@@ -3593,27 +4077,28 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : (f32, i8) -> string
+                main::foo : (f32, i8) -> string
                 0 : (f32, i8) -> string
                 1 : i32
                 2 : string
                 3 : void
             "#]],
             |_| {
+                let float = ResolvedTy::Float(32).into();
+                let int = ResolvedTy::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::Mismatch {
                             expected: ResolvedTy::Function {
-                                params: vec![
-                                    Idx::from_raw(RawIdx::from(1)),
-                                    Idx::from_raw(RawIdx::from(2)),
-                                ],
-                                return_ty: Idx::from_raw(RawIdx::from(3)),
-                            },
+                                params: vec![float, ResolvedTy::IInt(8).into()],
+                                return_ty: ResolvedTy::String.into(),
+                            }
+                            .into(),
                             found: ResolvedTy::Function {
-                                params: vec![Idx::from_raw(RawIdx::from(0))],
-                                return_ty: Idx::from_raw(RawIdx::from(4)),
-                            },
+                                params: vec![int],
+                                return_ty: ResolvedTy::Void.into(),
+                            }
+                            .into(),
                         },
                         56..112,
                         None,
@@ -3628,8 +4113,8 @@ mod tests {
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::Float(32),
-                            found: ResolvedTy::IInt(32),
+                            expected: float,
+                            found: int,
                         },
                         91..92,
                         None,
@@ -3648,29 +4133,29 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : i32
+                main::foo : i32
                 0 : i32
                 1 : i32
                 2 : <unknown>
                 3 : void
             "#]],
             |_| {
+                let int = ResolvedTy::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::IInt(32),
+                            expected: int,
                             found: ResolvedTy::Function {
-                                params: vec![Idx::from_raw(RawIdx::from(0))],
-                                return_ty: Idx::from_raw(RawIdx::from(1)),
-                            },
+                                params: vec![int],
+                                return_ty: ResolvedTy::Void.into(),
+                            }
+                            .into(),
                         },
                         29..85,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::CalledNonFunction {
-                            found: ResolvedTy::IInt(32),
-                        },
+                        TyDiagnosticKind::CalledNonFunction { found: int },
                         60..66,
                         None,
                     ),
@@ -3690,7 +4175,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : (bool) -> string
+                main::foo : (bool) -> string
                 0 : bool
                 1 : string
                 2 : string
@@ -3700,12 +4185,12 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::MissingElse {
-                        expected: ResolvedTy::String,
+                        expected: ResolvedTy::String.into(),
                     },
                     68..130,
                     Some((
                         TyDiagnosticHelpKind::IfReturnsTypeHere {
-                            found: ResolvedTy::String,
+                            found: ResolvedTy::String.into(),
                         },
                         101..108,
                     )),
@@ -3725,7 +4210,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : type
                 3 : distinct'0 i32
                 4 : void
@@ -3747,7 +4232,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : type
                 3 : {uint}
                 4 : void
@@ -3773,7 +4258,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : i8
                 2 : void
                 l0 : i8
@@ -3783,7 +4268,7 @@ mod tests {
                     TyDiagnosticKind::IntTooBigForType {
                         found: 128,
                         max: 127,
-                        ty: ResolvedTy::IInt(8),
+                        ty: ResolvedTy::IInt(8).into(),
                     },
                     63..66,
                     None,
@@ -3803,7 +4288,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : i8
                 3 : i8
                 4 : void
@@ -3815,7 +4300,7 @@ mod tests {
                     TyDiagnosticKind::IntTooBigForType {
                         found: 128,
                         max: 127,
-                        ty: ResolvedTy::IInt(8),
+                        ty: ResolvedTy::IInt(8).into(),
                     },
                     59..62,
                     None,
@@ -3841,14 +4326,14 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 3 : string
                 4 : i32
-                5 : main.Person
+                5 : main::Person
                 6 : void
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |_| [],
         );
@@ -3871,48 +4356,43 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> void
+                main::Person : type
+                main::foo : () -> void
                 0 : type
                 3 : bool
                 4 : string
-                5 : main.Person
+                5 : main::Person
                 6 : void
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |i| {
                 let person_ty = ResolvedTy::Struct {
                     fqn: Some(hir::Fqn {
-                        module: hir::Name(i.intern("main")),
+                        module: hir::FileName(i.intern("main.capy")),
                         name: hir::Name(i.intern("Person")),
                     }),
                     fields: vec![
-                        (
-                            Some(hir::Name(i.intern("name"))),
-                            Idx::from_raw(RawIdx::from(0)),
-                        ),
-                        (
-                            Some(hir::Name(i.intern("age"))),
-                            Idx::from_raw(RawIdx::from(1)),
-                        ),
+                        (hir::Name(i.intern("name")), ResolvedTy::String.into()),
+                        (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
                     ],
-                };
+                }
+                .into();
 
                 [
                     (
-                        TyDiagnosticKind::NonExistentField {
-                            field: i.intern("height"),
-                            found_ty: person_ty.clone(),
+                        TyDiagnosticKind::Mismatch {
+                            expected: ResolvedTy::String.into(),
+                            found: ResolvedTy::Bool.into(),
                         },
-                        249..255,
+                        218..223,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::String,
-                            found: ResolvedTy::Bool,
+                        TyDiagnosticKind::NonExistentField {
+                            field: i.intern("height"),
+                            found_ty: person_ty,
                         },
-                        218..223,
+                        249..255,
                         None,
                     ),
                     (
@@ -3947,16 +4427,16 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> i32
+                main::Person : type
+                main::foo : () -> i32
                 0 : type
                 3 : string
                 4 : i32
-                5 : main.Person
-                6 : main.Person
+                5 : main::Person
+                6 : main::Person
                 7 : i32
                 8 : i32
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |_| [],
         );
@@ -3981,16 +4461,16 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.Person : type
-                main.foo : () -> i32
+                main::Person : type
+                main::foo : () -> i32
                 0 : type
                 3 : string
                 4 : i32
-                5 : main.Person
-                6 : main.Person
+                5 : main::Person
+                6 : main::Person
                 7 : <unknown>
                 8 : <unknown>
-                l0 : main.Person
+                l0 : main::Person
             "#]],
             |i| {
                 [(
@@ -3998,20 +4478,15 @@ mod tests {
                         field: i.intern("height"),
                         found_ty: ResolvedTy::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::Name(i.intern("main")),
+                                module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Person")),
                             }),
                             fields: vec![
-                                (
-                                    Some(hir::Name(i.intern("name"))),
-                                    Idx::from_raw(RawIdx::from(0)),
-                                ),
-                                (
-                                    Some(hir::Name(i.intern("age"))),
-                                    Idx::from_raw(RawIdx::from(1)),
-                                ),
+                                (hir::Name(i.intern("name")), ResolvedTy::String.into()),
+                                (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
                             ],
-                        },
+                        }
+                        .into(),
                     },
                     316..331,
                     None,
@@ -4033,7 +4508,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : (bool) -> void
+                main::foo : (bool) -> void
                 0 : bool
                 1 : string
                 2 : string
@@ -4045,8 +4520,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IfMismatch {
-                        found: ResolvedTy::UInt(0),
-                        expected: ResolvedTy::String,
+                        found: ResolvedTy::UInt(0).into(),
+                        expected: ResolvedTy::String.into(),
                     },
                     58..178,
                     None,
@@ -4066,7 +4541,7 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : string
                 2 : string
                 3 : {uint}
@@ -4077,7 +4552,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IndexNonArray {
-                        found: ResolvedTy::String,
+                        found: ResolvedTy::String.into(),
                     },
                     87..93,
                     None,
@@ -4097,8 +4572,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.bar : (i32) -> void
-                main.foo : () -> void
+                main::bar : (i32) -> void
+                main::foo : () -> void
                 0 : void
                 1 : (i32) -> void
                 2 : i32
@@ -4131,7 +4606,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : string
                 2 : string
                 3 : {uint}
@@ -4142,7 +4617,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CalledNonFunction {
-                        found: ResolvedTy::String,
+                        found: ResolvedTy::String.into(),
                     },
                     85..92,
                     None,
@@ -4162,7 +4637,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : string
                 2 : string
                 3 : <unknown>
@@ -4172,7 +4647,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::DerefNonPointer {
-                        found: ResolvedTy::String,
+                        found: ResolvedTy::String.into(),
                     },
                     85..89,
                     None,
@@ -4190,7 +4665,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : (type) -> void
+                main::foo : (type) -> void
                 1 : string
                 2 : void
                 l0 : string
@@ -4212,7 +4687,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : type
                 3 : i32
                 4 : i32
@@ -4236,7 +4711,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main.foo : () -> void
+                main::foo : () -> void
                 1 : type
                 4 : {uint}
                 5 : {uint}

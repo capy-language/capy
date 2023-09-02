@@ -97,11 +97,13 @@ fn parse_lhs(
     } else if p.at(TokenKind::Quote) {
         parse_string_literal(p)
     } else if p.at(TokenKind::Ident) {
-        parse_var_or_struct_literal(p, recovery_set)
+        parse_var_ref(p)
     } else if p.at(TokenKind::Caret) {
         parse_ref(p, recovery_set)
     } else if p.at(TokenKind::Distinct) {
         parse_distinct(p, recovery_set)
+    } else if p.at(TokenKind::Import) {
+        parse_import(p)
     } else if p.at(TokenKind::Struct) {
         parse_struct_def(p, recovery_set)
     } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) || p.at(TokenKind::Bang) {
@@ -199,6 +201,14 @@ fn parse_lhs(
         }
     }
 
+    if matches!(cm.kind(), NodeKind::Path | NodeKind::VarRef)
+        && !recovery_set.contains(TokenKind::LBrace)
+        && p.at(TokenKind::LBrace)
+    {
+        let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
+        cm = parse_struct_literal(p, ty_cm, recovery_set);
+    }
+
     Some(cm)
 }
 
@@ -223,7 +233,7 @@ fn parse_bool_literal(p: &mut Parser) -> CompletedMarker {
     m.complete(p, NodeKind::BoolLiteral)
 }
 
-fn parse_string_literal(p: &mut Parser) -> CompletedMarker {
+pub(crate) fn parse_string_literal(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Quote));
     let m = p.start();
     p.bump();
@@ -260,20 +270,28 @@ fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::Distinct)
 }
 
-fn parse_var_or_struct_literal(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+fn parse_import(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::Import));
+    let m = p.start();
+    p.bump();
+
+    if p.at(TokenKind::Quote) {
+        expr::parse_string_literal(p);
+    } else {
+        let _guard = p.expected_syntax_name("file name string");
+        p.error();
+    }
+
+    m.complete(p, NodeKind::ImportExpr)
+}
+
+fn parse_var_ref(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Ident));
     let m = p.start();
 
     p.bump();
 
-    let cm = m.complete(p, NodeKind::VarRef);
-
-    if !recovery_set.contains(TokenKind::LBrace) && p.at(TokenKind::LBrace) {
-        let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-        parse_struct_literal(p, ty_cm, recovery_set)
-    } else {
-        cm
-    }
+    m.complete(p, NodeKind::VarRef)
 }
 
 fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {

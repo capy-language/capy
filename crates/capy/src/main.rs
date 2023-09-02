@@ -1,14 +1,16 @@
 mod source;
 
-use std::{cell::RefCell, env, io, process::exit, rc::Rc, time::Instant};
+use std::{cell::RefCell, env, io, path::PathBuf, process::exit, rc::Rc, time::Instant};
 
 use clap::{Parser, Subcommand};
-use hir::{UIDGenerator, WorldIndex};
+use hir::WorldIndex;
 use itertools::Itertools;
 use la_arena::Arena;
 use line_index::LineIndex;
+use path_clean::PathClean;
 use rustc_hash::FxHashMap;
 use std::fs;
+use uid_gen::UIDGenerator;
 
 use crate::source::SourceFile;
 
@@ -26,9 +28,9 @@ struct CompilerConfig {
 enum BuildAction {
     /// Takes in one or more .capy files and compiles them
     Build {
-        /// The files to compile
+        /// The file to compile
         #[arg(required = true)]
-        files: Vec<String>,
+        file: String,
 
         /// The entry point function of the program
         #[arg(long, default_value = "main")]
@@ -46,7 +48,7 @@ enum BuildAction {
     Run {
         /// The files to compile and run
         #[arg(required = true)]
-        files: Vec<String>,
+        file: String,
 
         /// The entry point function of the program
         #[arg(long, default_value = "main")]
@@ -80,22 +82,20 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (files, entry_point, verbose, config) =
-        get_build_config!(config.action => files, entry_point, verbose);
+    let (file, entry_point, verbose, config) =
+        get_build_config!(config.action => file, entry_point, verbose);
 
-    let files = files
-        .iter()
-        .unique()
-        .map(|filename| match fs::read_to_string(filename) {
-            Ok(contents) => (filename.clone(), contents),
-            Err(why) => {
-                println!("{}: {}", filename, why);
-                exit(1)
-            }
-        })
-        .collect();
+    let file = env::current_dir().unwrap().join(file).clean();
 
-    compile_files(files, entry_point, config, verbose)
+    let contents = match fs::read_to_string(&file) {
+        Ok(contents) => contents,
+        Err(why) => {
+            println!("{}: {}", file.display(), why);
+            exit(1)
+        }
+    };
+
+    compile_file(file, contents, entry_point, config, verbose)
 }
 
 #[derive(Clone, PartialEq)]
@@ -110,8 +110,9 @@ const ANSI_GREEN: &str = "\x1B[1;92m";
 const ANSI_WHITE: &str = "\x1B[1;97m";
 const ANSI_RESET: &str = "\x1B[0m";
 
-fn compile_files(
-    files: Vec<(String, String)>,
+fn compile_file(
+    file_name: PathBuf,
+    file_contents: String,
     entry_point: String,
     config: CompilationConfig,
     verbose: u8,
@@ -123,6 +124,11 @@ fn compile_files(
         ("", "", "", "")
     };
 
+    if !file_name.to_string_lossy().ends_with(".capy") {
+        println!("{ansi_red}error{ansi_white}: capy files must end in `.capy`{ansi_reset}");
+        exit(1)
+    }
+
     println!("{ansi_green}Compiling{ansi_reset}  ...");
     let compilation_start = Instant::now();
 
@@ -131,43 +137,94 @@ fn compile_files(
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
     let twr_arena = Rc::new(RefCell::new(Arena::new()));
-    let resolved_arena = Rc::new(RefCell::new(Arena::new()));
 
     let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
 
     let mut line_indexes = FxHashMap::default();
     let mut source_files = FxHashMap::default();
 
-    let mut main_modules = Vec::new();
-    for (file_name, contents) in files {
-        let source_file = SourceFile::parse(
-            file_name.clone(),
-            contents.clone(),
-            uid_gen.clone(),
-            twr_arena.clone(),
-            resolved_arena.clone(),
-            interner.clone(),
-            bodies_map.clone(),
-            world_index.clone(),
-            verbose,
-        );
+    // parse the first source file given in the `capy` command
 
-        if source_file.has_fn_of_name(main_fn) {
-            main_modules.push(source_file.module);
-        }
+    let mut source_file = SourceFile::parse(
+        file_name.clone(),
+        file_contents.clone(),
+        uid_gen.clone(),
+        twr_arena.clone(),
+        interner.clone(),
+        bodies_map.clone(),
+        world_index.clone(),
+        verbose,
+    );
 
-        line_indexes.insert(source_file.module, LineIndex::new(&contents));
-        source_files.insert(source_file.module, source_file);
-    }
+    line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
+
     if verbose >= 1 {
         println!();
     }
 
-    // parse the bodies of each file into hir::Expr's and hir::LocalDef's
+    let mut current_imports = source_file.build_bodies();
+    source_files.insert(source_file.module, source_file);
 
-    source_files
-        .iter_mut()
-        .for_each(|(_, source)| source.build_bodies());
+    // find all imports in the source file, compile them, then do the same for their imports
+
+    let mut project_root = file_name.parent().unwrap().to_path_buf();
+
+    while !current_imports.is_empty() {
+        let cloned_imports = current_imports.clone();
+        current_imports.clear();
+        for file_name in cloned_imports {
+            if source_files.contains_key(&file_name) {
+                continue;
+            }
+
+            let file_name = {
+                let interner = interner.borrow();
+                PathBuf::from(interner.lookup(file_name.0))
+            };
+            let file_contents = match fs::read_to_string(&file_name) {
+                Ok(contents) => contents,
+                Err(why) => {
+                    println!("{}: {}", file_name.display(), why);
+                    exit(1)
+                }
+            };
+
+            if !file_name.starts_with(&project_root) {
+                let last_common_idx = file_name
+                    .components()
+                    .zip(project_root.components())
+                    .find_position(|(file_name_comp, project_root_comp)| {
+                        file_name_comp != project_root_comp
+                    })
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(0);
+                let least_common_path =
+                    PathBuf::from_iter(project_root.components().take(last_common_idx));
+
+                if project_root != least_common_path {
+                    project_root = least_common_path;
+                }
+            }
+
+            let mut source_file = SourceFile::parse(
+                file_name,
+                file_contents.clone(),
+                uid_gen.clone(),
+                twr_arena.clone(),
+                interner.clone(),
+                bodies_map.clone(),
+                world_index.clone(),
+                verbose,
+            );
+
+            line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
+
+            current_imports.extend(source_file.build_bodies());
+
+            source_files.insert(source_file.module, source_file);
+        }
+    }
+
     if verbose >= 1 {
         println!();
     }
@@ -178,11 +235,10 @@ fn compile_files(
         &bodies_map.borrow(),
         &world_index.borrow(),
         &twr_arena.borrow(),
-        &mut resolved_arena.borrow_mut(),
     )
     .finish();
     if verbose >= 2 {
-        let debug = inference.debug(&resolved_arena.borrow(), &interner.borrow(), true);
+        let debug = inference.debug(&project_root, &interner.borrow(), true);
         println!("{}", debug);
         if !debug.is_empty() {
             println!();
@@ -195,7 +251,7 @@ fn compile_files(
         || source_files.iter().any(|(_, source)| source.has_errors());
     source_files
         .iter()
-        .for_each(|(_, source)| source.print_diagnostics(with_color));
+        .for_each(|(_, source)| source.print_diagnostics(&project_root, with_color));
     for d in ty_diagnostics {
         let line_index = &line_indexes[&d.module];
         let source_file = &source_files[&d.module];
@@ -204,9 +260,9 @@ fn compile_files(
             "{}",
             diagnostics::Diagnostic::from_ty(d)
                 .display(
-                    &source_file.file_name,
+                    &source_file.file_name.to_string_lossy(),
                     &source_file.contents,
-                    &resolved_arena.borrow(),
+                    &project_root,
                     &interner.borrow(),
                     line_index,
                     with_color,
@@ -220,6 +276,11 @@ fn compile_files(
         exit(1);
     }
 
+    let main_modules = source_files
+        .iter()
+        .filter(|(_, sf)| sf.has_fn_of_name(main_fn))
+        .map(|(name, _)| *name)
+        .collect_vec();
     if main_modules.is_empty() {
         println!(
             "{ansi_red}error{ansi_white}: there is no `{}` function{ansi_reset}",
@@ -253,7 +314,7 @@ fn compile_files(
                 module: *main_module,
                 name: main_fn,
             },
-            &resolved_arena.borrow(),
+            &project_root,
             &interner,
             &bodies_map.borrow(),
             &inference,
@@ -280,7 +341,7 @@ fn compile_files(
             module: *main_module,
             name: main_fn,
         },
-        &resolved_arena.borrow(),
+        &project_root,
         &interner,
         &bodies_map.borrow(),
         &inference,
@@ -300,7 +361,9 @@ fn compile_files(
 
     let _ = fs::create_dir(&output_folder);
 
-    let file = output_folder.join(format!("{}.o", interner.lookup(main_module.0)));
+    let output_file_name = std::path::PathBuf::from(interner.lookup(main_module.0));
+    let output_file_name = output_file_name.file_name().unwrap().to_string_lossy();
+    let file = output_folder.join(format!("{output_file_name}.o",));
     fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
         println!("{}: {why}", file.display());
         exit(1);

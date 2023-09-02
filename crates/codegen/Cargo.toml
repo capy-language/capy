@@ -20,6 +20,8 @@ cranelift-jit = "0.98.1"
 cranelift-native = "0.98.1"
 cranelift-object = "0.98.1"
 target-lexicon = "0.12.11"
+internment = "0.7.1"
+uid_gen = { path = "../uid_gen" }
 
 [dev-dependencies]
 ast = { path = "../ast" }
@@ -30,3 +32,4 @@ parser = { path = "../parser" }
 test-utils = { path = "../test-utils" }
 regex = "1.9.3"
 cfg-if = "1.0.0"
+path-clean = "1.0.1"

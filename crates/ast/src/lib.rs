@@ -372,6 +372,7 @@ def_multi_node! {
     While -> WhileExpr
     Distinct -> Distinct
     Lambda -> Lambda
+    Import -> ImportExpr
     ;
     ;
 }
@@ -648,6 +649,14 @@ impl Arg {
     }
 }
 
+def_ast_node!(ImportExpr);
+
+impl ImportExpr {
+    pub fn file(self, tree: &SyntaxTree) -> Option<StringLiteral> {
+        node(self, tree)
+    }
+}
+
 def_ast_node!(IntLiteral);
 
 impl IntLiteral {
@@ -726,6 +735,7 @@ def_multi_token! {
 
 def_ast_token!(Mut);
 def_ast_token!(Extern);
+def_ast_token!(Import);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
 def_ast_token!(Hyphen);
@@ -806,8 +816,19 @@ fn token<Node: AstNode, Token: AstToken>(node: Node, tree: &SyntaxTree) -> Optio
 mod tests {
     use super::*;
 
-    fn parse(input: &str) -> (SyntaxTree, Root) {
+    fn parse_repl(input: &str) -> (SyntaxTree, Root) {
         let parse = parser::parse_repl_line(&lexer::lex(input), input);
+        for error in parse.errors() {
+            println!("Syntax Error: {:?}", error);
+        }
+        let tree = parse.into_syntax_tree();
+        let root = Root::cast(tree.root(), &tree).unwrap();
+
+        (tree, root)
+    }
+
+    fn parse_source(input: &str) -> (SyntaxTree, Root) {
+        let parse = parser::parse_source_file(&lexer::lex(input), input);
         for error in parse.errors() {
             println!("Syntax Error: {:?}", error);
         }
@@ -819,18 +840,18 @@ mod tests {
 
     #[test]
     fn cast_root() {
-        parse("");
+        parse_repl("");
     }
 
     #[test]
     fn get_statements() {
-        let (tree, root) = parse("a := b; a;");
+        let (tree, root) = parse_repl("a := b; a;");
         assert_eq!(root.stmts(&tree).count(), 2);
     }
 
     #[test]
     fn inspect_statement_kind() {
-        let (tree, root) = parse("foo := bar; baz * qux;");
+        let (tree, root) = parse_repl("foo := bar; baz * qux;");
         let mut statements = root.stmts(&tree);
 
         assert!(matches!(statements.next(), Some(Stmt::Define(_))));
@@ -840,7 +861,7 @@ mod tests {
 
     #[test]
     fn get_name_of_var_def() {
-        let (tree, root) = parse("foo := 10;");
+        let (tree, root) = parse_repl("foo := 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -858,7 +879,7 @@ mod tests {
 
     #[test]
     fn get_named_ty_of_var_def() {
-        let (tree, root) = parse("foo : string = 10;");
+        let (tree, root) = parse_repl("foo : string = 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -881,7 +902,7 @@ mod tests {
 
     #[test]
     fn get_array_ty_of_var_def() {
-        let (tree, root) = parse("foo : [3]i32 = []i32{1, 2, 3};");
+        let (tree, root) = parse_repl("foo : [3]i32 = []i32{1, 2, 3};");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -905,7 +926,7 @@ mod tests {
         assert!(matches!(size, Some(Expr::IntLiteral(_))));
         assert_eq!(size.unwrap().text(&tree), "3");
 
-        assert!(matches!(array_ty.body(&tree), None));
+        assert!(array_ty.body(&tree).is_none());
 
         let sub_ty = match array_ty.ty(&tree).unwrap().expr(&tree) {
             Some(Expr::VarRef(name)) => name,
@@ -917,7 +938,7 @@ mod tests {
 
     #[test]
     fn get_value_of_var_def() {
-        let (tree, root) = parse("bar := 42;");
+        let (tree, root) = parse_repl("bar := 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -935,7 +956,7 @@ mod tests {
 
     #[test]
     fn get_name_of_binding() {
-        let (tree, root) = parse("foo :: 10;");
+        let (tree, root) = parse_repl("foo :: 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -953,7 +974,7 @@ mod tests {
 
     #[test]
     fn get_value_of_binding() {
-        let (tree, root) = parse("bar :: 42;");
+        let (tree, root) = parse_repl("bar :: 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -971,7 +992,7 @@ mod tests {
 
     #[test]
     fn get_expr_of_assign() {
-        let (tree, root) = parse("foo = 10;");
+        let (tree, root) = parse_repl("foo = 10;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let assign = match statement {
@@ -987,7 +1008,7 @@ mod tests {
 
     #[test]
     fn get_value_of_assign() {
-        let (tree, root) = parse("bar = 42;");
+        let (tree, root) = parse_repl("bar = 42;");
         let statement = root.stmts(&tree).next().unwrap();
 
         let assign = match statement {
@@ -1000,7 +1021,7 @@ mod tests {
 
     #[test]
     fn get_lhs_and_rhs_of_binary_expr() {
-        let (tree, root) = parse("foo - 42;");
+        let (tree, root) = parse_repl("foo - 42;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1018,7 +1039,7 @@ mod tests {
 
     #[test]
     fn get_op_of_binary_expr() {
-        let (tree, root) = parse("six * 7;");
+        let (tree, root) = parse_repl("six * 7;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1035,7 +1056,7 @@ mod tests {
 
     #[test]
     fn get_expr_of_unary_expr() {
-        let (tree, root) = parse("-foo;");
+        let (tree, root) = parse_repl("-foo;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1052,7 +1073,7 @@ mod tests {
 
     #[test]
     fn get_op_of_unary_expr() {
-        let (tree, root) = parse("+7;");
+        let (tree, root) = parse_repl("+7;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1069,7 +1090,7 @@ mod tests {
 
     #[test]
     fn get_ty_of_array() {
-        let (tree, root) = parse("[]bool{true, false}");
+        let (tree, root) = parse_repl("[]bool{true, false}");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1086,7 +1107,7 @@ mod tests {
 
     #[test]
     fn get_items_of_array() {
-        let (tree, root) = parse("[]i32{4, 8, 15, 16, 23, 42}");
+        let (tree, root) = parse_repl("[]i32{4, 8, 15, 16, 23, 42}");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1111,7 +1132,7 @@ mod tests {
 
     #[test]
     fn get_array_of_index() {
-        let (tree, root) = parse("my_array[0]");
+        let (tree, root) = parse_repl("my_array[0]");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1133,7 +1154,7 @@ mod tests {
 
     #[test]
     fn get_int_index_of_index() {
-        let (tree, root) = parse("list[2]");
+        let (tree, root) = parse_repl("list[2]");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1155,7 +1176,7 @@ mod tests {
 
     #[test]
     fn get_ref_index_of_index() {
-        let (tree, root) = parse("arr[idx]");
+        let (tree, root) = parse_repl("arr[idx]");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1177,7 +1198,7 @@ mod tests {
 
     #[test]
     fn get_name_of_var_ref() {
-        let (tree, root) = parse("idx;");
+        let (tree, root) = parse_repl("idx;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1194,7 +1215,7 @@ mod tests {
 
     #[test]
     fn get_full_path_of_var_refs() {
-        let (tree, root) = parse("some_place.some_thing_in_there.inception;");
+        let (tree, root) = parse_repl("some_place.some_thing_in_there.inception;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1228,7 +1249,7 @@ mod tests {
 
     #[test]
     fn get_name_of_call() {
-        let (tree, root) = parse("print();");
+        let (tree, root) = parse_repl("print();");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1250,7 +1271,7 @@ mod tests {
 
     #[test]
     fn get_expr_of_ref() {
-        let (tree, root) = parse("^foo;");
+        let (tree, root) = parse_repl("^foo;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1273,7 +1294,7 @@ mod tests {
 
     #[test]
     fn get_mut_of_ref() {
-        let (tree, root) = parse("^mut foo;");
+        let (tree, root) = parse_repl("^mut foo;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1296,7 +1317,7 @@ mod tests {
 
     #[test]
     fn get_args_of_call() {
-        let (tree, root) = parse("mul(10, 20);");
+        let (tree, root) = parse_repl("mul(10, 20);");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1317,7 +1338,7 @@ mod tests {
 
     #[test]
     fn get_value_of_int_literal() {
-        let (tree, root) = parse("92;");
+        let (tree, root) = parse_repl("92;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1334,7 +1355,7 @@ mod tests {
 
     #[test]
     fn get_value_of_float_literal() {
-        let (tree, root) = parse("4.5;");
+        let (tree, root) = parse_repl("4.5;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1351,19 +1372,19 @@ mod tests {
 
     #[test]
     fn get_components_of_string_literal() {
-        let (tree, root) = parse(r#""\"Hello\"";"#);
+        let (tree, root) = parse_repl(r#""\"Hello\"";"#);
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
             _ => unreachable!(),
         };
 
-        let string_literal = match expr {
+        let string_lit = match expr {
             Some(Expr::StringLiteral(string_literal)) => string_literal,
             _ => unreachable!(),
         };
 
-        let mut components = string_literal.components(&tree);
+        let mut components = string_lit.components(&tree);
 
         let escaped_quote = match components.next() {
             Some(StringComponent::Escape(escape)) => escape,
@@ -1388,7 +1409,7 @@ mod tests {
 
     #[test]
     fn get_block_stmts() {
-        let (tree, root) = parse("{ a := 10; b = a * {a - 1}; b + 5 };");
+        let (tree, root) = parse_repl("{ a := 10; b = a * {a - 1}; b + 5 };");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1409,7 +1430,7 @@ mod tests {
 
     #[test]
     fn get_block_tail() {
-        let (tree, root) = parse("{ a = 10; b = a * {a - 1}; b + 5 };");
+        let (tree, root) = parse_repl("{ a = 10; b = a * {a - 1}; b + 5 };");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1428,7 +1449,7 @@ mod tests {
 
     #[test]
     fn get_if_condition() {
-        let (tree, root) = parse("if true {}");
+        let (tree, root) = parse_repl("if true {}");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1447,7 +1468,7 @@ mod tests {
 
     #[test]
     fn get_if_body() {
-        let (tree, root) = parse("if false { foo(); }");
+        let (tree, root) = parse_repl("if false { foo(); }");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1471,7 +1492,7 @@ mod tests {
 
     #[test]
     fn get_else_body() {
-        let (tree, root) = parse("if false {} else { x := 42; }");
+        let (tree, root) = parse_repl("if false {} else { x := 42; }");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1497,7 +1518,7 @@ mod tests {
 
     #[test]
     fn get_else_if_condition() {
-        let (tree, root) = parse("if false {} else if true {}");
+        let (tree, root) = parse_repl("if false {} else if true {}");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1523,7 +1544,7 @@ mod tests {
 
     #[test]
     fn get_while_condition() {
-        let (tree, root) = parse("while true {}");
+        let (tree, root) = parse_repl("while true {}");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1542,7 +1563,7 @@ mod tests {
 
     #[test]
     fn get_while_body() {
-        let (tree, root) = parse("while true { bar(); }");
+        let (tree, root) = parse_repl("while true { bar(); }");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1566,7 +1587,7 @@ mod tests {
 
     #[test]
     fn get_loop_condition() {
-        let (tree, root) = parse("loop { bar(); }");
+        let (tree, root) = parse_repl("loop { bar(); }");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1583,7 +1604,7 @@ mod tests {
 
     #[test]
     fn get_lambda_params() {
-        let (tree, root) = parse("(x: i32, y: i32) {};");
+        let (tree, root) = parse_repl("(x: i32, y: i32) {};");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1610,7 +1631,7 @@ mod tests {
 
     #[test]
     fn get_lambda_return_ty() {
-        let (tree, root) = parse("() -> i32 {};");
+        let (tree, root) = parse_repl("() -> i32 {};");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1632,7 +1653,7 @@ mod tests {
 
     #[test]
     fn get_lambda_body() {
-        let (tree, root) = parse("() {};");
+        let (tree, root) = parse_repl("() {};");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1654,7 +1675,7 @@ mod tests {
 
     #[test]
     fn get_lambda_extern() {
-        let (tree, root) = parse("() extern;");
+        let (tree, root) = parse_repl("() extern;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1672,7 +1693,7 @@ mod tests {
 
     #[test]
     fn no_lambda_body() {
-        let (tree, root) = parse("() -> void;");
+        let (tree, root) = parse_repl("() -> void;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1689,7 +1710,7 @@ mod tests {
 
     #[test]
     fn struct_decl_get_fields() {
-        let (tree, root) = parse("struct { foo: i32, bar: string };");
+        let (tree, root) = parse_repl("struct { foo: i32, bar: string };");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1718,7 +1739,7 @@ mod tests {
 
     #[test]
     fn struct_literal_get_fields() {
-        let (tree, root) = parse(r#"Some_Record_Type { foo: 123, bar: "hello" };"#);
+        let (tree, root) = parse_repl(r#"Some_Record_Type { foo: 123, bar: "hello" };"#);
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1749,5 +1770,32 @@ mod tests {
         ));
 
         assert!(fields.next().is_none());
+    }
+
+    #[test]
+    fn import_get_file() {
+        let (tree, root) = parse_source(r#"foo :: import "foo.capy";"#);
+        let statement = root.stmts(&tree).next().unwrap();
+        let value = match statement {
+            Stmt::Define(define) => define.value(&tree),
+            _ => unreachable!(),
+        };
+
+        let import_expr = match value {
+            Some(Expr::Import(import_expr)) => import_expr,
+            _ => unreachable!(),
+        };
+
+        let string_lit = import_expr.file(&tree).unwrap();
+
+        let mut components = string_lit.components(&tree);
+
+        let text = match components.next() {
+            Some(StringComponent::Contents(contents)) => contents,
+            _ => unreachable!(),
+        };
+        assert_eq!(text.text(&tree), "foo.capy");
+
+        assert!(components.next().is_none());
     }
 }

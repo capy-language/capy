@@ -1,7 +1,7 @@
 use interner::Interner;
 use text_size::TextRange;
 
-use crate::{Fqn, Name};
+use crate::{FileName, Fqn, Name};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Path {
@@ -10,24 +10,17 @@ pub enum Path {
 }
 
 impl Path {
-    pub fn display(&self, interner: &Interner) -> String {
+    pub fn to_string(&self, project_root: &std::path::Path, interner: &Interner) -> String {
         match self {
             Path::ThisModule(name) => interner.lookup(name.0).to_string(),
-            Path::OtherModule(fqn) => format!(
-                "{}.{}",
-                interner.lookup(fqn.module.0),
-                interner.lookup(fqn.name.0)
-            ),
+            Path::OtherModule(fqn) => fqn.to_string(project_root, interner),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PathWithRange {
-    ThisModule {
-        name: Name,
-        range: TextRange,
-    },
+    ThisModule(NameWithRange),
     OtherModule {
         fqn: Fqn,
         module_range: TextRange,
@@ -38,15 +31,15 @@ pub enum PathWithRange {
 impl PathWithRange {
     pub fn path(self) -> Path {
         match self {
-            Self::ThisModule { name, .. } => Path::ThisModule(name),
+            Self::ThisModule(NameWithRange { name, .. }) => Path::ThisModule(name),
             Self::OtherModule { fqn, .. } => Path::OtherModule(fqn),
         }
     }
 
-    pub fn into_fqn(self, this_module: Name) -> Fqn {
+    pub fn into_fqn(self, current_module: FileName) -> Fqn {
         match self {
-            PathWithRange::ThisModule { name, .. } => Fqn {
-                module: this_module,
+            PathWithRange::ThisModule(NameWithRange { name, .. }) => Fqn {
+                module: current_module,
                 name,
             },
             PathWithRange::OtherModule { fqn, .. } => fqn,
@@ -54,11 +47,8 @@ impl PathWithRange {
     }
 }
 
-pub struct NameResDiagnostic {
-    pub kind: NameResDiagnosticKind,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NameWithRange {
+    pub name: Name,
     pub range: TextRange,
-}
-
-pub enum NameResDiagnosticKind {
-    Undefined(Name),
 }

@@ -6,16 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ast = {path = "../ast"}
-la-arena = "0.2.0"
-hir = {path = "../hir"}
-hir_ty = {path = "../hir_ty"}
-interner = {path = "../interner"}
-line_index = {path = "../line_index"}
-parser = {path = "../parser"}
-syntax = {path = "../syntax"}
+ast = { path = "../ast" }
+hir = { path = "../hir" }
+hir_ty = { path = "../hir_ty" }
+interner = { path = "../interner" }
+line_index = { path = "../line_index" }
+parser = { path = "../parser" }
+syntax = { path = "../syntax" }
 text-size = "1.1"
-
+pathdiff = "0.2.1"
 
 [dev-dependencies]
 expect-test = "1.1"

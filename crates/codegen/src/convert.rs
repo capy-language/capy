@@ -1,7 +1,7 @@
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::Module;
 use hir_ty::ResolvedTy;
-use la_arena::{Arena, Idx};
+use internment::Intern;
 use rustc_hash::FxHashMap;
 
 use crate::{CapyFnSignature, CraneliftSignature};
@@ -80,11 +80,11 @@ impl CompType {
 }
 
 pub(crate) trait ToCompType {
-    fn to_comp_type(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> CompType;
+    fn to_comp_type(&self, module: &dyn Module) -> CompType;
 }
 
 impl ToCompType for ResolvedTy {
-    fn to_comp_type(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> CompType {
+    fn to_comp_type(&self, module: &dyn Module) -> CompType {
         match self {
             hir_ty::ResolvedTy::NotYetResolved | hir_ty::ResolvedTy::Unknown => unreachable!(),
             hir_ty::ResolvedTy::IInt(bit_width) | hir_ty::ResolvedTy::UInt(bit_width) => {
@@ -159,9 +159,7 @@ impl ToCompType for ResolvedTy {
             hir_ty::ResolvedTy::Pointer { .. } => {
                 CompType::Pointer(module.target_config().pointer_type())
             }
-            hir_ty::ResolvedTy::Distinct { ty, .. } => {
-                resolved_arena[*ty].to_comp_type(module, resolved_arena)
-            }
+            hir_ty::ResolvedTy::Distinct { ty, .. } => ty.to_comp_type(module),
             hir_ty::ResolvedTy::Function { .. } => {
                 CompType::Pointer(module.target_config().pointer_type())
             }
@@ -170,6 +168,7 @@ impl ToCompType for ResolvedTy {
             }
             hir_ty::ResolvedTy::Type => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
+            hir_ty::ResolvedTy::Module(_) => CompType::Void,
         }
     }
 }
@@ -178,7 +177,6 @@ pub(crate) trait ToCraneliftSignature {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
-        resolved_arena: &Arena<ResolvedTy>,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>);
 }
 
@@ -186,18 +184,15 @@ impl ToCraneliftSignature for CapyFnSignature {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
-        resolved_arena: &Arena<ResolvedTy>,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
-        (self.param_tys.clone(), self.return_ty.clone())
-            .to_cranelift_signature(module, resolved_arena)
+        (self.param_tys.clone(), self.return_ty).to_cranelift_signature(module)
     }
 }
 
-impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
+impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
-        resolved_arena: &Arena<ResolvedTy>,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
         let (param_tys, return_ty) = self;
 
@@ -209,14 +204,10 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
             .iter()
             .enumerate()
             .filter_map(|(idx, param_ty)| {
-                let param_ty = &resolved_arena[*param_ty];
-                let param_ty = match param_ty {
+                let param_ty = match param_ty.as_ref() {
                     hir_ty::ResolvedTy::Void { .. } => None,
                     other_ty => Some(AbiParam::new(
-                        other_ty
-                            .to_comp_type(module, resolved_arena)
-                            .into_real_type()
-                            .unwrap(),
+                        other_ty.to_comp_type(module).into_real_type().unwrap(),
                     )),
                 };
                 if param_ty.is_some() {
@@ -227,7 +218,7 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
             })
             .collect::<Vec<_>>();
 
-        if return_ty.is_aggregate(resolved_arena) {
+        if return_ty.is_aggregate() {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
@@ -238,7 +229,7 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
             CraneliftSignature {
                 params: param_types,
                 returns: return_ty
-                    .to_comp_type(module, resolved_arena)
+                    .to_comp_type(module)
                     .into_real_type()
                     .map(|ty| vec![AbiParam::new(ty)])
                     .unwrap_or_default(),
@@ -250,7 +241,7 @@ impl ToCraneliftSignature for (Vec<Idx<ResolvedTy>>, ResolvedTy) {
 }
 
 pub(crate) trait ToCompSize {
-    fn get_size_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32;
+    fn get_size_in_bytes(&self, module: &dyn Module) -> u32;
 
     /// Most types must appear in addresses that are a mutliple of a certain "alignment".
     /// This is a restriction of the underlying architechture.
@@ -262,11 +253,11 @@ pub(crate) trait ToCompSize {
     ///
     /// An alignment of `1` is accepted in all
     /// memory locations
-    fn get_align_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32;
+    fn get_align_in_bytes(&self, module: &dyn Module) -> u32;
 }
 
 impl ToCompSize for ResolvedTy {
-    fn get_size_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32 {
+    fn get_size_in_bytes(&self, module: &dyn Module) -> u32 {
         match self {
             ResolvedTy::NotYetResolved | ResolvedTy::Unknown => unreachable!(),
             ResolvedTy::IInt(u32::MAX) | ResolvedTy::UInt(u32::MAX) => {
@@ -278,42 +269,40 @@ impl ToCompSize for ResolvedTy {
             ResolvedTy::Float(bit_width) => bit_width / 8,
             ResolvedTy::Bool => 1, // bools are u8's
             ResolvedTy::String => module.target_config().pointer_bytes() as u32,
-            ResolvedTy::Array { size, sub_ty } => {
-                resolved_arena[*sub_ty].get_size_in_bytes(module, resolved_arena) * *size as u32
-            }
+            ResolvedTy::Array { size, sub_ty } => sub_ty.get_size_in_bytes(module) * *size as u32,
             ResolvedTy::Pointer { .. } => module.target_config().pointer_bytes() as u32,
-            ResolvedTy::Distinct { ty, .. } => {
-                resolved_arena[*ty].get_size_in_bytes(module, resolved_arena)
-            }
+            ResolvedTy::Distinct { ty, .. } => ty.get_size_in_bytes(module),
             ResolvedTy::Function { .. } => module.target_config().pointer_bytes() as u32,
             ResolvedTy::Struct { fields, .. } => {
                 let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
-                StructMemory::new(fields, module, resolved_arena).size
+                StructMemory::new(fields, module).size
             }
             ResolvedTy::Type => 0,
             ResolvedTy::Void => 0,
+            ResolvedTy::Module(_) => 0,
         }
     }
 
-    fn get_align_in_bytes(&self, module: &dyn Module, resolved_arena: &Arena<ResolvedTy>) -> u32 {
+    fn get_align_in_bytes(&self, module: &dyn Module) -> u32 {
         match self {
             ResolvedTy::NotYetResolved | ResolvedTy::Unknown => unreachable!(),
             ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_) => {
-                self.get_size_in_bytes(module, resolved_arena).min(8)
+                self.get_size_in_bytes(module).min(8)
             }
             ResolvedTy::Bool => 1, // bools are u8's
             ResolvedTy::String
             | ResolvedTy::Array { .. }
             | ResolvedTy::Pointer { .. }
             | ResolvedTy::Distinct { .. }
-            | ResolvedTy::Function { .. } => self.get_size_in_bytes(module, resolved_arena),
+            | ResolvedTy::Function { .. } => self.get_size_in_bytes(module),
             ResolvedTy::Struct { fields, .. } => fields
                 .iter()
-                .map(|(_, ty)| resolved_arena[*ty].get_align_in_bytes(module, resolved_arena))
+                .map(|(_, ty)| ty.get_align_in_bytes(module))
                 .max()
                 .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
             ResolvedTy::Type => 1,
             ResolvedTy::Void => 1,
+            ResolvedTy::Module(_) => 1,
         }
     }
 }
@@ -338,17 +327,13 @@ impl StructMemory {
         }
     }
 
-    pub(crate) fn new(
-        fields: Vec<Idx<ResolvedTy>>,
-        module: &dyn Module,
-        resolved_arena: &Arena<ResolvedTy>,
-    ) -> Self {
+    pub(crate) fn new(fields: Vec<Intern<ResolvedTy>>, module: &dyn Module) -> Self {
         let mut offsets = Vec::with_capacity(fields.len());
         let mut max_align = 1;
         let mut current_offset = 0;
 
         for field in fields {
-            let field_align = resolved_arena[field].get_align_in_bytes(module, resolved_arena);
+            let field_align = field.get_align_in_bytes(module);
             if field_align > max_align {
                 max_align = field_align;
             }
@@ -357,7 +342,7 @@ impl StructMemory {
 
             offsets.push(current_offset);
 
-            current_offset += resolved_arena[field].get_size_in_bytes(module, resolved_arena);
+            current_offset += field.get_size_in_bytes(module);
         }
 
         Self {

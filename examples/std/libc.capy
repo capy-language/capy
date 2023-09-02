@@ -1,0 +1,22 @@
+
+FILE :: struct {
+    a: i32,
+};
+
+// in the future, there will be a `^any` type that can be cast down to a more specific pointer
+// also in the future, you wouldn't call `malloc` directly, you'd use an `Allocator`
+malloc :: (bytes: usize) -> ^u8 extern;
+free :: (ptr: ^u8) extern;
+
+puts :: (s: string) extern;
+
+// fopen actually returns a pointer to a `FILE` struct, but
+// we just treat this as a usize and everything works fine
+fopen :: (filename: string, mode: string) -> usize extern;
+fclose :: (fp: usize) -> i32 extern;
+
+fputc :: (c: i8, fp: usize) -> i32 extern;
+fputs :: (s: string, fp: usize) -> i32 extern;
+
+fgetc :: (fp: usize) -> u8 extern;
+fgets :: (buf: ^u8, n: i32, fp: usize) -> string extern;

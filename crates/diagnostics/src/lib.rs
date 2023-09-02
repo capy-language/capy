@@ -5,9 +5,8 @@ use hir::{
     IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind,
     TyParseError,
 };
-use hir_ty::{ResolvedTy, TyDiagnostic, TyDiagnosticHelp};
+use hir_ty::{TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
-use la_arena::Arena;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
 use syntax::TokenKind;
@@ -54,7 +53,7 @@ impl Diagnostic {
         &self,
         filename: &str,
         input: &str,
-        resolved_arena: &Arena<ResolvedTy>,
+        project_root: &std::path::Path,
         interner: &Interner,
         line_index: &LineIndex,
         with_colors: bool,
@@ -82,7 +81,7 @@ impl Diagnostic {
             "{}{}: {}",
             severity,
             ansi_white,
-            self.message(resolved_arena, interner)
+            self.message(project_root, interner)
         )];
 
         input_snippet(
@@ -102,7 +101,7 @@ impl Diagnostic {
                 "{}help{}: {}",
                 ansi_blue,
                 ansi_white,
-                help.message(resolved_arena, interner)
+                help.message(project_root, interner)
             ));
 
             let range = help.range();
@@ -162,13 +161,13 @@ impl Diagnostic {
         }
     }
 
-    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+    pub fn message(&self, project_root: &std::path::Path, interner: &Interner) -> String {
         match &self.0 {
             Repr::Syntax(e) => syntax_error_message(e),
             Repr::Validation(d) => validation_diagnostic_message(d),
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
-            Repr::Ty(d) => ty_diagnostic_message(d, resolved_arena, interner),
+            Repr::Ty(d) => ty_diagnostic_message(d, project_root, interner),
         }
     }
 
@@ -194,9 +193,9 @@ impl HelpDiagnostic<'_> {
         }
     }
 
-    pub fn message(&self, resolved_arena: &Arena<ResolvedTy>, interner: &Interner) -> String {
+    pub fn message(&self, project_root: &std::path::Path, interner: &Interner) -> String {
         match &self {
-            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d, resolved_arena, interner),
+            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d, project_root, interner),
         }
     }
 }
@@ -218,6 +217,10 @@ fn input_snippet(
     } else {
         ("", "", "")
     };
+
+    let filename = pathdiff::diff_paths(filename, std::env::current_dir().unwrap())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| filename.to_string());
 
     const PADDING: &str = " | ";
     const POINTER_UP: &str = "^";
@@ -421,6 +424,12 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
             format!("expected `{}` elements, found `{}`", expected, found)
         }
+        LoweringDiagnosticKind::ImportMustEndInDotCapy => {
+            "capy files must end in `.capy`".to_string()
+        }
+        LoweringDiagnosticKind::ImportDoesNotExist { file } => {
+            format!("`{}` couldn't be found", file)
+        }
         LoweringDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
@@ -438,28 +447,28 @@ fn lower_ty_parse_error(d: &TyParseError) -> String {
 
 fn ty_diagnostic_message(
     d: &TyDiagnostic,
-    resolved_arena: &Arena<ResolvedTy>,
+    project_root: &std::path::Path,
     interner: &Interner,
 ) -> String {
     match &d.kind {
         hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
             format!(
                 "expected `{}` but found `{}`",
-                expected.display(resolved_arena, interner),
-                found.display(resolved_arena, interner)
+                expected.display(project_root, interner),
+                found.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::Uncastable { from, to } => {
             format!(
                 "cannot cast `{}` to `{}`",
-                from.display(resolved_arena, interner),
-                to.display(resolved_arena, interner)
+                from.display(project_root, interner),
+                to.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::OpMismatch { op, first, second } => {
             format!(
                 "`{}` cannot be {} `{}`",
-                first.display(resolved_arena, interner),
+                first.display(project_root, interner),
                 match op {
                     hir::BinaryOp::Add => "added to",
                     hir::BinaryOp::Sub => "subtracted by",
@@ -475,20 +484,20 @@ fn ty_diagnostic_message(
                     | hir::BinaryOp::And
                     | hir::BinaryOp::Or => "compared to",
                 },
-                second.display(resolved_arena, interner)
+                second.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
             format!(
                 "`if` and `else` have different types, expected `{}` but found `{}`",
-                found.display(resolved_arena, interner),
-                expected.display(resolved_arena, interner)
+                found.display(project_root, interner),
+                expected.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
             format!(
                 "tried indexing `[]` a non-array, `{}`",
-                found.display(resolved_arena, interner)
+                found.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IndexOutOfBounds {
@@ -499,7 +508,7 @@ fn ty_diagnostic_message(
             format!(
                 "index `[{}]` is too big, `{}` has size `{}`",
                 index,
-                array_ty.display(resolved_arena, interner),
+                array_ty.display(project_root, interner),
                 actual_size,
             )
         }
@@ -509,25 +518,25 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
             format!(
                 "expected a function, but found {}",
-                found.display(resolved_arena, interner),
+                found.display(project_root, interner),
             )
         }
         hir_ty::TyDiagnosticKind::DerefNonPointer { found } => {
             format!(
                 "tried dereferencing `^` a non-pointer, `{}`",
-                found.display(resolved_arena, interner)
+                found.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
-                expected.display(resolved_arena, interner)
+                expected.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::NotYetResolved { path } => {
             format!(
                 "circular definition, `{}` has not yet been resolved",
-                path.display(interner),
+                path.to_string(project_root, interner),
             )
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
@@ -542,26 +551,29 @@ fn ty_diagnostic_message(
             format!(
                 "integer literal `{}` is too big for `{}`, which can only hold up to {}",
                 found,
-                ty.display(resolved_arena, interner),
+                ty.display(project_root, interner),
                 max
             )
         }
         hir_ty::TyDiagnosticKind::UnknownModule { name } => {
-            format!("could not find a module named `{}`", interner.lookup(*name))
+            format!(
+                "could not find a module named `{}`",
+                name.to_string(project_root, interner)
+            )
         }
         hir_ty::TyDiagnosticKind::UnknownFqn { fqn } => format!(
             "`{}` does not exist within the module `{}`",
             interner.lookup(fqn.name.0),
-            interner.lookup(fqn.module.0)
+            fqn.module.to_string(project_root, interner)
         ),
         hir_ty::TyDiagnosticKind::NonExistentField { field, found_ty } => format!(
             "there is no field `{}` within `{}`",
             interner.lookup(*field),
-            found_ty.display(resolved_arena, interner)
+            found_ty.display(project_root, interner)
         ),
         hir_ty::TyDiagnosticKind::StructLiteralMissingField { field, expected_ty } => format!(
             "`{}` struct literal is missing the field `{}`",
-            expected_ty.display(resolved_arena, interner),
+            expected_ty.display(project_root, interner),
             interner.lookup(*field)
         ),
     }
@@ -569,7 +581,7 @@ fn ty_diagnostic_message(
 
 fn ty_diagnostic_help_message(
     d: &TyDiagnosticHelp,
-    resolved_arena: &Arena<ResolvedTy>,
+    project_root: &std::path::Path,
     interner: &Interner,
 ) -> String {
     match &d.kind {
@@ -582,15 +594,19 @@ fn ty_diagnostic_help_message(
         hir_ty::TyDiagnosticHelpKind::ImmutableRef => {
             "this is an immutable reference. consider changing it to `^mut`".to_string()
         }
-        hir_ty::TyDiagnosticHelpKind::ImmutableParam => {
+        hir_ty::TyDiagnosticHelpKind::ImmutableParam { assignment: true } => {
             "parameters are immutable. consider passing a `^mut`".to_string()
         }
+        hir_ty::TyDiagnosticHelpKind::ImmutableParam { assignment: false } => {
+            "parameters are immutable".to_string()
+        }
         hir_ty::TyDiagnosticHelpKind::ImmutableGlobal => "globals are immutable".to_string(),
+        hir_ty::TyDiagnosticHelpKind::NotMutatingRefThroughDeref => {
+            "this a reference, to mutate it's inner value add a `^` at the end to dereference it first"
+                .to_string()
+        }
         hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {
-            format!(
-                "here, the `if` returns a {}",
-                found.display(resolved_arena, interner)
-            )
+            format!("here, the `if` returns a {}", found.display(project_root, interner))
         }
         hir_ty::TyDiagnosticHelpKind::MutableVariable => {
             "`:=` bindings are immutable. consider changing it to `::`".to_string()
@@ -610,6 +626,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Distinct => "`distinct`",
         TokenKind::Extern => "`extern`",
         TokenKind::Struct => "`struct`",
+        TokenKind::Import => "`import`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",

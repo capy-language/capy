@@ -1,0 +1,11 @@
+libc :: import "std/libc.capy";
+
+to_print :: "Hello, World!";
+
+main :: () -> i32 {
+    // prints "Hello, World!" to the screen
+    libc.puts(to_print);
+
+    // exit with code 0
+    0
+}

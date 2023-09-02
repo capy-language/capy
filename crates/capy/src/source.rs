@@ -1,51 +1,45 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use ast::{AstNode, Root};
 use diagnostics::{Diagnostic, Severity};
-use hir::Name;
+use hir::{FileName, Name};
 use interner::Interner;
 use la_arena::Arena;
 use line_index::LineIndex;
 use parser::Parse;
-use rustc_hash::FxHashMap;
-use std::path::Path;
+use rustc_hash::{FxHashMap, FxHashSet};
+use uid_gen::UIDGenerator;
 
 pub(crate) struct SourceFile {
-    pub(crate) file_name: String,
+    pub(crate) file_name: PathBuf,
     pub(crate) contents: String,
-    pub(crate) module: Name,
+    pub(crate) module: FileName,
     parse: Parse,
     root: Root,
     diagnostics: Vec<Diagnostic>,
-    uid_gen: Rc<RefCell<hir::UIDGenerator>>,
+    uid_gen: Rc<RefCell<UIDGenerator>>,
     twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
-    resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
     interner: Rc<RefCell<Interner>>,
-    bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
+    bodies_map: Rc<RefCell<FxHashMap<hir::FileName, hir::Bodies>>>,
     world_index: Rc<RefCell<hir::WorldIndex>>,
+    index: hir::Index,
     verbose: u8,
 }
 
 impl SourceFile {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
-        file_name: String,
+        file_name: PathBuf,
         contents: String,
-        uid_gen: Rc<RefCell<hir::UIDGenerator>>,
+        uid_gen: Rc<RefCell<UIDGenerator>>,
         twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
-        resolved_arena: Rc<RefCell<Arena<hir_ty::ResolvedTy>>>,
         interner: Rc<RefCell<Interner>>,
-        bodies_map: Rc<RefCell<FxHashMap<hir::Name, hir::Bodies>>>,
+        bodies_map: Rc<RefCell<FxHashMap<hir::FileName, hir::Bodies>>>,
         world_index: Rc<RefCell<hir::WorldIndex>>,
         verbose: u8,
     ) -> SourceFile {
-        let module_name = Path::new(&file_name).file_stem().unwrap().to_str().unwrap();
-        if verbose >= 1 {
-            println!("{} => {}", file_name, module_name);
-        }
-
         let parse = parser::parse_source_file(&lexer::lex(&contents), &contents);
-        if verbose >= 2 {
+        if verbose >= 3 {
             println!("{:?}", parse);
         }
 
@@ -54,7 +48,7 @@ impl SourceFile {
 
         let validation_diagnostics = ast::validation::validate(root, tree);
 
-        let module = hir::Name(interner.borrow_mut().intern(module_name));
+        let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
         let (index, indexing_diagnostics) = hir::index(
             root,
             tree,
@@ -62,21 +56,15 @@ impl SourceFile {
             &mut twr_arena.borrow_mut(),
             &mut interner.borrow_mut(),
         );
-        world_index.borrow_mut().add_module(module, index);
 
         if verbose >= 3 {
-            let world_index = world_index.borrow();
-            let index = world_index.get_module(module).unwrap();
-
+            println!();
             for name in index.definition_names() {
                 println!(
                     "{} = {:?}",
                     interner.borrow().lookup(name.0),
                     index.get_definition(name)
                 );
-            }
-            if index.definition_names().next().is_some() {
-                println!();
             }
         }
 
@@ -89,9 +77,9 @@ impl SourceFile {
             diagnostics: Vec::new(),
             uid_gen,
             twr_arena,
-            resolved_arena,
             interner,
             bodies_map,
+            index,
             world_index,
             verbose,
         };
@@ -119,28 +107,37 @@ impl SourceFile {
         res
     }
 
-    pub(crate) fn build_bodies(&mut self) {
+    pub(crate) fn build_bodies(&mut self) -> FxHashSet<FileName> {
         let tree = self.parse.syntax_tree();
 
         let (bodies, lowering_diagnostics) = hir::lower(
             self.root,
             tree,
-            self.module,
-            &self.world_index.borrow(),
+            self.file_name.as_path(),
+            &self.index,
             &mut self.uid_gen.borrow_mut(),
             &mut self.twr_arena.borrow_mut(),
             &mut self.interner.borrow_mut(),
+            false,
         );
+
+        self.world_index
+            .borrow_mut()
+            .add_module(self.module, self.index.clone());
         if self.verbose >= 1 {
             let interner = self.interner.borrow();
             let debug = bodies.debug(
-                interner.lookup(self.module.0),
+                self.module,
                 &self.twr_arena.borrow(),
+                std::path::Path::new(""),
                 &interner,
                 self.verbose >= 2,
             );
             println!("{}", debug);
         }
+
+        let imports = bodies.imports().clone();
+
         self.bodies_map.borrow_mut().insert(self.module, bodies);
         self.diagnostics.extend(
             lowering_diagnostics
@@ -148,27 +145,24 @@ impl SourceFile {
                 .cloned()
                 .map(diagnostics::Diagnostic::from_lowering),
         );
+
+        imports
     }
 
     pub(crate) fn has_fn_of_name(&self, name: Name) -> bool {
-        self.world_index
-            .borrow()
-            .get_module(self.module)
-            .unwrap()
-            .function_names()
-            .any(|fn_name| fn_name == name)
+        self.index.function_names().any(|fn_name| fn_name == name)
     }
 
-    pub(crate) fn print_diagnostics(&self, with_color: bool) {
+    pub(crate) fn print_diagnostics(&self, project_root: &std::path::Path, with_color: bool) {
         let line_index = LineIndex::new(&self.contents);
         for diagnostic in &self.diagnostics {
             println!(
                 "{}",
                 diagnostic
                     .display(
-                        &self.file_name,
+                        &self.file_name.to_string_lossy(),
                         &self.contents,
-                        &self.resolved_arena.borrow(),
+                        project_root,
                         &self.interner.borrow(),
                         &line_index,
                         with_color

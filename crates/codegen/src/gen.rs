@@ -4,30 +4,32 @@ use cranelift::prelude::{
     Value, Variable,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use hir::UIDGenerator;
 use hir_ty::ResolvedTy;
 use interner::Interner;
-use la_arena::{Arena, Idx};
+use internment::Intern;
+use la_arena::Idx;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
+use uid_gen::UIDGenerator;
 
 use crate::convert::*;
 use crate::functions::FunctionCompiler;
 use crate::mangle::Mangle;
 
 pub(crate) struct LambdaToCompile {
-    pub(crate) module_name: hir::Name,
+    pub(crate) module_name: hir::FileName,
     pub(crate) lambda: Idx<hir::Lambda>,
-    pub(crate) param_tys: Vec<Idx<ResolvedTy>>,
-    pub(crate) return_ty: ResolvedTy,
+    pub(crate) param_tys: Vec<Intern<ResolvedTy>>,
+    pub(crate) return_ty: Intern<ResolvedTy>,
 }
 
 pub(crate) struct CodeGen<'a> {
     verbose: bool,
 
-    resolved_arena: &'a Arena<ResolvedTy>,
+    project_root: &'a std::path::Path,
+
     interner: &'a Interner,
-    bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     tys: &'a hir_ty::InferenceResult,
 
     builder_context: FunctionBuilderContext,
@@ -50,15 +52,15 @@ impl<'a> CodeGen<'a> {
     pub(crate) fn new(
         verbose: bool,
         entry_point: hir::Fqn,
-        resolved_arena: &'a Arena<ResolvedTy>,
+        project_root: &'a std::path::Path,
         interner: &'a Interner,
-        bodies_map: &'a FxHashMap<hir::Name, hir::Bodies>,
+        bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
         tys: &'a hir_ty::InferenceResult,
         module: &'a mut dyn Module,
     ) -> CodeGen<'a> {
         Self {
             verbose,
-            resolved_arena,
+            project_root,
             interner,
             bodies_map,
             tys,
@@ -92,16 +94,12 @@ impl<'a> CodeGen<'a> {
             }
 
             self.compile_function(
-                &format!(
-                    "{}.{}",
-                    self.interner.lookup(fqn.module.0),
-                    self.interner.lookup(fqn.name.0)
-                ),
-                &fqn.to_mangled_name(self.interner),
+                &fqn.to_string(self.project_root, self.interner),
+                &fqn.to_mangled_name(self.project_root, self.interner),
                 fqn.module,
                 self.bodies_map[&fqn.module].function_body(fqn.name),
                 signature.param_tys.clone(),
-                signature.return_ty.clone(),
+                signature.return_ty,
             );
         }
         while let Some(ltc) = self.lambdas_to_compile.pop_front() {
@@ -111,7 +109,7 @@ impl<'a> CodeGen<'a> {
                     self.interner.lookup(ltc.module_name.0),
                     ltc.lambda.into_raw()
                 ),
-                &ltc.to_mangled_name(self.interner),
+                &ltc.to_mangled_name(self.project_root, self.interner),
                 ltc.module_name,
                 self.bodies_map[&ltc.module_name][ltc.lambda].body,
                 ltc.param_tys,
@@ -171,7 +169,7 @@ impl<'a> CodeGen<'a> {
 
         let exit_code = match entry_point_signature
             .return_ty
-            .to_comp_type(self.module, self.resolved_arena)
+            .to_comp_type(self.module)
             .into_number_type()
         {
             Some(found_return_ty) => {
@@ -215,10 +213,10 @@ impl<'a> CodeGen<'a> {
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         get_func_id(
             self.module,
+            self.project_root,
             &mut self.functions,
             &mut self.functions_to_compile,
             self.tys,
-            self.resolved_arena,
             self.interner,
             fqn,
         )
@@ -228,13 +226,13 @@ impl<'a> CodeGen<'a> {
         &mut self,
         unmangled_name: &str,
         mangled_name: &str,
-        module_name: hir::Name,
+        module_name: hir::FileName,
         body: Idx<hir::Expr>,
-        param_tys: Vec<Idx<ResolvedTy>>,
-        return_ty: ResolvedTy,
+        param_tys: Vec<Intern<ResolvedTy>>,
+        return_ty: Intern<ResolvedTy>,
     ) {
-        let (comp_sig, new_idx_to_old_idx) = (param_tys.clone(), return_ty.clone())
-            .to_cranelift_signature(self.module, self.resolved_arena);
+        let (comp_sig, new_idx_to_old_idx) =
+            (param_tys.clone(), return_ty).to_cranelift_signature(self.module);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -248,8 +246,8 @@ impl<'a> CodeGen<'a> {
         let compiler = FunctionCompiler {
             builder,
             module_name,
+            project_root: self.project_root,
             signature: comp_sig,
-            resolved_arena: self.resolved_arena,
             interner: self.interner,
             bodies_map: self.bodies_map,
             tys: self.tys,
@@ -286,10 +284,10 @@ impl<'a> CodeGen<'a> {
 
 pub(crate) fn get_func_id(
     module: &mut dyn Module,
+    project_root: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
     functions_to_compile: &mut VecDeque<hir::Fqn>,
     tys: &hir_ty::InferenceResult,
-    resolved_arena: &Arena<ResolvedTy>,
     interner: &Interner,
     fqn: hir::Fqn,
 ) -> FuncId {
@@ -303,7 +301,7 @@ pub(crate) fn get_func_id(
         .as_function()
         .expect("tried to compile non-function as function");
 
-    let (comp_sig, _) = signature.to_cranelift_signature(module, resolved_arena);
+    let (comp_sig, _) = signature.to_cranelift_signature(module);
 
     let func_id = if signature.is_extern {
         module
@@ -311,7 +309,11 @@ pub(crate) fn get_func_id(
             .expect("There are multiple extern functions with the same name")
     } else {
         module
-            .declare_function(&fqn.to_mangled_name(interner), Linkage::Export, &comp_sig)
+            .declare_function(
+                &fqn.to_mangled_name(project_root, interner),
+                Linkage::Export,
+                &comp_sig,
+            )
             .unwrap()
     };
 
