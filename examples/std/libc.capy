@@ -1,8 +1,4 @@
 
-FILE :: struct {
-    a: i32,
-};
-
 // in the future, there will be a `^any` type that can be cast down to a more specific pointer
 // also in the future, you wouldn't call `malloc` directly, you'd use an `Allocator`
 malloc :: (bytes: usize) -> ^u8 extern;

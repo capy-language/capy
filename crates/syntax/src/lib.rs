@@ -34,6 +34,7 @@ pub enum NodeKind {
     Index,     // the actual index. `6` in `my_array[6]`
     Source,
     Distinct,
+    ComptimeExpr,
     Block,
     IfExpr,
     ElseBranch,

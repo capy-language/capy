@@ -413,7 +413,6 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
 fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> String {
     match &d.kind {
         LoweringDiagnosticKind::OutOfRangeIntLiteral => "integer literal out of range".to_string(),
-        LoweringDiagnosticKind::OutOfRangeFloatLiteral => "float literal out of range".to_string(),
         LoweringDiagnosticKind::UndefinedRef { name } => {
             format!("undefined reference to `{}`", interner.lookup(*name))
         }
@@ -465,7 +464,7 @@ fn ty_diagnostic_message(
                 to.display(project_root, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::OpMismatch { op, first, second } => {
+        hir_ty::TyDiagnosticKind::BinaryOpMismatch { op, first, second } => {
             format!(
                 "`{}` cannot be {} `{}`",
                 first.display(project_root, interner),
@@ -487,6 +486,17 @@ fn ty_diagnostic_message(
                 second.display(project_root, interner)
             )
         }
+        hir_ty::TyDiagnosticKind::UnaryOpMismatch { op, ty } => {
+            format!(
+                "cannot apply `{}` to `{}`",
+                match op {
+                    hir::UnaryOp::Neg => '-',
+                    hir::UnaryOp::Pos => '+',
+                    hir::UnaryOp::Not => '!',
+                },
+                ty.display(project_root, interner)
+            )
+        }
         hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
             format!(
                 "`if` and `else` have different types, expected `{}` but found `{}`",
@@ -506,10 +516,10 @@ fn ty_diagnostic_message(
             array_ty,
         } => {
             format!(
-                "index `[{}]` is too big, `{}` has size `{}`",
+                "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
                 index,
                 array_ty.display(project_root, interner),
-                actual_size,
+                actual_size - 1,
             )
         }
         hir_ty::TyDiagnosticKind::MismatchedArgCount { found, expected } => {
@@ -576,6 +586,15 @@ fn ty_diagnostic_message(
             expected_ty.display(project_root, interner),
             interner.lookup(*field)
         ),
+        hir_ty::TyDiagnosticKind::ComptimePointer => {
+            "comptime blocks cannot return pointers. the data won't exist at runtime".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ComptimeType => {
+            "comptime blocks cannot return types ... yet ;)".to_string()
+        }
+        hir_ty::TyDiagnosticKind::GlobalNotConst => {
+            "globals must be constant values. try wrapping this in `comptime { ... }`".to_string()
+        }
     }
 }
 
@@ -627,6 +646,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Extern => "`extern`",
         TokenKind::Struct => "`struct`",
         TokenKind::Import => "`import`",
+        TokenKind::Comptime => "`comptime`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",

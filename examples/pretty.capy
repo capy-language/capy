@@ -1,0 +1,10 @@
+libc :: import "std/libc.capy";
+
+main :: () {
+    // These are the same as odin
+    libc.puts("\e[32mHello!\v\e[34mWorld\e[0m\n");
+    libc.puts("Joe\b\b\bP");
+    libc.puts("ALERT!\a");
+    libc.puts("\fAnd\r\n\tnow..");
+    libc.puts("\e[1;90mC\e[91mO\e[92mL\e[93m\e[94mO\e[95mR\e[96mS\e[97m!\e[0m");
+}

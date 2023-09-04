@@ -1,25 +1,29 @@
-mod convert;
-mod functions;
-mod gen;
-mod mangle;
+#![feature(new_uninit)]
 
+mod compiler;
+mod convert;
+mod mangle;
+mod slice_utils;
+
+use compiler::comptime::ComptimeResult;
+use compiler::program::compile_program;
 use cranelift::prelude::isa::{self};
 use cranelift::prelude::{settings, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_object::object::write;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use gen::CodeGen;
 use interner::Interner;
 use rustc_hash::FxHashMap;
 use std::mem;
 use std::path::PathBuf;
 use std::process::{exit, Command};
-use std::str::FromStr;
 use target_lexicon::Triple;
 
 pub(crate) type CraneliftSignature = cranelift::prelude::Signature;
 pub(crate) type CapyFnSignature = hir_ty::FunctionSignature;
+
+pub use compiler::comptime::{eval_comptime_blocks, ComptimeToCompile};
 
 pub fn compile_jit(
     verbose: bool,
@@ -28,6 +32,7 @@ pub fn compile_jit(
     interner: &Interner,
     bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
+    comptime_results: &FxHashMap<ComptimeToCompile, ComptimeResult>,
 ) -> fn(usize, usize) -> usize {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -42,7 +47,7 @@ pub fn compile_jit(
 
     let mut module = JITModule::new(builder);
 
-    let cmain = CodeGen::new(
+    let cmain = compile_program(
         verbose,
         entry_point,
         project_root,
@@ -50,8 +55,8 @@ pub fn compile_jit(
         bodies_map,
         tys,
         &mut module,
-    )
-    .finish();
+        comptime_results,
+    );
 
     // Finalize the functions which were defined, which resolves any
     // outstanding relocations (patching in addresses, now that they're
@@ -64,6 +69,7 @@ pub fn compile_jit(
     unsafe { mem::transmute::<_, fn(usize, usize) -> usize>(code_ptr) }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_obj(
     verbose: bool,
     entry_point: hir::Fqn,
@@ -71,27 +77,17 @@ pub fn compile_obj(
     interner: &Interner,
     bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
-    target: Option<&str>,
+    comptime_results: &FxHashMap<ComptimeToCompile, ComptimeResult>,
+    target: Triple,
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
     // flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "true").unwrap();
 
-    let isa_builder = if let Some(target) = target {
-        isa::lookup(Triple::from_str(target).unwrap_or_else(|msg| {
-            println!("invalid target: {}", msg);
-            exit(1);
-        }))
-        .unwrap_or_else(|msg| {
-            println!("invalid target: {}", msg);
-            exit(1);
-        })
-    } else {
-        cranelift_native::builder().unwrap_or_else(|msg| {
-            println!("host machine is not supported: {}", msg);
-            exit(1);
-        })
-    };
+    let isa_builder = isa::lookup(target).unwrap_or_else(|msg| {
+        println!("invalid target: {}", msg);
+        exit(1);
+    });
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
@@ -104,7 +100,7 @@ pub fn compile_obj(
     .unwrap();
     let mut module = ObjectModule::new(builder);
 
-    CodeGen::new(
+    compile_program(
         verbose,
         entry_point,
         project_root,
@@ -112,8 +108,8 @@ pub fn compile_obj(
         bodies_map,
         tys,
         &mut module,
-    )
-    .finish();
+        comptime_results,
+    );
 
     // Finalize the functions which were defined, which resolves any
     // outstanding relocations (patching in addresses, now that they're
@@ -147,7 +143,6 @@ mod tests {
     use hir_ty::InferenceCtx;
     use la_arena::Arena;
     use path_clean::PathClean;
-    use regex::Regex;
     use uid_gen::UIDGenerator;
 
     use super::*;
@@ -168,6 +163,8 @@ mod tests {
         let mut uid_gen = UIDGenerator::default();
         let mut twr_arena = Arena::new();
         let mut bodies_map = FxHashMap::default();
+
+        let mut comptimes = Vec::new();
 
         for file in other_files {
             let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
@@ -205,6 +202,12 @@ mod tests {
                 &mut interner,
                 false,
             );
+
+            comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
+                module_name: module,
+                comptime,
+            }));
+
             cfg_if::cfg_if! {
             if #[cfg(not(feature = "disable_codegen_checks"))] {
                 assert_eq!(diagnostics, vec![]);
@@ -248,6 +251,10 @@ mod tests {
             &mut interner,
             false,
         );
+        comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
+            module_name: module,
+            comptime,
+        }));
         cfg_if::cfg_if! {
         if #[cfg(not(feature = "disable_codegen_checks"))] {
             assert_eq!(diagnostics, vec![]);
@@ -264,6 +271,20 @@ mod tests {
         }
         }
 
+        println!("comptime:");
+
+        let comptime_results = eval_comptime_blocks(
+            true,
+            comptimes,
+            Path::new(""),
+            &interner,
+            &bodies_map,
+            &inference_result,
+            Triple::host().pointer_width().unwrap().bits(),
+        );
+
+        println!("actual program:");
+
         let bytes = compile_obj(
             true,
             hir::Fqn {
@@ -274,7 +295,8 @@ mod tests {
             &interner,
             &bodies_map,
             &inference_result,
-            None,
+            &comptime_results,
+            Triple::host(),
         )
         .unwrap();
 
@@ -296,88 +318,14 @@ mod tests {
 
         assert_eq!(output.status.code().unwrap(), expected_status);
 
-        let re = Regex::new(r"[^A-Za-z0-9\n\s().=#!_:,\[\]\-><{}]").unwrap();
         let stdout = std::str::from_utf8(&output.stdout)
             .unwrap()
             .replace('\r', "");
-        let stdout = re.replace_all(&stdout, "");
-
-        let trim_expect_data = trim_indent(stdout_expect.data());
-        let mut trim_expect_data = trim_expect_data.bytes();
-        let mut stdout_data = stdout.bytes();
-
-        for _ in 0..trim_expect_data.len().max(stdout_data.len()) {
-            let expect = trim_expect_data.next();
-            let actual = stdout_data.next();
-
-            println!(
-                "{:>3} : {:>3} | {:>2} : {:>2} {}",
-                expect.map(|expect| expect.to_string()).unwrap_or_default(),
-                actual.map(|expect| expect.to_string()).unwrap_or_default(),
-                expect
-                    .map(|expect| match expect as char {
-                        '\r' => "\\r".to_string(),
-                        '\n' => "\\n".to_string(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default(),
-                actual
-                    .map(|actual| match actual as char {
-                        '\r' => "\\r".to_string(),
-                        '\n' => "\\n".to_string(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default(),
-                if expect != actual { "NOT EQUAL" } else { "" }
-            );
-        }
-
         let stdout = format!("{}\n", stdout);
 
+        println!("{:?}", stdout);
+
         stdout_expect.assert_eq(&stdout);
-    }
-
-    fn trim_indent(mut text: &str) -> String {
-        if text.starts_with('\n') {
-            text = &text[1..];
-        }
-        let indent = text
-            .lines()
-            .filter(|it| !it.trim().is_empty())
-            .map(|it| it.len() - it.trim_start().len())
-            .min()
-            .unwrap_or(0);
-
-        lines_with_ends(text)
-            .map(|line| {
-                if line.len() <= indent {
-                    line.trim_start_matches(' ')
-                } else {
-                    &line[indent..]
-                }
-            })
-            .collect()
-    }
-
-    fn lines_with_ends(text: &str) -> LinesWithEnds {
-        LinesWithEnds { text }
-    }
-
-    struct LinesWithEnds<'a> {
-        text: &'a str,
-    }
-
-    impl<'a> Iterator for LinesWithEnds<'a> {
-        type Item = &'a str;
-        fn next(&mut self) -> Option<&'a str> {
-            if self.text.is_empty() {
-                return None;
-            }
-            let idx = self.text.find('\n').map_or(self.text.len(), |it| it + 1);
-            let (res, next) = self.text.split_at(idx);
-            self.text = next;
-            Some(res)
-        }
     }
 
     #[test]
@@ -476,7 +424,7 @@ mod tests {
     fn array_of_arrays() {
         check(
             "../../examples/arrays_of_arrays.capy",
-            &[],
+            &["../../examples/std/libc.capy"],
             "main",
             expect![[r#"
                 my_array[0][0][0] = 2
@@ -575,13 +523,42 @@ mod tests {
     }
 
     #[test]
+    fn pretty() {
+        check(
+            "../../examples/pretty.capy",
+            &["../../examples/std/libc.capy"],
+            "main",
+            expect![["
+                \u{1b}[32mHello!\u{b}\u{1b}[34mWorld\u{1b}[0m
+
+                Joe\u{8}\u{8}\u{8}P
+                ALERT!\u{7}
+                \u{c}And
+                \tnow..
+                \u{1b}[1;90mC\u{1b}[91mO\u{1b}[92mL\u{1b}[93m\u{1b}[94mO\u{1b}[95mR\u{1b}[96mS\u{1b}[97m!\u{1b}[0m
+
+            "]],
+            0,
+        )
+    }
+
+    #[test]
     fn float_to_string() {
         check(
             "../../examples/float_to_string.capy",
-            &[],
+            &["../../examples/std/math.capy"],
             "main",
             expect![[r#"
-            12.500
+            3.141
+
+            ln 10 = 2.302
+            ln 50 = 3.912
+            ln 100 = 4.605
+            ln 500 = 6.214
+            log 10 = 1.000
+            log 50 = 1.698
+            log 100 = 2.000
+            log 500 = 2.698
 
             "#]],
             0,
@@ -610,7 +587,7 @@ mod tests {
     fn structs() {
         check(
             "../../examples/structs.capy",
-            &[],
+            &["../../examples/std/libc.capy"],
             "main",
             expect![[r#"
             people:
@@ -620,6 +597,30 @@ mod tests {
 
             some_guy:
             Terry is 1000 years old
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn comptime() {
+        check(
+            "../../examples/comptime.capy",
+            &[
+                "../../examples/std/libc.capy",
+                "../../examples/std/math.capy",
+            ],
+            "main",
+            expect![[r#"
+            Hello at runtime!
+            that global was equal to 10
+            2^0 = 1
+            2^1 = 2
+            2^2 = 4
+            2^3 = 8
+            2^4 = 16
+            2^5 = 32
 
             "#]],
             0,

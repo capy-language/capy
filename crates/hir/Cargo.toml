@@ -19,4 +19,10 @@ uid_gen = { path = "../uid_gen" }
 pathdiff = "0.2.1"
 
 [dev-dependencies]
+ast = { path = "../ast" }
+expect-test = "1.1"
+interner = { path = "../interner" }
+lexer = { path = "../lexer" }
 parser = { path = "../parser" }
+test-utils = { path = "../test-utils" }
+uid_gen = { path = "../uid_gen" }

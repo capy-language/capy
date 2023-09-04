@@ -6,3 +6,4 @@ examples/test.capy
 
 hello.txt
 Cargo.lock
+.editorconfig

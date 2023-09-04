@@ -1,9 +1,10 @@
-use cranelift::codegen;
-use cranelift::prelude::{
-    types, AbiParam, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature,
-    Value, Variable,
-};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
+pub mod comptime;
+mod functions;
+pub mod program;
+
+use cranelift::codegen::{self, CodegenError};
+use cranelift::prelude::{types, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use hir_ty::ResolvedTy;
 use interner::Interner;
 use internment::Intern;
@@ -12,9 +13,11 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
-use crate::convert::*;
-use crate::functions::FunctionCompiler;
 use crate::mangle::Mangle;
+use crate::{convert::*, CapyFnSignature, ComptimeToCompile};
+
+use self::comptime::ComptimeResult;
+use self::functions::FunctionCompiler;
 
 pub(crate) struct LambdaToCompile {
     pub(crate) module_name: hir::FileName,
@@ -23,196 +26,50 @@ pub(crate) struct LambdaToCompile {
     pub(crate) return_ty: Intern<ResolvedTy>,
 }
 
-pub(crate) struct CodeGen<'a> {
-    verbose: bool,
+pub(crate) struct Compiler<'a> {
+    pub(crate) verbose: bool,
 
-    project_root: &'a std::path::Path,
+    pub(crate) project_root: &'a std::path::Path,
 
-    interner: &'a Interner,
-    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-    tys: &'a hir_ty::InferenceResult,
+    pub(crate) interner: &'a Interner,
+    pub(crate) bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
+    pub(crate) tys: &'a hir_ty::InferenceResult,
 
-    builder_context: FunctionBuilderContext,
-    ctx: codegen::Context,
-    data_description: DataDescription,
-    module: &'a mut dyn Module,
+    pub(crate) builder_context: FunctionBuilderContext,
+    pub(crate) ctx: codegen::Context,
+    pub(crate) data_description: DataDescription,
+    pub(crate) module: &'a mut dyn Module,
+    pub(crate) pointer_ty: types::Type,
 
-    entry_point: hir::Fqn,
-    functions_to_compile: VecDeque<hir::Fqn>,
-    lambdas_to_compile: VecDeque<LambdaToCompile>,
+    // bodies to compile
+    pub(crate) functions_to_compile: VecDeque<hir::Fqn>,
+    pub(crate) lambdas_to_compile: VecDeque<LambdaToCompile>,
 
     // globals
-    functions: FxHashMap<hir::Fqn, FuncId>,
-    data: FxHashMap<hir::Fqn, DataId>,
-
-    str_id_gen: UIDGenerator,
+    pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
+    pub(crate) data: FxHashMap<hir::Fqn, DataId>,
+    pub(crate) str_id_gen: UIDGenerator,
+    pub(crate) comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
 }
 
-impl<'a> CodeGen<'a> {
-    pub(crate) fn new(
-        verbose: bool,
-        entry_point: hir::Fqn,
-        project_root: &'a std::path::Path,
-        interner: &'a Interner,
-        bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-        tys: &'a hir_ty::InferenceResult,
-        module: &'a mut dyn Module,
-    ) -> CodeGen<'a> {
-        Self {
-            verbose,
-            project_root,
-            interner,
-            bodies_map,
-            tys,
-            builder_context: FunctionBuilderContext::new(),
-            ctx: module.make_context(),
-            data_description: DataDescription::new(),
-            module,
-            entry_point,
-            functions_to_compile: VecDeque::from([entry_point]),
-            lambdas_to_compile: VecDeque::new(),
-            functions: FxHashMap::default(),
-            data: FxHashMap::default(),
-            str_id_gen: UIDGenerator::default(),
-        }
-    }
-
-    /// compiles everything into cranelift IR and returns the FuncId of the cmain function
-    pub(crate) fn finish(mut self) -> FuncId {
-        self.compile_queued_functions();
-        self.generate_main_function()
-    }
-
+impl Compiler<'_> {
     fn compile_queued_functions(&mut self) {
         while let Some(fqn) = self.functions_to_compile.pop_front() {
-            let signature = self.tys[fqn]
+            let sig = self.tys[fqn]
                 .as_function()
                 .expect("tried to compile non-function as function");
 
-            if signature.is_extern {
-                continue;
-            }
-
-            self.compile_function(
-                &fqn.to_string(self.project_root, self.interner),
-                &fqn.to_mangled_name(self.project_root, self.interner),
-                fqn.module,
-                self.bodies_map[&fqn.module].function_body(fqn.name),
-                signature.param_tys.clone(),
-                signature.return_ty,
-            );
+            self.compile_real_function(sig, fqn);
         }
         while let Some(ltc) = self.lambdas_to_compile.pop_front() {
-            self.compile_function(
-                &format!(
-                    "{}.lambda#{}",
-                    self.interner.lookup(ltc.module_name.0),
-                    ltc.lambda.into_raw()
-                ),
-                &ltc.to_mangled_name(self.project_root, self.interner),
-                ltc.module_name,
-                self.bodies_map[&ltc.module_name][ltc.lambda].body,
-                ltc.param_tys,
-                ltc.return_ty,
-            );
+            self.compile_lambda(ltc);
         }
-    }
-
-    fn generate_main_function(&mut self) -> FuncId {
-        let entry_point = self.get_func_id(self.entry_point);
-
-        let cmain_sig = Signature {
-            params: vec![
-                AbiParam::new(self.module.target_config().pointer_type()),
-                AbiParam::new(self.module.target_config().pointer_type()),
-            ],
-            returns: vec![AbiParam::new(
-                self.module.target_config().pointer_type(), /*isize*/
-            )],
-            call_conv: self.module.target_config().default_call_conv,
-        };
-        let cmain_id = self
-            .module
-            .declare_function("main", Linkage::Export, &cmain_sig)
-            .unwrap();
-
-        self.ctx.func.signature = cmain_sig;
-
-        // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
-
-        // Create the entry block, to start emitting code in.
-        let entry_block = builder.create_block();
-
-        builder.switch_to_block(entry_block);
-        // tell the builder that the block will have no further predecessors
-        builder.seal_block(entry_block);
-
-        let arg_argc =
-            builder.append_block_param(entry_block, self.module.target_config().pointer_type());
-        let arg_argv =
-            builder.append_block_param(entry_block, self.module.target_config().pointer_type());
-
-        let var_argc = Variable::new(0);
-        builder.declare_var(var_argc, self.module.target_config().pointer_type());
-        builder.def_var(var_argc, arg_argc);
-
-        let var_argv = Variable::new(1);
-        builder.declare_var(var_argv, self.module.target_config().pointer_type());
-        builder.def_var(var_argv, arg_argv);
-
-        let local_entry_point = self.module.declare_func_in_func(entry_point, builder.func);
-
-        let call = builder.ins().call(local_entry_point, &[]);
-
-        let entry_point_signature = self.tys[self.entry_point].as_function().unwrap();
-
-        let exit_code = match entry_point_signature
-            .return_ty
-            .to_comp_type(self.module)
-            .into_number_type()
-        {
-            Some(found_return_ty) => {
-                let exit_code = builder.inst_results(call)[0];
-
-                // cast the exit code from the entry point into a usize
-                cast(
-                    &mut builder,
-                    exit_code,
-                    found_return_ty,
-                    NumberType {
-                        ty: self.module.target_config().pointer_type(),
-                        float: false,
-                        signed: false,
-                    },
-                )
-            }
-            _ => builder
-                .ins()
-                .iconst(self.module.target_config().pointer_type(), 0),
-        };
-
-        builder.ins().return_(&[exit_code]);
-
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        if self.verbose {
-            println!("main \x1B[90mmain\x1B[0m:\n{}", self.ctx.func);
-        }
-
-        self.module
-            .define_function(cmain_id, &mut self.ctx)
-            .expect("error defining function");
-
-        self.module.clear_context(&mut self.ctx);
-
-        cmain_id
     }
 
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         get_func_id(
             self.module,
+            self.pointer_ty,
             self.project_root,
             &mut self.functions,
             &mut self.functions_to_compile,
@@ -220,6 +77,36 @@ impl<'a> CodeGen<'a> {
             self.interner,
             fqn,
         )
+    }
+
+    fn compile_lambda(&mut self, ltc: LambdaToCompile) {
+        self.compile_function(
+            &format!(
+                "{}.lambda#{}",
+                ltc.module_name.to_string(self.project_root, self.interner),
+                ltc.lambda.into_raw()
+            ),
+            &ltc.to_mangled_name(self.project_root, self.interner),
+            ltc.module_name,
+            self.bodies_map[&ltc.module_name][ltc.lambda].body,
+            ltc.param_tys,
+            ltc.return_ty,
+        );
+    }
+
+    fn compile_real_function(&mut self, sig: &CapyFnSignature, fqn: hir::Fqn) {
+        if sig.is_extern {
+            return;
+        }
+
+        self.compile_function(
+            &fqn.to_string(self.project_root, self.interner),
+            &fqn.to_mangled_name(self.project_root, self.interner),
+            fqn.module,
+            self.bodies_map[&fqn.module].function_body(fqn.name),
+            sig.param_tys.clone(),
+            sig.return_ty,
+        );
     }
 
     fn compile_function(
@@ -230,9 +117,9 @@ impl<'a> CodeGen<'a> {
         body: Idx<hir::Expr>,
         param_tys: Vec<Intern<ResolvedTy>>,
         return_ty: Intern<ResolvedTy>,
-    ) {
+    ) -> FuncId {
         let (comp_sig, new_idx_to_old_idx) =
-            (param_tys.clone(), return_ty).to_cranelift_signature(self.module);
+            (param_tys.clone(), return_ty).to_cranelift_signature(self.module, self.pointer_ty);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -252,6 +139,7 @@ impl<'a> CodeGen<'a> {
             bodies_map: self.bodies_map,
             tys: self.tys,
             module: self.module,
+            pointer_ty: self.pointer_ty,
             data_description: &mut self.data_description,
             functions_to_compile: &mut self.functions_to_compile,
             lambdas_to_compile: &mut self.lambdas_to_compile,
@@ -260,6 +148,7 @@ impl<'a> CodeGen<'a> {
             functions: &mut self.functions,
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
+            comptime_results: self.comptime_results,
             var_id_gen: UIDGenerator::default(),
             locals: FxHashMap::default(),
             params: FxHashMap::default(),
@@ -276,14 +165,26 @@ impl<'a> CodeGen<'a> {
 
         self.module
             .define_function(func_id, &mut self.ctx)
-            .expect("error defining function");
+            .unwrap_or_else(|err| {
+                println!("Error defining function:");
+                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
+                    println!("{}", v.to_string().replace("):", "):\n "));
+                } else {
+                    println!("{:?}", err);
+                }
+                std::process::exit(1);
+            });
 
         self.module.clear_context(&mut self.ctx);
+
+        func_id
     }
 }
 
-pub(crate) fn get_func_id(
+#[allow(clippy::too_many_arguments)]
+fn get_func_id(
     module: &mut dyn Module,
+    pointer_ty: types::Type,
     project_root: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
     functions_to_compile: &mut VecDeque<hir::Fqn>,
@@ -301,7 +202,7 @@ pub(crate) fn get_func_id(
         .as_function()
         .expect("tried to compile non-function as function");
 
-    let (comp_sig, _) = signature.to_cranelift_signature(module);
+    let (comp_sig, _) = signature.to_cranelift_signature(module, pointer_ty);
 
     let func_id = if signature.is_extern {
         module
@@ -322,7 +223,7 @@ pub(crate) fn get_func_id(
     func_id
 }
 
-pub(crate) fn cast(
+fn cast(
     builder: &mut FunctionBuilder,
     val: Value,
     cast_from: NumberType,

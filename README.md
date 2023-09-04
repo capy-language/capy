@@ -3,7 +3,7 @@
 # The Capy Programming Language
 
 A statically typed, compiled programming language, largely inspired by Jai, Odin, and Zig.
-Compile-time evaluation coming soon.
+It even has arbitrary compile-time evaluation!
 
 Now on all your favorite Operating Systems! Thanks [cranelift](https://cranelift.dev/)!
 
@@ -59,6 +59,22 @@ gandalf := Person {
 gandalf.age = gandalf.age + 1;
 ```
 
+Arbitrary Compile-Time Evaluation,
+
+```capy
+math :: import "std/math.capy";
+
+powers_of_two := comptime {
+    array := [] i32 { 0, 0, 0 };
+
+    array[0] = math.pow(2, 1);
+    array[1] = math.pow(2, 2);
+    array[2] = math.pow(2, 3);
+
+    array
+};
+```
+
 First Class Functions,
 
 ```capy
@@ -101,13 +117,13 @@ Make sure you have `gcc` installed,
 Then compile and run your code,
 
 ```shell
-capy run examples/readme.capy
+capy run examples/hello_world.capy
 ```
 
 Or if you just want to build the final executable,
 
 ```shell
-capy build examples/readme.capy
+capy build examples/hello_world.capy
 ```
 
 Only Windows and Linux have been tested, so tell me if you get it working on MacOS :)
@@ -117,7 +133,7 @@ Only Windows and Linux have been tested, so tell me if you get it working on Mac
 Currently, `gcc` must be installed for the compiler to work.
 It is used for linking to libc and producing a proper executable.
 
-If you want to use libc functions, define them with `extern` as above.
+If you want to use libc functions, define them with `extern` (look in [`libc.capy`](./examples/std/libc.capy) for examples).
 Variadic functions do not work. You *could* try explicitly defining `printf`
 to take 3 arguments, but this won't work for floats, which are passed into
 variadic functions differently depending on the calling convention.

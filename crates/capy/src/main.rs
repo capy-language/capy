@@ -1,6 +1,8 @@
 mod source;
 
-use std::{cell::RefCell, env, io, path::PathBuf, process::exit, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell, env, io, path::PathBuf, process::exit, rc::Rc, str::FromStr, time::Instant,
+};
 
 use clap::{Parser, Subcommand};
 use hir::WorldIndex;
@@ -10,6 +12,7 @@ use line_index::LineIndex;
 use path_clean::PathClean;
 use rustc_hash::FxHashMap;
 use std::fs;
+use target_lexicon::Triple;
 use uid_gen::UIDGenerator;
 
 use crate::source::SourceFile;
@@ -129,6 +132,18 @@ fn compile_file(
         exit(1)
     }
 
+    let target = match &config {
+        CompilationConfig::Compile(target) => target.as_deref(),
+        _ => None,
+    }
+    .map(|target| {
+        Triple::from_str(target).unwrap_or_else(|msg| {
+            println!("invalid target: {}", msg);
+            exit(1);
+        })
+    })
+    .unwrap_or_else(Triple::host);
+
     println!("{ansi_green}Compiling{ansi_reset}  ...");
     let compilation_start = Instant::now();
 
@@ -158,11 +173,7 @@ fn compile_file(
 
     line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-    if verbose >= 1 {
-        println!();
-    }
-
-    let mut current_imports = source_file.build_bodies();
+    let (mut current_imports, mut comptimes) = source_file.build_bodies();
     source_files.insert(source_file.module, source_file);
 
     // find all imports in the source file, compile them, then do the same for their imports
@@ -219,14 +230,12 @@ fn compile_file(
 
             line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-            current_imports.extend(source_file.build_bodies());
+            let (imports, new_comptimes) = source_file.build_bodies();
+            current_imports.extend(imports);
+            comptimes.extend(new_comptimes);
 
             source_files.insert(source_file.module, source_file);
         }
-    }
-
-    if verbose >= 1 {
-        println!();
     }
 
     // infer types
@@ -239,10 +248,8 @@ fn compile_file(
     .finish();
     if verbose >= 2 {
         let debug = inference.debug(&project_root, &interner.borrow(), true);
+        println!("=== types ===\n");
         println!("{}", debug);
-        if !debug.is_empty() {
-            println!();
-        }
     }
 
     // print out errors and warnings
@@ -304,7 +311,26 @@ fn compile_file(
         "{ansi_green}Finalizing{ansi_reset} (parsed in {:.2}s)",
         parse_finish.as_secs_f32()
     );
+
     let interner = interner.borrow();
+
+    if verbose >= 4 {
+        println!("comptime JIT:\n");
+    }
+
+    let comptime_results = codegen::eval_comptime_blocks(
+        verbose >= 4,
+        comptimes,
+        &project_root,
+        &interner,
+        &bodies_map.borrow(),
+        &inference,
+        target.pointer_width().unwrap().bits(),
+    );
+
+    if verbose >= 4 {
+        println!("\nactual program:\n");
+    }
 
     let main_module = main_modules.first().unwrap();
     if config == CompilationConfig::Jit {
@@ -318,6 +344,7 @@ fn compile_file(
             &interner,
             &bodies_map.borrow(),
             &inference,
+            &comptime_results,
         );
 
         println!(
@@ -345,10 +372,8 @@ fn compile_file(
         &interner,
         &bodies_map.borrow(),
         &inference,
-        match &config {
-            CompilationConfig::Compile(target) => target.as_deref(),
-            _ => None,
-        },
+        &comptime_results,
+        target,
     ) {
         Ok(bytes) => bytes,
         Err(why) => {

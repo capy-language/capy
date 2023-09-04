@@ -1,0 +1,12 @@
+1 < 10
+===
+Root@0..6
+  ExprStmt@0..6
+    BinaryExpr@0..6
+      IntLiteral@0..1
+        Int@0..1 "1"
+      Whitespace@1..2 " "
+      Less@2..3 "<"
+      Whitespace@3..4 " "
+      IntLiteral@4..6
+        Int@4..6 "10"

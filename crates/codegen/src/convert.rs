@@ -80,11 +80,11 @@ impl CompType {
 }
 
 pub(crate) trait ToCompType {
-    fn to_comp_type(&self, module: &dyn Module) -> CompType;
+    fn to_comp_type(&self, pointer_ty: types::Type) -> CompType;
 }
 
 impl ToCompType for ResolvedTy {
-    fn to_comp_type(&self, module: &dyn Module) -> CompType {
+    fn to_comp_type(&self, pointer_ty: types::Type) -> CompType {
         match self {
             hir_ty::ResolvedTy::NotYetResolved | hir_ty::ResolvedTy::Unknown => unreachable!(),
             hir_ty::ResolvedTy::IInt(bit_width) | hir_ty::ResolvedTy::UInt(bit_width) => {
@@ -92,7 +92,7 @@ impl ToCompType for ResolvedTy {
 
                 match *bit_width {
                     u32::MAX => CompType::Number(NumberType {
-                        ty: module.target_config().pointer_type(),
+                        ty: pointer_ty,
                         float: false,
                         signed,
                     }),
@@ -152,20 +152,12 @@ impl ToCompType for ResolvedTy {
                 float: false,
                 signed: false,
             }),
-            hir_ty::ResolvedTy::String => CompType::Pointer(module.target_config().pointer_type()),
-            hir_ty::ResolvedTy::Array { .. } => {
-                CompType::Pointer(module.target_config().pointer_type())
-            }
-            hir_ty::ResolvedTy::Pointer { .. } => {
-                CompType::Pointer(module.target_config().pointer_type())
-            }
-            hir_ty::ResolvedTy::Distinct { ty, .. } => ty.to_comp_type(module),
-            hir_ty::ResolvedTy::Function { .. } => {
-                CompType::Pointer(module.target_config().pointer_type())
-            }
-            hir_ty::ResolvedTy::Struct { .. } => {
-                CompType::Pointer(module.target_config().pointer_type())
-            }
+            hir_ty::ResolvedTy::String => CompType::Pointer(pointer_ty),
+            hir_ty::ResolvedTy::Array { .. } => CompType::Pointer(pointer_ty),
+            hir_ty::ResolvedTy::Pointer { .. } => CompType::Pointer(pointer_ty),
+            hir_ty::ResolvedTy::Distinct { ty, .. } => ty.to_comp_type(pointer_ty),
+            hir_ty::ResolvedTy::Function { .. } => CompType::Pointer(pointer_ty),
+            hir_ty::ResolvedTy::Struct { .. } => CompType::Pointer(pointer_ty),
             hir_ty::ResolvedTy::Type => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
             hir_ty::ResolvedTy::Module(_) => CompType::Void,
@@ -177,6 +169,7 @@ pub(crate) trait ToCraneliftSignature {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
+        pointer_ty: types::Type,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>);
 }
 
@@ -184,8 +177,9 @@ impl ToCraneliftSignature for CapyFnSignature {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
+        pointer_ty: types::Type,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
-        (self.param_tys.clone(), self.return_ty).to_cranelift_signature(module)
+        (self.param_tys.clone(), self.return_ty).to_cranelift_signature(module, pointer_ty)
     }
 }
 
@@ -193,6 +187,7 @@ impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,
+        pointer_ty: types::Type,
     ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
         let (param_tys, return_ty) = self;
 
@@ -207,7 +202,7 @@ impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
                 let param_ty = match param_ty.as_ref() {
                     hir_ty::ResolvedTy::Void { .. } => None,
                     other_ty => Some(AbiParam::new(
-                        other_ty.to_comp_type(module).into_real_type().unwrap(),
+                        other_ty.to_comp_type(pointer_ty).into_real_type().unwrap(),
                     )),
                 };
                 if param_ty.is_some() {
@@ -222,14 +217,14 @@ impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
-            param_types.push(AbiParam::new(module.target_config().pointer_type()));
+            param_types.push(AbiParam::new(pointer_ty));
         }
 
         (
             CraneliftSignature {
                 params: param_types,
                 returns: return_ty
-                    .to_comp_type(module)
+                    .to_comp_type(pointer_ty)
                     .into_real_type()
                     .map(|ty| vec![AbiParam::new(ty)])
                     .unwrap_or_default(),
@@ -241,7 +236,7 @@ impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
 }
 
 pub(crate) trait ToCompSize {
-    fn get_size_in_bytes(&self, module: &dyn Module) -> u32;
+    fn get_size_in_bytes(&self, pointer_ty: types::Type) -> u32;
 
     /// Most types must appear in addresses that are a mutliple of a certain "alignment".
     /// This is a restriction of the underlying architechture.
@@ -253,29 +248,29 @@ pub(crate) trait ToCompSize {
     ///
     /// An alignment of `1` is accepted in all
     /// memory locations
-    fn get_align_in_bytes(&self, module: &dyn Module) -> u32;
+    fn get_align_in_bytes(&self, pointer_ty: types::Type) -> u32;
 }
 
 impl ToCompSize for ResolvedTy {
-    fn get_size_in_bytes(&self, module: &dyn Module) -> u32 {
+    fn get_size_in_bytes(&self, pointer_ty: types::Type) -> u32 {
         match self {
             ResolvedTy::NotYetResolved | ResolvedTy::Unknown => unreachable!(),
-            ResolvedTy::IInt(u32::MAX) | ResolvedTy::UInt(u32::MAX) => {
-                module.target_config().pointer_bytes() as u32
-            }
+            ResolvedTy::IInt(u32::MAX) | ResolvedTy::UInt(u32::MAX) => pointer_ty.bytes(),
             ResolvedTy::IInt(0) | ResolvedTy::UInt(0) => 32 / 8,
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width) => bit_width / 8,
             ResolvedTy::Float(0) => 32 / 8,
             ResolvedTy::Float(bit_width) => bit_width / 8,
             ResolvedTy::Bool => 1, // bools are u8's
-            ResolvedTy::String => module.target_config().pointer_bytes() as u32,
-            ResolvedTy::Array { size, sub_ty } => sub_ty.get_size_in_bytes(module) * *size as u32,
-            ResolvedTy::Pointer { .. } => module.target_config().pointer_bytes() as u32,
-            ResolvedTy::Distinct { ty, .. } => ty.get_size_in_bytes(module),
-            ResolvedTy::Function { .. } => module.target_config().pointer_bytes() as u32,
+            ResolvedTy::String => pointer_ty.bytes(),
+            ResolvedTy::Array { size, sub_ty } => {
+                sub_ty.get_size_in_bytes(pointer_ty) * *size as u32
+            }
+            ResolvedTy::Pointer { .. } => pointer_ty.bytes(),
+            ResolvedTy::Distinct { ty, .. } => ty.get_size_in_bytes(pointer_ty),
+            ResolvedTy::Function { .. } => pointer_ty.bytes(),
             ResolvedTy::Struct { fields, .. } => {
                 let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
-                StructMemory::new(fields, module).size
+                StructMemory::new(fields, pointer_ty).size
             }
             ResolvedTy::Type => 0,
             ResolvedTy::Void => 0,
@@ -283,21 +278,21 @@ impl ToCompSize for ResolvedTy {
         }
     }
 
-    fn get_align_in_bytes(&self, module: &dyn Module) -> u32 {
+    fn get_align_in_bytes(&self, pointer_ty: types::Type) -> u32 {
         match self {
             ResolvedTy::NotYetResolved | ResolvedTy::Unknown => unreachable!(),
             ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_) => {
-                self.get_size_in_bytes(module).min(8)
+                self.get_size_in_bytes(pointer_ty).min(8)
             }
             ResolvedTy::Bool => 1, // bools are u8's
-            ResolvedTy::String
-            | ResolvedTy::Array { .. }
-            | ResolvedTy::Pointer { .. }
-            | ResolvedTy::Distinct { .. }
-            | ResolvedTy::Function { .. } => self.get_size_in_bytes(module),
+            ResolvedTy::String | ResolvedTy::Pointer { .. } | ResolvedTy::Function { .. } => {
+                pointer_ty.bytes()
+            }
+            ResolvedTy::Array { sub_ty, .. } => sub_ty.get_align_in_bytes(pointer_ty),
+            ResolvedTy::Distinct { ty, .. } => ty.get_align_in_bytes(pointer_ty),
             ResolvedTy::Struct { fields, .. } => fields
                 .iter()
-                .map(|(_, ty)| ty.get_align_in_bytes(module))
+                .map(|(_, ty)| ty.get_align_in_bytes(pointer_ty))
                 .max()
                 .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
             ResolvedTy::Type => 1,
@@ -327,13 +322,13 @@ impl StructMemory {
         }
     }
 
-    pub(crate) fn new(fields: Vec<Intern<ResolvedTy>>, module: &dyn Module) -> Self {
+    pub(crate) fn new(fields: Vec<Intern<ResolvedTy>>, pointer_ty: types::Type) -> Self {
         let mut offsets = Vec::with_capacity(fields.len());
         let mut max_align = 1;
         let mut current_offset = 0;
 
         for field in fields {
-            let field_align = field.get_align_in_bytes(module);
+            let field_align = field.get_align_in_bytes(pointer_ty);
             if field_align > max_align {
                 max_align = field_align;
             }
@@ -342,7 +337,7 @@ impl StructMemory {
 
             offsets.push(current_offset);
 
-            current_offset += field.get_size_in_bytes(module);
+            current_offset += field.get_size_in_bytes(pointer_ty);
         }
 
         Self {

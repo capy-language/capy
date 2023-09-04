@@ -8,8 +8,8 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    resolved_ty::TypedBinaryOp, InferenceCtx, LocalUsage, ResolvedTy, Signature, TyDiagnostic,
-    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind,
+    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, ResolvedTy, Signature, TyDiagnostic,
+    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
 macro_rules! current_bodies {
@@ -84,8 +84,9 @@ impl InferenceCtx<'_> {
         body: Idx<Expr>,
         param_tys: Option<Vec<Intern<ResolvedTy>>>,
         expected_ty: Intern<ResolvedTy>,
+        global: bool,
     ) {
-        let actual_type = self.finish_body_unknown(body, param_tys);
+        let actual_type = self.finish_body_unknown(body, param_tys, global);
         self.expect_match(actual_type, expected_ty, body);
         self.replace_weak_tys(body, expected_ty);
     }
@@ -94,6 +95,7 @@ impl InferenceCtx<'_> {
         &mut self,
         body: Idx<Expr>,
         param_tys: Option<Vec<Intern<ResolvedTy>>>,
+        global: bool,
     ) -> Intern<ResolvedTy> {
         let old_param_tys = match param_tys {
             Some(new_param_tys) => self.param_tys.replace(new_param_tys),
@@ -112,13 +114,27 @@ impl InferenceCtx<'_> {
             self.reinfer_usages(usages.clone());
         }
 
-        let actual_ty = self.reinfer_expr(body);
+        let mut actual_ty = self.reinfer_expr(body);
+
+        let i32 = ResolvedTy::IInt(32).into();
+        if global && self.replace_weak_tys(body, i32) {
+            actual_ty = i32;
+        }
 
         if let Some(old_local_usages) = old_local_usages {
             self.local_usages
                 .insert(self.current_module.unwrap(), old_local_usages);
         }
         self.param_tys = old_param_tys;
+
+        if global && !self.is_const(body) {
+            self.diagnostics.push(TyDiagnostic {
+                kind: TyDiagnosticKind::GlobalNotConst,
+                module: self.current_module.unwrap(),
+                range: current_bodies!(self).range_for_expr(body),
+                help: None,
+            })
+        }
 
         actual_ty
     }
@@ -205,6 +221,11 @@ impl InferenceCtx<'_> {
                     self.replace_weak_tys(else_branch, new_ty);
                 }
             }
+            Expr::Comptime(comptime) => {
+                let body = current_bodies!(self)[comptime].body;
+
+                self.replace_weak_tys(body, new_ty);
+            }
             Expr::Deref { pointer } => {
                 let mutable = current_module!(self).expr_tys[expr]
                     .as_pointer()
@@ -265,6 +286,20 @@ impl InferenceCtx<'_> {
         }
 
         true
+    }
+
+    fn is_const(&self, expr: Idx<Expr>) -> bool {
+        match &current_bodies!(self)[expr] {
+            Expr::Import(_)
+            | Expr::PrimitiveTy { .. }
+            | Expr::Comptime(_)
+            | Expr::StringLiteral(_)
+            | Expr::IntLiteral(_)
+            | Expr::FloatLiteral(_)
+            | Expr::BoolLiteral(_) => true,
+            Expr::Array { items, .. } => items.iter().all(|item| self.is_const(*item)),
+            _ => *(self.modules[&self.current_module.unwrap()][expr]) == ResolvedTy::Type,
+        }
     }
 
     /// `deref` allows certain expressions to be mutable
@@ -435,9 +470,9 @@ impl InferenceCtx<'_> {
                         range: assign_body.range,
                         help,
                     })
-                } else {
-                    self.expect_match(value_ty, source_ty, assign_body.value);
-
+                } else if source_ty.is_weak_type_replaceable_by(&value_ty) {
+                    self.replace_weak_tys(assign_body.source, source_ty);
+                } else if self.expect_match(value_ty, source_ty, assign_body.value) {
                     self.replace_weak_tys(assign_body.value, source_ty);
                 }
 
@@ -536,6 +571,7 @@ impl InferenceCtx<'_> {
                 self.get_referenced_locals(*previous, local_defs);
             }
             Expr::Lambda(_) => {}
+            Expr::Comptime(_) => {}
             Expr::StructLiteral { .. } => {} // struct literals are always strongly typed
             Expr::PrimitiveTy { .. } => {}
             Expr::Import(_) => {}
@@ -845,7 +881,7 @@ impl InferenceCtx<'_> {
                         && !op.can_perform(&output_ty.max_ty)
                     {
                         self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::OpMismatch {
+                            kind: TyDiagnosticKind::BinaryOpMismatch {
                                 op: *op,
                                 first: lhs_ty,
                                 second: rhs_ty,
@@ -864,7 +900,7 @@ impl InferenceCtx<'_> {
                     output_ty.final_output_ty.into()
                 } else {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::OpMismatch {
+                        kind: TyDiagnosticKind::BinaryOpMismatch {
                             op: *op,
                             first: lhs_ty,
                             second: rhs_ty,
@@ -880,23 +916,20 @@ impl InferenceCtx<'_> {
             hir::Expr::Unary { expr, op } => {
                 let expr_ty = self.infer_expr(*expr);
 
-                match op {
-                    hir::UnaryOp::Neg => {
-                        self.expect_match(expr_ty, ResolvedTy::IInt(0).into(), *expr);
-                        match *expr_ty {
-                            ResolvedTy::UInt(bit_width) => ResolvedTy::IInt(bit_width).into(),
-                            ResolvedTy::IInt(_) => expr_ty,
-                            _ => ResolvedTy::Unknown.into(),
-                        }
-                    }
-                    hir::UnaryOp::Not => {
-                        self.expect_match(expr_ty, ResolvedTy::Bool.into(), *expr);
-                        expr_ty
-                    }
-                    hir::UnaryOp::Pos => {
-                        self.expect_match(expr_ty, ResolvedTy::IInt(0).into(), *expr);
-                        expr_ty
-                    }
+                if !op.can_perform(&expr_ty) {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::UnaryOpMismatch {
+                            op: *op,
+                            ty: expr_ty,
+                        },
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(*expr),
+                        help: None,
+                    });
+
+                    op.default_ty().into()
+                } else {
+                    op.get_possible_output_ty(expr_ty)
                 }
             }
             hir::Expr::Block { stmts, tail_expr } => {
@@ -986,7 +1019,7 @@ impl InferenceCtx<'_> {
 
                 match definition {
                     hir::Definition::Global(global) => {
-                        let global_signature = self.singleton_global_signature(global, fqn);
+                        let global_signature = self.get_global_signature(global, fqn);
 
                         if *global_signature.ty == ResolvedTy::NotYetResolved {
                             self.diagnostics.push(TyDiagnostic {
@@ -1030,7 +1063,7 @@ impl InferenceCtx<'_> {
 
                         match definition {
                             Ok(hir::Definition::Global(global)) => {
-                                let global_signature = self.singleton_global_signature(global, fqn);
+                                let global_signature = self.get_global_signature(global, fqn);
 
                                 if *global_signature.ty == ResolvedTy::NotYetResolved {
                                     self.diagnostics.push(TyDiagnostic {
@@ -1163,13 +1196,40 @@ impl InferenceCtx<'_> {
                 }
             }
             hir::Expr::Lambda(lambda) => {
-                let sig = self.generate_unnamed_function_signature(*lambda);
+                let sig = self.generate_lambda_signature(*lambda);
 
                 ResolvedTy::Function {
                     params: sig.param_tys,
                     return_ty: sig.return_ty,
                 }
                 .into()
+            }
+            hir::Expr::Comptime(comptime) => {
+                let hir::Comptime { body } = current_bodies!(self)[*comptime];
+
+                let ty = self.infer_expr(body);
+
+                if ty.is_pointer() {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::ComptimePointer,
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
+                    });
+
+                    ResolvedTy::Unknown.into()
+                } else if *ty == ResolvedTy::Type {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::ComptimeType,
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
+                    });
+
+                    ResolvedTy::Unknown.into()
+                } else {
+                    ty
+                }
             }
             hir::Expr::StructLiteral {
                 ty: ty_expr,

@@ -16,6 +16,10 @@ pub struct Index {
 }
 
 impl Index {
+    pub fn is_empty(&self) -> bool {
+        self.definitions.is_empty()
+    }
+
     pub fn functions(&self) -> impl Iterator<Item = (Name, &Function)> {
         self.definitions
             .iter()
@@ -315,4 +319,383 @@ pub enum IndexingDiagnosticKind {
     NonBindingAtRoot,
     AlreadyDefined { name: Key },
     TyParseError(TyParseError),
+}
+
+impl Index {
+    pub fn debug(&self, twr_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
+        let mut s = String::new();
+
+        let mut definitions = self.definitions.iter().collect::<Vec<_>>();
+        definitions.sort_unstable_by_key(|(name, _)| *name);
+
+        for (name, definition) in definitions {
+            s.push_str(interner.lookup(name.0));
+            s.push_str(" : ");
+
+            match definition {
+                Definition::Function(function) => {
+                    let ty_annotation = &twr_arena[function.ty_annotation];
+
+                    s.push_str(&ty_annotation.display(twr_arena, interner));
+
+                    s.push_str(" : ");
+
+                    s.push('(');
+
+                    for (idx, Param { name, ty }) in function.params.iter().enumerate() {
+                        if let Some(name) = name {
+                            s.push_str(interner.lookup(name.0));
+                        } else {
+                            s.push('?');
+                        }
+
+                        s.push_str(": ");
+
+                        s.push_str(&twr_arena[*ty].display(twr_arena, interner));
+
+                        if idx < function.params.len() - 1 {
+                            s.push_str(", ");
+                        }
+                    }
+
+                    s.push_str(") -> ");
+
+                    s.push_str(&twr_arena[function.return_ty].display(twr_arena, interner));
+
+                    if function.is_extern {
+                        s.push_str(" extern");
+                    }
+                }
+                Definition::Global(global) => {
+                    s.push_str(&twr_arena[global.ty].display(twr_arena, interner));
+                    s.push_str(" : global");
+                }
+            }
+
+            s.push('\n');
+        }
+
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use expect_test::{expect, Expect};
+
+    fn check<const N: usize>(
+        input: &str,
+        expect: Expect,
+        expected_diagnostics: impl Fn(
+            &mut Interner,
+        ) -> [(IndexingDiagnosticKind, std::ops::Range<u32>); N],
+    ) {
+        let mut interner = Interner::default();
+        let mut uid_gen = UIDGenerator::default();
+        let mut twr_arena = Arena::default();
+
+        let tokens = lexer::lex(input);
+        let tree = parser::parse_source_file(&tokens, input).into_syntax_tree();
+        let root = ast::Root::cast(tree.root(), &tree).unwrap();
+        let (index, actual_diagnostics) =
+            index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+
+        expect.assert_eq(&index.debug(&twr_arena, &interner));
+
+        let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
+            .into_iter()
+            .map(|(kind, range)| IndexingDiagnostic {
+                kind,
+                range: TextRange::new(range.start.into(), range.end.into()),
+            })
+            .collect();
+
+        assert_eq!(expected_diagnostics, actual_diagnostics);
+    }
+
+    #[test]
+    fn empty() {
+        check("", expect![""], |_| [])
+    }
+
+    #[test]
+    fn simple_function() {
+        check(
+            r#"
+                foo :: () {}
+            "#,
+            expect![[r"
+                foo : ? : () -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_params() {
+        check(
+            r#"
+                foo :: (x: i32, y: string) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: i32, y: string) -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_return_ty() {
+        check(
+            r#"
+                foo :: (x: i32, y: string) -> bool {}
+            "#,
+            expect![[r"
+                foo : ? : (x: i32, y: string) -> bool
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn global_without_ty_annotation() {
+        check(
+            r#"
+                foo :: 25;
+            "#,
+            expect![
+                r"
+                foo : ? : global
+            "
+            ],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn global_with_ty_annotation() {
+        check(
+            r#"
+                foo : i32 : 25;
+            "#,
+            expect![[r"
+                foo : i32 : global
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_ty_annotation() {
+        check(
+            r#"
+                foo : i32 : () {}
+            "#,
+            expect![[r"
+                foo : i32 : () -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_missing_param_name() {
+        check(
+            r#"
+                foo :: (: i32) {}
+            "#,
+            expect![[r"
+                foo : ? : (?: i32) -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_missing_param_ty() {
+        check(
+            r#"
+                foo :: (x) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_missing_return_ty() {
+        check(
+            r#"
+                foo :: () -> {}
+            "#,
+            expect![[r"
+                foo : ? : () -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn definition_with_the_same_name() {
+        check(
+            r#"
+                foo :: () {};
+                foo :: (x: i32) {};
+                foo :: 5;
+            "#,
+            expect![[r"
+                foo : ? : () -> void
+            "]],
+            |i| {
+                [
+                    (
+                        IndexingDiagnosticKind::AlreadyDefined {
+                            name: i.intern("foo"),
+                        },
+                        47..50,
+                    ),
+                    (
+                        IndexingDiagnosticKind::AlreadyDefined {
+                            name: i.intern("foo"),
+                        },
+                        83..86,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn non_binding_at_root() {
+        check(
+            r#"
+                foo := () {};
+            "#,
+            expect![[r"
+                foo : ? : () -> void
+            "]],
+            |_| [(IndexingDiagnosticKind::NonBindingAtRoot, 17..29)],
+        )
+    }
+
+    #[test]
+    fn named_ty() {
+        check(
+            r#"
+                imaginary :: distinct i32;
+                foo :: (x: imaginary) {}
+            "#,
+            expect![[r"
+                imaginary : ? : global
+                foo : ? : (x: imaginary) -> void
+            "]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn path_ty() {
+        check(
+            r#"
+                foo :: (x: other_file.imaginary) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| {
+                [(
+                    IndexingDiagnosticKind::TyParseError(TyParseError::NotATy),
+                    28..48,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn take_array_with_body() {
+        check(
+            r#"
+                foo :: (x: [3]i32{ 0, 0, 0 }) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| {
+                [(
+                    IndexingDiagnosticKind::TyParseError(TyParseError::ArrayHasBody),
+                    34..45,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn take_array_missing_size() {
+        check(
+            r#"
+                foo :: (x: []i32) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| {
+                [(
+                    IndexingDiagnosticKind::TyParseError(TyParseError::ArrayMissingSize),
+                    28..30,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn take_array_non_const_size() {
+        check(
+            r#"
+                foo :: (x: [_]i32) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| {
+                [(
+                    IndexingDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
+                    29..30,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn take_array_out_of_bounds_size() {
+        check(
+            r#"
+                foo :: (x: [18446744073709551616]i32) {}
+            "#,
+            expect![[r"
+                foo : ? : (x: ?) -> void
+            "]],
+            |_| {
+                [(
+                    IndexingDiagnosticKind::TyParseError(TyParseError::ArraySizeOutOfBounds),
+                    29..49,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn extern_function() {
+        check(
+            r#"
+                printf :: (s: string, n: i32) extern;
+            "#,
+            expect![[r"
+                printf : ? : (s: string, n: i32) -> void extern
+            "]],
+            |_| [],
+        )
+    }
 }

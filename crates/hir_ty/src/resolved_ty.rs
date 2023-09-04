@@ -1,3 +1,4 @@
+use hir::UnaryOp;
 use internment::Intern;
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
@@ -97,6 +98,14 @@ impl ResolvedTy {
         match self {
             ResolvedTy::Array { .. } => true,
             ResolvedTy::Distinct { ty, .. } => ty.is_array(),
+            _ => false,
+        }
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        match self {
+            ResolvedTy::Pointer { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => ty.is_pointer(),
             _ => false,
         }
     }
@@ -581,20 +590,15 @@ impl ResolvedTy {
     }
 }
 
-pub(crate) trait TypedBinaryOp {
-    fn can_perform(&self, ty: &ResolvedTy) -> bool;
-
+pub(crate) trait BinaryOutput {
     fn get_possible_output_ty(
         &self,
-
         first: &ResolvedTy,
         second: &ResolvedTy,
     ) -> Option<BinaryOutputTy>;
-
-    fn default_ty(&self) -> ResolvedTy;
 }
 
-impl TypedBinaryOp for hir::BinaryOp {
+impl BinaryOutput for hir::BinaryOp {
     /// should check with `can_perform` before actually using the type emitted from this function
     fn get_possible_output_ty(
         &self,
@@ -620,7 +624,31 @@ impl TypedBinaryOp for hir::BinaryOp {
             },
         })
     }
+}
 
+pub(crate) trait UnaryOutput {
+    fn get_possible_output_ty(&self, input: Intern<ResolvedTy>) -> Intern<ResolvedTy>;
+}
+
+impl UnaryOutput for UnaryOp {
+    fn get_possible_output_ty(&self, input: Intern<ResolvedTy>) -> Intern<ResolvedTy> {
+        match self {
+            hir::UnaryOp::Neg => match *input {
+                ResolvedTy::UInt(bit_width) => ResolvedTy::IInt(bit_width).into(),
+                _ => input,
+            },
+            hir::UnaryOp::Pos | hir::UnaryOp::Not => input,
+        }
+    }
+}
+
+pub(crate) trait TypedOp {
+    fn can_perform(&self, ty: &ResolvedTy) -> bool;
+
+    fn default_ty(&self) -> ResolvedTy;
+}
+
+impl TypedOp for hir::BinaryOp {
     fn can_perform(&self, found: &ResolvedTy) -> bool {
         let expected: &[ResolvedTy] = match self {
             hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
@@ -632,7 +660,7 @@ impl TypedBinaryOp for hir::BinaryOp {
             | hir::BinaryOp::Le
             | hir::BinaryOp::Ge
             | hir::BinaryOp::Eq
-            | hir::BinaryOp::Ne => &[ResolvedTy::IInt(0)],
+            | hir::BinaryOp::Ne => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
             hir::BinaryOp::And | hir::BinaryOp::Or => &[ResolvedTy::Bool],
         };
 
@@ -654,6 +682,26 @@ impl TypedBinaryOp for hir::BinaryOp {
             | hir::BinaryOp::Eq
             | hir::BinaryOp::Ne => ResolvedTy::Bool,
             hir::BinaryOp::And | hir::BinaryOp::Or => ResolvedTy::Bool,
+        }
+    }
+}
+
+impl TypedOp for hir::UnaryOp {
+    fn can_perform(&self, found: &ResolvedTy) -> bool {
+        let expected: &[ResolvedTy] = match self {
+            hir::UnaryOp::Neg | hir::UnaryOp::Pos => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
+            hir::UnaryOp::Not => &[ResolvedTy::Bool],
+        };
+
+        expected
+            .iter()
+            .any(|expected| found.has_semantics_of(expected))
+    }
+
+    fn default_ty(&self) -> ResolvedTy {
+        match self {
+            hir::UnaryOp::Neg | hir::UnaryOp::Pos => ResolvedTy::IInt(0),
+            hir::UnaryOp::Not => ResolvedTy::Bool,
         }
     }
 }

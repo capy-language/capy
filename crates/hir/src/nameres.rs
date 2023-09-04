@@ -16,6 +16,17 @@ impl Path {
             Path::OtherModule(fqn) => fqn.to_string(project_root, interner),
         }
     }
+
+    pub fn to_naive_string(&self, interner: &Interner) -> String {
+        match self {
+            Path::ThisModule(name) => interner.lookup(name.0).to_string(),
+            Path::OtherModule(fqn) => format!(
+                r#"{}::{}"#,
+                interner.lookup(fqn.module.0),
+                interner.lookup(fqn.name.0),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

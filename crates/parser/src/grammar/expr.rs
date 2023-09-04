@@ -45,24 +45,25 @@ fn parse_expr_bp(
     let mut lhs = parse_lhs(p, recovery_set, expected_syntax_name)?;
 
     loop {
-        let (left_bp, right_bp) = if p.at(TokenKind::Plus) || p.at(TokenKind::Hyphen) {
+        let (left_bp, right_bp) = if p.at(TokenKind::DoublePipe) {
             (1, 2)
-        } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) || p.at(TokenKind::Percent) {
-            (3, 4)
-        } else if p.at(TokenKind::DoubleEquals) || p.at(TokenKind::BangEquals) {
-            (5, 6)
-        } else if p.at(TokenKind::Less)
-            || p.at(TokenKind::LessEquals)
-            || p.at(TokenKind::Greater)
-            || p.at(TokenKind::GreaterEquals)
-        {
-            (7, 8)
-        } else if p.at(TokenKind::DoublePipe) {
-            (9, 10)
         } else if p.at(TokenKind::DoubleAnd) {
-            (11, 12) // make sure parse_prefix_expr has a higher binding power than this
+            (3, 4)
+        } else if p.at_set(TokenSet::new([
+            TokenKind::Less,
+            TokenKind::LessEquals,
+            TokenKind::Greater,
+            TokenKind::GreaterEquals,
+            TokenKind::DoubleEquals,
+            TokenKind::BangEquals,
+        ])) {
+            (5, 6)
+        } else if p.at(TokenKind::Plus) || p.at(TokenKind::Hyphen) {
+            (7, 8)
+        } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) || p.at(TokenKind::Percent) {
+            (9, 10)
         } else {
-            break;
+            break; // make sure parse_prefix_expr has a higher binding power than 10
         };
 
         if left_bp < minimum_bp {
@@ -104,6 +105,8 @@ fn parse_lhs(
         parse_distinct(p, recovery_set)
     } else if p.at(TokenKind::Import) {
         parse_import(p)
+    } else if p.at(TokenKind::Comptime) {
+        parse_comptime(p, recovery_set)
     } else if p.at(TokenKind::Struct) {
         parse_struct_def(p, recovery_set)
     } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) || p.at(TokenKind::Bang) {
@@ -303,7 +306,7 @@ fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker 
     let m = p.start();
 
     let right_bp = if plus || minus || bang {
-        13
+        11
     } else {
         unreachable!()
     };
@@ -557,6 +560,22 @@ fn parse_loop(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     }
 
     m.complete(p, NodeKind::WhileExpr)
+}
+
+fn parse_comptime(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    assert!(p.at(TokenKind::Comptime));
+
+    let m = p.start();
+    p.bump();
+
+    if !p.at(TokenKind::LBrace) {
+        let _guard = p.expected_syntax_name("comptime block");
+        p.error_with_no_skip();
+    } else {
+        parse_block(p, recovery_set);
+    }
+
+    m.complete(p, NodeKind::ComptimeExpr)
 }
 
 fn parse_block(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {

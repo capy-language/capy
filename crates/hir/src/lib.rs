@@ -3,6 +3,8 @@ mod index;
 mod nameres;
 mod world_index;
 
+use std::path::Component;
+
 use ast::{AstNode, AstToken};
 pub use body::*;
 pub use index::*;
@@ -25,7 +27,10 @@ impl FileName {
         let file_name = interner.lookup(self.0);
         let relative_path = pathdiff::diff_paths(file_name, project_root).unwrap();
 
-        let components = relative_path.components().collect::<Vec<_>>();
+        let components = relative_path
+            .components()
+            .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
+            .collect::<Vec<_>>();
         for (idx, component) in components.iter().enumerate() {
             let component = component.as_os_str().to_string_lossy();
 
@@ -226,7 +231,9 @@ impl TyWithRange {
                             }
                         }
                     }
-                    Some(_) => return Err((TyParseError::ArraySizeNotConst, brackets.range(tree))),
+                    Some(other) => {
+                        return Err((TyParseError::ArraySizeNotConst, other.range(tree)))
+                    }
                     None => {
                         return Err((TyParseError::ArrayMissingSize, brackets.range(tree)));
                     }
@@ -485,12 +492,7 @@ impl TyWithRange {
         })
     }
 
-    pub fn display(
-        &self,
-        twr_arena: &Arena<TyWithRange>,
-        project_root: &std::path::Path,
-        interner: &Interner,
-    ) -> String {
+    pub fn display(&self, twr_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
         match self {
             Self::Unknown { .. } => "?".to_string(),
             Self::IInt { bit_width, .. } => {
@@ -513,31 +515,28 @@ impl TyWithRange {
             Self::Array { size, sub_ty, .. } => {
                 format!(
                     "[{size}]{}",
-                    twr_arena[*sub_ty].display(twr_arena, project_root, interner)
+                    twr_arena[*sub_ty].display(twr_arena, interner)
                 )
             }
             Self::Pointer { sub_ty, .. } => {
-                format!(
-                    "^{}",
-                    twr_arena[*sub_ty].display(twr_arena, project_root, interner)
-                )
+                format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
             }
             Self::Type { .. } => "type".to_string(),
             Self::Distinct { uid, ty, .. } => {
                 format!(
                     "distinct'{} {}",
                     uid,
-                    twr_arena[*ty].display(twr_arena, project_root, interner)
+                    twr_arena[*ty].display(twr_arena, interner)
                 )
             }
-            Self::Named { path } => path.path().to_string(project_root, interner),
+            Self::Named { path } => path.path().to_naive_string(interner),
             Self::Function {
                 params, return_ty, ..
             } => {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&twr_arena[*param].display(twr_arena, project_root, interner));
+                    res.push_str(&twr_arena[*param].display(twr_arena, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
@@ -545,7 +544,7 @@ impl TyWithRange {
                 }
                 res.push_str(") -> ");
 
-                res.push_str(&twr_arena[*return_ty].display(twr_arena, project_root, interner));
+                res.push_str(&twr_arena[*return_ty].display(twr_arena, interner));
 
                 res
             }
@@ -558,7 +557,7 @@ impl TyWithRange {
                         res.push_str(": ");
                     }
 
-                    res.push_str(&twr_arena[*ty].display(twr_arena, project_root, interner));
+                    res.push_str(&twr_arena[*ty].display(twr_arena, interner));
 
                     if idx != fields.len() - 1 {
                         res.push_str(", ");

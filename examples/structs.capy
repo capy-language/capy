@@ -1,3 +1,5 @@
+libc :: import "std/libc.capy";
+
 Person :: struct {
     name: string,
     age: i32
@@ -31,14 +33,14 @@ main :: () {
 
     my_company.employees[0].age = 3;
 
-    puts("people:");
+    libc.puts("people:");
     idx := 0;
     while idx < 3 {
         print_person_by_ref(^my_company.employees[idx]);
         idx = idx + 1;
     }
 
-    puts("\nsome_guy:");
+    libc.puts("\nsome_guy:");
     print_person_by_value(some_guy);
 }
 
@@ -55,5 +57,4 @@ print_person_by_ref :: (p: ^Person) {
     printf("%s is %i years old\n", p^.name, p^.age);
 }
 
-puts :: (s: string) extern;
 printf :: (s: string, name: string, age: i32) extern;

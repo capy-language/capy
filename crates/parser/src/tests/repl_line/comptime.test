@@ -1,0 +1,27 @@
+comptime {
+    foo := 5;
+    foo    
+}
+===
+Root@0..38
+  ExprStmt@0..38
+    ComptimeExpr@0..38
+      Comptime@0..8 "comptime"
+      Whitespace@8..9 " "
+      Block@9..38
+        LBrace@9..10 "{"
+        Whitespace@10..15 "\n    "
+        VarDef@15..23
+          Ident@15..18 "foo"
+          Whitespace@18..19 " "
+          Colon@19..20 ":"
+          Equals@20..21 "="
+          Whitespace@21..22 " "
+          IntLiteral@22..23
+            Int@22..23 "5"
+        Semicolon@23..24 ";"
+        Whitespace@24..29 "\n    "
+        VarRef@29..32
+          Ident@29..32 "foo"
+        Whitespace@32..37 "    \n"
+        RBrace@37..38 "}"

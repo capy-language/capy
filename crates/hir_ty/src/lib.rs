@@ -75,6 +75,20 @@ impl Signature {
             Signature::Global(signature) => Some(signature),
         }
     }
+
+    pub fn into_function(self) -> Option<FunctionSignature> {
+        match self {
+            Signature::Function(signature) => Some(signature),
+            Signature::Global(_) => None,
+        }
+    }
+
+    pub fn into_global(self) -> Option<GlobalSignature> {
+        match self {
+            Signature::Function { .. } => None,
+            Signature::Global(signature) => Some(signature),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -113,10 +127,14 @@ pub enum TyDiagnosticKind {
         from: Intern<ResolvedTy>,
         to: Intern<ResolvedTy>,
     },
-    OpMismatch {
+    BinaryOpMismatch {
         op: hir::BinaryOp,
         first: Intern<ResolvedTy>,
         second: Intern<ResolvedTy>,
+    },
+    UnaryOpMismatch {
+        op: hir::UnaryOp,
+        ty: Intern<ResolvedTy>,
     },
     IfMismatch {
         found: Intern<ResolvedTy>,
@@ -169,6 +187,9 @@ pub enum TyDiagnosticKind {
         field: Key,
         expected_ty: Intern<ResolvedTy>,
     },
+    ComptimePointer,
+    ComptimeType,
+    GlobalNotConst,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -245,8 +266,7 @@ impl<'a> InferenceCtx<'a> {
 
                 #[allow(clippy::map_entry)]
                 if !self.signatures.contains_key(&fqn) {
-                    let global_sig = self.generate_global_signature(global, fqn);
-                    self.signatures.insert(fqn, global_sig);
+                    self.get_global_signature(global, fqn);
                 }
             }
 
@@ -255,8 +275,7 @@ impl<'a> InferenceCtx<'a> {
 
                 #[allow(clippy::map_entry)]
                 if !self.signatures.contains_key(&fqn) {
-                    let fn_sig = self.get_function_signature(function, fqn);
-                    self.signatures.insert(fqn, fn_sig);
+                    self.get_function_signature(function, fqn);
                 }
             }
         }
@@ -272,24 +291,11 @@ impl<'a> InferenceCtx<'a> {
 
     /// constructs the signature of a global only once, even though it might have many uses.
     /// saves much unneeded work
-    fn singleton_global_signature(
-        &mut self,
-        global: &hir::Global,
-        fqn: hir::Fqn,
-    ) -> GlobalSignature {
+    fn get_global_signature(&mut self, global: &hir::Global, fqn: hir::Fqn) -> GlobalSignature {
         if let Some(sig) = self.signatures.get(&fqn) {
             return sig.as_global().unwrap().clone();
         }
 
-        let sig = self.generate_global_signature(global, fqn);
-        self.signatures.insert(fqn, sig);
-
-        self.signatures[&fqn].as_global().unwrap().clone()
-    }
-
-    /// newly constructs the signature of a global, possibly throwing diagnostics.
-    /// please use `singleton_global_signature` instead
-    fn generate_global_signature(&mut self, global: &hir::Global, fqn: hir::Fqn) -> Signature {
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
         // if the global has a type annotation (my_global : string : "hello"),
@@ -303,8 +309,11 @@ impl<'a> InferenceCtx<'a> {
                     }),
                 );
 
-                let ty =
-                    self.finish_body_unknown(self.bodies_map[&fqn.module].global(fqn.name), None);
+                let ty = self.finish_body_unknown(
+                    self.bodies_map[&fqn.module].global(fqn.name),
+                    None,
+                    true,
+                );
 
                 Signature::Global(GlobalSignature { ty })
             }
@@ -319,15 +328,18 @@ impl<'a> InferenceCtx<'a> {
                     self.bodies_map[&fqn.module].global(fqn.name),
                     None,
                     sig.as_global().unwrap().ty,
+                    true,
                 );
 
                 sig
             }
         };
 
+        self.signatures.insert(fqn, sig.clone());
+
         self.current_module = old_module;
 
-        sig
+        sig.into_global().unwrap()
     }
 
     /// could potentially return a non-function signature depending on the function's type annotation
@@ -363,6 +375,7 @@ impl<'a> InferenceCtx<'a> {
                         self.bodies_map[&fqn.module].function_body(fqn.name),
                         Some(param_tys),
                         return_ty,
+                        false,
                     );
                 }
 
@@ -402,6 +415,7 @@ impl<'a> InferenceCtx<'a> {
                         self.bodies_map[&fqn.module].function_body(fqn.name),
                         Some(param_tys),
                         return_ty,
+                        false,
                     );
                 }
 
@@ -430,6 +444,7 @@ impl<'a> InferenceCtx<'a> {
                         self.bodies_map[&fqn.module].function_body(fqn.name),
                         Some(param_tys),
                         return_ty,
+                        false,
                     );
                 }
 
@@ -444,10 +459,7 @@ impl<'a> InferenceCtx<'a> {
 
     /// newly constructs the signature of a function, possibly throwing diagnostics.
     /// please use `singleton_fn_signature` instead
-    fn generate_unnamed_function_signature(
-        &mut self,
-        lambda: Idx<hir::Lambda>,
-    ) -> FunctionSignature {
+    fn generate_lambda_signature(&mut self, lambda: Idx<hir::Lambda>) -> FunctionSignature {
         let hir::Lambda { function, body } =
             &self.bodies_map[&self.current_module.unwrap()][lambda];
 
@@ -472,7 +484,7 @@ impl<'a> InferenceCtx<'a> {
             .insert(lambda, sig.clone());
 
         if !function.is_extern {
-            self.finish_body_known(*body, Some(sig.param_tys.clone()), sig.return_ty);
+            self.finish_body_known(*body, Some(sig.param_tys.clone()), sig.return_ty, false);
         }
 
         sig
@@ -498,7 +510,7 @@ impl<'a> InferenceCtx<'a> {
         match self.world_index.get_definition(fqn) {
             Ok(definition) => match definition {
                 hir::Definition::Global(global) => {
-                    let global_ty = self.singleton_global_signature(global, fqn).ty;
+                    let global_ty = self.get_global_signature(global, fqn).ty;
 
                     if *global_ty == ResolvedTy::Unknown {
                         return ResolvedTy::Unknown.into();
@@ -768,10 +780,12 @@ impl<'a> InferenceCtx<'a> {
 
 impl InferenceResult {
     fn shrink_to_fit(&mut self) {
-        let Self { signatures, .. } = self;
+        let Self {
+            signatures,
+            modules,
+        } = self;
         signatures.shrink_to_fit();
-        // expr_types.shrink_to_fit();
-        // local_types.shrink_to_fit();
+        modules.shrink_to_fit();
     }
 }
 
@@ -1277,7 +1291,7 @@ mod tests {
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::UInt(16).into(),
                         second: ResolvedTy::IInt(0).into(),
@@ -2059,7 +2073,7 @@ mod tests {
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::String.into(),
                         second: ResolvedTy::UInt(0).into(),
@@ -2120,7 +2134,7 @@ mod tests {
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Lt,
                         first: ResolvedTy::Bool.into(),
                         second: ResolvedTy::UInt(0).into(),
@@ -2147,7 +2161,7 @@ mod tests {
             "#]],
             |_| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::And,
                         first: ResolvedTy::String.into(),
                         second: ResolvedTy::String.into(),
@@ -2626,7 +2640,7 @@ mod tests {
             "#]],
             |i| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
@@ -2677,7 +2691,7 @@ mod tests {
             "#]],
             |i| {
                 [(
-                    TyDiagnosticKind::OpMismatch {
+                    TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
                         first: ResolvedTy::Distinct {
                             fqn: Some(hir::Fqn {
@@ -2837,22 +2851,26 @@ mod tests {
     fn recursive_definition() {
         check(
             r#"
-                foo :: bar;
+                foo :: comptime { bar };
 
-                bar :: foo;
+                bar :: comptime { foo };
             "#,
             expect![[r#"
                 main::bar : <unknown>
                 main::foo : <unknown>
                 0 : <unknown>
                 1 : <unknown>
+                2 : <unknown>
+                3 : <unknown>
+                4 : <unknown>
+                5 : <unknown>
             "#]],
             |interner| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
                         path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
                     },
-                    53..56,
+                    77..80,
                     None,
                 )]
             },
@@ -3680,9 +3698,9 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar : () -> void
-                main::foo : {uint}
-                0 : {uint}
-                1 : {uint}
+                main::foo : i32
+                0 : i32
+                1 : i32
                 2 : {uint}
                 3 : void
             "#]],
@@ -3692,84 +3710,6 @@ mod tests {
                     76..83,
                     Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..25)),
                 )]
-            },
-        );
-    }
-
-    #[test]
-    fn assign_to_global_mut_ref_literal() {
-        check(
-            r#"
-                foo :: ^mut 5;
-
-                bar :: () {
-                    foo^ = 5;
-                }
-            "#,
-            expect![[r#"
-                main::bar : () -> void
-                main::foo : ^mut {uint}
-                0 : {uint}
-                1 : ^mut {uint}
-                2 : ^mut {uint}
-                3 : {uint}
-                4 : {uint}
-                5 : void
-            "#]],
-            |_| {
-                [
-                    (
-                        TyDiagnosticKind::MutableRefToImmutableData,
-                        24..30,
-                        Some((TyDiagnosticHelpKind::FoundToBeImmutable, 29..30)),
-                    ),
-                    (
-                        TyDiagnosticKind::CannotMutate,
-                        81..89,
-                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..30)),
-                    ),
-                ]
-            },
-        );
-    }
-
-    #[test]
-    fn assign_to_global_mut_ref_other_global() {
-        check(
-            r#"
-                foo :: 5;
-
-                bar :: ^mut foo;
-
-                baz :: () {
-                    bar^ = 5;
-                }
-            "#,
-            expect![[r#"
-                main::bar : ^mut {uint}
-                main::baz : () -> void
-                main::foo : {uint}
-                0 : {uint}
-                1 : {uint}
-                2 : ^mut {uint}
-                3 : ^mut {uint}
-                4 : {uint}
-                5 : {uint}
-                6 : void
-            "#]],
-            |_| {
-                [
-                    (
-                        TyDiagnosticKind::MutableRefToImmutableData,
-                        51..59,
-                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..25)),
-                    ),
-                    (
-                        TyDiagnosticKind::CannotMutate,
-                        110..118,
-                        Some((TyDiagnosticHelpKind::ImmutableGlobal, 44..59)),
-                    ),
-                ]
             },
         );
     }
@@ -3790,15 +3730,15 @@ mod tests {
             expect![[r#"
                 main::func : () -> void
                 main::other_file : module other_file
-                other_file::foo : {uint}
+                other_file::foo : i32
                 main:
                   0 : module other_file
                   1 : module other_file
-                  2 : {uint}
+                  2 : i32
                   3 : {uint}
                   4 : void
                 other_file:
-                  0 : {uint}
+                  0 : i32
             "#]],
             |_| {
                 [(
@@ -4243,6 +4183,38 @@ mod tests {
                 [(
                     TyDiagnosticKind::LocalTyIsMutable,
                     106..115,
+                    Some((TyDiagnosticHelpKind::MutableVariable, 49..74)),
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn local_ty_mut_through_binding() {
+        check(
+            r#"
+                foo :: () {
+                    imaginary := distinct i32;
+
+                    binding :: imaginary;
+
+                    my_num : binding = 5;
+                };
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : type
+                3 : type
+                5 : {uint}
+                6 : void
+                l0 : type
+                l1 : type
+                l2 : {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::LocalTyIsMutable,
+                    108..117,
                     Some((TyDiagnosticHelpKind::MutableVariable, 49..74)),
                 )]
             },
@@ -4722,6 +4694,154 @@ mod tests {
                 l1 : [3]distinct'0 i32
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn lambda_ty_annotation() {
+        check(
+            r#"
+                bar :: (s: string) {
+                    // do stuff
+                } 
+
+                foo :: () {
+                    a : (s: string) -> void = (s: string) {};
+
+                    a = bar;
+
+                    a("Hello!");
+                }
+            "#,
+            expect![[r#"
+                main::bar : (string) -> void
+                main::foo : () -> void
+                0 : void
+                2 : void
+                3 : (string) -> void
+                4 : (string) -> void
+                5 : (string) -> void
+                6 : (string) -> void
+                7 : string
+                8 : void
+                9 : void
+                l0 : (string) -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn lambda_with_body_ty_annotation() {
+        check(
+            r#"
+                foo :: () {
+                    a : (s: string) -> void {} = (s: string) {};
+
+                    a("Hello!");
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : void
+                1 : (string) -> void
+                2 : void
+                3 : (string) -> void
+                4 : (string) -> void
+                5 : string
+                6 : void
+                7 : void
+                l0 : (string) -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Type.into(),
+                        found: ResolvedTy::Function {
+                            params: vec![ResolvedTy::String.into()],
+                            return_ty: ResolvedTy::Void.into(),
+                        }
+                        .into(),
+                    },
+                    53..75,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn comptime() {
+        check(
+            r#"
+                foo :: () {
+                    foo : string = comptime {
+                        2 * 5
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : void
+                l0 : string
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Intern::new(ResolvedTy::String),
+                        found: Intern::new(ResolvedTy::UInt(0)),
+                    },
+                    64..126,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn comptime_pointer() {
+        check(
+            r#"
+                foo :: () {
+                    comptime {
+                        x := 5;
+
+                        ^x
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                2 : {uint}
+                3 : ^{uint}
+                4 : ^{uint}
+                5 : <unknown>
+                6 : void
+                l0 : {uint}
+            "#]],
+            |_| [(TyDiagnosticKind::ComptimePointer, 49..141, None)],
+        );
+    }
+
+    #[test]
+    fn non_const_global() {
+        check(
+            r#"
+                foo :: 2 + 2;
+            "#,
+            expect![[r#"
+                main::foo : i32
+                0 : i32
+                1 : i32
+                2 : i32
+            "#]],
+            |_| [(TyDiagnosticKind::GlobalNotConst, 24..29, None)],
         );
     }
 }

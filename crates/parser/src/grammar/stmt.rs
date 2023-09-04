@@ -48,7 +48,7 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     } else {
         let requires_semicolon = !matches!(
             expr_cm.kind(),
-            NodeKind::IfExpr | NodeKind::WhileExpr | NodeKind::Block
+            NodeKind::IfExpr | NodeKind::WhileExpr | NodeKind::ComptimeExpr | NodeKind::Block
         );
 
         (Some(m.complete(p, NodeKind::ExprStmt)), requires_semicolon)

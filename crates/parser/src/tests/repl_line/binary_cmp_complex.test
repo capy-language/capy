@@ -1,0 +1,48 @@
+5 * 2 == 10 || 5 <= 10 && 6 / 2 == 3
+===
+Root@0..36
+  ExprStmt@0..36
+    BinaryExpr@0..36
+      BinaryExpr@0..11
+        BinaryExpr@0..5
+          IntLiteral@0..1
+            Int@0..1 "5"
+          Whitespace@1..2 " "
+          Asterisk@2..3 "*"
+          Whitespace@3..4 " "
+          IntLiteral@4..5
+            Int@4..5 "2"
+        Whitespace@5..6 " "
+        DoubleEquals@6..8 "=="
+        Whitespace@8..9 " "
+        IntLiteral@9..11
+          Int@9..11 "10"
+      Whitespace@11..12 " "
+      DoublePipe@12..14 "||"
+      Whitespace@14..15 " "
+      BinaryExpr@15..36
+        BinaryExpr@15..22
+          IntLiteral@15..16
+            Int@15..16 "5"
+          Whitespace@16..17 " "
+          LessEquals@17..19 "<="
+          Whitespace@19..20 " "
+          IntLiteral@20..22
+            Int@20..22 "10"
+        Whitespace@22..23 " "
+        DoubleAnd@23..25 "&&"
+        Whitespace@25..26 " "
+        BinaryExpr@26..36
+          BinaryExpr@26..31
+            IntLiteral@26..27
+              Int@26..27 "6"
+            Whitespace@27..28 " "
+            Slash@28..29 "/"
+            Whitespace@29..30 " "
+            IntLiteral@30..31
+              Int@30..31 "2"
+          Whitespace@31..32 " "
+          DoubleEquals@32..34 "=="
+          Whitespace@34..35 " "
+          IntLiteral@35..36
+            Int@35..36 "3"

@@ -1,0 +1,33 @@
+{
+    comptime {
+
+    }
+
+    comptime {
+
+    }
+}
+===
+Root@0..48
+  ExprStmt@0..48
+    Block@0..48
+      LBrace@0..1 "{"
+      Whitespace@1..6 "\n    "
+      ExprStmt@6..23
+        ComptimeExpr@6..23
+          Comptime@6..14 "comptime"
+          Whitespace@14..15 " "
+          Block@15..23
+            LBrace@15..16 "{"
+            Whitespace@16..22 "\n\n    "
+            RBrace@22..23 "}"
+      Whitespace@23..29 "\n\n    "
+      ComptimeExpr@29..46
+        Comptime@29..37 "comptime"
+        Whitespace@37..38 " "
+        Block@38..46
+          LBrace@38..39 "{"
+          Whitespace@39..45 "\n\n    "
+          RBrace@45..46 "}"
+      Whitespace@46..47 "\n"
+      RBrace@47..48 "}"

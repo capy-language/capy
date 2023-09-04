@@ -1,0 +1,45 @@
+
+libc :: import "std/libc.capy";
+
+// comptime blocks are JIT compiled and the bytes they return are baked into the data segment of the program
+my_global :: comptime {
+    libc.puts("Calculating global value...");
+
+    x := 5;
+
+    x * 2
+};
+
+main :: () {
+    libc.puts("Hello at runtime!");
+
+    printf("that global was equal to %i\n", my_global);
+
+    powers_of_two := comptime {
+        libc.puts("Doing heavy calculation...");
+
+        math :: import "std/math.capy";
+
+        array := [6] i32 { 0, 0, 0, 0, 0, 0 };
+
+        idx := 0;
+        while idx < 6 {
+            array[idx] = math.pow(2, idx as i32);
+            idx = idx + 1;
+        }
+
+        libc.puts("Finished heavy calculation :)");
+
+        array
+    };
+
+    printf("2^0 = %i\n", powers_of_two[0]);
+    printf("2^1 = %i\n", powers_of_two[1]);
+    printf("2^2 = %i\n", powers_of_two[2]);
+    printf("2^3 = %i\n", powers_of_two[3]);
+    printf("2^4 = %i\n", powers_of_two[4]);
+    printf("2^5 = %i\n", powers_of_two[5]);
+}
+
+// since printf isn't techincally supposed to be here, it cannot be called from comptime blocks
+printf :: (s: string, n: i32) extern;

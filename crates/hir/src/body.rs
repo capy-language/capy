@@ -1,4 +1,4 @@
-use std::{env, vec};
+use std::{env, mem, vec};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
@@ -23,6 +23,7 @@ pub struct Bodies {
     function_bodies: FxHashMap<Name, Idx<Expr>>,
     globals: FxHashMap<Name, Idx<Expr>>,
     lambdas: Arena<Lambda>,
+    comptimes: Arena<Comptime>,
     imports: FxHashSet<FileName>,
 }
 
@@ -90,6 +91,7 @@ pub enum Expr {
         args: Vec<Idx<Expr>>,
     },
     Lambda(Idx<Lambda>),
+    Comptime(Idx<Comptime>),
     /// either a primitive type (such as `i32`, `bool`, etc.), or an array type,
     /// or a pointer to a primitive type, or a distinct type
     PrimitiveTy {
@@ -105,6 +107,11 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct Lambda {
     pub function: Function,
+    pub body: Idx<Expr>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Comptime {
     pub body: Idx<Expr>,
 }
 
@@ -162,7 +169,7 @@ pub enum BinaryOp {
     Or,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     // math operations
     Pos,
@@ -181,7 +188,6 @@ pub struct LoweringDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
-    OutOfRangeFloatLiteral,
     UndefinedRef { name: Key },
     NonGlobalExtern,
     ArraySizeMismatch { found: u32, expected: u32 },
@@ -273,6 +279,7 @@ impl<'a> Ctx<'a> {
                 function_bodies: FxHashMap::default(),
                 globals: FxHashMap::default(),
                 lambdas: Arena::new(),
+                comptimes: Arena::new(),
                 imports: FxHashSet::default(),
             },
             file_name,
@@ -365,11 +372,36 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_lambda(&mut self, lambda: ast::Lambda) -> Expr {
+        if lambda.body(self.tree).is_none() && lambda.r#extern(self.tree).is_none() {
+            match TyWithRange::parse(
+                Some(ast::Expr::Lambda(lambda)),
+                self.uid_gen,
+                self.twr_arena,
+                self.interner,
+                self.tree,
+                false,
+            ) {
+                Ok(ty) => {
+                    return Expr::PrimitiveTy {
+                        ty: self.twr_arena.alloc(ty),
+                    }
+                }
+                Err((why, range)) => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::TyParseError(why),
+                        range,
+                    });
+
+                    return Expr::Missing;
+                }
+            }
+        }
+
+        let old_params = mem::take(&mut self.params);
+        let old_scopes = mem::take(&mut self.scopes);
+
         let mut params = Vec::new();
         let mut param_type_ranges = Vec::new();
-
-        let old_params = self.params.clone();
-        self.params.clear();
 
         if let Some(param_list) = lambda.param_list(self.tree) {
             for (idx, param) in param_list.params(self.tree).enumerate() {
@@ -401,7 +433,9 @@ impl<'a> Ctx<'a> {
         }
 
         let body = self.lower_expr(lambda.body(self.tree));
+
         self.params = old_params;
+        self.scopes = old_scopes;
 
         let return_ty = lambda
             .return_ty(self.tree)
@@ -418,6 +452,18 @@ impl<'a> Ctx<'a> {
             },
             body,
         }))
+    }
+
+    fn lower_comptime(&mut self, comptime_expr: ast::ComptimeExpr) -> Expr {
+        let old_params = mem::take(&mut self.params);
+        let old_scopes = mem::take(&mut self.scopes);
+
+        let body = self.lower_expr(comptime_expr.body(self.tree));
+
+        self.params = old_params;
+        self.scopes = old_scopes;
+
+        Expr::Comptime(self.bodies.comptimes.alloc(Comptime { body }))
     }
 
     fn lower_stmt(&mut self, stmt: ast::Stmt) -> Stmt {
@@ -504,6 +550,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
             ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
             ast::Expr::Import(import_expr) => self.lower_import(import_expr),
+            ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
         }
     }
 
@@ -767,7 +814,16 @@ impl<'a> Ctx<'a> {
         let size = array_expr
             .size(self.tree)
             .and_then(|size| size.size(self.tree))
-            .map(|size| self.lower_expr_raw(size))
+            .and_then(|size| match size {
+                ast::Expr::IntLiteral(_) => Some(self.lower_expr_raw(size)),
+                other => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
+                        range: other.range(self.tree),
+                    });
+                    None
+                }
+            })
             .and_then(|size| match size {
                 Expr::IntLiteral(size) => {
                     if size as usize != items.len() {
@@ -781,13 +837,7 @@ impl<'a> Ctx<'a> {
                     }
                     Some(size)
                 }
-                _ => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
-                        range: array_expr.size(self.tree).unwrap().range(self.tree),
-                    });
-                    None
-                }
+                _ => unreachable!(), // this was already filtered out
             });
 
         Expr::Array { size, items, ty }
@@ -948,18 +998,10 @@ impl<'a> Ctx<'a> {
     fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
         let value = float_literal
             .value(self.tree)
-            .and_then(|int| int.text(self.tree).parse().ok());
+            .and_then(|int| int.text(self.tree).parse().ok())
+            .unwrap();
 
-        if let Some(value) = value {
-            return Expr::FloatLiteral(value);
-        }
-
-        self.diagnostics.push(LoweringDiagnostic {
-            kind: LoweringDiagnosticKind::OutOfRangeFloatLiteral,
-            range: float_literal.range(self.tree),
-        });
-
-        Expr::Missing
+        Expr::FloatLiteral(value)
     }
 
     fn lower_bool_literal(&mut self, bool_literal: ast::BoolLiteral) -> Expr {
@@ -1059,6 +1101,10 @@ impl Bodies {
         self.expr_ranges[expr]
     }
 
+    pub fn comptimes(&self) -> impl Iterator<Item = Idx<Comptime>> + '_ {
+        self.comptimes.iter().map(|(idx, _)| idx)
+    }
+
     pub fn imports(&self) -> &FxHashSet<FileName> {
         &self.imports
     }
@@ -1073,6 +1119,7 @@ impl Bodies {
             expr_ranges: _,
             globals,
             lambdas,
+            comptimes,
             imports,
         } = self;
 
@@ -1083,6 +1130,7 @@ impl Bodies {
         assigns.shrink_to_fit();
         globals.shrink_to_fit();
         lambdas.shrink_to_fit();
+        comptimes.shrink_to_fit();
         imports.shrink_to_fit();
     }
 }
@@ -1108,6 +1156,14 @@ impl std::ops::Index<Idx<Lambda>> for Bodies {
 
     fn index(&self, id: Idx<Lambda>) -> &Self::Output {
         &self.lambdas[id]
+    }
+}
+
+impl std::ops::Index<Idx<Comptime>> for Bodies {
+    type Output = Comptime;
+
+    fn index(&self, id: Idx<Comptime>) -> &Self::Output {
+        &self.comptimes[id]
     }
 }
 
@@ -1143,7 +1199,7 @@ impl Bodies {
 
         for (name, expr_id) in globals {
             s.push_str(&format!(
-                "\n{} := ",
+                "{} := ",
                 Fqn {
                     module,
                     name: *name,
@@ -1160,7 +1216,7 @@ impl Bodies {
                 interner,
                 0,
             );
-            s.push(';');
+            s.push_str(";\n");
         }
 
         let mut function_bodies: Vec<_> = self.function_bodies.iter().collect();
@@ -1168,7 +1224,7 @@ impl Bodies {
 
         for (name, expr_id) in function_bodies {
             s.push_str(&format!(
-                "\n{} := () -> ",
+                "{} := () -> ",
                 Fqn {
                     module,
                     name: *name,
@@ -1185,10 +1241,10 @@ impl Bodies {
                 interner,
                 0,
             );
-            s.push(';');
+            s.push_str(";\n");
         }
 
-        return s.trim().to_string();
+        return s;
 
         #[allow(clippy::too_many_arguments)]
         fn write_expr(
@@ -1625,11 +1681,7 @@ impl Bodies {
                             s.push_str(": ");
                         }
 
-                        s.push_str(
-                            twr_arena[param.ty]
-                                .display(twr_arena, project_root, interner)
-                                .as_str(),
-                        );
+                        s.push_str(twr_arena[param.ty].display(twr_arena, interner).as_str());
 
                         if idx != function.params.len() - 1 {
                             s.push_str(", ");
@@ -1639,7 +1691,7 @@ impl Bodies {
 
                     s.push_str(
                         twr_arena[function.return_ty]
-                            .display(twr_arena, project_root, interner)
+                            .display(twr_arena, interner)
                             .as_str(),
                     );
 
@@ -1648,6 +1700,23 @@ impl Bodies {
                     write_expr(
                         s,
                         *body,
+                        show_idx,
+                        bodies,
+                        twr_arena,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
+                }
+
+                Expr::Comptime(comptime) => {
+                    let Comptime { body } = bodies.comptimes[*comptime];
+
+                    s.push_str("comptime ");
+
+                    write_expr(
+                        s,
+                        body,
                         show_idx,
                         bodies,
                         twr_arena,
@@ -1697,11 +1766,11 @@ impl Bodies {
                 }
 
                 Expr::PrimitiveTy { ty } => {
-                    s.push_str(&twr_arena[*ty].display(twr_arena, project_root, interner))
+                    s.push_str(&twr_arena[*ty].display(twr_arena, interner))
                 }
 
                 Expr::Import(file_name) => {
-                    s.push_str(&format!("import {:?}", interner.lookup(file_name.0)))
+                    s.push_str(&format!(r#"import "{}""#, interner.lookup(file_name.0)))
                 }
             }
 
@@ -1777,5 +1846,751 @@ impl Bodies {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use expect_test::{expect, Expect};
+
+    fn check<const N: usize>(
+        input: &str,
+        expect: Expect,
+        expected_diagnostics: impl Fn(
+            &mut Interner,
+        ) -> [(LoweringDiagnosticKind, std::ops::Range<u32>); N],
+    ) {
+        let mut interner = Interner::default();
+        let mut uid_gen = UIDGenerator::default();
+        let mut twr_arena = Arena::default();
+
+        let tokens = lexer::lex(input);
+        let tree = parser::parse_source_file(&tokens, input).into_syntax_tree();
+        let root = ast::Root::cast(tree.root(), &tree).unwrap();
+        let (index, _) = crate::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+
+        let (bodies, actual_diagnostics) = lower(
+            root,
+            &tree,
+            std::path::Path::new("main.capy"),
+            &index,
+            &mut uid_gen,
+            &mut twr_arena,
+            &mut interner,
+            true,
+        );
+
+        expect.assert_eq(&bodies.debug(
+            FileName(interner.intern("main.capy")),
+            &twr_arena,
+            std::path::Path::new(""),
+            &interner,
+            false,
+        ));
+
+        let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
+            .into_iter()
+            .map(|(kind, range)| LoweringDiagnostic {
+                kind,
+                range: TextRange::new(range.start.into(), range.end.into()),
+            })
+            .collect();
+
+        assert_eq!(expected_diagnostics, actual_diagnostics);
+    }
+
+    #[test]
+    fn empty() {
+        check("", expect![""], |_| [])
+    }
+
+    #[test]
+    fn function() {
+        check(
+            r#"
+                foo :: () {
+                    
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn binary() {
+        check(
+            r#"
+                foo :: () {
+                    1 + 1;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    1 + 1;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn global() {
+        check(
+            r#"
+                foo :: 5;
+
+                bar :: () {
+                    foo;
+                }
+            "#,
+            expect![[r#"
+                main::foo := 5;
+                main::bar := () -> {
+                    foo;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn local_var() {
+        check(
+            r#"
+                foo :: () {
+                    x := 5;
+
+                    x;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 5;
+                    l0;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn param() {
+        check(
+            r#"
+                foo :: (x: i32) {
+                    x;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    p0;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn import() {
+        check(
+            r#"
+                other_file :: import "other_file.capy";
+
+                foo :: () {
+                    other_file.global;
+                }
+            "#,
+            expect![[r#"
+                main::other_file := import "other_file.capy";
+                main::foo := () -> {
+                    other_file.global;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn import_non_dot_capy() {
+        check(
+            r#"
+                foo :: () {
+                    other_file :: import "other_file.cap";
+
+                    other_file.global;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := <missing>;
+                    l0.global;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::ImportMustEndInDotCapy, 70..86)],
+        )
+    }
+
+    #[test]
+    fn int_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 18446744073709551615;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 18446744073709551615;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn out_of_range_int_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 18446744073709551616;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..76)],
+        )
+    }
+
+    #[test]
+    fn float_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := .123;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 0.123;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn string_literal() {
+        check(
+            r#"
+                foo :: () {
+                    crab := "🦀";
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := "🦀";
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn string_literal_with_escapes() {
+        check(
+            r#"
+                foo :: () {
+                    crab := "\0\a\b\n\f\r\t\v\e\"\\";
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := "\0\u{7}\u{8}\n\u{c}\r\t\u{b}\u{1b}\"\\";
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn string_literal_with_invalid_escapes() {
+        check(
+            r#"
+                foo :: () {
+                    crab := "a\jb\🦀c";
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := "abc";
+                };
+            "#]],
+            |_| {
+                [
+                    (LoweringDiagnosticKind::InvalidEscape, 59..61),
+                    (LoweringDiagnosticKind::InvalidEscape, 62..67),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn nested_binary_expr() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    1 + 2 * 3 - 4 / 5
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> { 1 + 2 * 3 - 4 / 5 };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn multiple_local_defs() {
+        check(
+            r#"
+                foo :: () {
+                    a := 1;
+                    b := 2;
+                    c := 3;
+                    d := 4;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 1;
+                    l1 := 2;
+                    l2 := 3;
+                    l3 := 4;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn multiple_functions() {
+        check(
+            r#"
+                foo :: () {}
+                bar :: () {}
+                baz :: () {}
+                qux :: () {}
+            "#,
+            expect![[r#"
+                main::foo := () -> {};
+                main::bar := () -> {};
+                main::baz := () -> {};
+                main::qux := () -> {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn call_other_function() {
+        check(
+            r#"
+                foo :: () {
+                    bar()
+                }
+
+                bar :: () {
+                    foo()
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> { bar() };
+                main::bar := () -> { foo() };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn call_non_existent_function() {
+        check(
+            r#"
+                foo :: () {
+                    bar()
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> { <missing>() };
+            "#]],
+            |i| {
+                [(
+                    LoweringDiagnosticKind::UndefinedRef {
+                        name: i.intern("bar"),
+                    },
+                    49..52,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn recursion() {
+        check(
+            r#"
+                foo :: () {
+                    foo();
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    foo();
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn lambda() {
+        check(
+            r#"
+                foo :: () {
+                    bar := () {};
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := () -> void {};
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn lambda_dont_capture_scope() {
+        check(
+            r#"
+                foo :: (x: i32) {
+                    y := 5;
+
+                    bar := () -> i32 {
+                        x + y
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 5;
+                    l1 := () -> i32 { <missing> + <missing> };
+                };
+            "#]],
+            |i| {
+                [
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("x"),
+                        },
+                        127..128,
+                    ),
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("y"),
+                        },
+                        131..132,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn call_lambda() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        (x: i32, y: i32) -> i32 {
+                            x + y
+                        }
+                    } (1, 2)
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> { { (x: i32, y: i32) -> i32 { p0 + p1 } }(1, 2) };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn scoped_local() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        a := 5;
+                    }
+
+                    a
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    {
+                        l0 := 5;
+                    };
+                    <missing>
+                };
+            "#]],
+            |i| {
+                [(
+                    LoweringDiagnosticKind::UndefinedRef {
+                        name: i.intern("a"),
+                    },
+                    133..134,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn locals_take_precedence_over_functions() {
+        check(
+            r#"
+                bar :: () -> i32 { 0 };
+
+                foo :: () -> i32 {
+                    bar := 25;
+
+                    bar
+                }
+            "#,
+            expect![[r#"
+                main::bar := () -> { 0 };
+                main::foo := () -> {
+                    l0 := 25;
+                    l0
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn locals_take_precedence_over_params() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    foo := {
+                        bar := {
+                            baz := 9;
+                            baz * 10
+                        };
+                        bar - 1
+                    };
+                    foo + 3
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l2 := {
+                        l1 := {
+                            l0 := 9;
+                            l0 * 10
+                        };
+                        l1 - 1
+                    };
+                    l2 + 3
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn extern_lambda() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    puts := (s: string) extern;
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := (s: string) -> void <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 77..83)],
+        )
+    }
+
+    #[test]
+    fn array_with_inferred_size() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := []i32{ 4, 8, 15, 16, 23, 42 };
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn array_with_specific_size() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := [6]i32{ 4, 8, 15, 16, 23, 42 };
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn array_with_incorrect_size() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    my_array := [3] i32 { 4, 8, 15, 16, 23, 42 };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := [3]i32{ 4, 8, 15, 16, 23, 42 };
+                };
+            "#]],
+            |_| {
+                [(
+                    LoweringDiagnosticKind::ArraySizeMismatch {
+                        found: 6,
+                        expected: 3,
+                    },
+                    77..101,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn array_with_non_const_size() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    size := 6;
+
+                    my_array := [size] i32 { 4, 8, 15, 16, 23, 42 };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := 6;
+                    l1 := []i32{ 4, 8, 15, 16, 23, 42 };
+                };
+            "#]],
+            |_| {
+                [(
+                    LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
+                    102..106,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn comptime() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    num :: comptime {
+                        1 + 1
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := comptime { 1 + 1 };
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn comptime_dont_capture_scope() {
+        check(
+            r#"
+                main :: (x: i32) -> i32 {
+                    y := 5;
+
+                    num :: comptime {
+                        x + y
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::main := () -> {
+                    l0 := 5;
+                    l1 := comptime { <missing> + <missing> };
+                };
+            "#]],
+            |i| {
+                [
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("x"),
+                        },
+                        134..135,
+                    ),
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("y"),
+                        },
+                        138..139,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn comptime_globals() {
+        check(
+            r#"
+                foo :: 5;
+
+                main :: () -> i32 {
+                    num :: comptime {
+                        foo * 2
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo := 5;
+                main::main := () -> {
+                    l0 := comptime { foo * 2 };
+                };
+            "#]],
+            |_| [],
+        )
     }
 }

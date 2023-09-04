@@ -9,6 +9,7 @@ Mut = 'mut'
 Extern = 'extern'
 Struct = 'struct'
 Import = 'import'
+Comptime = 'comptime'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
 Float = /[0-9]*\.[0-9]+([eE][-+]?[0-9]+)?/
 Int = /[0-9]+/

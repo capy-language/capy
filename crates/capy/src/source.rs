@@ -38,9 +38,13 @@ impl SourceFile {
         world_index: Rc<RefCell<hir::WorldIndex>>,
         verbose: u8,
     ) -> SourceFile {
+        if verbose >= 1 {
+            println!("=== {} ===\n", file_name.display());
+        }
+
         let parse = parser::parse_source_file(&lexer::lex(&contents), &contents);
-        if verbose >= 3 {
-            println!("{:?}", parse);
+        if verbose >= 4 {
+            println!("{:?}\n", parse);
         }
 
         let tree = parse.syntax_tree();
@@ -57,15 +61,8 @@ impl SourceFile {
             &mut interner.borrow_mut(),
         );
 
-        if verbose >= 3 {
-            println!();
-            for name in index.definition_names() {
-                println!(
-                    "{} = {:?}",
-                    interner.borrow().lookup(name.0),
-                    index.get_definition(name)
-                );
-            }
+        if verbose >= 3 && !index.is_empty() {
+            println!("{}", index.debug(&twr_arena.borrow(), &interner.borrow()));
         }
 
         let mut res = Self {
@@ -107,7 +104,9 @@ impl SourceFile {
         res
     }
 
-    pub(crate) fn build_bodies(&mut self) -> FxHashSet<FileName> {
+    pub(crate) fn build_bodies(
+        &mut self,
+    ) -> (FxHashSet<FileName>, Vec<codegen::ComptimeToCompile>) {
         let tree = self.parse.syntax_tree();
 
         let (bodies, lowering_diagnostics) = hir::lower(
@@ -124,19 +123,30 @@ impl SourceFile {
         self.world_index
             .borrow_mut()
             .add_module(self.module, self.index.clone());
+
         if self.verbose >= 1 {
             let interner = self.interner.borrow();
             let debug = bodies.debug(
                 self.module,
                 &self.twr_arena.borrow(),
-                std::path::Path::new(""),
+                &std::env::current_dir().unwrap(),
                 &interner,
                 self.verbose >= 2,
             );
-            println!("{}", debug);
+            if !debug.is_empty() {
+                println!("{}", debug);
+            }
         }
 
         let imports = bodies.imports().clone();
+
+        let comptimes = bodies
+            .comptimes()
+            .map(|comptime| codegen::ComptimeToCompile {
+                module_name: self.module,
+                comptime,
+            })
+            .collect();
 
         self.bodies_map.borrow_mut().insert(self.module, bodies);
         self.diagnostics.extend(
@@ -146,7 +156,7 @@ impl SourceFile {
                 .map(diagnostics::Diagnostic::from_lowering),
         );
 
-        imports
+        (imports, comptimes)
     }
 
     pub(crate) fn has_fn_of_name(&self, name: Name) -> bool {
