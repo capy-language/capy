@@ -159,7 +159,7 @@ impl ToCompType for ResolvedTy {
             hir_ty::ResolvedTy::Function { .. } => CompType::Pointer(pointer_ty),
             hir_ty::ResolvedTy::Struct { .. } => CompType::Pointer(pointer_ty),
             hir_ty::ResolvedTy::Type => CompType::Void,
-            // todo: is this right?
+            // you should never be able to get an any value
             hir_ty::ResolvedTy::Any => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
             hir_ty::ResolvedTy::Module(_) => CompType::Void,

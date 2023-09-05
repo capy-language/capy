@@ -54,7 +54,7 @@ print_person_by_value :: (p: Person) {
 }
 
 print_person_by_ref :: (p: ^Person) {
-    printf("%s is %i years old\n", p^.name, p^.age);
+    printf("%s is %i years old\n", p.name, p.age);
 }
 
 printf :: (s: string, name: string, age: i32) extern;
