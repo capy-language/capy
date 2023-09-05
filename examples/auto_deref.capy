@@ -1,0 +1,35 @@
+libc :: import "std/libc.capy";
+
+Foo :: struct {
+    a: i32,
+    b: i32,
+};
+
+main :: () {
+    my_foo := Foo {
+        a: 4,
+        b: 8,
+    };
+
+    printf("my_foo.b   %i\n", my_foo.b);
+
+    ptr := ^^^^my_foo;
+
+    printf("ptr^^^^.b  %i\n", ptr^^^^.b);
+    printf("ptr^^^.b   %i\n", ptr^^^.b);
+    printf("ptr^^.b    %i\n", ptr^^.b);
+    printf("ptr^.b     %i\n", ptr^.b);
+    printf("ptr.b      %i\n", ptr.b);
+
+    libc.puts("  give:");
+
+    give(ptr^^);
+}
+
+give :: (ptr: ^^Foo) {
+    printf("ptr^^.b    %i\n", ptr^^.b);
+    printf("ptr^.b     %i\n", ptr^.b);
+    printf("ptr.b      %i\n", ptr.b);
+}
+
+printf :: (s: string, n: i32) extern;

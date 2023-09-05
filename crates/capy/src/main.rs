@@ -349,12 +349,12 @@ fn compile_file(
 
         println!(
             "{ansi_green}Finished{ansi_reset}   {} (JIT) in {:.2}s",
-            interner.lookup(main_module.0),
+            main_module.to_string(&project_root, &interner),
             compilation_start.elapsed().as_secs_f32(),
         );
         println!(
             "{ansi_green}Running{ansi_reset}    `{}`\n",
-            interner.lookup(main_module.0)
+            main_module.to_string(&project_root, &interner)
         );
         let status = jit_fn(0, 0);
         println!("\nProcess exited with {}", status);
@@ -407,7 +407,7 @@ fn compile_file(
     let exec = codegen::link_to_exec(&file);
     println!(
         "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
-        interner.lookup(main_module.0),
+        main_module.to_string(&project_root, &interner),
         exec.display(),
         compilation_start.elapsed().as_secs_f32(),
     );

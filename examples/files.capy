@@ -12,7 +12,7 @@ write_to_file :: (filename: string) {
 read_from_file :: (filename: string) {
     my_file := libc.fopen("hello.txt", "r");
 
-    buf := libc.malloc(20);
+    buf := libc.malloc(20) as ^u8;
     
     str := libc.fgets(buf, 20, my_file);
     libc.puts(str);

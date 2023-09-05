@@ -711,7 +711,7 @@ impl<'a> Ctx<'a> {
                 .join(file)
                 .clean();
 
-            if !file.exists() {
+            if !file.exists() || !file.is_file() {
                 self.diagnostics.push(LoweringDiagnostic {
                     kind: LoweringDiagnosticKind::ImportDoesNotExist {
                         file: file.to_string_lossy().to_string(),

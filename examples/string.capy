@@ -1,0 +1,112 @@
+libc :: import "std/libc.capy";
+ptr :: import "std/ptr.capy";
+
+max :: (x: usize, y: usize) -> usize {
+    if x > y {
+        x
+    } else {
+        y
+    }
+}
+
+String :: struct {
+    buf: ^mut u8,
+    len: usize,
+    cap: usize,
+};
+
+make_string :: () -> String {
+    buf := libc.malloc(0) as ^mut u8;
+
+    String {
+        buf: buf,
+        len: 0,
+        cap: 0,
+    }
+};
+
+prepare_for_n_bytes :: (str: ^mut String, len: usize) {
+    if str.len + len > str.cap {
+        libc.puts("Reallocating!");
+        new_cap := max(str.cap * 2, 1);
+        while new_cap <= str.len + len {
+            new_cap = new_cap * 2;
+        }
+
+        new_buf := libc.malloc(new_cap) as ^mut u8;
+
+        // copy the old buffer into the new buffer
+        libc.memcpy(new_buf, str.buf, str.cap);
+        libc.free(str.buf);
+
+        str.buf = new_buf;
+        str.cap = new_cap;
+    }
+}
+
+add_char :: (str: ^mut String, ch: u8) {
+    prepare_for_n_bytes(str, 1);
+
+    ptr.write(str.buf, ch, str.len);
+
+    str.len = str.len + 1;
+
+    printf("cap: %i, len: %i\n", str.cap, str.len);
+}
+
+add_str :: (str: ^mut String, s: string) {
+    len :: (s: string) -> usize {
+        s_ptr := s as ^u8;
+
+        cont := true;
+        idx := 0;
+        while cont {
+            ch := ptr.read(s_ptr, idx);
+            cont = ch != 0;
+            idx = idx + 1;
+        }
+
+        idx - 1
+    };
+
+    len := len(s);
+
+    prepare_for_n_bytes(str, len);
+
+    offset := ptr.mut_ptr_offset(str.buf, str.len);
+
+    libc.memcpy(offset, s as ^any, len);
+    
+    str.len = str.len + len;
+
+    printf("cap: %i, len: %i\n", str.cap, str.len);
+}
+
+print_string :: (str: ^String) {
+    idx := 0;
+    while idx < str.len {
+        ch := ptr.read(str.buf, idx);
+        libc.putchar(ch);
+        idx = idx + 1;
+    }
+}
+
+// This example basically shows off a `Vec<u8>`
+// When I fully implement Generics, `Vec<_>` will be possible.
+main :: () {
+    my_str := make_string();
+
+    add_char(^mut my_str, 72); // H
+    add_char(^mut my_str, 101); // e
+    add_char(^mut my_str, 108); // l
+    add_char(^mut my_str, 108); // l
+    add_char(^mut my_str, 111); // o
+    add_char(^mut my_str, 32); // space
+    add_str(^mut my_str, "World");
+    add_char(^mut my_str, 33); // !
+    add_char(^mut my_str, 10); // \n
+
+    print_string(^my_str);
+}
+
+printf :: (s: string, n: usize, n2: usize) extern;

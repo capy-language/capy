@@ -30,6 +30,7 @@ pub enum ResolvedTy {
         ty: Intern<ResolvedTy>,
     },
     Type,
+    Any,
     Module(hir::FileName),
     // this is only ever used for functions defined locally
     Function {
@@ -106,6 +107,14 @@ impl ResolvedTy {
         match self {
             ResolvedTy::Pointer { .. } => true,
             ResolvedTy::Distinct { ty, .. } => ty.is_pointer(),
+            _ => false,
+        }
+    }
+
+    pub fn is_function(&self) -> bool {
+        match self {
+            ResolvedTy::Function { .. } => true,
+            ResolvedTy::Distinct { ty, .. } => ty.is_function(),
             _ => false,
         }
     }
@@ -431,7 +440,7 @@ impl ResolvedTy {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && found_ty.can_fit_into(expected_ty)
+                ) && (**expected_ty == ResolvedTy::Any || found_ty.can_fit_into(expected_ty))
             }
             (
                 ResolvedTy::Array {
@@ -484,6 +493,27 @@ impl ResolvedTy {
                 from.primitive_castable(to)
             }
             (ResolvedTy::Distinct { ty: from, .. }, to) => from.primitive_castable(to),
+            (
+                ResolvedTy::Pointer {
+                    mutable: found_mutable,
+                    sub_ty: found_sub_ty,
+                },
+                ResolvedTy::Pointer {
+                    mutable: expected_mutable,
+                    sub_ty: expected_sub_ty,
+                },
+            ) => {
+                matches!(
+                    (found_mutable, expected_mutable),
+                    (true, _) | (false, false)
+                ) && (found_sub_ty == expected_sub_ty
+                    || **found_sub_ty == ResolvedTy::Any
+                    || **expected_sub_ty == ResolvedTy::Any)
+            }
+            (ResolvedTy::String, ResolvedTy::Pointer { sub_ty, .. })
+            | (ResolvedTy::Pointer { sub_ty, .. }, ResolvedTy::String) => {
+                matches!(sub_ty.as_ref(), ResolvedTy::Any | ResolvedTy::UInt(8))
+            }
             _ => self.can_fit_into(primitive_ty),
         }
     }

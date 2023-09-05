@@ -290,7 +290,8 @@ impl InferenceCtx<'_> {
 
     fn is_const(&self, expr: Idx<Expr>) -> bool {
         match &current_bodies!(self)[expr] {
-            Expr::Import(_)
+            Expr::Missing
+            | Expr::Import(_)
             | Expr::PrimitiveTy { .. }
             | Expr::Comptime(_)
             | Expr::StringLiteral(_)
@@ -310,10 +311,10 @@ impl InferenceCtx<'_> {
             Expr::Array { .. } => ExprMutability::Mutable,
             Expr::StructLiteral { .. } => ExprMutability::Mutable,
             Expr::Ref { mutable, .. } => match (*mutable, deref) {
-                (true, true) => ExprMutability::Mutable,
-                (true, false) => ExprMutability::NotMutatingRefThroughDeref(
-                    current_bodies!(self).range_for_expr(expr),
-                ),
+                (true, _) => ExprMutability::Mutable,
+                // (true, false) => ExprMutability::NotMutatingRefThroughDeref(
+                //     current_bodies!(self).range_for_expr(expr),
+                // ),
                 _ => ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr)),
             },
             Expr::Deref { pointer } => self.get_mutability(*pointer, assignment, true),
@@ -325,7 +326,7 @@ impl InferenceCtx<'_> {
             Expr::Local(local_def) if deref => {
                 let local_def = &current_bodies!(self)[*local_def];
 
-                self.get_mutability(local_def.value, assignment, deref)
+                self.get_mutability(local_def.value, false, deref)
             }
             Expr::Local(local_def) if !deref => {
                 let local_ty = self.modules[&self.current_module.unwrap()][*local_def];
@@ -404,14 +405,43 @@ impl InferenceCtx<'_> {
                         {
                             ExprMutability::Mutable
                         } else {
+                            println!("here");
                             // todo: use the actual range of the struct literal, not the range of this field name
                             ExprMutability::ImmutableRef(field.range)
                         }
                     }
-                    _ => self.get_mutability(*previous, assignment, deref),
+                    _ => self.get_mutability(
+                        *previous,
+                        assignment,
+                        deref || previous_ty.is_pointer(),
+                    ),
                 }
             }
             Expr::Call { .. } if deref => ExprMutability::Mutable,
+            Expr::Cast { .. } if deref => {
+                let ty = self.modules[&self.current_module.unwrap()][expr];
+
+                match ty.as_pointer() {
+                    Some((mutable, _)) if deref => {
+                        if mutable {
+                            ExprMutability::Mutable
+                        } else {
+                            // todo: change this to be the range of the param's type
+                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                        }
+                    }
+                    Some((mutable, _)) if assignment => {
+                        if mutable {
+                            ExprMutability::NotMutatingRefThroughDeref(
+                                current_bodies!(self).range_for_expr(expr),
+                            )
+                        } else {
+                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                        }
+                    }
+                    _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),
+                }
+            }
             _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),
         }
     }
@@ -858,6 +888,16 @@ impl InferenceCtx<'_> {
                 let deref_ty = self.infer_expr(*pointer);
 
                 match *deref_ty {
+                    ResolvedTy::Pointer { sub_ty, .. } if *sub_ty == ResolvedTy::Any => {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::DerefAny,
+                            module: self.current_module.unwrap(),
+                            range: current_bodies!(self).range_for_expr(expr),
+                            help: None,
+                        });
+
+                        ResolvedTy::Unknown.into()
+                    }
                     ResolvedTy::Pointer { sub_ty, .. } => sub_ty,
                     _ => {
                         self.diagnostics.push(TyDiagnostic {
@@ -1108,7 +1148,13 @@ impl InferenceCtx<'_> {
                         }
                     }
                     _ => {
-                        if let Some(fields) = previous_ty.as_struct() {
+                        // because it's annoying to do `foo^.bar`, this code lets you do `foo.bar`
+                        let mut deref_ty = previous_ty;
+                        while let Some((_, sub_ty)) = deref_ty.as_pointer() {
+                            deref_ty = sub_ty;
+                        }
+
+                        if let Some(fields) = deref_ty.as_struct() {
                             if let Some((_, ty)) =
                                 fields.into_iter().find(|(name, _)| *name == field.name)
                             {
@@ -1129,8 +1175,6 @@ impl InferenceCtx<'_> {
                                 ResolvedTy::Unknown.into()
                             }
                         } else {
-                            let previous_ty = self.infer_expr(*previous);
-
                             if !previous_ty.is_unknown() {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::NonExistentField {
@@ -1209,7 +1253,7 @@ impl InferenceCtx<'_> {
 
                 let ty = self.infer_expr(body);
 
-                if ty.is_pointer() {
+                if ty.is_pointer() || ty.is_function() {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ComptimePointer,
                         module: self.current_module.unwrap(),

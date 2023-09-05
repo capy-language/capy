@@ -1,10 +1,11 @@
 
-// in the future, there will be a `^any` type that can be cast down to a more specific pointer
-// also in the future, you wouldn't call `malloc` directly, you'd use an `Allocator`
-malloc :: (bytes: usize) -> ^u8 extern;
-free :: (ptr: ^u8) extern;
+// in the future, you wouldn't call `malloc` directly, you'd use an Allocator abstraction
+malloc :: (bytes: usize) -> ^mut any extern;
+free :: (ptr: ^any) extern;
+memcpy :: (dst: ^any, src: ^any, len: usize) extern;
 
 puts :: (s: string) extern;
+putchar :: (c: u8) extern;
 
 // fopen actually returns a pointer to a `FILE` struct, but
 // we just treat this as a usize and everything works fine

@@ -48,6 +48,7 @@ impl_interner! {
     bool => "bool",
     string => "string",
     r#type => "type",
+    any => "any",
 }
 
 impl Interner {

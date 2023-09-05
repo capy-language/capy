@@ -1,0 +1,49 @@
+my_fun(x: f32, y: f32) -> f32 {
+  x + y
+}
+===
+Root@0..41
+  Binding@0..41
+    Ident@0..6 "my_fun"
+    Lambda@6..41
+      ParamList@6..22
+        LParen@6..7 "("
+        Param@7..13
+          Ident@7..8 "x"
+          Colon@8..9 ":"
+          Whitespace@9..10 " "
+          Ty@10..13
+            VarRef@10..13
+              Ident@10..13 "f32"
+        Comma@13..14 ","
+        Whitespace@14..15 " "
+        Param@15..21
+          Ident@15..16 "y"
+          Colon@16..17 ":"
+          Whitespace@17..18 " "
+          Ty@18..21
+            VarRef@18..21
+              Ident@18..21 "f32"
+        RParen@21..22 ")"
+      Whitespace@22..23 " "
+      Arrow@23..25 "->"
+      Whitespace@25..26 " "
+      Ty@26..29
+        VarRef@26..29
+          Ident@26..29 "f32"
+      Whitespace@29..30 " "
+      Block@30..41
+        LBrace@30..31 "{"
+        Whitespace@31..34 "\n  "
+        BinaryExpr@34..39
+          VarRef@34..35
+            Ident@34..35 "x"
+          Whitespace@35..36 " "
+          Plus@36..37 "+"
+          Whitespace@37..38 " "
+          VarRef@38..39
+            Ident@38..39 "y"
+        Whitespace@39..40 "\n"
+        RBrace@40..41 "}"
+error at 6: missing Colon
+error at 6: missing Colon

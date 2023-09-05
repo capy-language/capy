@@ -13,8 +13,9 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
+use crate::compiler_defined::{as_compiler_defined, CompilerDefinedFunction};
 use crate::mangle::Mangle;
-use crate::{convert::*, CapyFnSignature, ComptimeToCompile};
+use crate::{convert::*, CapyFnSignature, ComptimeToCompile, CraneliftSignature};
 
 use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
@@ -47,6 +48,7 @@ pub(crate) struct Compiler<'a> {
 
     // globals
     pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
+    pub(crate) compiler_defined_functions: FxHashMap<CompilerDefinedFunction, FuncId>,
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) str_id_gen: UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
@@ -72,6 +74,7 @@ impl Compiler<'_> {
             self.pointer_ty,
             self.project_root,
             &mut self.functions,
+            &mut self.compiler_defined_functions,
             &mut self.functions_to_compile,
             self.tys,
             self.interner,
@@ -96,6 +99,15 @@ impl Compiler<'_> {
 
     fn compile_real_function(&mut self, sig: &CapyFnSignature, fqn: hir::Fqn) {
         if sig.is_extern {
+            if let Some(compiler_defined) = as_compiler_defined(sig, fqn, self.interner) {
+                let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
+                    self.module,
+                    self.pointer_ty,
+                    self.project_root,
+                    self.interner,
+                );
+                self.compile_ptr_offset_fn(&mangled, sig, func_id);
+            }
             return;
         }
 
@@ -107,6 +119,56 @@ impl Compiler<'_> {
             sig.param_tys.clone(),
             sig.return_ty,
         );
+    }
+
+    fn compile_ptr_offset_fn(
+        &mut self,
+        mangled_name: &str,
+        sig: CraneliftSignature,
+        func_id: FuncId,
+    ) {
+        self.ctx.func.signature = sig;
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+
+        builder.switch_to_block(entry_block);
+        // tell the builder that the block will have no further predecessors
+        builder.seal_block(entry_block);
+
+        let arg_ptr = builder.append_block_param(entry_block, self.pointer_ty);
+        let arg_offset = builder.append_block_param(entry_block, self.pointer_ty);
+
+        let new_ptr = builder.ins().iadd(arg_ptr, arg_offset);
+
+        builder.ins().return_(&[new_ptr]);
+
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        if self.verbose {
+            println!(
+                "ptr_offset \x1B[90m{}\x1B[0m:\n{}",
+                mangled_name, self.ctx.func
+            );
+        }
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .unwrap_or_else(|err| {
+                println!("Error defining function:");
+                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
+                    println!("{}", v.to_string().replace("):", "):\n "));
+                } else {
+                    println!("{:?}", err);
+                }
+                std::process::exit(1);
+            });
+
+        self.module.clear_context(&mut self.ctx);
     }
 
     fn compile_function(
@@ -130,7 +192,7 @@ impl Compiler<'_> {
         // Create the builder to build a function.
         let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
-        let compiler = FunctionCompiler {
+        let function_compiler = FunctionCompiler {
             builder,
             module_name,
             project_root: self.project_root,
@@ -146,6 +208,7 @@ impl Compiler<'_> {
             local_functions: FxHashMap::default(),
             local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,
+            compiler_defined_functions: &mut self.compiler_defined_functions,
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
             comptime_results: self.comptime_results,
@@ -154,7 +217,7 @@ impl Compiler<'_> {
             params: FxHashMap::default(),
         };
 
-        compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);
+        function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);
 
         if self.verbose {
             println!(
@@ -187,6 +250,7 @@ fn get_func_id(
     pointer_ty: types::Type,
     project_root: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
+    compiler_defined_functions: &mut FxHashMap<CompilerDefinedFunction, FuncId>,
     functions_to_compile: &mut VecDeque<hir::Fqn>,
     tys: &hir_ty::InferenceResult,
     interner: &Interner,
@@ -196,15 +260,33 @@ fn get_func_id(
         return *func_id;
     }
 
-    functions_to_compile.push_back(fqn);
-
-    let signature = tys[fqn]
+    let sig = tys[fqn]
         .as_function()
         .expect("tried to compile non-function as function");
 
-    let (comp_sig, _) = signature.to_cranelift_signature(module, pointer_ty);
+    if let Some(compiler_defined) = as_compiler_defined(sig, fqn, interner) {
+        if let Some(func_id) = compiler_defined_functions.get(&compiler_defined) {
+            functions.insert(fqn, *func_id);
 
-    let func_id = if signature.is_extern {
+            return *func_id;
+        }
+
+        let (_, _, func_id) =
+            compiler_defined.to_sig_and_func_id(module, pointer_ty, project_root, interner);
+
+        functions_to_compile.push_back(fqn);
+
+        compiler_defined_functions.insert(compiler_defined, func_id);
+        functions.insert(fqn, func_id);
+
+        return func_id;
+    }
+
+    functions_to_compile.push_back(fqn);
+
+    let (comp_sig, _) = sig.to_cranelift_signature(module, pointer_ty);
+
+    let func_id = if sig.is_extern {
         module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
             .expect("There are multiple extern functions with the same name")

@@ -158,6 +158,7 @@ pub enum TyDiagnosticKind {
     DerefNonPointer {
         found: Intern<ResolvedTy>,
     },
+    DerefAny,
     MissingElse {
         expected: Intern<ResolvedTy>,
     },
@@ -753,6 +754,7 @@ impl<'a> InferenceCtx<'a> {
             }
             .into(),
             hir::TyWithRange::Type { .. } => ResolvedTy::Type.into(),
+            hir::TyWithRange::Any { .. } => ResolvedTy::Any.into(),
             hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path),
             hir::TyWithRange::Void { .. } => ResolvedTy::Void.into(),
             hir::TyWithRange::Function {
@@ -842,7 +844,7 @@ impl InferenceResult {
         }
 
         let mut modules = self.modules.iter().collect::<Vec<_>>();
-        modules.sort_by_key(|(name, _)| interner.lookup(name.0));
+        modules.sort_by_key(|(name, _)| **name);
 
         for (name, module) in modules {
             if fancy || self.modules.len() > 1 {
@@ -946,6 +948,7 @@ impl ResolvedTy {
                 res
             }
             Self::Type => "type".to_string(),
+            Self::Any => "any".to_string(),
             Self::Void => "void".to_string(),
             Self::Module(file_name) => {
                 format!("module {}", file_name.to_string(project_root, interner))
@@ -1137,7 +1140,7 @@ mod tests {
                     ),
                     // (
                     //     TyDiagnosticKind::UnknownModule {
-                    //         name: hir::FileName(i.intern("bar")),
+                    //         name: hir::FileName { key: i.intern("bar")),
                     //     },
                     //     67..70,
                     //     None,
@@ -1179,6 +1182,9 @@ mod tests {
                 main::numbers : module numbers
                 numbers::Magic_Struct : type
                 numbers::imaginary : type
+                numbers:
+                  0 : type
+                  1 : type
                 main:
                   0 : module numbers
                   1 : module numbers
@@ -1195,9 +1201,6 @@ mod tests {
                   16 : numbers::imaginary
                   l0 : numbers::imaginary
                   l1 : numbers::Magic_Struct
-                numbers:
-                  0 : type
-                  1 : type
             "#]],
             |_| [],
         );
@@ -3731,14 +3734,14 @@ mod tests {
                 main::func : () -> void
                 main::other_file : module other_file
                 other_file::foo : i32
+                other_file:
+                  0 : i32
                 main:
                   0 : module other_file
                   1 : module other_file
                   2 : i32
                   3 : {uint}
                   4 : void
-                other_file:
-                  0 : i32
             "#]],
             |_| {
                 [(
@@ -4842,6 +4845,434 @@ mod tests {
                 2 : i32
             "#]],
             |_| [(TyDiagnosticKind::GlobalNotConst, 24..29, None)],
+        );
+    }
+
+    #[test]
+    fn any_type() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : i32 = 5;
+
+                    ptr : ^i32 = ^foo;
+                    ptr : ^any = ptr as ^any;
+                    ptr : ^f32 = ptr as ^f32;
+
+                    foo : f32 = ptr^;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : i32
+                3 : i32
+                4 : ^i32
+                6 : ^i32
+                8 : ^any
+                10 : ^any
+                12 : ^f32
+                14 : ^f32
+                15 : f32
+                16 : void
+                l0 : i32
+                l1 : ^i32
+                l2 : ^any
+                l3 : ^f32
+                l4 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn cast_ptr_without_any() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : i32 = 5;
+
+                    ptr : ^i32 = ^foo;
+                    ptr : ^f32 = ptr as ^f32;
+
+                    foo : f32 = ptr^;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : i32
+                3 : i32
+                4 : ^i32
+                6 : ^i32
+                8 : ^f32
+                10 : ^f32
+                11 : f32
+                12 : void
+                l0 : i32
+                l1 : ^i32
+                l2 : ^f32
+                l3 : f32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
+                        to: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Float(32).into(),
+                        }
+                        .into(),
+                    },
+                    141..152,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn deref_any() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : i32 = 5;
+
+                    ptr : ^i32 = ^foo;
+                    ptr : ^any = ptr as ^any;
+
+                    foo : any = ptr^;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : i32
+                3 : i32
+                4 : ^i32
+                6 : ^i32
+                8 : ^any
+                10 : ^any
+                11 : <unknown>
+                12 : void
+                l0 : i32
+                l1 : ^i32
+                l2 : ^any
+                l3 : any
+            "#]],
+            |_| [(TyDiagnosticKind::DerefAny, 187..191, None)],
+        );
+    }
+
+    #[test]
+    fn auto_real_ptr_to_any_ptr() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : i32 = 5;
+                    ptr : ^i32 = ^foo;
+
+                    ptr : ^any = ptr;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : i32
+                3 : i32
+                4 : ^i32
+                6 : ^i32
+                7 : void
+                l0 : i32
+                l1 : ^i32
+                l2 : ^any
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn auto_any_ptr_to_real_ptr() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : i32 = 5;
+                    ptr : ^i32 = ^foo;
+                    ptr : ^any = ptr;
+
+                    ptr : ^i32 = ptr;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : i32
+                3 : i32
+                4 : ^i32
+                6 : ^i32
+                8 : ^any
+                9 : void
+                l0 : i32
+                l1 : ^i32
+                l2 : ^any
+                l3 : ^i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::IInt(32).into(),
+                        }
+                        .into(),
+                        found: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Any.into(),
+                        }
+                        .into(),
+                    },
+                    179..182,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn any_ptr_to_string() {
+        check(
+            r#"
+                get_any :: () {
+                    bytes := [3] u8 { 72, 73, 0 };
+                    ptr := {^bytes} as ^any;
+                    str := ptr as string;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                2 : u8
+                3 : u8
+                4 : u8
+                5 : [3]u8
+                7 : [3]u8
+                8 : ^[3]u8
+                9 : ^[3]u8
+                11 : ^any
+                13 : ^any
+                15 : string
+                16 : void
+                l0 : [3]u8
+                l1 : ^any
+                l2 : string
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn u8_ptr_to_string() {
+        check(
+            r#"
+                get_any :: () {
+                    bytes := [3] u8 { 72, 73, 0 };
+                    ptr := {{^bytes} as ^any} as ^u8;
+                    str := ptr as string;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                2 : u8
+                3 : u8
+                4 : u8
+                5 : [3]u8
+                7 : [3]u8
+                8 : ^[3]u8
+                9 : ^[3]u8
+                11 : ^any
+                12 : ^any
+                14 : ^u8
+                16 : ^u8
+                18 : string
+                19 : void
+                l0 : [3]u8
+                l1 : ^u8
+                l2 : string
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn field_of_struct_ptr() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32
+                };
+
+                main :: () {
+                    my_foo := Foo {
+                        a: 25
+                    };
+
+                    ptr := ^my_foo;
+
+                    ptr.a;
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                3 : i32
+                4 : main::Foo
+                6 : main::Foo
+                7 : ^main::Foo
+                8 : ^main::Foo
+                9 : i32
+                10 : void
+                l0 : main::Foo
+                l1 : ^main::Foo
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn field_of_struct_ptr_ptr() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32
+                };
+
+                main :: () {
+                    my_foo := Foo {
+                        a: 25
+                    };
+
+                    ptr := ^^my_foo;
+
+                    ptr.a;
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                3 : i32
+                4 : main::Foo
+                6 : main::Foo
+                7 : ^main::Foo
+                8 : ^^main::Foo
+                9 : ^^main::Foo
+                10 : i32
+                11 : void
+                l0 : main::Foo
+                l1 : ^^main::Foo
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn non_existent_field_of_struct_ptr_ptr() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32
+                };
+
+                main :: () {
+                    my_foo := Foo {
+                        a: 25
+                    };
+
+                    ptr := ^^my_foo;
+
+                    ptr.b;
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                3 : i32
+                4 : main::Foo
+                6 : main::Foo
+                7 : ^main::Foo
+                8 : ^^main::Foo
+                9 : ^^main::Foo
+                10 : <unknown>
+                11 : void
+                l0 : main::Foo
+                l1 : ^^main::Foo
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NonExistentField {
+                        field: i.intern("b"),
+                        found_ty: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Pointer {
+                                mutable: false,
+                                sub_ty: ResolvedTy::Struct {
+                                    fqn: Some(hir::Fqn {
+                                        module: hir::FileName(i.intern("main.capy")),
+                                        name: hir::Name(i.intern("Foo")),
+                                    }),
+                                    fields: vec![(
+                                        hir::Name(i.intern("a")),
+                                        ResolvedTy::IInt(32).into(),
+                                    )],
+                                }
+                                .into(),
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    257..262,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mutate_field_of_struct_ptr_ptr() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32
+                };
+
+                main :: () {
+                    my_foo := Foo {
+                        a: 25
+                    };
+
+                    ptr := ^mut ^mut my_foo;
+
+                    ptr.a = 5;
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                3 : i32
+                4 : main::Foo
+                6 : main::Foo
+                7 : ^mut main::Foo
+                8 : ^mut ^mut main::Foo
+                9 : ^mut ^mut main::Foo
+                10 : i32
+                11 : i32
+                12 : void
+                l0 : main::Foo
+                l1 : ^mut ^mut main::Foo
+            "#]],
+            |_| [],
         );
     }
 }

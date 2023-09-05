@@ -1,6 +1,7 @@
 #![feature(new_uninit)]
 
 mod compiler;
+mod compiler_defined;
 mod convert;
 mod mangle;
 mod slice_utils;
@@ -94,7 +95,7 @@ pub fn compile_obj(
 
     let builder = ObjectBuilder::new(
         isa,
-        interner.lookup(entry_point.module.0),
+        entry_point.module.to_string(project_root, interner),
         cranelift_module::default_libcall_names(),
     )
     .unwrap();
@@ -546,7 +547,10 @@ mod tests {
     fn float_to_string() {
         check(
             "../../examples/float_to_string.capy",
-            &["../../examples/std/math.capy"],
+            &[
+                "../../examples/std/libc.capy",
+                "../../examples/std/math.capy",
+            ],
             "main",
             expect![[r#"
             3.141
@@ -621,6 +625,59 @@ mod tests {
             2^3 = 8
             2^4 = 16
             2^5 = 32
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn string() {
+        check(
+            "../../examples/string.capy",
+            &[
+                "../../examples/std/libc.capy",
+                "../../examples/std/ptr.capy",
+            ],
+            "main",
+            expect![[r#"
+            Reallocating!
+            cap: 2, len: 1
+            cap: 2, len: 2
+            Reallocating!
+            cap: 4, len: 3
+            cap: 4, len: 4
+            Reallocating!
+            cap: 8, len: 5
+            cap: 8, len: 6
+            Reallocating!
+            cap: 16, len: 11
+            cap: 16, len: 12
+            cap: 16, len: 13
+            Hello World!
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn auto_deref() {
+        check(
+            "../../examples/auto_deref.capy",
+            &["../../examples/std/libc.capy"],
+            "main",
+            expect![[r#"
+            my_foo.b   8
+            ptr^^^^.b  8
+            ptr^^^.b   8
+            ptr^^.b    8
+            ptr^.b     8
+            ptr.b      8
+              give:
+            ptr^^.b    8
+            ptr^.b     8
+            ptr.b      8
 
             "#]],
             0,

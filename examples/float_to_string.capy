@@ -1,4 +1,4 @@
-
+libc :: import "std/libc.capy";
 math :: import "std/math.capy";
 
 HYPHEN : u8 : 45;
@@ -81,46 +81,53 @@ clear_buf :: (buf: ^mut [20]u8) {
 }
 
 main :: () {
-    // it'd be easier to do a malloc and free here, but there is currently no pointer math
-    buf := [20]u8 { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    // libc.malloc returns a `^mut any`, so we must explicitly cast that to the pointer type we want
+    buf := libc.malloc(20) as ^mut [20]u8;
 
-    ftoa(3.14159, ^mut buf, 3);
-    puts(buf);
+    ftoa(3.14159, buf, 3);
+    print_buf(buf);
     printf("\n");
 
     printf("ln 10 = ");
-    ftoa(comptime { math.ln(10) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.ln(10) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("ln 50 = ");
-    ftoa(comptime { math.ln(50) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.ln(50) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("ln 100 = ");
-    ftoa(comptime { math.ln(100) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.ln(100) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("ln 500 = ");
-    ftoa(comptime { math.ln(500) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.ln(500) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("log 10 = ");
-    ftoa(comptime { math.log10(10) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.log10(10) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("log 50 = ");
-    ftoa(comptime { math.log10(50) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.log10(50) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("log 100 = ");
-    ftoa(comptime { math.log10(100) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.log10(100) as f32 }, buf, 3);
+    print_buf(buf);
 
     printf("log 500 = ");
-    ftoa(comptime { math.log10(500) as f32 }, ^mut buf, 3);
-    puts(buf);
+    ftoa(comptime { math.log10(500) as f32 }, buf, 3);
+    print_buf(buf);
 
+    libc.free(buf);
 }
 
-puts :: (str: [20]u8) extern;
+print_buf :: (buf: ^[20]u8) {
+    ptr := buf as ^any;
+    ptr := ptr as string;
+    libc.puts(ptr);
+}
+
+// this is only to avoid the newline in `libc.puts`
 printf :: (str: string) extern;

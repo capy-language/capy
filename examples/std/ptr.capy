@@ -1,0 +1,16 @@
+
+// compiler defined
+ptr_offset :: (ptr: ^any, offset: usize) -> ^any extern;
+
+// compiler defined
+mut_ptr_offset :: (ptr: ^mut any, offset: usize) -> ^mut any extern;
+
+read :: (ptr: ^any, offset: usize) -> u8 {
+    plus_offset := ptr_offset(ptr, offset) as ^u8;
+    plus_offset^
+}
+
+write :: (ptr: ^mut any, byte: u8, offset: usize) {
+    plus_offset := mut_ptr_offset(ptr, offset) as ^mut u8;
+    plus_offset^ = byte;
+}

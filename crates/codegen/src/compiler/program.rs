@@ -38,6 +38,7 @@ pub(crate) fn compile_program<'a>(
         functions_to_compile: VecDeque::from([entry_point]),
         lambdas_to_compile: VecDeque::new(),
         functions: FxHashMap::default(),
+        compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),
         comptime_results,

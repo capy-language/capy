@@ -1,0 +1,20 @@
+foo := () {};
+===
+Root@0..13
+  Binding@0..12
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Error@5..6
+      Equals@5..6 "="
+    Whitespace@6..7 " "
+    Lambda@7..12
+      ParamList@7..9
+        LParen@7..8 "("
+        RParen@8..9 ")"
+      Whitespace@9..10 " "
+      Block@10..12
+        LBrace@10..11 "{"
+        RBrace@11..12 "}"
+  Semicolon@12..13 ";"
+error at 5..6: expected Colon but found Equals

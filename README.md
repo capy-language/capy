@@ -25,6 +25,8 @@ main :: () -> i32 {
 
 ## Features
 
+(Make sure to put these snippets in a `main` function)
+
 Static arrays,
 
 ```capy
@@ -37,7 +39,7 @@ Pointers,
 
 ```capy
 foo := 5;
-bar := ^mut foo;
+bar :: ^mut foo;
 
 bar^ = 10;
 ```
@@ -139,6 +141,8 @@ to take 3 arguments, but this won't work for floats, which are passed into
 variadic functions differently depending on the calling convention.
 Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030),
 so that might be added in the future.
+
+If you find any bugs in the compiler, please please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and I'll fix it as soon as I can.
 
 ## Shout Outs
 

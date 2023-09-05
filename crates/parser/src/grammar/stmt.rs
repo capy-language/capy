@@ -66,24 +66,26 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
 
 /// returns the completed marker for the definition, and a bool if it is a top level lambda definition
 pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> (CompletedMarker, bool) {
-    let _guard = p.expected_syntax_name("statement");
-
     let m = p.start();
 
-    p.expect(TokenKind::Ident);
+    let _guard = p.expected_syntax_name("name");
+    p.expect_with_no_skip(TokenKind::Ident);
+
+    let first_colon = p.at(TokenKind::Colon);
 
     p.expect_with_no_skip(TokenKind::Colon);
 
     const DEF_SET: TokenSet = TokenSet::new([TokenKind::Equals, TokenKind::Colon]);
-    if !p.at_set(DEF_SET) {
+    if first_colon && !p.at_set(DEF_SET) {
         expr::parse_ty(p, "type annotation", DEF_SET);
     }
 
-    let def_kind = if p.at(TokenKind::Colon) {
-        p.expect(TokenKind::Colon);
+    let def_kind = if top_level || p.at(TokenKind::Colon) {
+        // if there is an equal sign skip it, otherwise don't skip anything
+        p.expect_with_recovery_set(TokenKind::Colon, TokenSet::ALL.without(TokenKind::Equals));
         NodeKind::Binding
     } else {
-        p.expect(TokenKind::Equals);
+        p.expect_with_no_skip(TokenKind::Equals);
         NodeKind::VarDef
     };
 

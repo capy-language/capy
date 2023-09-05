@@ -400,9 +400,6 @@ fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
 
 fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> String {
     match &d.kind {
-        IndexingDiagnosticKind::NonBindingAtRoot => {
-            "all globals must be binding `::` and not variable `:=`".to_string()
-        }
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
         }
@@ -537,6 +534,9 @@ fn ty_diagnostic_message(
                 found.display(project_root, interner)
             )
         }
+        hir_ty::TyDiagnosticKind::DerefAny => {
+            "tried dereferencing `^` a pointer to `any`. try casting it to a different pointer type first".to_string()
+        }
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
@@ -621,7 +621,7 @@ fn ty_diagnostic_help_message(
         }
         hir_ty::TyDiagnosticHelpKind::ImmutableGlobal => "globals are immutable".to_string(),
         hir_ty::TyDiagnosticHelpKind::NotMutatingRefThroughDeref => {
-            "this a reference, to mutate it's inner value add a `^` at the end to dereference it first"
+            "this is a reference, to mutate it's inner value add a `^` at the end to dereference it first"
                 .to_string()
         }
         hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {

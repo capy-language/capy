@@ -36,6 +36,10 @@ impl TokenSet {
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    pub(crate) const fn without(self, kind: TokenKind) -> Self {
+        Self(self.0 ^ mask(kind))
+    }
 }
 
 #[cfg(test)]

@@ -159,6 +159,8 @@ impl ToCompType for ResolvedTy {
             hir_ty::ResolvedTy::Function { .. } => CompType::Pointer(pointer_ty),
             hir_ty::ResolvedTy::Struct { .. } => CompType::Pointer(pointer_ty),
             hir_ty::ResolvedTy::Type => CompType::Void,
+            // todo: is this right?
+            hir_ty::ResolvedTy::Any => CompType::Void,
             hir_ty::ResolvedTy::Void => CompType::Void,
             hir_ty::ResolvedTy::Module(_) => CompType::Void,
         }
@@ -273,6 +275,7 @@ impl ToCompSize for ResolvedTy {
                 StructMemory::new(fields, pointer_ty).size
             }
             ResolvedTy::Type => 0,
+            ResolvedTy::Any => 0,
             ResolvedTy::Void => 0,
             ResolvedTy::Module(_) => 0,
         }
@@ -296,6 +299,7 @@ impl ToCompSize for ResolvedTy {
                 .max()
                 .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
             ResolvedTy::Type => 1,
+            ResolvedTy::Any => 1,
             ResolvedTy::Void => 1,
             ResolvedTy::Module(_) => 1,
         }

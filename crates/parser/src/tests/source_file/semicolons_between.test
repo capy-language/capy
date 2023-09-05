@@ -1,14 +1,14 @@
-;;;main := () {};;;foo := "bar";;;
+;;;main :: () {};;;foo :: "bar";;;
 ===
 Root@0..34
   Semicolon@0..1 ";"
   Semicolon@1..2 ";"
   Semicolon@2..3 ";"
-  VarDef@3..16
+  Binding@3..16
     Ident@3..7 "main"
     Whitespace@7..8 " "
     Colon@8..9 ":"
-    Equals@9..10 "="
+    Colon@9..10 ":"
     Whitespace@10..11 " "
     Lambda@11..16
       ParamList@11..13
@@ -21,11 +21,11 @@ Root@0..34
   Semicolon@16..17 ";"
   Semicolon@17..18 ";"
   Semicolon@18..19 ";"
-  VarDef@19..31
+  Binding@19..31
     Ident@19..22 "foo"
     Whitespace@22..23 " "
     Colon@23..24 ":"
-    Equals@24..25 "="
+    Colon@24..25 ":"
     Whitespace@25..26 " "
     StringLiteral@26..31
       Quote@26..27 "\""

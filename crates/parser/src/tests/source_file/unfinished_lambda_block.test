@@ -1,12 +1,12 @@
-foo := () {
+foo :: () {
     bar
 ===
 Root@0..19
-  VarDef@0..19
+  Binding@0..19
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
-    Equals@5..6 "="
+    Colon@5..6 ":"
     Whitespace@6..7 " "
     Lambda@7..19
       ParamList@7..9

@@ -134,6 +134,9 @@ pub enum TyWithRange {
     Type {
         range: TextRange,
     },
+    Any {
+        range: TextRange,
+    },
     Named {
         path: PathWithRange,
     },
@@ -156,7 +159,8 @@ impl TyWithRange {
             | TyWithRange::Distinct { range, .. }
             | TyWithRange::Function { range, .. }
             | TyWithRange::Struct { range, .. }
-            | TyWithRange::Type { range } => Some(*range),
+            | TyWithRange::Type { range }
+            | TyWithRange::Any { range } => Some(*range),
             TyWithRange::Void { range } => *range,
             TyWithRange::Named { path } => match path {
                 PathWithRange::ThisModule(NameWithRange { range, .. }) => Some(*range),
@@ -166,32 +170,6 @@ impl TyWithRange {
                     ..
                 } => Some(module_range.cover(*name_range)),
             },
-        }
-    }
-
-    pub fn primitive_id(&self) -> Option<u64> {
-        const INT_BIT: u64 = 1 << 63;
-        const FLOAT_BIT: u64 = 1 << 62;
-        const SIGNED_BIT: u64 = 1 << 61;
-        const BOOL_BIT: u64 = 1 << 60;
-        const STRING_BIT: u64 = 1 << 59;
-        const TYPE_ID_BIT: u64 = 1 << 58;
-
-        match self {
-            TyWithRange::Unknown => Some(0),
-            TyWithRange::Void { .. } => Some(0),
-            TyWithRange::IInt { bit_width, .. } => Some(INT_BIT ^ SIGNED_BIT ^ (*bit_width as u64)),
-            TyWithRange::UInt { bit_width, .. } => Some(INT_BIT ^ (*bit_width as u64)),
-            TyWithRange::Float { bit_width, .. } => Some(FLOAT_BIT ^ (*bit_width as u64)),
-            TyWithRange::Bool { .. } => Some(BOOL_BIT),
-            TyWithRange::String { .. } => Some(STRING_BIT),
-            TyWithRange::Array { .. } => None,
-            TyWithRange::Pointer { .. } => None,
-            TyWithRange::Type { .. } => Some(TYPE_ID_BIT),
-            TyWithRange::Distinct { .. } => None,
-            TyWithRange::Function { .. } => None,
-            TyWithRange::Struct { .. } => None,
-            TyWithRange::Named { .. } => None,
         }
     }
 
@@ -487,6 +465,8 @@ impl TyWithRange {
             TyWithRange::String { range }
         } else if key == Key::r#type() {
             TyWithRange::Type { range }
+        } else if key == Key::any() {
+            TyWithRange::Any { range }
         } else {
             return None;
         })
@@ -522,6 +502,7 @@ impl TyWithRange {
                 format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
             }
             Self::Type { .. } => "type".to_string(),
+            Self::Any { .. } => "any".to_string(),
             Self::Distinct { uid, ty, .. } => {
                 format!(
                     "distinct'{} {}",

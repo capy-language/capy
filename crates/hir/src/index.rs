@@ -130,12 +130,6 @@ pub fn index(
     };
 
     for def in root.defs(tree) {
-        if matches!(def, ast::Define::Variable(_)) {
-            ctx.diagnostics.push(IndexingDiagnostic {
-                kind: IndexingDiagnosticKind::NonBindingAtRoot,
-                range: def.range(tree),
-            })
-        }
         ctx.index_def(def);
     }
 
@@ -316,7 +310,6 @@ pub struct IndexingDiagnostic {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexingDiagnosticKind {
-    NonBindingAtRoot,
     AlreadyDefined { name: Key },
     TyParseError(TyParseError),
 }
@@ -565,19 +558,6 @@ mod tests {
                     ),
                 ]
             },
-        )
-    }
-
-    #[test]
-    fn non_binding_at_root() {
-        check(
-            r#"
-                foo := () {};
-            "#,
-            expect![[r"
-                foo : ? : () -> void
-            "]],
-            |_| [(IndexingDiagnosticKind::NonBindingAtRoot, 17..29)],
         )
     }
 

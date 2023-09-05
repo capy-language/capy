@@ -17,6 +17,7 @@ use rustc_hash::FxHashMap;
 use uid_gen::UIDGenerator;
 
 use crate::{
+    compiler_defined::CompilerDefinedFunction,
     convert::{NumberType, StructMemory, ToCompSize, ToCompType, ToCraneliftSignature},
     mangle::Mangle,
     slice_utils::{IntoBoxedSlice, IntoRcSlice},
@@ -47,6 +48,7 @@ pub(crate) struct FunctionCompiler<'a> {
 
     // globals
     pub(crate) functions: &'a mut FxHashMap<hir::Fqn, FuncId>,
+    pub(crate) compiler_defined_functions: &'a mut FxHashMap<CompilerDefinedFunction, FuncId>,
     pub(crate) globals: &'a mut FxHashMap<hir::Fqn, DataId>,
     pub(crate) str_id_gen: &'a mut UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
@@ -297,6 +299,7 @@ impl FunctionCompiler<'_> {
             self.pointer_ty,
             self.project_root,
             self.functions,
+            self.compiler_defined_functions,
             self.functions_to_compile,
             self.tys,
             self.interner,
@@ -676,28 +679,27 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Deref { pointer } => {
-                let addr = self.compile_expr_with_args(pointer, no_load)?;
-
-                let self_ty = &self.tys[self.module_name][expr];
+                let self_ty = self.tys[self.module_name][expr];
 
                 if self_ty.is_aggregate() {
-                    Some(addr)
-                } else {
-                    let self_ty = if no_load {
-                        self.pointer_ty
-                    } else {
-                        self_ty
-                            .to_comp_type(self.pointer_ty)
-                            .into_real_type()
-                            .unwrap()
-                    };
-
-                    Some(
-                        self.builder
-                            .ins()
-                            .load(self_ty, MemFlags::trusted(), addr, 0),
-                    )
+                    return self.compile_expr_with_args(pointer, no_load);
                 }
+
+                let addr = self.compile_expr_with_args(pointer, no_load)?;
+
+                let self_ty = self_ty.to_comp_type(self.pointer_ty);
+
+                let self_ty = if no_load {
+                    self.pointer_ty
+                } else {
+                    self_ty.into_real_type().unwrap()
+                };
+
+                Some(
+                    self.builder
+                        .ins()
+                        .load(self_ty, MemFlags::trusted(), addr, 0),
+                )
             }
             hir::Expr::Binary {
                 lhs: lhs_expr,
@@ -842,12 +844,12 @@ impl FunctionCompiler<'_> {
                     .iter()
                     .zip(param_tys.iter())
                     .filter_map(|(arg_expr, expected_ty)| {
-                        let actual_ty =
-                            self.tys[self.module_name][*arg_expr].to_comp_type(self.pointer_ty);
+                        let arg_ty = self.tys[self.module_name][*arg_expr];
+                        let comp_ty = arg_ty.to_comp_type(self.pointer_ty);
 
                         let arg = self.compile_expr(*arg_expr);
 
-                        if let Some(actual_ty) = actual_ty.into_number_type() {
+                        if let Some(actual_ty) = comp_ty.into_number_type() {
                             let expected_ty = expected_ty
                                 .to_comp_type(self.pointer_ty)
                                 .into_number_type()
@@ -1083,9 +1085,14 @@ impl FunctionCompiler<'_> {
                 if no_load || ty.is_aggregate() {
                     Some(ptr)
                 } else {
-                    let ty = ty.to_comp_type(self.pointer_ty).into_real_type().unwrap();
+                    let ty = ty.to_comp_type(self.pointer_ty);
 
-                    Some(self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
+                    Some(self.builder.ins().load(
+                        ty.into_real_type().unwrap(),
+                        MemFlags::trusted(),
+                        ptr,
+                        0,
+                    ))
                 }
             }
             hir::Expr::Param { idx, .. } => self
@@ -1183,22 +1190,39 @@ impl FunctionCompiler<'_> {
                         let field_comp_ty =
                             field_ty.to_comp_type(self.pointer_ty).into_real_type()?;
 
-                        let field_tys = previous_ty.as_struct().unwrap();
+                        let mut required_derefs = 0;
+                        let mut struct_ty = previous_ty;
+                        while let Some((_, sub_ty)) = struct_ty.as_pointer() {
+                            struct_ty = sub_ty;
+                            required_derefs += 1;
+                        }
 
-                        let field_idx = field_tys
+                        let struct_ty = struct_ty.as_struct().unwrap();
+
+                        let field_idx = struct_ty
                             .iter()
                             .enumerate()
                             .find(|(_, (name, _))| *name == field.name)
                             .map(|(idx, _)| idx)
                             .unwrap();
 
-                        let field_tys = field_tys.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
+                        let field_tys = struct_ty.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
 
-                        let struct_mem = StructMemory::new(field_tys, self.pointer_ty);
+                        let struct_mem: StructMemory =
+                            StructMemory::new(field_tys, self.pointer_ty);
 
                         let offset = struct_mem.offsets()[field_idx];
 
-                        let struct_addr = self.compile_expr_with_args(previous, true)?;
+                        let mut struct_addr = self.compile_expr_with_args(previous, false)?;
+
+                        for _ in 1..required_derefs {
+                            struct_addr = self.builder.ins().load(
+                                self.pointer_ty,
+                                MemFlags::trusted(),
+                                struct_addr,
+                                0,
+                            );
+                        }
 
                         if no_load || field_ty.is_aggregate() {
                             let offset = self.builder.ins().iconst(self.pointer_ty, offset as i64);
