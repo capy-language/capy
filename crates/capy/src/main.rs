@@ -43,6 +43,10 @@ enum BuildAction {
         #[arg(long)]
         target: Option<String>,
 
+        /// The final executable name. This doesn't need a file extension
+        #[arg(short, long)]
+        output: Option<String>,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -60,6 +64,10 @@ enum BuildAction {
         /// Whether or not to run by JIT instead of by compilation to an executable file
         #[arg(long)]
         jit: bool,
+
+        /// The final executable name. This doesn't need a file extension
+        #[arg(short, long)]
+        output: Option<String>,
 
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
@@ -85,8 +93,8 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (file, entry_point, verbose, config) =
-        get_build_config!(config.action => file, entry_point, verbose);
+    let (file, entry_point, output, verbose, config) =
+        get_build_config!(config.action => file, entry_point, output, verbose);
 
     let file = env::current_dir().unwrap().join(file).clean();
 
@@ -98,7 +106,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    compile_file(file, contents, entry_point, config, verbose)
+    compile_file(file, contents, entry_point, output, config, verbose)
 }
 
 #[derive(Clone, PartialEq)]
@@ -117,6 +125,7 @@ fn compile_file(
     file_name: PathBuf,
     file_contents: String,
     entry_point: String,
+    output: Option<String>,
     config: CompilationConfig,
     verbose: u8,
 ) -> io::Result<()> {
@@ -126,6 +135,15 @@ fn compile_file(
     } else {
         ("", "", "", "")
     };
+
+    if output
+        .as_ref()
+        .map(|o| o.contains(['/', '\\']))
+        .unwrap_or(false)
+    {
+        println!("{ansi_red}error{ansi_white}: the output cannot contain file separators");
+        exit(1)
+    }
 
     if !file_name.to_string_lossy().ends_with(".capy") {
         println!("{ansi_red}error{ansi_white}: capy files must end in `.capy`{ansi_reset}");
@@ -386,28 +404,31 @@ fn compile_file(
 
     let _ = fs::create_dir(&output_folder);
 
-    let output_file_name = std::path::PathBuf::from(interner.lookup(main_module.0));
-    let output_file_name = output_file_name.file_name().unwrap().to_string_lossy();
-    let file = output_folder.join(format!("{output_file_name}.o",));
-    fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
-        println!("{}: {why}", file.display());
+    let output = output.unwrap_or_else(|| {
+        let main_file = std::path::PathBuf::from(interner.lookup(main_module.0));
+        main_file.file_stem().unwrap().to_string_lossy().to_string()
+    });
+    let mut object_file = output_folder.join(&output);
+    object_file.set_extension("o");
+    fs::write(&object_file, bytes.as_slice()).unwrap_or_else(|why| {
+        println!("{}: {why}", object_file.display());
         exit(1);
     });
 
     if let CompilationConfig::Compile(Some(target)) = config {
         println!(
             "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
-            file.display(),
+            object_file.display(),
             target,
             compilation_start.elapsed().as_secs_f32(),
         );
         return Ok(());
     }
 
-    let exec = codegen::link_to_exec(&file);
+    let exec = codegen::link_to_exec(&object_file);
     println!(
         "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
-        main_module.to_string(&project_root, &interner),
+        output,
         exec.display(),
         compilation_start.elapsed().as_secs_f32(),
     );

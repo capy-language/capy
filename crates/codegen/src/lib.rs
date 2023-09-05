@@ -121,10 +121,13 @@ pub fn compile_obj(
     product.emit()
 }
 
-pub fn link_to_exec(path: &PathBuf) -> PathBuf {
-    let exe_path = path.parent().unwrap().join(path.file_stem().unwrap());
+pub fn link_to_exec(object_file: &PathBuf) -> PathBuf {
+    let exe_path = object_file
+        .parent()
+        .unwrap()
+        .join(object_file.file_stem().unwrap());
     let success = Command::new("gcc")
-        .arg(path)
+        .arg(object_file)
         .arg("-o")
         .arg(&exe_path)
         .status()
