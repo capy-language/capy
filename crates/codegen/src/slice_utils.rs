@@ -6,13 +6,7 @@ pub(crate) trait IntoBoxedSlice {
 
 impl IntoBoxedSlice for Rc<[u8]> {
     fn into_boxed_slice(self) -> Box<[u8]> {
-        if self.len() == 0 {
-            return Box::default();
-        }
-        let mut result = unsafe { Box::<[u8]>::new_uninit_slice(self.len()).assume_init() };
-        result.clone_from_slice(&self);
-
-        result
+        self.to_vec().into_boxed_slice()
     }
 }
 
@@ -34,20 +28,6 @@ impl<const N: usize> IntoRcSlice for [u8; N] {
 
 impl IntoRcSlice for &[u8] {
     fn into_rc_slice(self) -> Rc<[u8]> {
-        if self.is_empty() {
-            return Rc::<[u8; 0]>::default();
-        }
-
-        let result = unsafe { Rc::<[u8]>::new_uninit_slice(self.len()).assume_init() };
-        let ptr = Rc::into_raw(result);
-        unsafe {
-            std::ptr::copy(
-                (self as *const [u8]) as *const u8,
-                ptr as *mut u8,
-                self.len(),
-            )
-        }
-
-        unsafe { Rc::from_raw(ptr) }
+        self.into()
     }
 }

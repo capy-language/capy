@@ -6,30 +6,68 @@ Foo :: struct {
 };
 
 main :: () {
+    libc.puts("struct auto deref:");
+
     my_foo := Foo {
         a: 4,
         b: 8,
     };
 
-    printf("my_foo.b   %i\n", my_foo.b);
+    printf("my_foo.b   %i\n", my_foo.b, 0);
 
     ptr := ^^^^my_foo;
 
-    printf("ptr^^^^.b  %i\n", ptr^^^^.b);
-    printf("ptr^^^.b   %i\n", ptr^^^.b);
-    printf("ptr^^.b    %i\n", ptr^^.b);
-    printf("ptr^.b     %i\n", ptr^.b);
-    printf("ptr.b      %i\n", ptr.b);
+    printf("ptr^^^^.b  %i\n", ptr^^^^.b, 0);
+    printf("ptr^^^.b   %i\n", ptr^^^.b, 0);
+    printf("ptr^^.b    %i\n", ptr^^.b, 0);
+    printf("ptr^.b     %i\n", ptr^.b, 0);
+    printf("ptr.b      %i\n", ptr.b, 0);
 
     libc.puts("  give:");
 
-    give(ptr^^);
+    give_struct(ptr^^);
+
+    libc.puts("\narray auto deref:");
+
+    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+
+    ptr := ^my_array;
+
+    idx : usize = 0;
+    while idx < 3 {
+        printf("ptr^[%i] %i\n", idx as i32, ptr^[idx]);
+        printf("ptr[%i]  %i\n", idx as i32, ptr[idx]);
+        idx = idx + 1;
+    }
+
+    ptr_ptr := ^^my_array;
+
+    while idx < 6 {
+        printf("ptr_ptr^^[%i] %i\n", idx as i32, ptr_ptr^^[idx]);
+        printf("ptr_ptr^[%i]  %i\n", idx as i32, ptr_ptr^[idx]);
+        printf("ptr_ptr[%i]   %i\n", idx as i32, ptr_ptr[idx]);
+        idx = idx + 1;
+    }
+
+    libc.puts("  give:");
+
+    give_array(ptr_ptr);
 }
 
-give :: (ptr: ^^Foo) {
-    printf("ptr^^.b    %i\n", ptr^^.b);
-    printf("ptr^.b     %i\n", ptr^.b);
-    printf("ptr.b      %i\n", ptr.b);
+give_struct :: (ptr: ^^Foo) {
+    printf("ptr^^.b    %i\n", ptr^^.b, 0);
+    printf("ptr^.b     %i\n", ptr^.b, 0);
+    printf("ptr.b      %i\n", ptr.b, 0);
 }
 
-printf :: (s: string, n: i32) extern;
+give_array :: (ptr_ptr: ^^[6] i32) {
+    idx : usize = 0;
+    while idx < 6 {
+        printf("ptr_ptr^^[%i] %i\n", idx as i32, ptr_ptr^^[idx]);
+        printf("ptr_ptr^[%i]  %i\n", idx as i32, ptr_ptr^[idx]);
+        printf("ptr_ptr[%i]   %i\n", idx as i32, ptr_ptr[idx]);
+        idx = idx + 1;
+    }
+}
+
+printf :: (s: string, n1: i32, n2: i32) extern;

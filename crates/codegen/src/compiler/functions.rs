@@ -575,7 +575,23 @@ impl FunctionCompiler<'_> {
                     return None;
                 }
 
-                let array = self.compile_expr(array).unwrap(); // this will be usize
+                let mut array_ty = self.tys[self.module_name][array];
+                let mut array = self.compile_expr(array).unwrap(); // this will be usize
+
+                let mut required_derefs = 0;
+                while let Some((_, sub_ty)) = array_ty.as_pointer() {
+                    array_ty = sub_ty;
+                    required_derefs += 1;
+                }
+
+                println!("required derefs: {}", required_derefs);
+
+                for _ in 1..required_derefs {
+                    array = self
+                        .builder
+                        .ins()
+                        .load(self.pointer_ty, MemFlags::trusted(), array, 0);
+                }
 
                 let index_ty = self.tys[self.module_name][index]
                     .to_comp_type(self.pointer_ty)

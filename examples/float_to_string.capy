@@ -1,36 +1,37 @@
 libc :: import "std/libc.capy";
+ptr  :: import "std/ptr.capy";
 math :: import "std/math.capy";
 
 HYPHEN : u8 : 45;
 PERIOD : u8 : 46;
 ZERO : u8 : 48;
 
-reverse :: (buf: ^mut [20]u8, starting_offset: usize, len: usize) {
+reverse :: (buf: ^mut u8, starting_offset: usize, len: usize) {
     i := starting_offset;
     j := len - 1;
     temp := 0;
 
     while i < j {
-        temp = buf^[i];
-        buf^[i] = buf^[j];
-        buf^[j] = temp;
+        temp = ptr.read(buf, i);
+        ptr.write(buf, ptr.read(buf, j), i);
+        ptr.write(buf, temp, j);
         i = i + 1;
         j = j - 1;
     }
 }
 
-int_to_string :: (n: i32, buf: ^mut [20]u8, buf_offset: usize, required_digits: usize) -> usize {
+int_to_string :: (n: i32, buf: ^mut u8, buf_offset: usize, required_digits: usize) -> usize {
     idx := buf_offset;
 
     n := n;
     if n < 0 {
         n = -n;
-        buf^[idx] = HYPHEN; // 45 is the unicode hyphen
+        ptr.write(buf, HYPHEN, idx);
         idx = idx + 1;
     }
 
     if n == 0 {
-        buf^[idx] = ZERO;
+        ptr.write(buf, ZERO, idx);
         idx = idx + 1;
     }
 
@@ -38,13 +39,13 @@ int_to_string :: (n: i32, buf: ^mut [20]u8, buf_offset: usize, required_digits: 
         remainder := n % 10;
         n = n / 10;
 
-        buf^[idx] = {ZERO + remainder} as u8;
+        ptr.write(buf, {ZERO + remainder} as u8, idx);
 
         idx = idx + 1;
     }
 
     while idx - buf_offset < required_digits {
-        buf^[idx] = ZERO;
+        ptr.write(buf, ZERO, idx);
         idx = idx + 1;
     }
 
@@ -53,8 +54,8 @@ int_to_string :: (n: i32, buf: ^mut [20]u8, buf_offset: usize, required_digits: 
     idx
 }
 
-ftoa :: (n: f32, buf: ^mut [20]u8, afterpoint: usize) {
-    clear_buf(buf);
+ftoa :: (n: f32, buf: ^mut u8, afterpoint: usize) {
+    clear_buf(buf, 20);
 
     ipart := n as i32;
 
@@ -63,7 +64,7 @@ ftoa :: (n: f32, buf: ^mut [20]u8, afterpoint: usize) {
     idx := int_to_string(ipart, buf, 0, 0);
 
     if afterpoint != 0 {
-        buf^[idx] = PERIOD;
+        ptr.write(buf, PERIOD, idx);
 
         fpart = fpart * math.pow(10, afterpoint as i32) as f32;
 
@@ -72,17 +73,17 @@ ftoa :: (n: f32, buf: ^mut [20]u8, afterpoint: usize) {
     }
 }
 
-clear_buf :: (buf: ^mut [20]u8) {
+clear_buf :: (buf: ^mut u8, len: usize) {
     idx := 0;
-    while idx < 20 {
-        buf^[idx] = 0;
+    while idx < len {
+        ptr.write(buf, 0, idx);
         idx = idx + 1;
     }
 }
 
 main :: () {
     // libc.malloc returns a `^mut any`, so we must explicitly cast that to the pointer type we want
-    buf := libc.malloc(20) as ^mut [20]u8;
+    buf := libc.malloc(20) as ^mut u8;
 
     ftoa(3.14159, buf, 3);
     print_buf(buf);
@@ -123,7 +124,7 @@ main :: () {
     libc.free(buf);
 }
 
-print_buf :: (buf: ^[20]u8) {
+print_buf :: (buf: ^u8) {
     ptr := buf as ^any;
     ptr := ptr as string;
     libc.puts(ptr);

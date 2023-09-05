@@ -1,5 +1,3 @@
-#![feature(new_uninit)]
-
 mod compiler;
 mod compiler_defined;
 mod convert;
@@ -552,6 +550,7 @@ mod tests {
             "../../examples/float_to_string.capy",
             &[
                 "../../examples/std/libc.capy",
+                "../../examples/std/ptr.capy",
                 "../../examples/std/math.capy",
             ],
             "main",
@@ -671,6 +670,7 @@ mod tests {
             &["../../examples/std/libc.capy"],
             "main",
             expect![[r#"
+            struct auto deref:
             my_foo.b   8
             ptr^^^^.b  8
             ptr^^^.b   8
@@ -681,6 +681,42 @@ mod tests {
             ptr^^.b    8
             ptr^.b     8
             ptr.b      8
+
+            array auto deref:
+            ptr^[0] 4
+            ptr[0]  4
+            ptr^[1] 8
+            ptr[1]  8
+            ptr^[2] 15
+            ptr[2]  15
+            ptr_ptr^^[3] 16
+            ptr_ptr^[3]  16
+            ptr_ptr[3]   16
+            ptr_ptr^^[4] 23
+            ptr_ptr^[4]  23
+            ptr_ptr[4]   23
+            ptr_ptr^^[5] 42
+            ptr_ptr^[5]  42
+            ptr_ptr[5]   42
+              give:
+            ptr_ptr^^[0] 4
+            ptr_ptr^[0]  4
+            ptr_ptr[0]   4
+            ptr_ptr^^[1] 8
+            ptr_ptr^[1]  8
+            ptr_ptr[1]   8
+            ptr_ptr^^[2] 15
+            ptr_ptr^[2]  15
+            ptr_ptr[2]   15
+            ptr_ptr^^[3] 16
+            ptr_ptr^[3]  16
+            ptr_ptr[3]   16
+            ptr_ptr^^[4] 23
+            ptr_ptr^[4]  23
+            ptr_ptr[4]   23
+            ptr_ptr^^[5] 42
+            ptr_ptr^[5]  42
+            ptr_ptr[5]   42
 
             "#]],
             0,

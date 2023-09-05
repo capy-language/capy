@@ -176,7 +176,7 @@ pub fn eval_comptime_blocks<'a>(
                 results.insert(ctc, result);
             }
             CompType::Pointer(_) => {
-                let bytes = unsafe { Rc::<[u8]>::new_zeroed_slice(size as usize).assume_init() };
+                let bytes = vec![0u8; size as usize].into_rc_slice();
 
                 let comptime =
                     unsafe { mem::transmute::<_, fn(*const [u8]) -> *const u8>(code_ptr) };

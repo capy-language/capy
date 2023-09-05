@@ -5175,6 +5175,51 @@ mod tests {
     }
 
     #[test]
+    fn field_of_non_struct_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    my_foo := 5;
+
+                    ptr := ^^my_foo;
+
+                    ptr.a;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^{uint}
+                5 : ^^{uint}
+                6 : ^^{uint}
+                7 : <unknown>
+                8 : void
+                l0 : {uint}
+                l1 : ^^{uint}
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NonExistentField {
+                        field: i.intern("a"),
+                        found_ty: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Pointer {
+                                mutable: false,
+                                sub_ty: ResolvedTy::UInt(0).into(),
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    122..127,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
     fn non_existent_field_of_struct_ptr_ptr() {
         check(
             r#"
@@ -5273,6 +5318,240 @@ mod tests {
                 l1 : ^mut ^mut main::Foo
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn index_of_array_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr := [] i32 { 1, 2, 3 };
+
+                    ptr := ^arr;
+
+                    ptr[0];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                7 : [3]i32
+                8 : ^[3]i32
+                9 : ^[3]i32
+                10 : usize
+                11 : i32
+                12 : void
+                l0 : [3]i32
+                l1 : ^[3]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn index_of_array_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr := [] i32 { 1, 2, 3 };
+
+                    ptr := ^^arr;
+
+                    ptr[0];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                7 : [3]i32
+                8 : ^[3]i32
+                9 : ^^[3]i32
+                10 : ^^[3]i32
+                11 : usize
+                12 : i32
+                13 : void
+                l0 : [3]i32
+                l1 : ^^[3]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn index_of_non_array_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr := 5;
+
+                    ptr := ^^arr;
+
+                    ptr[0];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^{uint}
+                5 : ^^{uint}
+                6 : ^^{uint}
+                7 : {uint}
+                8 : <unknown>
+                9 : void
+                l0 : {uint}
+                l1 : ^^{uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IndexNonArray {
+                        found: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Pointer {
+                                mutable: false,
+                                sub_ty: ResolvedTy::UInt(0).into(),
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    116..122,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn index_too_large_of_array_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr := [] i32 { 1, 2, 3 };
+
+                    ptr := ^^arr;
+
+                    ptr[10];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                7 : [3]i32
+                8 : ^[3]i32
+                9 : ^^[3]i32
+                10 : ^^[3]i32
+                11 : usize
+                12 : i32
+                13 : void
+                l0 : [3]i32
+                l1 : ^^[3]i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IndexOutOfBounds {
+                        index: 10,
+                        actual_size: 3,
+                        array_ty: ResolvedTy::Pointer {
+                            mutable: false,
+                            sub_ty: ResolvedTy::Pointer {
+                                mutable: false,
+                                sub_ty: ResolvedTy::Array {
+                                    size: 3,
+                                    sub_ty: ResolvedTy::IInt(32).into(),
+                                }
+                                .into(),
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    133..140,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn mutable_index_of_array_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr := [] i32 { 1, 2, 3 };
+
+                    ptr :: ^mut ^mut arr;
+
+                    ptr[1] = 50;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                7 : [3]i32
+                8 : ^mut [3]i32
+                9 : ^mut ^mut [3]i32
+                10 : ^mut ^mut [3]i32
+                11 : usize
+                12 : i32
+                13 : i32
+                14 : void
+                l0 : [3]i32
+                l1 : ^mut ^mut [3]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn immutable_index_of_array_ptr_ptr() {
+        check(
+            r#"
+                main :: () {
+                    arr :: [] i32 { 1, 2, 3 };
+
+                    ptr := ^^arr;
+
+                    ptr[1] = 50;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : [3]i32
+                7 : [3]i32
+                8 : ^[3]i32
+                9 : ^^[3]i32
+                10 : ^^[3]i32
+                11 : usize
+                12 : i32
+                13 : {uint}
+                14 : void
+                l0 : [3]i32
+                l1 : ^^[3]i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::CannotMutate,
+                    133..144,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 105..110)),
+                )]
+            },
         );
     }
 }

@@ -318,7 +318,11 @@ impl InferenceCtx<'_> {
                 _ => ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr)),
             },
             Expr::Deref { pointer } => self.get_mutability(*pointer, assignment, true),
-            Expr::Index { array, .. } => self.get_mutability(*array, assignment, deref),
+            Expr::Index { array, .. } => self.get_mutability(
+                *array,
+                assignment,
+                deref || self.modules[&self.current_module.unwrap()][*array].is_pointer(),
+            ),
             Expr::Block {
                 tail_expr: Some(tail_expr),
                 ..
@@ -789,11 +793,17 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::Index { array, index } => {
                 let source_ty = self.infer_expr(*array);
+                // because it's annoying to do `foo^[0]`, this code lets you do `foo[0]`
+                let mut deref_source_ty = source_ty;
+                while let Some((_, sub_ty)) = deref_source_ty.as_pointer() {
+                    deref_source_ty = sub_ty;
+                }
+
                 let index_ty = self.infer_expr(*index);
 
-                if *source_ty == ResolvedTy::Unknown {
+                if *deref_source_ty == ResolvedTy::Unknown {
                     ResolvedTy::Unknown.into()
-                } else if let Some((actual_size, array_sub_ty)) = source_ty.as_array() {
+                } else if let Some((actual_size, array_sub_ty)) = deref_source_ty.as_array() {
                     if let hir::Expr::IntLiteral(index) = current_bodies!(self)[*index] {
                         if index >= actual_size {
                             self.diagnostics.push(TyDiagnostic {
@@ -900,12 +910,14 @@ impl InferenceCtx<'_> {
                     }
                     ResolvedTy::Pointer { sub_ty, .. } => sub_ty,
                     _ => {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::DerefNonPointer { found: deref_ty },
-                            module: self.current_module.unwrap(),
-                            range: current_bodies!(self).range_for_expr(expr),
-                            help: None,
-                        });
+                        if !deref_ty.is_unknown() {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::DerefNonPointer { found: deref_ty },
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(expr),
+                                help: None,
+                            });
+                        }
 
                         ResolvedTy::Unknown.into()
                     }

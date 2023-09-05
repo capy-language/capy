@@ -33,7 +33,7 @@ main :: () -> usize {
 }
 
 edit :: (arr: ^mut [3][3][3]i8) {
-    arr^[1][1] = [3]i8{ 127, 0, 42 };
+    arr[1][1] = [3]i8{ 127, 0, 42 };
 }
 
 // While an array is internally a pointer, a pointer to an array doesn't actually get
@@ -64,7 +64,7 @@ print_array_by_ref :: (arr: ^[3][3][3]i8, name: string) {
         while y < 3 {
             z : usize = 0;
             while z < 3 {
-                printf("%s[%i][%i][%i] = %i\n", name, x as i32, y as i32, z as i32, arr^[x][y][z]);
+                printf("%s[%i][%i][%i] = %i\n", name, x as i32, y as i32, z as i32, arr[x][y][z]);
                 z = z + 1;
             }
             y = y + 1;

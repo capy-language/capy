@@ -6,7 +6,7 @@ main :: () {
 
     idx := 0;
     while idx < 6 {
-        printf("%i\n", my_array_ptr^[idx]);
+        printf("%i\n", my_array_ptr[idx]);
         idx = idx + 1;
     }
 }
