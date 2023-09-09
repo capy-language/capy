@@ -57,7 +57,7 @@ macro_rules! def_ast_node {
 
         impl std::fmt::Debug for $kind {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_tuple("$kind").finish()
+                f.debug_tuple(stringify!($kind)).finish()
             }
         }
     };
@@ -84,7 +84,7 @@ macro_rules! def_ast_token {
 
         impl std::fmt::Debug for $kind {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_tuple("$kind").finish()
+                f.debug_tuple(stringify!($kind)).finish()
             }
         }
     };
@@ -133,8 +133,8 @@ macro_rules! def_multi_node {
         impl std::fmt::Debug for $node_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
-                    $(Self::$simple_child_name(node) => f.debug_tuple("$simple_child_name").field(node).finish(),)*
-                    $(Self::$multi_child_name(node) => f.debug_tuple("$multi_child_name").field(node).finish(),)*
+                    $(Self::$simple_child_name(node) => f.debug_tuple(stringify!($simple_child_name)).field(node).finish(),)*
+                    $(Self::$multi_child_name(node) => f.debug_tuple(stringify!($multi_child_name)).field(node).finish(),)*
                 }
             }
         }
@@ -193,7 +193,7 @@ macro_rules! def_multi_token {
         impl std::fmt::Debug for $node_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
-                    $(Self::$simple_child_name(node) => f.debug_tuple("$simple_child_name").field(node).finish(),)*
+                    $(Self::$simple_child_name(node) => f.debug_tuple(stringify!($simple_child_name)).field(node).finish(),)*
                 }
             }
         }
