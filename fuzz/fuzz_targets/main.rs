@@ -12,10 +12,9 @@ fuzz_target!(|s: &str| {
     let mut interner = interner::Interner::default();
     let world_index = hir::WorldIndex::default();
 
-    let mut interner = interner::Interner::default();
     let bodies_map = rustc_hash::FxHashMap::default();
-    let uid_gen = uid_gen::UIDGenerator::default();
-    let twr_arena = la_arena::Arena::new();
+    let mut twr_arena = la_arena::Arena::new();
+    let mut uid_gen = uid_gen::UIDGenerator::default();
 
     let tokens = &lexer::lex(s);
     let parse = parser::parse_source_file(tokens, s);
@@ -26,9 +25,21 @@ fuzz_target!(|s: &str| {
 
     let module = hir::FileName(interner.intern(&"fuzz_file"));
 
-    // let (index, _diagnostics) = hir::index(root, tree, &mut interner);
-    // let (bodies, _diagnostics) = hir::lower(root, tree, &index, &world_index, &mut interner);
-    // let (_inference, _diagnostics) = hir_ty::infer_all(&bodies, &index, &world_index);
-    let (inference, ty_diagnostics) =
+    let (index, _indexing_diagnostics) =
+        hir::index(root, tree, &mut uid_gen, &mut twr_arena, &mut interner);
+
+    let hir = hir::lower(
+        root,
+        tree,
+        &std::path::PathBuf::from("main.capy"),
+        &index,
+        &mut uid_gen,
+        &mut twr_arena,
+        &mut interner,
+        true,
+    ); // let (index, _diagnostics) = hir::index(root, tree, &mut interner);
+       // let (bodies, _diagnostics) = hir::lower(root, tree, &index, &world_index, &mut interner);
+       // let (_inference, _diagnostics) = hir_ty::infer_all(&bodies, &index, &world_index);
+    let (_inference, _ty_diagnostics) =
         hir_ty::InferenceCtx::new(&bodies_map, &world_index, &twr_arena).finish();
 });
