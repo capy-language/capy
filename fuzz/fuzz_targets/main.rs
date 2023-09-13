@@ -5,8 +5,6 @@ extern crate libfuzzer_sys;
 
 use ast::AstNode;
 use libfuzzer_sys::fuzz_target;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 fuzz_target!(|s: &str| {
     let mut interner = interner::Interner::default();
@@ -23,12 +21,10 @@ fuzz_target!(|s: &str| {
     let root = ast::Root::cast(tree.root(), tree).unwrap();
     let _diagnostics = ast::validation::validate(root, tree);
 
-    let module = hir::FileName(interner.intern(&"fuzz_file"));
-
     let (index, _indexing_diagnostics) =
         hir::index(root, tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-    let hir = hir::lower(
+    let _hir = hir::lower(
         root,
         tree,
         &std::path::PathBuf::from("main.capy"),
