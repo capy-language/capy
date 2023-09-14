@@ -4048,7 +4048,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::CannotMutate,
                     114..122,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 87..91)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..91)),
                 )]
             },
         );
@@ -4081,7 +4081,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::CannotMutate,
                     118..126,
-                    Some((TyDiagnosticHelpKind::NotMutatingRefThroughDeref, 118..121)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
                 )]
             },
         );
