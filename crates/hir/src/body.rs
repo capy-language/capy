@@ -13,7 +13,7 @@ use crate::{
     TyWithRange, UIDGenerator,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
     assigns: Arena<Assign>,
@@ -131,7 +131,7 @@ pub struct LocalDef {
     pub range: TextRange,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Assign {
     pub source: Idx<Expr>,
     pub value: Idx<Expr>,
@@ -1099,6 +1099,10 @@ impl Bodies {
 
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
         self.expr_ranges[expr]
+    }
+
+    pub fn get_range_for_expr(&self, expr: Idx<Expr>) -> Option<TextRange> {
+        self.expr_ranges.get(expr).copied()
     }
 
     pub fn comptimes(&self) -> impl Iterator<Item = Idx<Comptime>> + '_ {

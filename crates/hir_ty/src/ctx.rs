@@ -40,7 +40,7 @@ enum ExprMutability {
     Mutable,
     ImmutableBinding(TextRange),
     NotMutatingRefThroughDeref(TextRange),
-    ImmutableRef(TextRange),
+    ImmutableRef(Option<TextRange>),
     ImmutableParam(TextRange, bool),
     ImmutableGlobal(TextRange),
     CannotMutate(TextRange),
@@ -57,7 +57,9 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::ImmutableBinding,
                 range,
             }),
-            ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
+            // TODO(@lenawanel): properly handle the case where we don't have a
+            //                   corresponding text range for a type
+            ExprMutability::ImmutableRef(Some(range)) => Some(TyDiagnosticHelp {
                 kind: TyDiagnosticHelpKind::ImmutableRef,
                 range,
             }),
@@ -73,7 +75,7 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::NotMutatingRefThroughDeref,
                 range,
             }),
-            ExprMutability::Mutable => None,
+            _ => None,
         }
     }
 }
@@ -315,7 +317,7 @@ impl InferenceCtx<'_> {
                 // (true, false) => ExprMutability::NotMutatingRefThroughDeref(
                 //     current_bodies!(self).range_for_expr(expr),
                 // ),
-                _ => ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr)),
+                _ => ExprMutability::ImmutableRef(current_bodies!(self).get_range_for_expr(expr)),
             },
             Expr::Deref { pointer } => self.get_mutability(*pointer, assignment, true),
             Expr::Index { array, .. } => self.get_mutability(
@@ -344,7 +346,7 @@ impl InferenceCtx<'_> {
                             )
                         } else {
                             ExprMutability::ImmutableRef(
-                                current_bodies!(self).range_for_expr(local_def.value),
+                                current_bodies!(self).get_range_for_expr(local_def.value),
                             )
                         }
                     }
@@ -361,7 +363,7 @@ impl InferenceCtx<'_> {
                             ExprMutability::Mutable
                         } else {
                             // todo: change this to be the range of the param's type
-                            ExprMutability::ImmutableRef(*range)
+                            ExprMutability::ImmutableRef(Some(*range))
                         }
                     }
                     Some((mutable, _)) if assignment => {
@@ -370,7 +372,7 @@ impl InferenceCtx<'_> {
                                 current_bodies!(self).range_for_expr(expr),
                             )
                         } else {
-                            ExprMutability::ImmutableRef(*range)
+                            ExprMutability::ImmutableRef(Some(*range))
                         }
                     }
                     _ => ExprMutability::ImmutableParam(*range, assignment),
@@ -411,7 +413,7 @@ impl InferenceCtx<'_> {
                         } else {
                             println!("here");
                             // todo: use the actual range of the struct literal, not the range of this field name
-                            ExprMutability::ImmutableRef(field.range)
+                            ExprMutability::ImmutableRef(Some(field.range))
                         }
                     }
                     _ => self.get_mutability(
@@ -431,7 +433,9 @@ impl InferenceCtx<'_> {
                             ExprMutability::Mutable
                         } else {
                             // todo: change this to be the range of the param's type
-                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                            ExprMutability::ImmutableRef(
+                                current_bodies!(self).get_range_for_expr(expr),
+                            )
                         }
                     }
                     Some((mutable, _)) if assignment => {
@@ -440,7 +444,9 @@ impl InferenceCtx<'_> {
                                 current_bodies!(self).range_for_expr(expr),
                             )
                         } else {
-                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
+                            ExprMutability::ImmutableRef(
+                                current_bodies!(self).get_range_for_expr(expr),
+                            )
                         }
                     }
                     _ => ExprMutability::CannotMutate(current_bodies!(self).range_for_expr(expr)),

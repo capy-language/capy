@@ -211,6 +211,7 @@ pub enum TyDiagnosticHelpKind {
     MutableVariable,
 }
 
+#[derive(Debug)]
 pub struct InferenceCtx<'a> {
     current_module: Option<hir::FileName>,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
@@ -358,7 +359,12 @@ impl<'a> InferenceCtx<'a> {
 
         // this is to make sure we don't get into recursive stuff like this:
         // a :: (b: a) {}
-        self.signatures.insert(fqn, Signature::Global(GlobalSignature { ty: ResolvedTy::NotYetResolved.into() }));
+        self.signatures.insert(
+            fqn,
+            Signature::Global(GlobalSignature {
+                ty: ResolvedTy::NotYetResolved.into(),
+            }),
+        );
 
         let param_tys: Vec<_> = function
             .params
@@ -527,9 +533,7 @@ impl<'a> InferenceCtx<'a> {
 
                     if *global_ty == ResolvedTy::NotYetResolved {
                         self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::NotYetResolved {
-                                path: path.path(),
-                            },
+                            kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
                             module: self.current_module.unwrap(),
                             range: name_range,
                             help: None,
@@ -605,9 +609,7 @@ impl<'a> InferenceCtx<'a> {
                         Signature::Global(GlobalSignature { ty }) => {
                             if *ty == ResolvedTy::NotYetResolved {
                                 self.diagnostics.push(TyDiagnostic {
-                                    kind: TyDiagnosticKind::NotYetResolved {
-                                        path: path.path(),
-                                    },
+                                    kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
                                     module: self.current_module.unwrap(),
                                     range: name_range,
                                     help: None,
@@ -615,7 +617,7 @@ impl<'a> InferenceCtx<'a> {
                             }
 
                             ResolvedTy::Unknown.into()
-                        },
+                        }
                     }
                 }
             },
