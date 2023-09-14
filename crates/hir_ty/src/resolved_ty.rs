@@ -402,14 +402,14 @@ impl ResolvedTy {
     ///
     /// diagram stolen from vlang docs bc i liked it
     pub(crate) fn can_fit_into(&self, expected: &ResolvedTy) -> bool {
-        assert_ne!(*self, ResolvedTy::Unknown);
-        assert_ne!(*expected, ResolvedTy::Unknown);
-
         if self == expected {
             return true;
         }
 
         match (self, expected) {
+            // the callers of can_fit_into should probably
+            // execute their own logic if one of the types is unknown
+            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => true,
             (ResolvedTy::IInt(found_bit_width), ResolvedTy::IInt(expected_bit_width))
             | (ResolvedTy::UInt(found_bit_width), ResolvedTy::UInt(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width <= expected_bit_width
@@ -555,9 +555,6 @@ impl ResolvedTy {
                     return true;
                 }
             }
-            // just lie so no errors get thrown
-            // todo: do we want to do this?
-            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => return true,
             _ => {}
         }
 
