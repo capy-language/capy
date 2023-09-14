@@ -27,7 +27,7 @@ pub struct Bodies {
     imports: FxHashSet<FileName>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Missing,
     IntLiteral(u64),
