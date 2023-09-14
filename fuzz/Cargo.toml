@@ -9,10 +9,13 @@ cargo-fuzz = true
 ast = {path = "../crates/ast"}
 hir = {path = "../crates/hir"}
 hir_ty = {path = "../crates/hir_ty"}
-interner = {path = "../crates/interner"}
+interner = { version = "0.1.0", path = "../crates/interner" }
+la-arena = "0.2.0"
 lexer = {path = "../crates/lexer"}
 libfuzzer-sys = "0.4.2"
 parser = {path = "../crates/parser"}
+rustc-hash = "1.1.0"
+uid_gen = { version = "0.1.0", path = "../crates/uid_gen" }
 
 [workspace]
 
