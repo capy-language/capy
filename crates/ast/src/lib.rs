@@ -1,7 +1,7 @@
 pub mod validation;
 
 use syntax::{NodeKind, SyntaxNode, SyntaxToken, SyntaxTree, TokenKind};
-use text_size::{TextRange, TextSize};
+use text_size::TextRange;
 
 pub trait AstNode: Copy + Sized {
     fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self>;
@@ -29,16 +29,11 @@ pub trait AstToken: Sized {
     fn range(self, tree: &SyntaxTree) -> TextRange {
         self.syntax().range(tree)
     }
-
-    fn range_after(self, tree: &SyntaxTree) -> TextRange {
-        let range = self.syntax().range(tree);
-        TextRange::new(range.end(), range.end() + TextSize::from(1))
-    }
 }
 
 macro_rules! def_ast_node {
     ($kind:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
         pub struct $kind(SyntaxNode);
 
         impl AstNode for $kind {
@@ -65,7 +60,7 @@ macro_rules! def_ast_node {
 
 macro_rules! def_ast_token {
     ($kind:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
         pub struct $kind(SyntaxToken);
 
         impl AstToken for $kind {
@@ -99,7 +94,7 @@ macro_rules! def_multi_node {
         ;
         $(fn $fn_name:ident () -> $fn_return_ty:ty)*
     ) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
         pub enum $node_name {
             $($simple_child_name($simple_child_node_kind),)*
             $($multi_child_name($multi_child_node_kind),)*
@@ -169,7 +164,7 @@ macro_rules! def_multi_token {
         $node_name:ident:
         $($simple_child_name:ident -> $simple_child_token_kind:ident)*
     ) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
         pub enum $node_name {
             $($simple_child_name($simple_child_token_kind),)*
         }
@@ -251,7 +246,6 @@ def_multi_node! {
     ;
     ;
     fn name() -> Option<Ident>
-    fn colon() -> Option<Colon>
     fn ty() -> Option<Ty>
     fn value() -> Option<Expr>
 }
@@ -260,10 +254,6 @@ def_ast_node!(Binding);
 
 impl Binding {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
-        token(self, tree)
-    }
-
-    pub fn colon(self, tree: &SyntaxTree) -> Option<Colon> {
         token(self, tree)
     }
 
@@ -283,10 +273,6 @@ impl VarDef {
         token(self, tree)
     }
 
-    pub fn colon(self, tree: &SyntaxTree) -> Option<Colon> {
-        token(self, tree)
-    }
-
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
@@ -301,10 +287,6 @@ def_ast_node!(Assign);
 impl Assign {
     pub fn source(self, tree: &SyntaxTree) -> Option<Source> {
         node(self, tree)
-    }
-
-    pub fn equals(self, tree: &SyntaxTree) -> Option<Equals> {
-        token(self, tree)
     }
 
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {

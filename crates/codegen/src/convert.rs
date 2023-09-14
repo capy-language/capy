@@ -141,7 +141,7 @@ impl ToCompType for ResolvedTy {
                     signed: true,
                 }),
                 64 => CompType::Number(NumberType {
-                    ty: types::F32,
+                    ty: types::F64,
                     float: true,
                     signed: true,
                 }),

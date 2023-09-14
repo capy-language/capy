@@ -1,7 +1,7 @@
 use std::fmt;
 
 use syntax::TokenKind;
-use text_size::{TextSize, TextRange};
+use text_size::{TextRange, TextSize};
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct SyntaxError {
@@ -11,13 +11,8 @@ pub struct SyntaxError {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyntaxErrorKind {
-    Missing { 
-        offset: TextSize 
-    },
-    Unexpected { 
-        found: TokenKind,
-        range: TextRange,
-    },
+    Missing { offset: TextSize },
+    Unexpected { found: TokenKind, range: TextRange },
 }
 
 impl fmt::Debug for SyntaxError {
@@ -26,8 +21,13 @@ impl fmt::Debug for SyntaxError {
         match self.kind {
             SyntaxErrorKind::Missing { offset } => write!(f, "{}", u32::from(offset))?,
             SyntaxErrorKind::Unexpected { range, .. } => {
-                write!(f, "{}..{}", u32::from(range.start()), u32::from(range.end()))?;
-            },
+                write!(
+                    f,
+                    "{}..{}",
+                    u32::from(range.start()),
+                    u32::from(range.end())
+                )?;
+            }
         }
         write!(f, ": ")?;
 
@@ -40,12 +40,12 @@ impl fmt::Debug for SyntaxError {
             SyntaxErrorKind::Missing { .. } => {
                 write!(f, "missing ")?;
                 format_expected_syntax(f)?;
-            },
+            }
             SyntaxErrorKind::Unexpected { found, .. } => {
                 write!(f, "expected ")?;
                 format_expected_syntax(f)?;
                 write!(f, " but found {:?}", found)?;
-            },
+            }
         }
 
         Ok(())
@@ -72,19 +72,19 @@ mod tests {
     //     let error: SyntaxError = if let Some(found) = found {
     //         SyntaxError {
     //             expected_syntax,
-    //             kind: SyntaxErrorKind::Unexpected { 
-    //                 found, 
+    //             kind: SyntaxErrorKind::Unexpected {
+    //                 found,
     //                 range: {
     //                     let start = range.start.into();
     //                     let end = range.end.into();
     //                     TextRange::new(start, end)
-    //                 } 
+    //                 }
     //             }
     //         }
     //     } else {
     //         SyntaxError {
     //             expected_syntax,
-    //             kind: SyntaxErrorKind::Missing { 
+    //             kind: SyntaxErrorKind::Missing {
     //                 offset: range.start.into()
     //             }
     //         }
@@ -127,7 +127,7 @@ mod tests {
     //         "error at 100..105: expected number, identifier, '-' or '(' but found ';'",
     //     );
     // }
-    
+
     // #[test]
     // fn two_expected_did_find() {
     //     check(

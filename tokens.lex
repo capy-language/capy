@@ -1,3 +1,5 @@
+// This is a DSL I quickly put together to make it easier to
+// make new tokens or alter existing tokens
 Whitespace = /[ \r\n]+/
 As = 'as'
 If = 'if'
@@ -47,5 +49,7 @@ _CommentContents
 Colon = ':'
 Semicolon = ';'
 Error = !
+// this will internally get replaced by _Quote, _Escape, and _StringContents
 __InternalString = /"([^"\\\n]|\\.)*"?"/
+// this will internally get replaced by _CommentLeader and _CommentContents
 __InternalComment = ///.*/

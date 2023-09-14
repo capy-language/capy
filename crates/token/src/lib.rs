@@ -1,7 +1,7 @@
 use std::fmt;
 
 use syntax::TokenKind;
-use text_size::{TextSize, TextRange};
+use text_size::{TextRange, TextSize};
 
 #[derive(PartialEq)]
 pub struct Tokens {

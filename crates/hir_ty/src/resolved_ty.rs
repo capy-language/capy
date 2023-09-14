@@ -39,6 +39,7 @@ pub enum ResolvedTy {
     },
     Struct {
         fqn: Option<hir::Fqn>,
+        uid: u32,
         fields: Vec<(hir::Name, Intern<ResolvedTy>)>,
     },
     Void,
@@ -401,14 +402,14 @@ impl ResolvedTy {
     ///
     /// diagram stolen from vlang docs bc i liked it
     pub(crate) fn can_fit_into(&self, expected: &ResolvedTy) -> bool {
-        assert_ne!(*self, ResolvedTy::Unknown);
-        assert_ne!(*expected, ResolvedTy::Unknown);
-
         if self == expected {
             return true;
         }
 
         match (self, expected) {
+            // the callers of can_fit_into should probably
+            // execute their own logic if one of the types is unknown
+            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => true,
             (ResolvedTy::IInt(found_bit_width), ResolvedTy::IInt(expected_bit_width))
             | (ResolvedTy::UInt(found_bit_width), ResolvedTy::UInt(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width <= expected_bit_width
@@ -453,22 +454,11 @@ impl ResolvedTy {
                 },
             ) => found_size == expected_size && found_ty.can_fit_into(expected_ty),
             (
+                ResolvedTy::Struct { uid: found_uid, .. },
                 ResolvedTy::Struct {
-                    fields: found_fields,
-                    ..
+                    uid: expected_uid, ..
                 },
-                ResolvedTy::Struct {
-                    fields: expected_fields,
-                    ..
-                },
-            ) => {
-                found_fields.len() == expected_fields.len()
-                    && found_fields.iter().zip(expected_fields.iter()).all(
-                        |((found_name, found_ty), (expected_name, expected_ty))| {
-                            found_name == expected_name && found_ty.can_fit_into(expected_ty)
-                        },
-                    )
-            }
+            ) => found_uid == expected_uid,
             (
                 ResolvedTy::Distinct { uid: found_uid, .. },
                 ResolvedTy::Distinct {
@@ -489,6 +479,26 @@ impl ResolvedTy {
                 ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
                 ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
             ) => true,
+            // todo: right now all the fields must be exactly equal,
+            // technically it would be possible to make it so that fields autocast
+            // but I'm lazy and that would require some changes in the codegen crate
+            (
+                ResolvedTy::Struct {
+                    fields: found_fields,
+                    ..
+                },
+                ResolvedTy::Struct {
+                    fields: expected_fields,
+                    ..
+                },
+            ) => {
+                found_fields.len() == expected_fields.len()
+                    && found_fields.iter().zip(expected_fields.iter()).all(
+                        |((found_name, found_ty), (expected_name, expected_ty))| {
+                            found_name == expected_name && found_ty.is_equal_to(expected_ty)
+                        },
+                    )
+            }
             (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
                 from.primitive_castable(to)
             }
@@ -510,6 +520,7 @@ impl ResolvedTy {
                     || **found_sub_ty == ResolvedTy::Any
                     || **expected_sub_ty == ResolvedTy::Any)
             }
+            // string to and from ^any and ^u8
             (ResolvedTy::String, ResolvedTy::Pointer { sub_ty, .. })
             | (ResolvedTy::Pointer { sub_ty, .. }, ResolvedTy::String) => {
                 matches!(sub_ty.as_ref(), ResolvedTy::Any | ResolvedTy::UInt(8))
@@ -544,9 +555,6 @@ impl ResolvedTy {
                     return true;
                 }
             }
-            // just lie so no errors get thrown
-            // todo: do we want to do this?
-            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => return true,
             _ => {}
         }
 

@@ -837,7 +837,7 @@ impl<'a> Ctx<'a> {
                     }
                     Some(size)
                 }
-                _ => unreachable!(), // this was already filtered out
+                _ => None,
             });
 
         Expr::Array { size, items, ty }

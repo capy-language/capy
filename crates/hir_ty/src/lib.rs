@@ -325,7 +325,7 @@ impl<'a> InferenceCtx<'a> {
             }
             _ => {
                 let sig = Signature::Global(GlobalSignature {
-                    ty: self.resolve_ty(global.ty),
+                    ty: self.resolve_ty(global.ty, &mut FxHashSet::default()),
                 });
 
                 self.signatures.insert(fqn, sig.clone());
@@ -369,12 +369,12 @@ impl<'a> InferenceCtx<'a> {
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| self.resolve_ty(param.ty))
+            .map(|param| self.resolve_ty(param.ty, &mut FxHashSet::default()))
             .collect();
 
-        let return_ty = self.resolve_ty(function.return_ty);
+        let return_ty = self.resolve_ty(function.return_ty, &mut FxHashSet::default());
 
-        let ty_annotation = self.resolve_ty(function.ty_annotation);
+        let ty_annotation = self.resolve_ty(function.ty_annotation, &mut FxHashSet::default());
         let sig = match ty_annotation.as_ref() {
             ResolvedTy::Unknown => {
                 let sig = Signature::Function(FunctionSignature {
@@ -478,12 +478,12 @@ impl<'a> InferenceCtx<'a> {
         let hir::Lambda { function, body } =
             &self.bodies_map[&self.current_module.unwrap()][lambda];
 
-        let return_ty = self.resolve_ty(function.return_ty);
+        let return_ty = self.resolve_ty(function.return_ty, &mut FxHashSet::default());
 
         let param_tys: Vec<_> = function
             .params
             .iter()
-            .map(|param| self.resolve_ty(param.ty))
+            .map(|param| self.resolve_ty(param.ty, &mut FxHashSet::default()))
             .collect();
 
         let sig = FunctionSignature {
@@ -505,7 +505,11 @@ impl<'a> InferenceCtx<'a> {
         sig
     }
 
-    fn path_with_range_to_ty(&mut self, path: hir::PathWithRange) -> Intern<ResolvedTy> {
+    fn path_with_range_to_ty(
+        &mut self,
+        path: hir::PathWithRange,
+        resolve_chain: &mut FxHashSet<u32>,
+    ) -> Intern<ResolvedTy> {
         let (fqn, module_range, name_range) = match path {
             hir::PathWithRange::ThisModule(NameWithRange { name, range }) => (
                 hir::Fqn {
@@ -561,24 +565,25 @@ impl<'a> InferenceCtx<'a> {
 
                     let old_module = self.current_module.replace(fqn.module);
 
-                    let actual_ty = self.parse_expr_to_ty(global_body);
+                    let actual_ty = self.parse_expr_to_ty(global_body, resolve_chain);
 
                     self.current_module = old_module;
 
                     // todo: here the intern ptr changes, even though the type is really still the same
                     match actual_ty.as_ref() {
-                        ResolvedTy::Distinct {
-                            fqn: None,
-                            uid,
-                            ty: distinct_ty,
-                        } => ResolvedTy::Distinct {
+                        ResolvedTy::Distinct { fqn: None, uid, ty } => ResolvedTy::Distinct {
                             fqn: Some(fqn),
                             uid: *uid,
-                            ty: *distinct_ty,
+                            ty: *ty,
                         }
                         .into(),
-                        ResolvedTy::Struct { fqn: None, fields } => ResolvedTy::Struct {
+                        ResolvedTy::Struct {
+                            fqn: None,
+                            uid,
+                            fields,
+                        } => ResolvedTy::Struct {
                             fqn: Some(fqn),
+                            uid: *uid,
                             fields: fields.clone(),
                         }
                         .into(),
@@ -642,11 +647,15 @@ impl<'a> InferenceCtx<'a> {
         }
     }
 
-    fn parse_expr_to_ty(&mut self, expr: Idx<hir::Expr>) -> Intern<ResolvedTy> {
+    fn parse_expr_to_ty(
+        &mut self,
+        expr: Idx<hir::Expr>,
+        resolve_chain: &mut FxHashSet<u32>,
+    ) -> Intern<ResolvedTy> {
         match &self.bodies_map[&self.current_module.unwrap()][expr] {
             hir::Expr::Missing => ResolvedTy::Unknown.into(),
             hir::Expr::Ref { mutable, expr } => {
-                let sub_ty = self.parse_expr_to_ty(*expr);
+                let sub_ty = self.parse_expr_to_ty(*expr, resolve_chain);
 
                 ResolvedTy::Pointer {
                     mutable: *mutable,
@@ -695,10 +704,10 @@ impl<'a> InferenceCtx<'a> {
                     return ResolvedTy::Unknown.into();
                 }
 
-                self.parse_expr_to_ty(local_def.value)
+                self.parse_expr_to_ty(local_def.value, resolve_chain)
             }
             hir::Expr::SelfGlobal(name) => {
-                self.path_with_range_to_ty(hir::PathWithRange::ThisModule(*name))
+                self.path_with_range_to_ty(hir::PathWithRange::ThisModule(*name), resolve_chain)
             }
             hir::Expr::Param { .. } => {
                 self.diagnostics.push(TyDiagnostic {
@@ -724,7 +733,7 @@ impl<'a> InferenceCtx<'a> {
                             name_range: field.range,
                         };
 
-                        self.path_with_range_to_ty(path)
+                        self.path_with_range_to_ty(path, resolve_chain)
                     }
                     _ => {
                         let expr_ty = self.infer_expr(expr);
@@ -745,7 +754,7 @@ impl<'a> InferenceCtx<'a> {
                     }
                 }
             }
-            hir::Expr::PrimitiveTy { ty } => self.resolve_ty(*ty),
+            hir::Expr::PrimitiveTy { ty } => self.resolve_ty(*ty, resolve_chain),
             _ => {
                 let expr_ty = self.infer_expr(expr);
                 self.diagnostics.push(TyDiagnostic {
@@ -763,7 +772,11 @@ impl<'a> InferenceCtx<'a> {
         }
     }
 
-    fn resolve_ty(&mut self, ty: Idx<hir::TyWithRange>) -> Intern<ResolvedTy> {
+    fn resolve_ty(
+        &mut self,
+        ty: Idx<hir::TyWithRange>,
+        resolve_chain: &mut FxHashSet<u32>,
+    ) -> Intern<ResolvedTy> {
         match self.twr_arena[ty].clone() {
             hir::TyWithRange::Unknown => ResolvedTy::Unknown.into(),
             hir::TyWithRange::IInt { bit_width, .. } => ResolvedTy::IInt(bit_width).into(),
@@ -773,45 +786,65 @@ impl<'a> InferenceCtx<'a> {
             hir::TyWithRange::String { .. } => ResolvedTy::String.into(),
             hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
                 size,
-                sub_ty: self.resolve_ty(sub_ty),
+                sub_ty: self.resolve_ty(sub_ty, resolve_chain),
             }
             .into(),
             hir::TyWithRange::Pointer {
                 mutable, sub_ty, ..
             } => ResolvedTy::Pointer {
                 mutable,
-                sub_ty: self.resolve_ty(sub_ty),
+                sub_ty: self.resolve_ty(sub_ty, resolve_chain),
             }
             .into(),
-            hir::TyWithRange::Distinct { uid, ty, .. } => ResolvedTy::Distinct {
-                fqn: None,
-                uid,
-                ty: self.resolve_ty(ty),
+            hir::TyWithRange::Distinct { uid, ty, .. } => {
+                // we don't want to get into circular distinct types
+                if resolve_chain.insert(uid) {
+                    ResolvedTy::Distinct {
+                        fqn: None,
+                        uid,
+                        ty: self.resolve_ty(ty, resolve_chain),
+                    }
+                    .into()
+                } else {
+                    ResolvedTy::Unknown.into()
+                }
             }
-            .into(),
             hir::TyWithRange::Type { .. } => ResolvedTy::Type.into(),
             hir::TyWithRange::Any { .. } => ResolvedTy::Any.into(),
-            hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path),
+            hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path, resolve_chain),
             hir::TyWithRange::Void { .. } => ResolvedTy::Void.into(),
             hir::TyWithRange::Function {
                 params, return_ty, ..
             } => ResolvedTy::Function {
                 params: params
                     .into_iter()
-                    .map(|param| self.resolve_ty(param))
+                    .map(|param| self.resolve_ty(param, &mut resolve_chain.clone()))
                     .collect(),
-                return_ty: self.resolve_ty(return_ty),
+                return_ty: self.resolve_ty(return_ty, &mut resolve_chain.clone()),
             }
             .into(),
-            hir::TyWithRange::Struct { fields, .. } => ResolvedTy::Struct {
-                fqn: None,
-                fields: fields
-                    .iter()
-                    .cloned()
-                    .filter_map(|(name, ty)| name.map(|name| (name, self.resolve_ty(ty))))
-                    .collect(),
+            hir::TyWithRange::Struct { fields, uid, .. } => {
+                // we don't want to get into circular structs
+                if resolve_chain.insert(uid) {
+                    // the struct hasn't been resolved yet
+                    ResolvedTy::Struct {
+                        fqn: None,
+                        uid,
+                        fields: fields
+                            .iter()
+                            .cloned()
+                            .filter_map(|(name, ty)| {
+                                name.map(|name| {
+                                    (name, self.resolve_ty(ty, &mut resolve_chain.clone()))
+                                })
+                            })
+                            .collect(),
+                    }
+                    .into()
+                } else {
+                    ResolvedTy::Unknown.into()
+                }
             }
-            .into(),
         }
     }
 }
@@ -965,8 +998,12 @@ impl ResolvedTy {
                 res
             }
             Self::Struct { fqn: Some(fqn), .. } => fqn.to_string(project_root, interner),
-            Self::Struct { fqn: None, fields } => {
-                let mut res = "struct {".to_string();
+            Self::Struct {
+                fqn: None,
+                uid,
+                fields,
+            } => {
+                let mut res = format!("struct'{} {{", uid);
 
                 for (idx, (name, ty)) in fields.iter().enumerate() {
                     res.push_str(interner.lookup(name.0));
@@ -2920,11 +2957,11 @@ mod tests {
     fn recursive_param_ty() {
         check(
             r#"
-                foo :: (bar: foo);
+                foo :: (bar: foo) {};
             "#,
             expect![[r#"
                 main::foo : (<unknown>) -> void
-                0 : <unknown>
+                0 : void
             "#]],
             |interner| {
                 [(
@@ -2932,6 +2969,179 @@ mod tests {
                         path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
                     },
                     30..33,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_global_ty_annotation() {
+        check(
+            r#"
+                foo : foo : 5;
+            "#,
+            expect![[r#"
+                main::foo : <unknown>
+                0 : i32
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
+                    },
+                    23..26,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_local_ty_annotation() {
+        // this is handled in hir lowering
+        check(
+            r#"
+                foo :: () {
+                    a : a = 5;
+                };
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                2 : void
+                l0 : {uint}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn recursive_struct() {
+        // this is handled in hir lowering
+        check(
+            r#"
+                Foo :: struct {
+                    bar: Foo,
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                0 : type
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                    },
+                    58..61,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_struct_and_multiple_instances() {
+        // this is handled in hir lowering
+        check(
+            r#"
+                Foo :: struct {
+                    bar: Foo,
+                };
+
+                global_foo :: comptime {
+                    Foo { bar: 0 }
+                };
+
+                main :: () {
+                    my_foo := Foo {
+                        bar: true,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::global_foo : main::Foo
+                main::main : () -> void
+                0 : type
+                2 : {uint}
+                3 : main::Foo
+                4 : main::Foo
+                5 : main::Foo
+                8 : bool
+                9 : main::Foo
+                10 : void
+                l0 : main::Foo
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                    },
+                    58..61,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_distinct() {
+        // this is handled in hir lowering
+        check(
+            r#"
+                Foo :: distinct Foo;
+            "#,
+            expect![[r#"
+                main::Foo : type
+                0 : type
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                    },
+                    33..36,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_distinct_and_multiple_instances() {
+        // this is handled in hir lowering
+        check(
+            r#"
+                Foo :: distinct Foo;
+
+                global_foo : Foo : comptime {
+                    0
+                };
+
+                main :: () {
+                    my_foo : Foo = 0;
+                }
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::global_foo : main::Foo
+                main::main : () -> void
+                0 : type
+                1 : i32
+                2 : i32
+                3 : i32
+                5 : {uint}
+                6 : void
+                l0 : main::Foo
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                    },
+                    33..36,
                     None,
                 )]
             },
@@ -4404,6 +4614,7 @@ mod tests {
                         module: hir::FileName(i.intern("main.capy")),
                         name: hir::Name(i.intern("Person")),
                     }),
+                    uid: 0,
                     fields: vec![
                         (hir::Name(i.intern("name")), ResolvedTy::String.into()),
                         (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
@@ -4514,6 +4725,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Person")),
                             }),
+                            uid: 0,
                             fields: vec![
                                 (hir::Name(i.intern("name")), ResolvedTy::String.into()),
                                 (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
@@ -4730,6 +4942,414 @@ mod tests {
                 l1 : i32
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn no_implicit_struct_cast() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                9 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Bar")),
+                            }),
+                            uid: 1,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                        found: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo")),
+                            }),
+                            uid: 0,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    404..410,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn cast_struct_same_fields() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                10 : main::Bar
+                11 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn cast_struct_diff_field_order() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    b: i8,
+                    a: i32,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                10 : main::Bar
+                11 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo")),
+                            }),
+                            uid: 0,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                        to: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Bar")),
+                            }),
+                            uid: 1,
+                            fields: vec![
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    404..417,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn cast_struct_diff_field_ty() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    a: i32,
+                    b: i16,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                10 : main::Bar
+                11 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo")),
+                            }),
+                            uid: 0,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                        to: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Bar")),
+                            }),
+                            uid: 1,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(16).into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    405..418,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn cast_struct_diff_field_name() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    x: i32,
+                    y: i8,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                10 : main::Bar
+                11 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo")),
+                            }),
+                            uid: 0,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                        to: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Bar")),
+                            }),
+                            uid: 1,
+                            fields: vec![
+                                (hir::Name(i.intern("x")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("y")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    404..417,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn cast_struct_diff_field_len() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: i8,
+                };
+
+                Bar :: struct {
+                    a: i32,
+                    b: i8,
+                    c: string,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo {
+                        a: 1,
+                        b: 2,
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                4 : i32
+                5 : i8
+                6 : main::Foo
+                8 : main::Foo
+                10 : main::Bar
+                11 : void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo")),
+                            }),
+                            uid: 0,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                            ],
+                        }
+                        .into(),
+                        to: ResolvedTy::Struct {
+                            fqn: Some(hir::Fqn {
+                                module: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Bar")),
+                            }),
+                            uid: 1,
+                            fields: vec![
+                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("c")), ResolvedTy::String.into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    435..448,
+                    None,
+                )]
+            },
         );
     }
 
@@ -5323,6 +5943,7 @@ mod tests {
                                         module: hir::FileName(i.intern("main.capy")),
                                         name: hir::Name(i.intern("Foo")),
                                     }),
+                                    uid: 0,
                                     fields: vec![(
                                         hir::Name(i.intern("a")),
                                         ResolvedTy::IInt(32).into(),

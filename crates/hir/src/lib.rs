@@ -128,6 +128,7 @@ pub enum TyWithRange {
         range: TextRange,
     },
     Struct {
+        uid: u32,
         fields: Vec<(Option<Name>, Idx<TyWithRange>)>,
         range: TextRange,
     },
@@ -378,6 +379,7 @@ impl TyWithRange {
                 }
 
                 Ok(TyWithRange::Struct {
+                    uid: uid_gen.generate_unique_id(),
                     fields,
                     range: struct_decl.range(tree),
                 })

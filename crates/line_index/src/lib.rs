@@ -17,7 +17,10 @@ impl LineIndex {
     pub fn new(text: &str) -> Self {
         Self {
             line_starts: iter::once(TextSize::from(0))
-                .chain(text.match_indices('\n').map(|(idx, _)| TextSize::from(idx as u32 + 1)))
+                .chain(
+                    text.match_indices('\n')
+                        .map(|(idx, _)| TextSize::from(idx as u32 + 1)),
+                )
                 .collect(),
         }
     }
@@ -64,7 +67,9 @@ mod tests {
     fn check<const LEN: usize>(text: &str, line_starts: [u32; LEN]) {
         assert_eq!(
             LineIndex::new(text),
-            LineIndex { line_starts: line_starts.into_iter().map(TextSize::from).collect() }
+            LineIndex {
+                line_starts: line_starts.into_iter().map(TextSize::from).collect()
+            }
         );
     }
 
