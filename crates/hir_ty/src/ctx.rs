@@ -57,6 +57,8 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::ImmutableBinding,
                 range,
             }),
+            // TODO(@lenawanel): properly handle the case where we don't have a
+            //                   corresponding text range for a type
             ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
                 kind: TyDiagnosticHelpKind::ImmutableRef,
                 range,
@@ -73,7 +75,7 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::NotMutatingRefThroughDeref,
                 range,
             }),
-            ExprMutability::Mutable => None,
+            _ => None,
         }
     }
 }
@@ -337,19 +339,22 @@ impl InferenceCtx<'_> {
                 let local_def = &current_bodies!(self)[*local_def];
 
                 match local_ty.as_pointer() {
+                    // Checking for bindings first makes more sense than what I wrote before
+                    // What do you think? A few tests would probably have to change.
+                    // Not really the focus of this PR though so it's wtv
+                    _ if !local_def.mutable => ExprMutability::ImmutableBinding(local_def.range),
                     Some((mutable, _)) if assignment => {
                         if mutable {
                             ExprMutability::NotMutatingRefThroughDeref(
                                 current_bodies!(self).range_for_expr(expr),
                             )
+                        } else if current_bodies!(self)[local_def.value] != Expr::Missing {
+                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
                         } else {
-                            ExprMutability::ImmutableRef(
-                                current_bodies!(self).range_for_expr(local_def.value),
-                            )
+                            ExprMutability::Mutable
                         }
                     }
-                    _ if local_def.mutable => ExprMutability::Mutable,
-                    _ => ExprMutability::ImmutableBinding(local_def.range),
+                    _ => ExprMutability::Mutable,
                 }
             }
             Expr::Param { idx, range } => {

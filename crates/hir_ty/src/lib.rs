@@ -211,6 +211,7 @@ pub enum TyDiagnosticHelpKind {
     MutableVariable,
 }
 
+#[derive(Debug)]
 pub struct InferenceCtx<'a> {
     current_module: Option<hir::FileName>,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
@@ -4047,7 +4048,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::CannotMutate,
                     114..122,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 87..91)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..91)),
                 )]
             },
         );
@@ -4080,7 +4081,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::CannotMutate,
                     118..126,
-                    Some((TyDiagnosticHelpKind::NotMutatingRefThroughDeref, 118..121)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
                 )]
             },
         );

@@ -9,7 +9,7 @@ use text_size::TextRange;
 
 use crate::{Name, TyParseError, TyWithRange, UIDGenerator};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Index {
     pub(crate) definitions: FxHashMap<Name, Definition>,
     pub(crate) range_info: FxHashMap<Name, RangeInfo>,

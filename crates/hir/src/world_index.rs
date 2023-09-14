@@ -2,7 +2,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{Definition, FileName, Fqn, Index, RangeInfo};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct WorldIndex(FxHashMap<FileName, Index>);
 
 impl WorldIndex {
