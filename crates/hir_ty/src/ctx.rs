@@ -463,7 +463,7 @@ impl InferenceCtx<'_> {
                 let def_body = &current_bodies!(self)[*local_def];
                 let value_ty = self.infer_expr(def_body.value);
 
-                let def_ty = self.parse_expr_to_ty(def_body.ty);
+                let def_ty = self.parse_expr_to_ty(def_body.ty, &mut FxHashSet::default());
 
                 match *def_ty {
                     ResolvedTy::Unknown => {
@@ -778,7 +778,7 @@ impl InferenceCtx<'_> {
             hir::Expr::BoolLiteral(_) => ResolvedTy::Bool.into(),
             hir::Expr::StringLiteral(_) => ResolvedTy::String.into(),
             hir::Expr::Array { size, items, ty } => {
-                let sub_ty = self.parse_expr_to_ty(*ty);
+                let sub_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 
                 for item in items {
                     let item_ty = self.infer_expr(*item);
@@ -841,7 +841,7 @@ impl InferenceCtx<'_> {
                 if *expr_ty == ResolvedTy::Unknown {
                     ResolvedTy::Unknown.into()
                 } else {
-                    let cast_ty = self.parse_expr_to_ty(*ty);
+                    let cast_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 
                     if cast_ty.is_unknown() {
                         ResolvedTy::Unknown.into()
@@ -1293,7 +1293,7 @@ impl InferenceCtx<'_> {
                 ty: ty_expr,
                 fields: field_values,
             } => {
-                let expected_ty = self.parse_expr_to_ty(*ty_expr);
+                let expected_ty = self.parse_expr_to_ty(*ty_expr, &mut FxHashSet::default());
 
                 // IndexMap is used to make sure errors are emitted in a logical order
 
@@ -1339,7 +1339,11 @@ impl InferenceCtx<'_> {
                     }
                 }
 
-                for expected_field_name in expected_tys.keys() {
+                for expected_field_name in expected_tys
+                    .iter()
+                    .filter(|(_, ty)| !ty.is_unknown())
+                    .map(|(name, _)| name)
+                {
                     if found_field_tys.get(expected_field_name).is_none() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::StructLiteralMissingField {
@@ -1355,7 +1359,11 @@ impl InferenceCtx<'_> {
 
                 expected_ty
             }
-            hir::Expr::PrimitiveTy { .. } => ResolvedTy::Type.into(),
+            hir::Expr::PrimitiveTy { ty } => {
+                // resolving the type might reveal diagnostics such as recursive types
+                self.resolve_ty(*ty, &mut FxHashSet::default());
+                ResolvedTy::Type.into()
+            }
             Expr::Import(file_name) => ResolvedTy::Module(*file_name).into(),
         };
 

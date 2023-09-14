@@ -16,6 +16,19 @@ calc :: comptime {
     }
 };
 
+Foo :: struct {
+    a: i32,
+    b: string,
+    c: ^Bar,
+};
+
+Bar :: struct {
+    x: bool,
+    y: Vector3,
+};
+
+Foo2 :: distinct Foo;
+
 main :: () {
     array := [] i32 { 1, 2, 3 };
 
@@ -26,7 +39,20 @@ main :: () {
     if array[1] == a * {a - 10} {
         printf("bleh", 1, 2, true);
     } else {
-        panic_or_something_idk();
+        panic("WHAT'S WRONG WITH YOU!");
+    }
+
+    num := 5;
+    ptr := ^num;
+
+    ptr^ = 42;
+
+    if !{array[0] as bool} {
+        // wow look at this comment!
+
+        ptr^ = {^array}^[2] * ptr^ * a;
+
+        // so fancy!
     }
 
     idx := 5;
@@ -57,3 +83,5 @@ main :: () {
 }
 
 printf :: (fmt: string, n1: i32, n2: i64, cond: bool) -> void extern;
+
+Vector3 :: distinct [3] i32;

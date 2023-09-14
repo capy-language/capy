@@ -96,7 +96,10 @@ fn main() -> io::Result<()> {
     let (file, entry_point, output, verbose, config) =
         get_build_config!(config.action => file, entry_point, output, verbose);
 
-    let file = env::current_dir().unwrap().join(file).clean();
+    let file = env::current_dir()
+        .unwrap()
+        .join(file.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR))
+        .clean();
 
     let contents = match fs::read_to_string(&file) {
         Ok(contents) => contents,

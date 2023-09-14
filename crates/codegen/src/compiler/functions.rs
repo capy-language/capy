@@ -235,7 +235,7 @@ impl FunctionCompiler<'_> {
 
                 array.into()
             }
-            _ => panic!("global with non-constant definition"),
+            _ => panic!("tried to compile global with non-compilable definition"),
         }
     }
 
@@ -530,16 +530,18 @@ impl FunctionCompiler<'_> {
                     })
                 }
             }
-            hir::Expr::FloatLiteral(f) => match self.tys[self.module_name][expr]
-                .to_comp_type(self.pointer_ty)
-                .into_number_type()
-                .unwrap()
-                .bit_width()
-            {
-                32 => Some(self.builder.ins().f32const(f as f32)),
-                64 => Some(self.builder.ins().f64const(f)),
-                _ => unreachable!(),
-            },
+            hir::Expr::FloatLiteral(f) => {
+                match self.tys[self.module_name][expr]
+                    .to_comp_type(self.pointer_ty)
+                    .into_number_type()
+                    .unwrap()
+                    .bit_width()
+                {
+                    32 => Some(self.builder.ins().f32const(f as f32)),
+                    64 => Some(self.builder.ins().f64const(f)),
+                    _ => unreachable!(),
+                }
+            }
             hir::Expr::BoolLiteral(b) => Some(self.builder.ins().iconst(types::I8, b as i64)),
             hir::Expr::StringLiteral(text) => {
                 let data = self.create_global_str(text);
@@ -1127,7 +1129,11 @@ impl FunctionCompiler<'_> {
 
                         Some(self.builder.ins().func_addr(self.pointer_ty, local_func))
                     }
-                    hir_ty::Signature::Global(_) => {
+                    hir_ty::Signature::Global(hir_ty::GlobalSignature { ty }) => {
+                        if ty.is_empty() {
+                            return None;
+                        }
+
                         let global_data = self.compile_global(fqn);
 
                         let local_id = self
