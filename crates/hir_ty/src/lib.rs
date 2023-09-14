@@ -299,17 +299,21 @@ impl<'a> InferenceCtx<'a> {
 
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
+
+        // we do this before parsing the possible type annotation
+        // to avoid a stack overflow like this:
+        // a : a : 5;
+        self.signatures.insert(
+            fqn,
+            Signature::Global(GlobalSignature {
+                ty: Intern::new(ResolvedTy::NotYetResolved),
+            }),
+        );
+
         // if the global has a type annotation (my_global : string : "hello"),
         // we must treat it differently than one that does not (my_global :: "hello")
         let sig = match self.twr_arena[global.ty] {
             TyWithRange::Unknown => {
-                self.signatures.insert(
-                    fqn,
-                    Signature::Global(GlobalSignature {
-                        ty: Intern::new(ResolvedTy::NotYetResolved),
-                    }),
-                );
-
                 let ty = self.finish_body_unknown(
                     self.bodies_map[&fqn.module].global(fqn.name),
                     None,
@@ -351,6 +355,10 @@ impl<'a> InferenceCtx<'a> {
 
         let old_module = self.current_module;
         self.current_module = Some(fqn.module);
+
+        // this is to make sure we don't get into recursive stuff like this:
+        // a :: (b: a) {}
+        self.signatures.insert(fqn, Signature::Global(GlobalSignature { ty: ResolvedTy::NotYetResolved.into() }));
 
         let param_tys: Vec<_> = function
             .params
@@ -517,6 +525,19 @@ impl<'a> InferenceCtx<'a> {
                         return ResolvedTy::Unknown.into();
                     }
 
+                    if *global_ty == ResolvedTy::NotYetResolved {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::NotYetResolved {
+                                path: path.path(),
+                            },
+                            module: self.current_module.unwrap(),
+                            range: name_range,
+                            help: None,
+                        });
+
+                        return ResolvedTy::Unknown.into();
+                    }
+
                     if *global_ty != ResolvedTy::Type {
                         if !global_ty.is_unknown() {
                             self.diagnostics.push(TyDiagnostic {
@@ -581,7 +602,20 @@ impl<'a> InferenceCtx<'a> {
 
                             ResolvedTy::Unknown.into()
                         }
-                        Signature::Global(_) => ResolvedTy::Unknown.into(),
+                        Signature::Global(GlobalSignature { ty }) => {
+                            if *ty == ResolvedTy::NotYetResolved {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::NotYetResolved {
+                                        path: path.path(),
+                                    },
+                                    module: self.current_module.unwrap(),
+                                    range: name_range,
+                                    help: None,
+                                });
+                            }
+
+                            ResolvedTy::Unknown.into()
+                        },
                     }
                 }
             },
@@ -2874,6 +2908,28 @@ mod tests {
                         path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
                     },
                     77..80,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_param_ty() {
+        check(
+            r#"
+                foo :: (bar: foo);
+            "#,
+            expect![[r#"
+                main::foo : (<unknown>) -> void
+                0 : <unknown>
+            "#]],
+            |interner| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
+                    },
+                    30..33,
                     None,
                 )]
             },

@@ -10,6 +10,12 @@ enum EnumTy {
     Stripped,
 }
 
+/// We have to maintain two different Token enums across two different crates
+/// (one in the lexer crate and one in the syntax crate),
+/// and we also need to be able to transmute these enums.
+/// 
+/// So this is a proc macro that can easily generate these enums for us from a `.lex` file,
+/// ensuring that they are transmutable
 #[proc_macro]
 pub fn define_token_enum(input: TokenStream) -> TokenStream {
     let input = input.into_iter().collect::<Vec<_>>();

@@ -270,6 +270,12 @@ impl<'tokens> Parser<'tokens> {
     fn peek_raw(&self) -> Option<TokenKind> {
         self.tokens.get_kind(self.token_idx)
     }
+
+    #[allow(unused)]
+    pub(crate) fn peek(&mut self) -> Option<TokenKind> {
+        self.skip_trivia();
+        self.peek_raw()
+    }
 }
 
 pub(crate) struct ExpectedSyntaxGuard {

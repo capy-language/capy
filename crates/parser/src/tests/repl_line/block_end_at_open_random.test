@@ -1,0 +1,12 @@
+{)
+===
+Root@0..2
+  ExprStmt@0..2
+    Block@0..2
+      LBrace@0..1 "{"
+      ExprStmt@1..2
+        Error@1..2
+          RParen@1..2 ")"
+error at 1..2: expected statement but found RParen
+error at 2: missing Semicolon
+error at 2: missing RBrace

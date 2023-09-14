@@ -334,7 +334,6 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     p.bump();
 
-    // todo: #2 originates here
     loop {
         if p.at(TokenKind::RParen) {
             break;
@@ -342,7 +341,7 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
         let param_m = p.start();
         let _guard = p.expected_syntax_name("parameter name");
-        p.expect_with_no_skip(TokenKind::Ident);
+        p.expect(TokenKind::Ident);
 
         p.expect_with_no_skip(TokenKind::Colon);
 
@@ -418,7 +417,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
         let field_m = p.start();
         let _guard = p.expected_syntax_name("field name");
-        p.expect_with_no_skip(TokenKind::Ident);
+        p.expect(TokenKind::Ident);
 
         p.expect_with_no_skip(TokenKind::Colon);
 
@@ -469,7 +468,7 @@ fn parse_struct_literal(
 
         let field_m = p.start();
         let _guard = p.expected_syntax_name("field name");
-        p.expect_with_no_skip(TokenKind::Ident);
+        p.expect(TokenKind::Ident);
 
         p.expect_with_no_skip(TokenKind::Colon);
 

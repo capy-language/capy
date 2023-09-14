@@ -128,8 +128,6 @@ Or if you just want to build the final executable,
 capy build examples/hello_world.capy
 ```
 
-Only Windows and Linux have been tested, so tell me if you get it working on MacOS :)
-
 ## Limitations
 
 Currently, `gcc` must be installed for the compiler to work.

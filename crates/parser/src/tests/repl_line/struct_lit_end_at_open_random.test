@@ -1,0 +1,17 @@
+Foo {)
+===
+Root@0..6
+  ExprStmt@0..6
+    StructLiteral@0..6
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "Foo"
+      Whitespace@3..4 " "
+      LBrace@4..5 "{"
+      FieldLiteral@5..6
+        Error@5..6
+          RParen@5..6 ")"
+error at 5..6: expected field name but found RParen
+error at 6: missing Colon
+error at 6: missing field value
+error at 6: missing RBrace

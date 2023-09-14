@@ -1026,15 +1026,17 @@ impl InferenceCtx<'_> {
                         body_ty
                     }
                 } else {
-                    let help_range = match &current_bodies!(self)[*body] {
-                        Expr::Block {
-                            tail_expr: Some(tail_expr),
-                            ..
-                        } => current_bodies!(self).range_for_expr(*tail_expr),
-                        _ => current_bodies!(self).range_for_expr(*body),
-                    };
-
                     if *body_ty != ResolvedTy::Void && !body_ty.is_unknown() {
+                        // only get the range if the body isn't unknown
+                        // otherwise we might be getting the range of something that doesn't exist
+                        let help_range = match &current_bodies!(self)[*body] {
+                            Expr::Block {
+                                tail_expr: Some(tail_expr),
+                                ..
+                            } => current_bodies!(self).range_for_expr(*tail_expr),
+                            _ => current_bodies!(self).range_for_expr(*body),
+                        };
+
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::MissingElse { expected: body_ty },
                             module: self.current_module.unwrap(),
