@@ -188,7 +188,6 @@ impl<'tokens> Parser<'tokens> {
         self.token_idx >= self.tokens.len()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn at_default_recovery_set(&mut self) -> bool {
         self.at_set(DEFAULT_RECOVERY_SET)
     }

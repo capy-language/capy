@@ -1,0 +1,6 @@
+}
+===
+Root@0..1
+  Error@0..1
+    RBrace@0..1 "}"
+error at 0..1: expected definition but found RBrace

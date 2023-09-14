@@ -1,0 +1,13 @@
+struct{;
+===
+Root@0..8
+  ExprStmt@0..7
+    StructDeclaration@0..7
+      Struct@0..6 "struct"
+      LBrace@6..7 "{"
+      FieldDeclaration@7..7
+  Semicolon@7..8 ";"
+error at 7: missing field name
+error at 7: missing Colon
+error at 7: missing field type
+error at 7: missing RBrace

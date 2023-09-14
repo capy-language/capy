@@ -1,0 +1,17 @@
+Foo {
+    bar:
+===
+Root@0..14
+  ExprStmt@0..14
+    StructLiteral@0..14
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "Foo"
+      Whitespace@3..4 " "
+      LBrace@4..5 "{"
+      Whitespace@5..10 "\n    "
+      FieldLiteral@10..14
+        Ident@10..13 "bar"
+        Colon@13..14 ":"
+error at 14: missing field value
+error at 14: missing RBrace

@@ -1,0 +1,7 @@
+{
+===
+Root@0..1
+  ExprStmt@0..1
+    Block@0..1
+      LBrace@0..1 "{"
+error at 1: missing RBrace

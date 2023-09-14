@@ -1,0 +1,26 @@
+Foo {
+    bar: "pls don't crash!",
+===
+Root@0..34
+  ExprStmt@0..34
+    StructLiteral@0..34
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "Foo"
+      Whitespace@3..4 " "
+      LBrace@4..5 "{"
+      Whitespace@5..10 "\n    "
+      FieldLiteral@10..33
+        Ident@10..13 "bar"
+        Colon@13..14 ":"
+        Whitespace@14..15 " "
+        StringLiteral@15..33
+          Quote@15..16 "\""
+          StringContents@16..32 "pls don't crash!"
+          Quote@32..33 "\""
+      Comma@33..34 ","
+      FieldLiteral@34..34
+error at 34: missing field name
+error at 34: missing Colon
+error at 34: missing field value
+error at 34: missing RBrace

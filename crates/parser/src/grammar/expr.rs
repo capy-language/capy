@@ -159,7 +159,8 @@ fn parse_lhs(
                         arg_m.precede(p).complete(p, NodeKind::Arg);
                     }
 
-                    if p.at_eof() {
+                    // todo: this might just be replaceable with at_default_recovery_set
+                    if p.at_eof() || p.at_default_recovery_set() {
                         break;
                     }
 
@@ -333,6 +334,7 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     p.bump();
 
+    // todo: #2 originates here
     loop {
         if p.at(TokenKind::RParen) {
             break;
@@ -352,7 +354,7 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
         param_m.complete(p, NodeKind::Param);
 
-        if p.at_eof() {
+        if p.at_eof() || p.at_default_recovery_set() {
             break;
         }
 
@@ -428,7 +430,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
         field_m.complete(p, NodeKind::FieldDeclaration);
 
-        if p.at_eof() {
+        if p.at_eof() || p.at_default_recovery_set() {
             break;
         }
 
@@ -479,7 +481,7 @@ fn parse_struct_literal(
 
         field_m.complete(p, NodeKind::FieldLiteral);
 
-        if p.at_eof() {
+        if p.at_eof() || p.at_default_recovery_set() {
             break;
         }
 

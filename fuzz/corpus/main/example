@@ -1,14 +1,14 @@
-foo = 10;
-bar = 20;
-a = foo + {bar * bar - {100 / 33}};
+foo :: 10;
+bar := 20;
+a :: comptime { foo + {bar * bar - {100 / 33}} };
 
-a * {a - 10};
+calc :: comptime {
+    a * {a - 10};
 
-calc = {
-    sum = (x, y) { x + y };
-    mul = (x, y) { x * y };
+    sum = (x: i32, y: i32) -> i32 { x + y };
+    mul = (x: i32, y: i32) -> i32 { x * y };
 
-    do_math = (op, x, y) { op(x, y) };
+    do_math = (op: (x: i32, y: i32) -> i32, x, y) { op(x, y) };
 
     do_math(sum, 2, 3);
     do_math(mul, 2, 3);
@@ -17,3 +17,28 @@ calc = {
         do_math(mul, 6, 7)
     }
 };
+
+main :: () {
+    array := [] i32 { 1, 2, 3 };
+
+    str := "Wowza!";
+
+    array[0] = 2000;
+
+    ptr := ^str;
+    str^ = "Hello, Sailor!";
+
+    Person :: struct {
+        name: string,
+        age: i32,
+    };
+
+    gandalf := Person {
+        name: "Gandalf",
+        age: 2000,
+    };
+
+    gandalf.age = gandalf.age + 1;
+}
+
+printf :: (fmt: string, n1: i32, n2: i64, cond: bool) -> void extern;

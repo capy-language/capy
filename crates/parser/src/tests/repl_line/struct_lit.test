@@ -1,0 +1,49 @@
+Foo {
+    bar: "Fancy!",
+    baz: 1200,
+    qux: true as u8,
+}
+===
+Root@0..62
+  ExprStmt@0..62
+    StructLiteral@0..62
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "Foo"
+      Whitespace@3..4 " "
+      LBrace@4..5 "{"
+      Whitespace@5..10 "\n    "
+      FieldLiteral@10..23
+        Ident@10..13 "bar"
+        Colon@13..14 ":"
+        Whitespace@14..15 " "
+        StringLiteral@15..23
+          Quote@15..16 "\""
+          StringContents@16..22 "Fancy!"
+          Quote@22..23 "\""
+      Comma@23..24 ","
+      Whitespace@24..29 "\n    "
+      FieldLiteral@29..38
+        Ident@29..32 "baz"
+        Colon@32..33 ":"
+        Whitespace@33..34 " "
+        IntLiteral@34..38
+          Int@34..38 "1200"
+      Comma@38..39 ","
+      Whitespace@39..44 "\n    "
+      FieldLiteral@44..59
+        Ident@44..47 "qux"
+        Colon@47..48 ":"
+        Whitespace@48..49 " "
+        CastExpr@49..59
+          BoolLiteral@49..53
+            Bool@49..53 "true"
+          Whitespace@53..54 " "
+          As@54..56 "as"
+          Whitespace@56..57 " "
+          Ty@57..59
+            VarRef@57..59
+              Ident@57..59 "u8"
+      Comma@59..60 ","
+      Whitespace@60..61 "\n"
+      RBrace@61..62 "}"

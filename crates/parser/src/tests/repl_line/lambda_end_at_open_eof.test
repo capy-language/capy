@@ -1,0 +1,14 @@
+(
+===
+Root@0..1
+  ExprStmt@0..1
+    Lambda@0..1
+      ParamList@0..1
+        LParen@0..1 "("
+        Param@1..1
+error at 1: missing parameter name
+error at 1: missing Colon
+error at 1: missing parameter type
+error at 1: missing RParen
+error at 1: missing Arrow
+error at 1: missing return type

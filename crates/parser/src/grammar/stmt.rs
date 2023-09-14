@@ -9,6 +9,8 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     while p.at(TokenKind::Semicolon) {
         p.bump();
     }
+    // we don't check for p.at_default_recovery_set(), because statements can be expressions
+    // and expressions can start with '{' or '}'
     if p.at_eof() {
         return None;
     }
@@ -68,6 +70,7 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
 pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> (CompletedMarker, bool) {
     let m = p.start();
 
+    // todo: this is not very descriptive, but i don't think "variable name" fits either
     let _guard = p.expected_syntax_name("name");
     p.expect_with_no_skip(TokenKind::Ident);
 

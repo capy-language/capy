@@ -1,1 +1,3 @@
-artifacts/
+artifacts
+corpus/main/*
+!corpus/main/example

@@ -544,6 +544,9 @@ impl ResolvedTy {
                     return true;
                 }
             }
+            // just lie so no errors get thrown
+            // todo: do we want to do this?
+            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => return true,
             _ => {}
         }
 
