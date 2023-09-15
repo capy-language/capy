@@ -58,3 +58,8 @@
 "y"
 " "
 "distinct"
+"false"
+"true"
+"||"
+"&&"
+"loop"
