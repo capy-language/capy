@@ -106,7 +106,15 @@ impl Compiler<'_> {
                     self.project_root,
                     self.interner,
                 );
-                self.compile_ptr_offset_fn(&mangled, sig, func_id);
+
+                match compiler_defined {
+                    CompilerDefinedFunction::PtrOffset => {
+                        self.compile_ptr_offset_fn(&mangled, sig, func_id)
+                    }
+                    CompilerDefinedFunction::PtrBitcast => {
+                        self.compile_ptr_bitcast_fn(&mangled, sig, func_id)
+                    }
+                }
             }
             return;
         }
@@ -152,6 +160,58 @@ impl Compiler<'_> {
         if self.verbose {
             println!(
                 "ptr_offset \x1B[90m{}\x1B[0m:\n{}",
+                mangled_name, self.ctx.func
+            );
+        }
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .unwrap_or_else(|err| {
+                println!("Error defining function:");
+                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
+                    println!("{}", v.to_string().replace("):", "):\n "));
+                } else {
+                    println!("{:?}", err);
+                }
+                std::process::exit(1);
+            });
+
+        self.module.clear_context(&mut self.ctx);
+    }
+
+    fn compile_ptr_bitcast_fn(
+        &mut self,
+        mangled_name: &str,
+        sig: CraneliftSignature,
+        func_id: FuncId,
+    ) {
+        self.ctx.func.signature = sig;
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+
+        builder.switch_to_block(entry_block);
+        // tell the builder that the block will have no further predecessors
+        builder.seal_block(entry_block);
+
+        // this function literally just returns what it was given.
+        // the only purpose of this function is to bypass `hir_ty`.
+        // could we make calls to `ptr.from_raw()` or `ptr.to_raw()`
+        // just evaluate to the first argument? yes probably
+        // we probably only need to compile these builtin functions
+        // if they are used as first class functions
+        let arg_ptr = builder.append_block_param(entry_block, self.pointer_ty);
+        builder.ins().return_(&[arg_ptr]);
+
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        if self.verbose {
+            println!(
+                "ptr_bitcast \x1B[90m{}\x1B[0m:\n{}",
                 mangled_name, self.ctx.func
             );
         }

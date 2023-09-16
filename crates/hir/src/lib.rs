@@ -107,6 +107,9 @@ pub enum TyWithRange {
     String {
         range: TextRange,
     },
+    Char {
+        range: TextRange,
+    },
     Array {
         size: u64,
         sub_ty: Idx<TyWithRange>,
@@ -155,6 +158,7 @@ impl TyWithRange {
             | TyWithRange::Float { range, .. }
             | TyWithRange::Bool { range }
             | TyWithRange::String { range }
+            | TyWithRange::Char { range }
             | TyWithRange::Array { range, .. }
             | TyWithRange::Pointer { range, .. }
             | TyWithRange::Distinct { range, .. }
@@ -465,6 +469,8 @@ impl TyWithRange {
             TyWithRange::Bool { range }
         } else if key == Key::string() {
             TyWithRange::String { range }
+        } else if key == Key::char() {
+            TyWithRange::Char { range }
         } else if key == Key::r#type() {
             TyWithRange::Type { range }
         } else if key == Key::any() {
@@ -494,6 +500,7 @@ impl TyWithRange {
             Self::Float { bit_width, .. } => format!("f{}", bit_width),
             Self::Bool { .. } => "bool".to_string(),
             Self::String { .. } => "string".to_string(),
+            Self::Char { .. } => "char".to_string(),
             Self::Array { size, sub_ty, .. } => {
                 format!(
                     "[{size}]{}",

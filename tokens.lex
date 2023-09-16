@@ -1,6 +1,6 @@
 // This is a DSL I quickly put together to make it easier to
 // make new tokens or alter existing tokens
-Whitespace = /[ \r\n]+/
+Whitespace = /[ \t\r\n]+/
 As = 'as'
 If = 'if'
 Else = 'else'
@@ -16,7 +16,8 @@ Ident = /[A-Za-z_][A-Za-z0-9_]*/
 Float = /[0-9]*\.[0-9]+([eE][-+]?[0-9]+)?/
 Int = /[0-9]+/
 Bool = /true|false/
-_Quote
+_SingleQuote
+_DoubleQuote
 _Escape
 _StringContents
 Plus = '+'
@@ -49,7 +50,10 @@ _CommentContents
 Colon = ':'
 Semicolon = ';'
 Error = !
-// this will internally get replaced by _Quote, _Escape, and _StringContents
-__InternalString = /"([^"\\\n]|\\.)*"?"/
+// The string/char doesn't have to end on a quote, this results in better error messages
+// this will internally get replaced by _SingleQuote, _Escape, and _StringContents
+__InternalString = /"([^"\\\n]|\\.)*"?/
+// this will internally get replaced by _DoubleQuote, _Escape, and _StringContents
+__InternalChar = /'([^'\\\n]|\\.)*'?/
 // this will internally get replaced by _CommentLeader and _CommentContents
 __InternalComment = ///.*/

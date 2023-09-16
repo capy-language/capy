@@ -28,9 +28,9 @@ Root@0..34
     Colon@24..25 ":"
     Whitespace@25..26 " "
     StringLiteral@26..31
-      Quote@26..27 "\""
+      DoubleQuote@26..27 "\""
       StringContents@27..30 "bar"
-      Quote@30..31 "\""
+      DoubleQuote@30..31 "\""
   Semicolon@31..32 ";"
   Semicolon@32..33 ";"
   Semicolon@33..34 ";"

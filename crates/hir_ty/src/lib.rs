@@ -784,6 +784,7 @@ impl<'a> InferenceCtx<'a> {
             hir::TyWithRange::Float { bit_width, .. } => ResolvedTy::Float(bit_width).into(),
             hir::TyWithRange::Bool { .. } => ResolvedTy::Bool.into(),
             hir::TyWithRange::String { .. } => ResolvedTy::String.into(),
+            hir::TyWithRange::Char { .. } => ResolvedTy::Char.into(),
             hir::TyWithRange::Array { size, sub_ty, .. } => ResolvedTy::Array {
                 size,
                 sub_ty: self.resolve_ty(sub_ty, resolve_chain),
@@ -968,6 +969,7 @@ impl ResolvedTy {
             },
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
+            Self::Char => "char".to_string(),
             Self::Array { size, sub_ty } => {
                 format!("[{size}]{}", sub_ty.display(project_root, interner))
             }
@@ -5777,6 +5779,109 @@ mod tests {
             "#]],
             |_| [],
         );
+    }
+
+    #[test]
+    fn char_ptr_to_string() {
+        check(
+            r"
+                get_any :: () {
+                    chars := [3] char { 'H', 'i', '\0' };
+                    ptr := {{^chars} as ^any} as ^char;
+                    str := ptr as string;
+                }
+            ",
+            expect![[r#"
+                main::get_any : () -> void
+                2 : char
+                3 : char
+                4 : char
+                5 : [3]char
+                7 : [3]char
+                8 : ^[3]char
+                9 : ^[3]char
+                11 : ^any
+                12 : ^any
+                14 : ^char
+                16 : ^char
+                18 : string
+                19 : void
+                l0 : [3]char
+                l1 : ^char
+                l2 : string
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn char() {
+        check(
+            r"
+                foo :: () {
+                    my_char := 'A';
+                }
+            ",
+            expect![[r#"
+                main::foo : () -> void
+                1 : char
+                2 : void
+                l0 : char
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn char_as_u8() {
+        check(
+            r"
+                foo :: () {
+                    my_char := 'A';
+                    my_u8 := my_char as u8;
+                }
+            ",
+            expect![[r#"
+                main::foo : () -> void
+                1 : char
+                3 : char
+                5 : u8
+                6 : void
+                l0 : char
+                l1 : u8
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn no_implicit_char_to_u8() {
+        check(
+            r"
+                foo :: () {
+                    my_char := 'A';
+                    my_u8 : u8 = my_char;
+                }
+            ",
+            expect![[r#"
+                main::foo : () -> void
+                1 : char
+                3 : char
+                4 : void
+                l0 : char
+                l1 : u8
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::UInt(8).into(),
+                        found: ResolvedTy::Char.into(),
+                    },
+                    98..105,
+                    None,
+                )]
+            },
+        )
     }
 
     #[test]

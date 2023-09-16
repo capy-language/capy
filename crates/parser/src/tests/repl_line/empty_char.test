@@ -1,0 +1,7 @@
+''
+===
+Root@0..2
+  ExprStmt@0..2
+    CharLiteral@0..2
+      SingleQuote@0..1 "'"
+      SingleQuote@1..2 "'"

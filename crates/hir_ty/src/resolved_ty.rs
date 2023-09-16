@@ -16,6 +16,7 @@ pub enum ResolvedTy {
     Float(u32),
     Bool,
     String,
+    Char,
     Array {
         size: u64,
         sub_ty: Intern<ResolvedTy>,
@@ -476,8 +477,16 @@ impl ResolvedTy {
     pub(crate) fn primitive_castable(&self, primitive_ty: &ResolvedTy) -> bool {
         match (self, primitive_ty) {
             (
-                ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
-                ResolvedTy::Bool | ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_),
+                ResolvedTy::Bool
+                | ResolvedTy::IInt(_)
+                | ResolvedTy::UInt(_)
+                | ResolvedTy::Float(_)
+                | ResolvedTy::Char,
+                ResolvedTy::Bool
+                | ResolvedTy::IInt(_)
+                | ResolvedTy::UInt(_)
+                | ResolvedTy::Float(_)
+                | ResolvedTy::Char,
             ) => true,
             // todo: right now all the fields must be exactly equal,
             // technically it would be possible to make it so that fields autocast
@@ -523,7 +532,10 @@ impl ResolvedTy {
             // string to and from ^any and ^u8
             (ResolvedTy::String, ResolvedTy::Pointer { sub_ty, .. })
             | (ResolvedTy::Pointer { sub_ty, .. }, ResolvedTy::String) => {
-                matches!(sub_ty.as_ref(), ResolvedTy::Any | ResolvedTy::UInt(8))
+                matches!(
+                    sub_ty.as_ref(),
+                    ResolvedTy::Any | ResolvedTy::UInt(8) | ResolvedTy::Char
+                )
             }
             _ => self.can_fit_into(primitive_ty),
         }

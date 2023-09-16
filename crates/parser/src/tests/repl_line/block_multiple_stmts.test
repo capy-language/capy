@@ -21,9 +21,9 @@ Root@0..21
       Whitespace@12..13 " "
       ExprStmt@13..18
         StringLiteral@13..18
-          Quote@13..14 "\""
+          DoubleQuote@13..14 "\""
           StringContents@14..17 "foo"
-          Quote@17..18 "\""
+          DoubleQuote@17..18 "\""
       Semicolon@18..19 ";"
       RBrace@19..20 "}"
   Semicolon@20..21 ";"

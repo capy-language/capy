@@ -21,6 +21,7 @@ pub fn lex(text: &str) -> Tokens {
         };
 
         match kind {
+            LexerTokenKind::__InternalChar => lex_char(lexer.slice(), start, handler),
             LexerTokenKind::__InternalString => lex_string(lexer.slice(), start, handler),
             LexerTokenKind::__InternalComment => lex_comment(start, range.len(), handler),
             _ => {
@@ -40,6 +41,39 @@ pub fn lex(text: &str) -> Tokens {
     Tokens::new(kinds, starts)
 }
 
+fn lex_char(s: &str, offset: TextSize, mut f: impl FnMut(TokenKind, TextSize)) {
+    #[derive(Clone, Copy)]
+    enum Mode {
+        StartContents,
+        InContents,
+        Escape,
+    }
+
+    let mut mode = Mode::InContents;
+    let mut pos = offset;
+
+    for c in s.chars() {
+        match (mode, c) {
+            (Mode::InContents | Mode::StartContents, '\'') => {
+                mode = Mode::StartContents;
+                f(TokenKind::SingleQuote, pos);
+            }
+            (Mode::InContents | Mode::StartContents, '\\') => {
+                mode = Mode::Escape;
+                f(TokenKind::Escape, pos);
+            }
+            (Mode::StartContents, _) => {
+                mode = Mode::InContents;
+                f(TokenKind::StringContents, pos);
+            }
+            (Mode::InContents, _) => {}
+            (Mode::Escape, _) => mode = Mode::StartContents,
+        }
+
+        pos += TextSize::from(c.len_utf8() as u32);
+    }
+}
+
 fn lex_string(s: &str, offset: TextSize, mut f: impl FnMut(TokenKind, TextSize)) {
     #[derive(Clone, Copy)]
     enum Mode {
@@ -55,7 +89,7 @@ fn lex_string(s: &str, offset: TextSize, mut f: impl FnMut(TokenKind, TextSize))
         match (mode, c) {
             (Mode::InContents | Mode::StartContents, '"') => {
                 mode = Mode::StartContents;
-                f(TokenKind::Quote, pos);
+                f(TokenKind::DoubleQuote, pos);
             }
             (Mode::InContents | Mode::StartContents, '\\') => {
                 mode = Mode::Escape;

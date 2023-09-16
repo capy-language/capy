@@ -33,9 +33,9 @@ Root@0..35
       Whitespace@24..25 " "
       ExprStmt@25..30
         StringLiteral@25..30
-          Quote@25..26 "\""
+          DoubleQuote@25..26 "\""
           StringContents@26..29 "foo"
-          Quote@29..30 "\""
+          DoubleQuote@29..30 "\""
       Semicolon@30..31 ";"
       Semicolon@31..32 ";"
       Semicolon@32..33 ";"

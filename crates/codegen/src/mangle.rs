@@ -86,6 +86,7 @@ impl Mangle for CompilerDefinedFunction {
 
         let name = match self {
             CompilerDefinedFunction::PtrOffset => "ptr_offset",
+            CompilerDefinedFunction::PtrBitcast => "ptr_bitcast",
         };
         mangled.push_str(&name.len().to_string());
         mangled.push_str(name);

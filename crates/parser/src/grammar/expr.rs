@@ -95,8 +95,10 @@ fn parse_lhs(
         parse_float_literal(p)
     } else if p.at(TokenKind::Bool) {
         parse_bool_literal(p)
-    } else if p.at(TokenKind::Quote) {
+    } else if p.at(TokenKind::DoubleQuote) {
         parse_string_literal(p)
+    } else if p.at(TokenKind::SingleQuote) {
+        parse_char_literal(p)
     } else if p.at(TokenKind::Ident) {
         parse_var_ref(p)
     } else if p.at(TokenKind::Caret) {
@@ -238,7 +240,7 @@ fn parse_bool_literal(p: &mut Parser) -> CompletedMarker {
 }
 
 pub(crate) fn parse_string_literal(p: &mut Parser) -> CompletedMarker {
-    assert!(p.at(TokenKind::Quote));
+    assert!(p.at(TokenKind::DoubleQuote));
     let m = p.start();
     p.bump();
 
@@ -246,8 +248,21 @@ pub(crate) fn parse_string_literal(p: &mut Parser) -> CompletedMarker {
         p.bump();
     }
 
-    p.expect(TokenKind::Quote);
+    p.expect(TokenKind::DoubleQuote);
     m.complete(p, NodeKind::StringLiteral)
+}
+
+pub(crate) fn parse_char_literal(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::SingleQuote));
+    let m = p.start();
+    p.bump();
+
+    while p.at(TokenKind::StringContents) || p.at(TokenKind::Escape) {
+        p.bump();
+    }
+
+    p.expect(TokenKind::SingleQuote);
+    m.complete(p, NodeKind::CharLiteral)
 }
 
 fn parse_ref(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
@@ -279,7 +294,7 @@ fn parse_import(p: &mut Parser) -> CompletedMarker {
     let m = p.start();
     p.bump();
 
-    if p.at(TokenKind::Quote) {
+    if p.at(TokenKind::DoubleQuote) {
         expr::parse_string_literal(p);
     } else {
         let _guard = p.expected_syntax_name("file name string");

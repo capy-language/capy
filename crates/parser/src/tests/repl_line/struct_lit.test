@@ -18,9 +18,9 @@ Root@0..62
         Colon@13..14 ":"
         Whitespace@14..15 " "
         StringLiteral@15..23
-          Quote@15..16 "\""
+          DoubleQuote@15..16 "\""
           StringContents@16..22 "Fancy!"
-          Quote@22..23 "\""
+          DoubleQuote@22..23 "\""
       Comma@23..24 ","
       Whitespace@24..29 "\n    "
       FieldLiteral@29..38

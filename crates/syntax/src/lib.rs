@@ -43,6 +43,7 @@ pub enum NodeKind {
     IntLiteral,
     FloatLiteral,
     BoolLiteral,
+    CharLiteral,
     StringLiteral,
     CastExpr,
     RefExpr,

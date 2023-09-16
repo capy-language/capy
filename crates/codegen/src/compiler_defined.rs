@@ -1,5 +1,6 @@
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::{FuncId, Linkage, Module};
+use hir_ty::ResolvedTy;
 use interner::Interner;
 
 use crate::{mangle::Mangle, CapyFnSignature, CraneliftSignature};
@@ -7,6 +8,7 @@ use crate::{mangle::Mangle, CapyFnSignature, CraneliftSignature};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CompilerDefinedFunction {
     PtrOffset,
+    PtrBitcast,
 }
 
 impl CompilerDefinedFunction {
@@ -17,21 +19,24 @@ impl CompilerDefinedFunction {
         project_root: &std::path::Path,
         interner: &Interner,
     ) -> (String, CraneliftSignature, FuncId) {
-        match self {
-            CompilerDefinedFunction::PtrOffset => {
-                let sig = CraneliftSignature {
-                    params: vec![AbiParam::new(pointer_ty), AbiParam::new(pointer_ty)],
-                    returns: vec![AbiParam::new(pointer_ty)],
-                    call_conv: module.target_config().default_call_conv,
-                };
-                let mangled = self.to_mangled_name(project_root, interner);
-                let func_id = module
-                    .declare_function(&mangled, Linkage::Export, &sig)
-                    .unwrap();
+        let sig = match self {
+            CompilerDefinedFunction::PtrOffset => CraneliftSignature {
+                params: vec![AbiParam::new(pointer_ty), AbiParam::new(pointer_ty)],
+                returns: vec![AbiParam::new(pointer_ty)],
+                call_conv: module.target_config().default_call_conv,
+            },
+            CompilerDefinedFunction::PtrBitcast => CraneliftSignature {
+                params: vec![AbiParam::new(pointer_ty)],
+                returns: vec![AbiParam::new(pointer_ty)],
+                call_conv: module.target_config().default_call_conv,
+            },
+        };
+        let mangled = self.to_mangled_name(project_root, interner);
+        let func_id = module
+            .declare_function(&mangled, Linkage::Export, &sig)
+            .unwrap();
 
-                (mangled, sig, func_id)
-            }
-        }
+        (mangled, sig, func_id)
     }
 }
 
@@ -63,6 +68,8 @@ pub(crate) fn as_compiler_defined(
     match filename.as_ref() {
         "ptr.capy" => match function_name {
             "ptr_offset" | "mut_ptr_offset" => as_ptr_offset(sig),
+            "to_raw" => as_ptr_to_usize(sig),
+            "from_raw" => as_usize_to_ptr(sig),
             _ => None,
         },
         _ => None,
@@ -100,4 +107,51 @@ fn as_ptr_offset(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
     }
 
     Some(CompilerDefinedFunction::PtrOffset)
+}
+
+fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
+    let mut params = sig.param_tys.iter();
+
+    let first = params.next()?;
+    if !first
+        .as_pointer()
+        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    if params.next().is_some() {
+        return None;
+    }
+
+    if *sig.return_ty != ResolvedTy::UInt(u32::MAX) {
+        return None;
+    }
+
+    Some(CompilerDefinedFunction::PtrBitcast)
+}
+
+fn as_usize_to_ptr(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
+    let mut params = sig.param_tys.iter();
+
+    let first = params.next()?;
+    if **first != ResolvedTy::UInt(u32::MAX) {
+        return None;
+    }
+
+    if params.next().is_some() {
+        return None;
+    }
+
+    if !sig
+        .return_ty
+        .as_pointer()
+        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    Some(CompilerDefinedFunction::PtrBitcast)
 }

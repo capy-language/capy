@@ -1,0 +1,9 @@
+'hello';
+===
+Root@0..8
+  ExprStmt@0..7
+    CharLiteral@0..7
+      SingleQuote@0..1 "'"
+      StringContents@1..6 "hello"
+      SingleQuote@6..7 "'"
+  Semicolon@7..8 ";"

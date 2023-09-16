@@ -723,5 +723,5 @@ mod tests {
         )
     }
 
-    // "ptrs.capy" and "ptrs_to_ptrs.capy" tests are not reproducible
+    // the "ptrs_to_ptrs.capy" test is not reproducible
 }

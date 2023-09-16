@@ -57,8 +57,6 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::ImmutableBinding,
                 range,
             }),
-            // TODO(@lenawanel): properly handle the case where we don't have a
-            //                   corresponding text range for a type
             ExprMutability::ImmutableRef(range) => Some(TyDiagnosticHelp {
                 kind: TyDiagnosticHelpKind::ImmutableRef,
                 range,
@@ -550,6 +548,7 @@ impl InferenceCtx<'_> {
             Expr::FloatLiteral(_) => {}
             Expr::BoolLiteral(_) => {}
             Expr::StringLiteral(_) => {}
+            Expr::CharLiteral(_) => {}
             Expr::Cast { expr, .. } => {
                 self.get_referenced_locals(*expr, local_defs);
             }
@@ -782,6 +781,7 @@ impl InferenceCtx<'_> {
             hir::Expr::FloatLiteral(_) => ResolvedTy::Float(0).into(),
             hir::Expr::BoolLiteral(_) => ResolvedTy::Bool.into(),
             hir::Expr::StringLiteral(_) => ResolvedTy::String.into(),
+            hir::Expr::CharLiteral(_) => ResolvedTy::Char.into(),
             hir::Expr::Array { size, items, ty } => {
                 let sub_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 

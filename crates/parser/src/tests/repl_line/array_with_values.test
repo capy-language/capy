@@ -13,14 +13,14 @@ Root@0..26
         LBrace@8..9 "{"
         ArrayItem@9..16
           StringLiteral@9..16
-            Quote@9..10 "\""
+            DoubleQuote@9..10 "\""
             StringContents@10..15 "Hello"
-            Quote@15..16 "\""
+            DoubleQuote@15..16 "\""
         Comma@16..17 ","
         Whitespace@17..18 " "
         ArrayItem@18..25
           StringLiteral@18..25
-            Quote@18..19 "\""
+            DoubleQuote@18..19 "\""
             StringContents@19..24 "World"
-            Quote@24..25 "\""
+            DoubleQuote@24..25 "\""
         RBrace@25..26 "}"

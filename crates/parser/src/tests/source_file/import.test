@@ -12,9 +12,9 @@ Root@0..36
       Import@7..13 "import"
       Whitespace@13..14 " "
       StringLiteral@14..24
-        Quote@14..15 "\""
+        DoubleQuote@14..15 "\""
         StringContents@15..23 "foo.capy"
-        Quote@23..24 "\""
+        DoubleQuote@23..24 "\""
   Semicolon@24..25 ";"
   Whitespace@25..26 "\n"
   Binding@26..35

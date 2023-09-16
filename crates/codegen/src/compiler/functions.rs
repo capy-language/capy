@@ -550,6 +550,7 @@ impl FunctionCompiler<'_> {
 
                 Some(self.builder.ins().symbol_value(self.pointer_ty, local_id))
             }
+            hir::Expr::CharLiteral(char) => Some(self.builder.ins().iconst(types::I8, char as i64)),
             hir::Expr::Array { items, .. } => {
                 if self.tys[self.module_name][expr].is_empty() {
                     return None;

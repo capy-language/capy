@@ -147,7 +147,7 @@ impl ToCompType for ResolvedTy {
                 }),
                 _ => unreachable!(),
             },
-            hir_ty::ResolvedTy::Bool => CompType::Number(NumberType {
+            hir_ty::ResolvedTy::Bool | hir_ty::ResolvedTy::Char => CompType::Number(NumberType {
                 ty: types::I8,
                 float: false,
                 signed: false,
@@ -262,7 +262,7 @@ impl ToCompSize for ResolvedTy {
             ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width) => bit_width / 8,
             ResolvedTy::Float(0) => 32 / 8,
             ResolvedTy::Float(bit_width) => bit_width / 8,
-            ResolvedTy::Bool => 1, // bools are u8's
+            ResolvedTy::Bool | ResolvedTy::Char => 1, // bools and chars are u8's
             ResolvedTy::String => pointer_ty.bytes(),
             ResolvedTy::Array { size, sub_ty } => {
                 sub_ty.get_size_in_bytes(pointer_ty) * *size as u32
@@ -287,7 +287,7 @@ impl ToCompSize for ResolvedTy {
             ResolvedTy::IInt(_) | ResolvedTy::UInt(_) | ResolvedTy::Float(_) => {
                 self.get_size_in_bytes(pointer_ty).min(8)
             }
-            ResolvedTy::Bool => 1, // bools are u8's
+            ResolvedTy::Bool | ResolvedTy::Char => 1, // bools and chars are u8's
             ResolvedTy::String | ResolvedTy::Pointer { .. } | ResolvedTy::Function { .. } => {
                 pointer_ty.bytes()
             }

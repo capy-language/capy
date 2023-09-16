@@ -341,6 +341,7 @@ def_multi_node! {
     IntLiteral -> IntLiteral
     FloatLiteral -> FloatLiteral
     BoolLiteral -> BoolLiteral
+    CharLiteral -> CharLiteral
     StringLiteral -> StringLiteral
     StructDecl -> StructDeclaration
     StructLiteral -> StructLiteral
@@ -680,6 +681,14 @@ impl StringLiteral {
     }
 }
 
+def_ast_node!(CharLiteral);
+
+impl CharLiteral {
+    pub fn components(self, tree: &SyntaxTree) -> impl Iterator<Item = StringComponent> + '_ {
+        tokens(self, tree)
+    }
+}
+
 def_multi_token! {
     BinaryOp:
     // math operations
@@ -748,26 +757,10 @@ def_ast_token!(Int);
 def_ast_token!(Float);
 def_ast_token!(Bool);
 
-pub enum StringComponent {
-    Escape(Escape),
-    Contents(StringContents),
-}
-
-impl AstToken for StringComponent {
-    fn cast(token: SyntaxToken, tree: &SyntaxTree) -> Option<Self> {
-        match token.kind(tree) {
-            TokenKind::Escape => Some(Self::Escape(Escape(token))),
-            TokenKind::StringContents => Some(Self::Contents(StringContents(token))),
-            _ => None,
-        }
-    }
-
-    fn syntax(self) -> SyntaxToken {
-        match self {
-            Self::Escape(escape) => escape.syntax(),
-            Self::Contents(contents) => contents.syntax(),
-        }
-    }
+def_multi_token! {
+    StringComponent:
+    Escape -> Escape
+    Contents -> StringContents
 }
 
 def_ast_token!(Escape);
@@ -1383,6 +1376,48 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(escaped_quote.text(&tree), "\\\"");
+
+        assert!(components.next().is_none());
+    }
+
+    #[test]
+    fn get_components_of_char_literal() {
+        // Making sure a char literal only contains one character comes later
+        let (tree, root) = parse(r"'\'Hello\'';");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let char_lit = match expr {
+            Some(Expr::CharLiteral(char_lit)) => char_lit,
+            _ => unreachable!(),
+        };
+
+        let mut components = char_lit.components(&tree);
+
+        let c = char_lit.components(&tree).collect::<Vec<_>>();
+
+        println!("{:?}", c);
+
+        let escaped_quote = match components.next() {
+            Some(StringComponent::Escape(escape)) => escape,
+            _ => unreachable!(),
+        };
+        assert_eq!(escaped_quote.text(&tree), "\\\'");
+
+        let text = match components.next() {
+            Some(StringComponent::Contents(contents)) => contents,
+            _ => unreachable!(),
+        };
+        assert_eq!(text.text(&tree), "Hello");
+
+        let escaped_quote = match components.next() {
+            Some(StringComponent::Escape(escape)) => escape,
+            _ => unreachable!(),
+        };
+        assert_eq!(escaped_quote.text(&tree), "\\\'");
 
         assert!(components.next().is_none());
     }

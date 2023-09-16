@@ -1,4 +1,4 @@
-use std::{env, mem, vec};
+use std::{cmp::Ordering, env, mem, vec};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
@@ -34,6 +34,7 @@ pub enum Expr {
     FloatLiteral(f64),
     BoolLiteral(bool),
     StringLiteral(String),
+    CharLiteral(u8),
     Cast {
         expr: Idx<Expr>,
         ty: Idx<Expr>,
@@ -192,6 +193,9 @@ pub enum LoweringDiagnosticKind {
     NonGlobalExtern,
     ArraySizeMismatch { found: u32, expected: u32 },
     InvalidEscape,
+    TooManyCharsInCharLiteral,
+    EmptyCharLiteral,
+    NonU8CharLiteral,
     ImportMustEndInDotCapy,
     ImportDoesNotExist { file: String },
     TyParseError(TyParseError),
@@ -544,6 +548,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
             ast::Expr::FloatLiteral(float_literal) => self.lower_float_literal(float_literal),
             ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
+            ast::Expr::CharLiteral(char_literal) => self.lower_char_literal(char_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
             ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
             ast::Expr::Lambda(lambda) => self.lower_lambda(lambda),
@@ -996,6 +1001,8 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
+        // I don't *think* this can panic, but that should probably be tested
+        // You can compile floats larger than f64::MAX, they just become +Inf
         let value = float_literal
             .value(self.tree)
             .and_then(|int| int.text(self.tree).parse().ok())
@@ -1044,6 +1051,7 @@ impl<'a> Ctx<'a> {
                         'v' => text.push('\x0B'), // vertical tab
                         'e' => text.push('\x1B'), // escape
                         '"' => text.push('"'),
+                        '\'' => text.push('\''),
                         '\\' => text.push('\\'),
                         _ => self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::InvalidEscape,
@@ -1058,6 +1066,91 @@ impl<'a> Ctx<'a> {
         }
 
         Expr::StringLiteral(text)
+    }
+
+    fn lower_char_literal(&mut self, char_literal: ast::CharLiteral) -> Expr {
+        let mut text = String::new();
+
+        let mut total_len = 0;
+        for component in char_literal.components(self.tree) {
+            match component {
+                ast::StringComponent::Escape(escape) => {
+                    // we do this instead of text.len() because just below
+                    // an escape sequence has the chance to add nothing to text
+                    total_len += 1;
+
+                    let escape_text = escape.text(self.tree);
+                    let mut chars = escape_text.chars();
+                    if cfg!(debug_assertions) {
+                        assert_eq!(chars.next(), Some('\\'));
+                    } else {
+                        chars.next();
+                    }
+
+                    let escape_char = chars.next().unwrap();
+                    debug_assert!(chars.next().is_none());
+
+                    match escape_char {
+                        '0' => text.push('\0'),   // null
+                        'a' => text.push('\x07'), // bell (BEL)
+                        'b' => text.push('\x08'), // backspace
+                        'n' => text.push('\n'),   // line feed (new line)
+                        'f' => text.push('\x0C'), // form feed (new page)
+                        'r' => text.push('\r'),   // carraige return
+                        't' => text.push('\t'),   // horizontal tab
+                        'v' => text.push('\x0B'), // vertical tab
+                        'e' => text.push('\x1B'), // escape
+                        '\'' => text.push('\''),
+                        '"' => text.push('"'),
+                        '\\' => text.push('\\'),
+                        _ => self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::InvalidEscape,
+                            range: escape.range(self.tree),
+                        }),
+                    }
+                }
+                ast::StringComponent::Contents(contents) => {
+                    let contents = contents.text(self.tree);
+
+                    total_len += contents.chars().count();
+                    text.push_str(contents);
+                }
+            }
+        }
+
+        let ch = match total_len.cmp(&1) {
+            Ordering::Less => {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::EmptyCharLiteral,
+                    range: char_literal.range(self.tree),
+                });
+
+                0
+            }
+            Ordering::Equal => text
+                .chars()
+                .next()
+                .unwrap_or('\0')
+                .try_into()
+                .unwrap_or_else(|_| {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::NonU8CharLiteral,
+                        range: char_literal.range(self.tree),
+                    });
+
+                    0
+                }),
+            Ordering::Greater => {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::TooManyCharsInCharLiteral,
+                    range: char_literal.range(self.tree),
+                });
+
+                0
+            }
+        };
+
+        Expr::CharLiteral(ch)
     }
 
     fn insert_into_current_scope(&mut self, name: Key, value: Idx<LocalDef>) {
@@ -1099,10 +1192,6 @@ impl Bodies {
 
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
         self.expr_ranges[expr]
-    }
-
-    pub fn get_range_for_expr(&self, expr: Idx<Expr>) -> Option<TextRange> {
-        self.expr_ranges.get(expr).copied()
     }
 
     pub fn comptimes(&self) -> impl Iterator<Item = Idx<Comptime>> + '_ {
@@ -1275,6 +1364,8 @@ impl Bodies {
                 Expr::BoolLiteral(b) => s.push_str(&format!("{}", b)),
 
                 Expr::StringLiteral(content) => s.push_str(&format!("{content:?}")),
+
+                Expr::CharLiteral(char) => s.push_str(&format!("{:?}", Into::<char>::into(*char))),
 
                 Expr::Array { size, items, ty } => {
                     s.push('[');
@@ -2111,12 +2202,12 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    crab := "\0\a\b\n\f\r\t\v\e\"\\";
+                    escapes := "\0\a\b\n\f\r\t\v\e\'\"\\";
                 }
             "#,
             expect![[r#"
                 main::foo := () -> {
-                    l0 := "\0\u{7}\u{8}\n\u{c}\r\t\u{b}\u{1b}\"\\";
+                    l0 := "\0\u{7}\u{8}\n\u{c}\r\t\u{b}\u{1b}'\"\\";
                 };
             "#]],
             |_| [],
@@ -2146,13 +2237,137 @@ mod tests {
     }
 
     #[test]
-    fn nested_binary_expr() {
+    fn char_literal() {
         check(
             r#"
+                foo :: () {
+                    ch := 'a';
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 'a';
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn char_literal_empty() {
+        check(
+            r#"
+                foo :: () {
+                    ch := '';
+                }
+            "#,
+            expect![[r"
+                main::foo := () -> {
+                    l0 := '\0';
+                };
+            "]],
+            |_| [(LoweringDiagnosticKind::EmptyCharLiteral, 55..57)],
+        )
+    }
+
+    #[test]
+    fn char_literal_multiple_chars() {
+        check(
+            r#"
+                foo :: () {
+                    ch := 'Hello, World!';
+                }
+            "#,
+            expect![[r"
+                main::foo := () -> {
+                    l0 := '\0';
+                };
+            "]],
+            |_| [(LoweringDiagnosticKind::TooManyCharsInCharLiteral, 55..70)],
+        )
+    }
+
+    #[test]
+    fn char_literal_out_of_range() {
+        check(
+            r#"
+                foo :: () {
+                    crab := '🦀';
+                }
+            "#,
+            expect![[r"
+                main::foo := () -> {
+                    l0 := '\0';
+                };
+            "]],
+            |_| [(LoweringDiagnosticKind::NonU8CharLiteral, 57..63)],
+        )
+    }
+
+    #[test]
+    fn char_literal_with_escape() {
+        check(
+            r#"
+                foo :: () {
+                    null := '\0';
+                    bell := '\a';
+                    backspace := '\b';
+                    linefeed := '\n';
+                    formfeed := '\f';
+                    carraige_return := '\r';
+                    tab := '\t';
+                    vertical_tab := '\v';
+                    escape := '\e';
+                    single_quote := '\'';
+                    double_quote := '\"';
+                    backslash := '\\';
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := '\0';
+                    l1 := '\u{7}';
+                    l2 := '\u{8}';
+                    l3 := '\n';
+                    l4 := '\u{c}';
+                    l5 := '\r';
+                    l6 := '\t';
+                    l7 := '\u{b}';
+                    l8 := '\u{1b}';
+                    l9 := '\'';
+                    l10 := '"';
+                    l11 := '\\';
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn char_literal_with_invalid_escape() {
+        check(
+            r"
+                foo :: () {
+                    crab := '\🦀';
+                }
+            ",
+            expect![[r"
+                main::foo := () -> {
+                    l0 := '\0';
+                };
+            "]],
+            |_| [(LoweringDiagnosticKind::InvalidEscape, 58..63)],
+        )
+    }
+
+    #[test]
+    fn nested_binary_expr() {
+        check(
+            r"
                 foo :: () -> i32 {
                     1 + 2 * 3 - 4 / 5
                 }
-            "#,
+            ",
             expect![[r#"
                 main::foo := () -> { 1 + 2 * 3 - 4 / 5 };
             "#]],

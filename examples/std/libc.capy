@@ -5,7 +5,8 @@ free :: (ptr: ^any) extern;
 memcpy :: (dst: ^any, src: ^any, len: usize) extern;
 
 puts :: (s: string) extern;
-putchar :: (c: u8) extern;
+// `char` is the same as `u8`
+putchar :: (c: char) extern;
 
 // fopen actually returns a pointer to a `FILE` struct, but
 // we just treat this as a usize and everything works fine
@@ -16,4 +17,4 @@ fputc :: (c: i8, fp: usize) -> i32 extern;
 fputs :: (s: string, fp: usize) -> i32 extern;
 
 fgetc :: (fp: usize) -> u8 extern;
-fgets :: (buf: ^u8, n: i32, fp: usize) -> string extern;
+fgets :: (buf: ^char, n: i32, fp: usize) -> string extern;

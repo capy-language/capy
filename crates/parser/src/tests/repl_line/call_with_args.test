@@ -14,9 +14,9 @@ Root@0..24
         Whitespace@7..8 " "
         Arg@8..15
           StringLiteral@8..15
-            Quote@8..9 "\""
+            DoubleQuote@8..9 "\""
             StringContents@9..14 "hello"
-            Quote@14..15 "\""
+            DoubleQuote@14..15 "\""
         Comma@15..16 ","
         Whitespace@16..17 " "
         Arg@17..22

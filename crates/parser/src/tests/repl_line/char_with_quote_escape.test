@@ -1,0 +1,11 @@
+'\'hello\'';
+===
+Root@0..12
+  ExprStmt@0..11
+    CharLiteral@0..11
+      SingleQuote@0..1 "'"
+      Escape@1..3 "\\'"
+      StringContents@3..8 "hello"
+      Escape@8..10 "\\'"
+      SingleQuote@10..11 "'"
+  Semicolon@11..12 ";"

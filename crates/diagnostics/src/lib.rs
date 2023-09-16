@@ -243,21 +243,24 @@ fn input_snippet(
 
         lines.push(format!("{}{}{}", ansi_gray, line_number_padding, PADDING));
 
+        let line = file_lines[start_line.0 as usize];
+
         lines.push(format!(
             "{}{}{}{}{}",
             ansi_gray,
             start_line.0 + 1,
             PADDING,
             ansi_reset,
-            file_lines[start_line.0 as usize]
+            line.replace('\t', "    ")
         ));
 
+        // since tabs are converted to 4 spaces, we need to add an extra 3 spaces for the POINTER_UP for every tab
         lines.push(format!(
             "{}{}{}{}{}{}{}",
             ansi_gray,
             line_number_padding,
             PADDING,
-            " ".repeat(start_col.0 as usize),
+            " ".repeat(start_col.0 as usize + (line.chars().filter(|ch| *ch == '\t').count() * 3)),
             ansi_yellow,
             POINTER_UP.repeat(range.len().try_into().unwrap()),
             ansi_reset
@@ -285,18 +288,18 @@ fn input_snippet(
     // now start printing the actual lines of code
     let first_line = file_lines[start_line.0 as usize];
     lines.push(format!(
-        "{}{}{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}",
         ansi_gray,
         start_line.0 + 1,
         " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
         PADDING,
-        ansi_yellow,
         "  ",
         ansi_reset,
-        first_line
+        first_line.replace('\t', "    ")
     ));
 
     // arrow below first line
+    let extra_tab_spaces = first_line.chars().filter(|ch| *ch == '\t').count() * 3;
     lines.push(format!(
         "{}{}{}{}{}{}{}",
         ansi_gray,
@@ -304,7 +307,7 @@ fn input_snippet(
         PADDING,
         ansi_yellow,
         " ",
-        "_".repeat(start_col.0 as usize + 1),
+        "_".repeat(start_col.0 as usize + 1 + extra_tab_spaces),
         POINTER_UP,
         //"-".repeat(first_line.len() - start_col.0 as usize + 2)
     ));
@@ -324,7 +327,7 @@ fn input_snippet(
             ansi_yellow,
             "| ",
             ansi_reset,
-            file_line
+            file_line.replace('\t', "    ")
         ));
     }
 
@@ -337,8 +340,11 @@ fn input_snippet(
         ansi_yellow,
         "| ",
         ansi_reset,
-        last_line
+        last_line.replace('\t', "    ")
     ));
+
+    // final arrow
+    let extra_tab_spaces = last_line.chars().filter(|ch| *ch == '\t').count() * 3;
     lines.push(format!(
         "{}{}{}{}{}{}{}{}",
         ansi_gray,
@@ -346,7 +352,7 @@ fn input_snippet(
         PADDING,
         ansi_yellow,
         "|",
-        "_".repeat(end_col.0 as usize + 1),
+        "_".repeat(end_col.0 as usize + 1 + extra_tab_spaces),
         POINTER_UP,
         ansi_reset
     ));
@@ -425,6 +431,15 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         }
         LoweringDiagnosticKind::ImportDoesNotExist { file } => {
             format!("`{}` couldn't be found", file)
+        }
+        LoweringDiagnosticKind::TooManyCharsInCharLiteral => {
+            "character literals can only contain one character".to_string()
+        }
+        LoweringDiagnosticKind::EmptyCharLiteral => {
+            "character literals cannot be empty".to_string()
+        }
+        LoweringDiagnosticKind::NonU8CharLiteral => {
+            "character literals cannot contain non-ASCII characters".to_string()
         }
         LoweringDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
@@ -650,7 +665,8 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",
-        TokenKind::Quote => "`\"`",
+        TokenKind::SingleQuote => "`'`",
+        TokenKind::DoubleQuote => "`\"`",
         TokenKind::Escape => "escape sequence",
         TokenKind::StringContents => "string",
         TokenKind::Plus => "`+`",

@@ -1,0 +1,7 @@
+'
+===
+Root@0..1
+  ExprStmt@0..1
+    CharLiteral@0..1
+      SingleQuote@0..1 "'"
+error at 1: missing SingleQuote
