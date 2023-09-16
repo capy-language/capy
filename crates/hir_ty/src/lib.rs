@@ -4024,7 +4024,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_to_immutable_ref_no_deref() {
+    fn assign_to_immutable_ref_binding_no_deref() {
         check(
             r#"
                 foo :: () {
@@ -4057,7 +4057,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_to_mut_ref_no_deref() {
+    fn assign_to_mut_ref_binding_no_deref() {
         check(
             r#"
                 foo :: () {
@@ -4086,6 +4086,74 @@ mod tests {
                     Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
                 )]
             },
+        );
+    }
+
+    #[test]
+    fn assign_to_immutable_ref_variable_no_deref() {
+        check(
+            r#"
+                foo :: () {
+                    val_a :: 5;
+                    ptr_a := ^val_a;
+
+                    val_b :: 42;
+                    ptr_b :: ^val_b;
+
+                    ptr_a = ptr_b;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^{uint}
+                6 : {uint}
+                8 : {uint}
+                9 : ^{uint}
+                10 : ^{uint}
+                11 : ^{uint}
+                12 : void
+                l0 : {uint}
+                l1 : ^{uint}
+                l2 : {uint}
+                l3 : ^{uint}
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn assign_to_mut_ref_varibale_no_deref() {
+        check(
+            r#"
+                foo :: () {
+                    val_a := 5;
+                    ptr_a := ^mut val_a;
+
+                    val_b := 42;
+                    ptr_b :: ^mut val_b;
+
+                    ptr_a = ptr_b;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : {uint}
+                3 : {uint}
+                4 : ^mut {uint}
+                6 : {uint}
+                8 : {uint}
+                9 : ^mut {uint}
+                10 : ^mut {uint}
+                11 : ^mut {uint}
+                12 : void
+                l0 : {uint}
+                l1 : ^mut {uint}
+                l2 : {uint}
+                l3 : ^mut {uint}
+            "#]],
+            |_| [],
         );
     }
 

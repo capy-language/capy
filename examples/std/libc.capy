@@ -1,20 +1,34 @@
 
 // in the future, you wouldn't call `malloc` directly, you'd use an Allocator abstraction
-malloc :: (bytes: usize) -> ^mut any extern;
+
+// allocates size bytes of memory. make sure to free() the pointer after your done.
+malloc :: (size: usize) -> ^mut any extern;
+// allocates len * size bytes, all the bits are set to 0
+calloc :: (len: usize, size: usize) -> ^mut any extern;
+// frees allocated memory
 free :: (ptr: ^any) extern;
+// copy len bytes from dst to src
 memcpy :: (dst: ^any, src: ^any, len: usize) extern;
 
+// prints a string to the screen, adds a newline at the end
 puts :: (s: string) extern;
-// `char` is the same as `u8`
+// prints a char to the screen
 putchar :: (c: char) extern;
 
-// fopen actually returns a pointer to a `FILE` struct, but
-// we just treat this as a usize and everything works fine
+// opens a file for either reading "r", writing "w", appending "a",
+// open a file to update both reading and writing "r+",
+// create an empty file for reading and writing "w+",
+// or open a file for reading and appending "a+"
 fopen :: (filename: string, mode: string) -> usize extern;
+// closes a file
 fclose :: (fp: usize) -> i32 extern;
 
+// writes a char to a file
 fputc :: (c: i8, fp: usize) -> i32 extern;
+// writes a string to a file, doesn't add a newline at the end
 fputs :: (s: string, fp: usize) -> i32 extern;
 
+// read a char from a file
 fgetc :: (fp: usize) -> u8 extern;
-fgets :: (buf: ^char, n: i32, fp: usize) -> string extern;
+// read len char's from a file and store them in buf
+fgets :: (buf: ^char, len: i32, fp: usize) -> string extern;

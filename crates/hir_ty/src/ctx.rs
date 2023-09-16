@@ -333,26 +333,12 @@ impl InferenceCtx<'_> {
                 self.get_mutability(local_def.value, false, deref)
             }
             Expr::Local(local_def) if !deref => {
-                let local_ty = self.modules[&self.current_module.unwrap()][*local_def];
                 let local_def = &current_bodies!(self)[*local_def];
 
-                match local_ty.as_pointer() {
-                    // Checking for bindings first makes more sense than what I wrote before
-                    // What do you think? A few tests would probably have to change.
-                    // Not really the focus of this PR though so it's wtv
-                    _ if !local_def.mutable => ExprMutability::ImmutableBinding(local_def.range),
-                    Some((mutable, _)) if assignment => {
-                        if mutable {
-                            ExprMutability::NotMutatingRefThroughDeref(
-                                current_bodies!(self).range_for_expr(expr),
-                            )
-                        } else if current_bodies!(self)[local_def.value] != Expr::Missing {
-                            ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr))
-                        } else {
-                            ExprMutability::Mutable
-                        }
-                    }
-                    _ => ExprMutability::Mutable,
+                if local_def.mutable {
+                    ExprMutability::Mutable
+                } else {
+                    ExprMutability::ImmutableBinding(local_def.range)
                 }
             }
             Expr::Param { idx, range } => {
