@@ -143,6 +143,7 @@ pub enum TyWithRange {
     },
     Named {
         path: PathWithRange,
+        uid: u32,
     },
     Void {
         range: Option<TextRange>,
@@ -167,7 +168,7 @@ impl TyWithRange {
             | TyWithRange::Type { range }
             | TyWithRange::Any { range } => Some(*range),
             TyWithRange::Void { range } => *range,
-            TyWithRange::Named { path } => match path {
+            TyWithRange::Named { path, .. } => match path {
                 PathWithRange::ThisModule(NameWithRange { range, .. }) => Some(*range),
                 PathWithRange::OtherModule {
                     module_range,
@@ -272,6 +273,7 @@ impl TyWithRange {
                                     name: Name(key),
                                     range,
                                 }),
+                                uid: uid_gen.generate_unique_id(),
                             })
                         }
                     }
@@ -519,7 +521,7 @@ impl TyWithRange {
                     twr_arena[*ty].display(twr_arena, interner)
                 )
             }
-            Self::Named { path } => path.path().to_naive_string(interner),
+            Self::Named { path, .. } => path.path().to_naive_string(interner),
             Self::Function {
                 params, return_ty, ..
             } => {

@@ -812,7 +812,15 @@ impl<'a> InferenceCtx<'a> {
             }
             hir::TyWithRange::Type { .. } => ResolvedTy::Type.into(),
             hir::TyWithRange::Any { .. } => ResolvedTy::Any.into(),
-            hir::TyWithRange::Named { path } => self.path_with_range_to_ty(path, resolve_chain),
+            hir::TyWithRange::Named { path, uid } => {
+                // we don't want to get into circular named types
+                // those can be generated from array mangled definitions
+                if resolve_chain.insert(uid) {
+                    self.path_with_range_to_ty(path, resolve_chain)
+                } else {
+                    ResolvedTy::Unknown.into()
+                }
+            }
             hir::TyWithRange::Void { .. } => ResolvedTy::Void.into(),
             hir::TyWithRange::Function {
                 params, return_ty, ..
@@ -2725,7 +2733,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
-                            uid: 0,
+                            uid: 1,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
@@ -2776,7 +2784,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
-                            uid: 0,
+                            uid: 1,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
@@ -2785,7 +2793,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("extra_imaginary")),
                             }),
-                            uid: 1,
+                            uid: 2,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
