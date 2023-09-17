@@ -725,6 +725,54 @@ impl FunctionCompiler<'_> {
                 rhs: rhs_expr,
                 op,
             } => {
+                match op {
+                    hir::BinaryOp::And => {
+                        let rhs_block = self.builder.create_block();
+                        let exit_block = self.builder.create_block();
+
+                        // if lhs is true, test the rhs
+                        // if lhs is false, exit early
+                        let lhs = self.compile_expr(lhs_expr).unwrap();
+                        self.builder
+                            .ins()
+                            .brif(lhs, rhs_block, &[], exit_block, &[lhs]);
+
+                        self.builder.switch_to_block(rhs_block);
+                        self.builder.seal_block(rhs_block);
+
+                        let rhs = self.compile_expr(rhs_expr).unwrap();
+                        self.builder.ins().jump(exit_block, &[rhs]);
+
+                        self.builder.switch_to_block(exit_block);
+                        self.builder.seal_block(exit_block);
+                        let result = self.builder.append_block_param(exit_block, types::I8);
+
+                        return Some(result);
+                    }
+                    hir::BinaryOp::Or => {
+                        let rhs_block = self.builder.create_block();
+                        let exit_block = self.builder.create_block();
+
+                        let lhs = self.compile_expr(lhs_expr).unwrap();
+                        self.builder
+                            .ins()
+                            .brif(lhs, exit_block, &[lhs], rhs_block, &[]);
+
+                        self.builder.switch_to_block(rhs_block);
+                        self.builder.seal_block(rhs_block);
+
+                        let rhs = self.compile_expr(rhs_expr).unwrap();
+                        self.builder.ins().jump(exit_block, &[rhs]);
+
+                        self.builder.switch_to_block(exit_block);
+                        self.builder.seal_block(exit_block);
+                        let result = self.builder.append_block_param(exit_block, types::I8);
+
+                        return Some(result);
+                    }
+                    _ => {}
+                }
+
                 let lhs = self.compile_expr(lhs_expr).unwrap();
                 let rhs = self.compile_expr(rhs_expr).unwrap();
 
@@ -764,8 +812,7 @@ impl FunctionCompiler<'_> {
                         }
                         hir::BinaryOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
                         hir::BinaryOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::And => self.builder.ins().band(lhs, rhs),
-                        hir::BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
+                        hir::BinaryOp::And | hir::BinaryOp::Or => unreachable!(),
                     })
                 } else {
                     Some(match op {
@@ -826,8 +873,7 @@ impl FunctionCompiler<'_> {
                         }
                         hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
                         hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::And => self.builder.ins().band(lhs, rhs),
-                        hir::BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
+                        hir::BinaryOp::And | hir::BinaryOp::Or => unreachable!(),
                     })
                 }
             }
@@ -849,7 +895,10 @@ impl FunctionCompiler<'_> {
                     match op {
                         hir::UnaryOp::Pos => Some(expr),
                         hir::UnaryOp::Neg => Some(self.builder.ins().ineg(expr)),
-                        hir::UnaryOp::Not => Some(self.builder.ins().bnot(expr)),
+                        hir::UnaryOp::Not => {
+                            let zero = self.builder.ins().iconst(expr_ty.ty, 0);
+                            Some(self.builder.ins().icmp(IntCC::Equal, expr, zero))
+                        }
                     }
                 }
             }

@@ -73,7 +73,7 @@ add_str :: (str: ^mut String, s: string) {
 
     prepare_for_n_bytes(str, len);
 
-    offset := ptr.mut_ptr_offset(str.buf, str.len);
+    offset := ptr.mut_offset(str.buf, str.len);
 
     libc.memcpy(offset, s as ^any, len);
     

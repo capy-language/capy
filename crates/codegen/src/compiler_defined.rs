@@ -7,7 +7,6 @@ use crate::{mangle::Mangle, CapyFnSignature, CraneliftSignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CompilerDefinedFunction {
-    PtrOffset,
     PtrBitcast,
 }
 
@@ -20,11 +19,6 @@ impl CompilerDefinedFunction {
         interner: &Interner,
     ) -> (String, CraneliftSignature, FuncId) {
         let sig = match self {
-            CompilerDefinedFunction::PtrOffset => CraneliftSignature {
-                params: vec![AbiParam::new(pointer_ty), AbiParam::new(pointer_ty)],
-                returns: vec![AbiParam::new(pointer_ty)],
-                call_conv: module.target_config().default_call_conv,
-            },
             CompilerDefinedFunction::PtrBitcast => CraneliftSignature {
                 params: vec![AbiParam::new(pointer_ty)],
                 returns: vec![AbiParam::new(pointer_ty)],
@@ -67,46 +61,13 @@ pub(crate) fn as_compiler_defined(
 
     match filename.as_ref() {
         "ptr.capy" => match function_name {
-            "ptr_offset" | "mut_ptr_offset" => as_ptr_offset(sig),
             "to_raw" => as_ptr_to_usize(sig),
-            "from_raw" => as_usize_to_ptr(sig),
+            "const_from_raw" => as_usize_to_ptr(sig, false),
+            "mut_from_raw" => as_usize_to_ptr(sig, true),
             _ => None,
         },
         _ => None,
     }
-}
-
-fn as_ptr_offset(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
-    let mut params = sig.param_tys.iter();
-
-    let first = params.next()?;
-    if !first
-        .as_pointer()
-        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    let second = params.next()?;
-    if **second != hir_ty::ResolvedTy::UInt(u32::MAX) {
-        return None;
-    }
-
-    if params.next().is_some() {
-        return None;
-    }
-
-    if !sig
-        .return_ty
-        .as_pointer()
-        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    Some(CompilerDefinedFunction::PtrOffset)
 }
 
 fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
@@ -115,7 +76,7 @@ fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
     let first = params.next()?;
     if !first
         .as_pointer()
-        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
+        .map(|(mutable, sub_ty)| !mutable && *sub_ty == hir_ty::ResolvedTy::Any)
         .unwrap_or(false)
     {
         return None;
@@ -132,7 +93,7 @@ fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
     Some(CompilerDefinedFunction::PtrBitcast)
 }
 
-fn as_usize_to_ptr(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
+fn as_usize_to_ptr(sig: &CapyFnSignature, mutable: bool) -> Option<CompilerDefinedFunction> {
     let mut params = sig.param_tys.iter();
 
     let first = params.next()?;
@@ -147,7 +108,7 @@ fn as_usize_to_ptr(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
     if !sig
         .return_ty
         .as_pointer()
-        .map(|(_, sub_ty)| *sub_ty == hir_ty::ResolvedTy::Any)
+        .map(|(ptr_mut, sub_ty)| ptr_mut == mutable && *sub_ty == hir_ty::ResolvedTy::Any)
         .unwrap_or(false)
     {
         return None;

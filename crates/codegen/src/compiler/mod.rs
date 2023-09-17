@@ -108,9 +108,6 @@ impl Compiler<'_> {
                 );
 
                 match compiler_defined {
-                    CompilerDefinedFunction::PtrOffset => {
-                        self.compile_ptr_offset_fn(&mangled, sig, func_id)
-                    }
                     CompilerDefinedFunction::PtrBitcast => {
                         self.compile_ptr_bitcast_fn(&mangled, sig, func_id)
                     }
@@ -127,56 +124,6 @@ impl Compiler<'_> {
             sig.param_tys.clone(),
             sig.return_ty,
         );
-    }
-
-    fn compile_ptr_offset_fn(
-        &mut self,
-        mangled_name: &str,
-        sig: CraneliftSignature,
-        func_id: FuncId,
-    ) {
-        self.ctx.func.signature = sig;
-
-        // Create the builder to build a function.
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
-
-        // Create the entry block, to start emitting code in.
-        let entry_block = builder.create_block();
-
-        builder.switch_to_block(entry_block);
-        // tell the builder that the block will have no further predecessors
-        builder.seal_block(entry_block);
-
-        let arg_ptr = builder.append_block_param(entry_block, self.pointer_ty);
-        let arg_offset = builder.append_block_param(entry_block, self.pointer_ty);
-
-        let new_ptr = builder.ins().iadd(arg_ptr, arg_offset);
-
-        builder.ins().return_(&[new_ptr]);
-
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        if self.verbose {
-            println!(
-                "ptr_offset \x1B[90m{}\x1B[0m:\n{}",
-                mangled_name, self.ctx.func
-            );
-        }
-
-        self.module
-            .define_function(func_id, &mut self.ctx)
-            .unwrap_or_else(|err| {
-                println!("Error defining function:");
-                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
-                    println!("{}", v.to_string().replace("):", "):\n "));
-                } else {
-                    println!("{:?}", err);
-                }
-                std::process::exit(1);
-            });
-
-        self.module.clear_context(&mut self.ctx);
     }
 
     fn compile_ptr_bitcast_fn(

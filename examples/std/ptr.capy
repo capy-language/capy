@@ -1,28 +1,31 @@
 
 // compiler defined
-ptr_offset :: (ptr: ^any, offset: usize) -> ^any extern;
-
-// compiler defined
-mut_ptr_offset :: (ptr: ^mut any, offset: usize) -> ^mut any extern;
-
-// compiler defined
 to_raw :: (ptr: ^any) -> usize extern;
-
 // compiler defined
-from_raw :: (raw: usize) -> ^any extern;
+const_from_raw :: (raw: usize) -> ^any extern;
+// compiler defined
+mut_from_raw :: (raw: usize) -> ^mut any extern;
+
+const_offset :: (ptr: ^any, offset: usize) -> ^any {
+    const_from_raw(to_raw(ptr) + offset)
+}
+
+mut_offset :: (ptr: ^mut any, offset: usize) -> ^mut any {
+    mut_from_raw(to_raw(ptr) + offset)
+}
 
 read :: (ptr: ^any, offset: usize) -> u8 {
-    plus_offset := ptr_offset(ptr, offset) as ^u8;
+    plus_offset := const_offset(ptr, offset) as ^u8;
     plus_offset^
 }
 
 write :: (ptr: ^mut any, byte: u8, offset: usize) {
-    plus_offset := mut_ptr_offset(ptr, offset) as ^mut u8;
+    plus_offset := mut_offset(ptr, offset) as ^mut u8;
     plus_offset^ = byte;
 }
 
 null :: () -> ^any {
-    from_raw(0)
+    const_from_raw(0)
 }
 
 is_null :: (ptr: ^any) -> bool {
