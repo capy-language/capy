@@ -814,7 +814,7 @@ impl<'a> InferenceCtx<'a> {
             hir::TyWithRange::Any { .. } => ResolvedTy::Any.into(),
             hir::TyWithRange::Named { path, uid } => {
                 // we don't want to get into circular named types
-                // those can be generated from array mangled definitions
+                // those can be generated from arrays with mangled definitions
                 if resolve_chain.insert(uid) {
                     self.path_with_range_to_ty(path, resolve_chain)
                 } else {
