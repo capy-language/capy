@@ -143,7 +143,6 @@ pub enum TyWithRange {
     },
     Named {
         path: PathWithRange,
-        uid: u32,
     },
     Void {
         range: Option<TextRange>,
@@ -273,7 +272,6 @@ impl TyWithRange {
                                     name: Name(key),
                                     range,
                                 }),
-                                uid: uid_gen.generate_unique_id(),
                             })
                         }
                     }

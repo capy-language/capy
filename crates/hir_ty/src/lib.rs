@@ -1,7 +1,7 @@
 mod ctx;
 mod resolved_ty;
 
-use hir::{NameWithRange, TyWithRange};
+use hir::{NameWithRange, PathWithRange, TyWithRange};
 use interner::{Interner, Key};
 use internment::Intern;
 use la_arena::{Arena, ArenaMap, Idx};
@@ -508,7 +508,7 @@ impl<'a> InferenceCtx<'a> {
     fn path_with_range_to_ty(
         &mut self,
         path: hir::PathWithRange,
-        resolve_chain: &mut FxHashSet<u32>,
+        resolve_chain: &mut FxHashSet<PathWithRange>,
     ) -> Intern<ResolvedTy> {
         let (fqn, module_range, name_range) = match path {
             hir::PathWithRange::ThisModule(NameWithRange { name, range }) => (
@@ -650,7 +650,7 @@ impl<'a> InferenceCtx<'a> {
     fn parse_expr_to_ty(
         &mut self,
         expr: Idx<hir::Expr>,
-        resolve_chain: &mut FxHashSet<u32>,
+        resolve_chain: &mut FxHashSet<PathWithRange>,
     ) -> Intern<ResolvedTy> {
         match &self.bodies_map[&self.current_module.unwrap()][expr] {
             hir::Expr::Missing => ResolvedTy::Unknown.into(),
@@ -775,7 +775,7 @@ impl<'a> InferenceCtx<'a> {
     fn resolve_ty(
         &mut self,
         ty: Idx<hir::TyWithRange>,
-        resolve_chain: &mut FxHashSet<u32>,
+        resolve_chain: &mut FxHashSet<PathWithRange>,
     ) -> Intern<ResolvedTy> {
         match self.twr_arena[ty].clone() {
             hir::TyWithRange::Unknown => ResolvedTy::Unknown.into(),
@@ -797,25 +797,20 @@ impl<'a> InferenceCtx<'a> {
                 sub_ty: self.resolve_ty(sub_ty, resolve_chain),
             }
             .into(),
-            hir::TyWithRange::Distinct { uid, ty, .. } => {
+            hir::TyWithRange::Distinct { ty, uid, .. } => {
                 // we don't want to get into circular distinct types
-                if resolve_chain.insert(uid) {
-                    ResolvedTy::Distinct {
-                        fqn: None,
-                        uid,
-                        ty: self.resolve_ty(ty, resolve_chain),
-                    }
-                    .into()
-                } else {
-                    ResolvedTy::Unknown.into()
+                ResolvedTy::Distinct {
+                    fqn: None,
+                    uid,
+                    ty: self.resolve_ty(ty, resolve_chain),
                 }
+                .into()
             }
             hir::TyWithRange::Type { .. } => ResolvedTy::Type.into(),
             hir::TyWithRange::Any { .. } => ResolvedTy::Any.into(),
-            hir::TyWithRange::Named { path, uid } => {
-                // we don't want to get into circular named types
-                // those can be generated from arrays with mangled definitions
-                if resolve_chain.insert(uid) {
+            hir::TyWithRange::Named { path } => {
+                // we don't want to get into circular types (i.e. types containing themselves)
+                if resolve_chain.insert(path) {
                     self.path_with_range_to_ty(path, resolve_chain)
                 } else {
                     ResolvedTy::Unknown.into()
@@ -832,28 +827,18 @@ impl<'a> InferenceCtx<'a> {
                 return_ty: self.resolve_ty(return_ty, &mut resolve_chain.clone()),
             }
             .into(),
-            hir::TyWithRange::Struct { fields, uid, .. } => {
-                // we don't want to get into circular structs
-                if resolve_chain.insert(uid) {
-                    // the struct hasn't been resolved yet
-                    ResolvedTy::Struct {
-                        fqn: None,
-                        uid,
-                        fields: fields
-                            .iter()
-                            .cloned()
-                            .filter_map(|(name, ty)| {
-                                name.map(|name| {
-                                    (name, self.resolve_ty(ty, &mut resolve_chain.clone()))
-                                })
-                            })
-                            .collect(),
-                    }
-                    .into()
-                } else {
-                    ResolvedTy::Unknown.into()
-                }
+            hir::TyWithRange::Struct { fields, uid, .. } => ResolvedTy::Struct {
+                fqn: None,
+                uid,
+                fields: fields
+                    .iter()
+                    .cloned()
+                    .filter_map(|(name, ty)| {
+                        name.map(|name| (name, self.resolve_ty(ty, &mut resolve_chain.clone())))
+                    })
+                    .collect(),
             }
+            .into(),
         }
     }
 }
@@ -2733,7 +2718,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
-                            uid: 1,
+                            uid: 0,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
@@ -2784,7 +2769,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
-                            uid: 1,
+                            uid: 0,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
@@ -2793,7 +2778,7 @@ mod tests {
                                 module: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("extra_imaginary")),
                             }),
-                            uid: 2,
+                            uid: 1,
                             ty: ResolvedTy::IInt(32).into(),
                         }
                         .into(),
@@ -6410,6 +6395,30 @@ mod tests {
                     TyDiagnosticKind::CannotMutate,
                     133..144,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 105..110)),
+                )]
+            },
+        );
+    }
+    #[test]
+    fn recuresive_array() {
+        check(
+            r#"
+                a :: [0] a;
+                b : a : 0;
+            "#,
+            expect![[r#"
+                main::a : type
+                main::b : [0][0]<unknown>
+                1 : type
+                2 : i32
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("a"))),
+                    },
+                    26..27,
+                    None,
                 )]
             },
         );

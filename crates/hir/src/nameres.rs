@@ -29,7 +29,7 @@ impl Path {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PathWithRange {
     ThisModule(NameWithRange),
     OtherModule {
