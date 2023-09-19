@@ -3144,6 +3144,31 @@ mod tests {
     }
 
     #[test]
+    fn recursive_array() {
+        check(
+            r#"
+                a :: [0] a;
+                b : a : 0;
+            "#,
+            expect![[r#"
+                main::a : type
+                main::b : [0][0]<unknown>
+                1 : type
+                2 : i32
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        path: hir::Path::ThisModule(hir::Name(i.intern("a"))),
+                    },
+                    26..27,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
     fn assign_var() {
         check(
             r#"
@@ -5784,7 +5809,7 @@ mod tests {
             r#"
                 get_any :: () {
                     bytes := [3] u8 { 72, 73, 0 };
-                    ptr := {^bytes} as ^any;
+                    ptr := ^bytes as ^any;
                     str := ptr as string;
                 }
             "#,
@@ -5796,11 +5821,10 @@ mod tests {
                 5 : [3]u8
                 7 : [3]u8
                 8 : ^[3]u8
-                9 : ^[3]u8
-                11 : ^any
-                13 : ^any
-                15 : string
-                16 : void
+                10 : ^any
+                12 : ^any
+                14 : string
+                15 : void
                 l0 : [3]u8
                 l1 : ^any
                 l2 : string
@@ -5815,7 +5839,7 @@ mod tests {
             r#"
                 get_any :: () {
                     bytes := [3] u8 { 72, 73, 0 };
-                    ptr := {{^bytes} as ^any} as ^u8;
+                    ptr := ^bytes as ^any as ^u8;
                     str := ptr as string;
                 }
             "#,
@@ -5827,13 +5851,11 @@ mod tests {
                 5 : [3]u8
                 7 : [3]u8
                 8 : ^[3]u8
-                9 : ^[3]u8
-                11 : ^any
-                12 : ^any
+                10 : ^any
+                12 : ^u8
                 14 : ^u8
-                16 : ^u8
-                18 : string
-                19 : void
+                16 : string
+                17 : void
                 l0 : [3]u8
                 l1 : ^u8
                 l2 : string
@@ -5848,7 +5870,7 @@ mod tests {
             r"
                 get_any :: () {
                     chars := [3] char { 'H', 'i', '\0' };
-                    ptr := {{^chars} as ^any} as ^char;
+                    ptr := ^chars as ^any as ^char;
                     str := ptr as string;
                 }
             ",
@@ -5860,13 +5882,11 @@ mod tests {
                 5 : [3]char
                 7 : [3]char
                 8 : ^[3]char
-                9 : ^[3]char
-                11 : ^any
-                12 : ^any
+                10 : ^any
+                12 : ^char
                 14 : ^char
-                16 : ^char
-                18 : string
-                19 : void
+                16 : string
+                17 : void
                 l0 : [3]char
                 l1 : ^char
                 l2 : string
@@ -6395,30 +6415,6 @@ mod tests {
                     TyDiagnosticKind::CannotMutate,
                     133..144,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 105..110)),
-                )]
-            },
-        );
-    }
-    #[test]
-    fn recuresive_array() {
-        check(
-            r#"
-                a :: [0] a;
-                b : a : 0;
-            "#,
-            expect![[r#"
-                main::a : type
-                main::b : [0][0]<unknown>
-                1 : type
-                2 : i32
-            "#]],
-            |i| {
-                [(
-                    TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("a"))),
-                    },
-                    26..27,
-                    None,
                 )]
             },
         );

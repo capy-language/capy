@@ -28,10 +28,20 @@ pub(super) fn parse_ty(
     expected_syntax_name: &'static str,
     recovery_set: TokenSet,
 ) -> Option<CompletedMarker> {
-    parse_lhs(p, recovery_set, expected_syntax_name).map(|expr| {
-        let m = expr.precede(p);
-        m.complete(p, NodeKind::Ty)
-    })
+    let cm = parse_lhs(p, recovery_set, expected_syntax_name)?;
+    let cm = parse_post_operators(p, recovery_set, cm, true);
+
+    let m = cm.precede(p);
+    Some(m.complete(p, NodeKind::Ty))
+}
+
+fn parse_expr_for_prefix(
+    p: &mut Parser,
+    recovery_set: TokenSet,
+    expected_syntax_name: &'static str,
+) -> Option<CompletedMarker> {
+    let cm = parse_lhs(p, recovery_set, expected_syntax_name)?;
+    Some(parse_post_operators(p, recovery_set, cm, true))
 }
 
 // bp stands for binding power
@@ -45,6 +55,8 @@ fn parse_expr_bp(
     let mut lhs = parse_lhs(p, recovery_set, expected_syntax_name)?;
 
     loop {
+        lhs = parse_post_operators(p, recovery_set, lhs, false);
+
         let (left_bp, right_bp) = if p.at(TokenKind::DoublePipe) {
             (1, 2)
         } else if p.at(TokenKind::DoubleAnd) {
@@ -63,7 +75,7 @@ fn parse_expr_bp(
         } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) || p.at(TokenKind::Percent) {
             (9, 10)
         } else {
-            break; // make sure parse_prefix_expr has a higher binding power than 10
+            break;
         };
 
         if left_bp < minimum_bp {
@@ -89,7 +101,7 @@ fn parse_lhs(
 
     // println!("parse_lhs @ {:?}", p.peek());
 
-    let mut cm = if p.at(TokenKind::Int) {
+    let cm = if p.at(TokenKind::Int) {
         parse_int_literal(p)
     } else if p.at(TokenKind::Float) {
         parse_float_literal(p)
@@ -130,6 +142,18 @@ fn parse_lhs(
         // println!("error {:?} {} {:?}", p.peek(), p.at_eof(), p.peek_range());
         return p.error_with_recovery_set(recovery_set);
     };
+
+    Some(cm)
+}
+
+// restrict rhs will not parse post `as` expressions or dereference expressions
+fn parse_post_operators(
+    p: &mut Parser,
+    recovery_set: TokenSet,
+    cm: CompletedMarker,
+    restrict: bool,
+) -> CompletedMarker {
+    let mut cm = cm;
 
     loop {
         match p.kind() {
@@ -177,12 +201,12 @@ fn parse_lhs(
 
                 cm = call.complete(p, NodeKind::Call);
             }
-            Some(TokenKind::Caret) => {
+            Some(TokenKind::Caret) if !restrict => {
                 let deref = cm.precede(p);
                 p.bump();
                 cm = deref.complete(p, NodeKind::DerefExpr);
             }
-            Some(TokenKind::As) => {
+            Some(TokenKind::As) if !restrict => {
                 let cast = cm.precede(p);
                 p.bump();
 
@@ -215,7 +239,7 @@ fn parse_lhs(
         cm = parse_struct_literal(p, ty_cm, recovery_set);
     }
 
-    Some(cm)
+    cm
 }
 
 fn parse_int_literal(p: &mut Parser) -> CompletedMarker {
@@ -274,7 +298,7 @@ fn parse_ref(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         p.bump();
     }
 
-    parse_expr_bp(p, 14, recovery_set, "operand");
+    parse_expr_for_prefix(p, recovery_set, "operand");
 
     m.complete(p, NodeKind::RefExpr)
 }
@@ -321,15 +345,9 @@ fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker 
 
     let m = p.start();
 
-    let right_bp = if plus || minus || bang {
-        11
-    } else {
-        unreachable!()
-    };
-
     // Eat the operator’s token.
     p.bump();
-    parse_expr_bp(p, right_bp, recovery_set, "operand");
+    parse_expr_for_prefix(p, recovery_set, "operand");
     m.complete(p, NodeKind::UnaryExpr)
 }
 
@@ -383,12 +401,12 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     param_list_m.complete(p, NodeKind::ParamList);
 
-    const BEGINNING_OF_BLOCK: TokenSet = TokenSet::new([TokenKind::LBrace, TokenKind::Extern]);
+    const BODY: TokenSet = TokenSet::new([TokenKind::LBrace, TokenKind::Extern]);
 
-    if !p.at_set(BEGINNING_OF_BLOCK) {
+    if !p.at_set(BODY) {
         p.expect_with_no_skip(TokenKind::Arrow);
 
-        if !p.at_set(BEGINNING_OF_BLOCK) {
+        if !p.at_set(BODY) {
             parse_ty(
                 p,
                 "return type",

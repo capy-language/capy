@@ -1,0 +1,6 @@
+42e9
+===
+Root@0..4
+  ExprStmt@0..4
+    IntLiteral@0..4
+      Int@0..4 "42e9"

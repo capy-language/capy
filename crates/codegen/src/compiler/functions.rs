@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, rc::Rc};
+use std::collections::VecDeque;
 
 use cranelift::{
     codegen::ir::{Endianness, FuncRef, StackSlot},
@@ -20,7 +20,6 @@ use crate::{
     compiler_defined::CompilerDefinedFunction,
     convert::{NumberType, StructMemory, ToCompSize, ToCompType, ToCraneliftSignature},
     mangle::Mangle,
-    slice_utils::{IntoBoxedSlice, IntoRcSlice},
     ComptimeToCompile, CraneliftSignature,
 };
 
@@ -172,7 +171,7 @@ impl FunctionCompiler<'_> {
         self.builder.finalize();
     }
 
-    fn expr_to_const_data(&mut self, module: hir::FileName, expr: Idx<hir::Expr>) -> Rc<[u8]> {
+    fn expr_to_const_data(&mut self, module: hir::FileName, expr: Idx<hir::Expr>) -> Box<[u8]> {
         match self.bodies_map[&module][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
@@ -184,18 +183,18 @@ impl FunctionCompiler<'_> {
                         .bit_width(),
                     self.module.isa().endianness(),
                 ) {
-                    (8, Endianness::Little) => (n as u8).to_le_bytes().into_rc_slice(),
-                    (8, Endianness::Big) => (n as u8).to_be_bytes().into_rc_slice(),
-                    (16, Endianness::Little) => (n as u16).to_le_bytes().into_rc_slice(),
-                    (16, Endianness::Big) => (n as u16).to_be_bytes().into_rc_slice(),
-                    (32, Endianness::Little) => (n as u32).to_le_bytes().into_rc_slice(),
-                    (32, Endianness::Big) => (n as u32).to_be_bytes().into_rc_slice(),
+                    (8, Endianness::Little) => Box::new((n as u8).to_le_bytes()),
+                    (8, Endianness::Big) => Box::new((n as u8).to_be_bytes()),
+                    (16, Endianness::Little) => Box::new((n as u16).to_le_bytes()),
+                    (16, Endianness::Big) => Box::new((n as u16).to_be_bytes()),
+                    (32, Endianness::Little) => Box::new((n as u32).to_le_bytes()),
+                    (32, Endianness::Big) => Box::new((n as u32).to_be_bytes()),
                     #[allow(clippy::unnecessary_cast)]
-                    (64, Endianness::Little) => (n as u64).to_le_bytes().into_rc_slice(),
+                    (64, Endianness::Little) => Box::new((n as u64).to_le_bytes()),
                     #[allow(clippy::unnecessary_cast)]
-                    (64, Endianness::Big) => (n as u64).to_be_bytes().into_rc_slice(),
-                    (128, Endianness::Little) => (n as u128).to_le_bytes().into_rc_slice(),
-                    (128, Endianness::Big) => (n as u128).to_be_bytes().into_rc_slice(),
+                    (64, Endianness::Big) => Box::new((n as u64).to_be_bytes()),
+                    (128, Endianness::Little) => Box::new((n as u128).to_le_bytes()),
+                    (128, Endianness::Big) => Box::new((n as u128).to_be_bytes()),
                     _ => unreachable!(),
                 }
             }
@@ -207,15 +206,15 @@ impl FunctionCompiler<'_> {
                     .bit_width(),
                 self.module.isa().endianness(),
             ) {
-                (32, Endianness::Little) => (f as f32).to_le_bytes().into_rc_slice(),
-                (32, Endianness::Big) => (f as f32).to_be_bytes().into_rc_slice(),
+                (32, Endianness::Little) => Box::new((f as f32).to_le_bytes()),
+                (32, Endianness::Big) => Box::new((f as f32).to_be_bytes()),
                 #[allow(clippy::unnecessary_cast)]
-                (64, Endianness::Little) => (f as f64).to_le_bytes().into_rc_slice(),
+                (64, Endianness::Little) => Box::new((f as f64).to_le_bytes()),
                 #[allow(clippy::unnecessary_cast)]
-                (64, Endianness::Big) => (f as f64).to_be_bytes().into_rc_slice(),
+                (64, Endianness::Big) => Box::new((f as f64).to_be_bytes()),
                 _ => unreachable!(),
             },
-            hir::Expr::BoolLiteral(b) => Rc::new([b as u8]),
+            hir::Expr::BoolLiteral(b) => Box::new([b as u8]),
             hir::Expr::StringLiteral(mut text) => {
                 text.push('\0');
                 text.into_bytes().into()
@@ -256,7 +255,7 @@ impl FunctionCompiler<'_> {
             if let Some(result) = self.comptime_results.get(&ctc) {
                 result.clone().into_bytes().unwrap()
             } else {
-                panic!("Oh shit I forgot to account for this possibility");
+                todo!("Oh shit I forgot to account for this possibility");
             }
         } else {
             self.expr_to_const_data(fqn.module, value)
@@ -272,8 +271,8 @@ impl FunctionCompiler<'_> {
         global
     }
 
-    fn create_global_data(&mut self, name: &str, data: impl IntoBoxedSlice) -> DataId {
-        self.data_description.define(data.into_boxed_slice());
+    fn create_global_data(&mut self, name: &str, data: Box<[u8]>) -> DataId {
+        self.data_description.define(data);
         let id = self
             .module
             .declare_data(name, Linkage::Export, true, false)
@@ -290,7 +289,7 @@ impl FunctionCompiler<'_> {
     fn create_global_str(&mut self, mut text: String) -> DataId {
         text.push('\0');
         let name = format!(".str{}", self.str_id_gen.generate_unique_id());
-        self.create_global_data(&name, text.into_bytes())
+        self.create_global_data(&name, text.into_bytes().into_boxed_slice())
     }
 
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {

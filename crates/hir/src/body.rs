@@ -984,28 +984,47 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_int_literal(&mut self, int_literal: ast::IntLiteral) -> Expr {
-        let value = int_literal
-            .value(self.tree)
-            .and_then(|int| int.text(self.tree).parse().ok());
+        let Some(value) = int_literal.value(self.tree) else {
+            return Expr::Missing;
+        };
+        let value = value.text(self.tree).replace('_', "");
+        let mut value = value.split(['e', 'E']);
 
-        if let Some(value) = value {
-            return Expr::IntLiteral(value);
-        }
+        // there will always be a first part
+        let Ok(base) = value.next().unwrap().parse::<u64>() else {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                range: int_literal.range(self.tree),
+            });
+            return Expr::Missing;
+        };
 
-        self.diagnostics.push(LoweringDiagnostic {
-            kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
-            range: int_literal.range(self.tree),
-        });
+        let val = if let Some(e) = value.next() {
+            let Some(result) = e
+                .parse()
+                .ok()
+                .and_then(|e| 10_u64.checked_pow(e))
+                .and_then(|e| base.checked_mul(e))
+            else {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                    range: int_literal.range(self.tree),
+                });
+                return Expr::Missing;
+            };
 
-        Expr::Missing
+            result
+        } else {
+            base
+        };
+
+        Expr::IntLiteral(val)
     }
 
     fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
-        // I don't *think* this can panic, but that should probably be tested
-        // You can compile floats larger than f64::MAX, they just become +Inf
         let value = float_literal
             .value(self.tree)
-            .and_then(|int| int.text(self.tree).parse().ok())
+            .and_then(|int| int.text(self.tree).replace('_', "").parse().ok())
             .unwrap();
 
         Expr::FloatLiteral(value)
@@ -2147,6 +2166,59 @@ mod tests {
     }
 
     #[test]
+    fn int_literal_with_e_lower() {
+        check(
+            r#"
+                foo :: () {
+                    // 123 * 10^9
+                    num := 1_23_e9_;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 123000000000;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn int_literal_with_e_upper() {
+        check(
+            r#"
+                foo :: () {
+                    // 456... * 10^(-10)
+                    num := 4_5_6_E1_0_;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 4560000000000;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn int_literal_with_e_very_large() {
+        check(
+            r#"
+                foo :: () {
+                    num := 1e20;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..60)],
+        )
+    }
+
+    #[test]
     fn out_of_range_int_literal() {
         check(
             r#"
@@ -2174,6 +2246,23 @@ mod tests {
             expect![[r#"
                 main::foo := () -> {
                     l0 := 0.123;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn float_literal_with_underscores() {
+        check(
+            r#"
+                foo :: () {
+                    num := 1_000_000.000_00000E-3_;
+                }
+            "#,
+            expect![[r#"
+                main::foo := () -> {
+                    l0 := 1000;
                 };
             "#]],
             |_| [],

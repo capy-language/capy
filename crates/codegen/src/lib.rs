@@ -2,7 +2,6 @@ mod compiler;
 mod compiler_defined;
 mod convert;
 mod mangle;
-mod slice_utils;
 
 use compiler::comptime::ComptimeResult;
 use compiler::program::compile_program;
@@ -175,22 +174,14 @@ mod tests {
 
             let tokens = lexer::lex(text);
             let parse = parser::parse_source_file(&tokens, text);
-            cfg_if::cfg_if! {
-            if #[cfg(not(feature = "disable_codegen_checks"))] {
-                assert_eq!(parse.errors(), &[]);
-            }
-            }
+            assert_eq!(parse.errors(), &[]);
 
             let tree = parse.into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
             let (index, diagnostics) =
                 hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-            cfg_if::cfg_if! {
-            if #[cfg(not(feature = "disable_codegen_checks"))] {
-                assert_eq!(diagnostics, vec![]);
-            }
-            }
+            assert_eq!(diagnostics, vec![]);
 
             let module = hir::FileName(interner.intern(&file_path.to_string_lossy()));
 
@@ -210,11 +201,7 @@ mod tests {
                 comptime,
             }));
 
-            cfg_if::cfg_if! {
-            if #[cfg(not(feature = "disable_codegen_checks"))] {
-                assert_eq!(diagnostics, vec![]);
-            }
-            }
+            assert_eq!(diagnostics, vec![]);
 
             world_index.add_module(module, index);
             bodies_map.insert(module, bodies);
@@ -226,22 +213,14 @@ mod tests {
         let module = hir::FileName(interner.intern(&main_file_path.to_string_lossy()));
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
-        cfg_if::cfg_if! {
-        if #[cfg(not(feature = "disable_codegen_checks"))] {
-            assert_eq!(parse.errors(), &[]);
-        }
-        }
+        assert_eq!(parse.errors(), &[]);
 
         let tree = parse.into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
         let (index, diagnostics) =
             hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
 
-        cfg_if::cfg_if! {
-        if #[cfg(not(feature = "disable_codegen_checks"))] {
-            assert_eq!(diagnostics, vec![]);
-        }
-        }
+        assert_eq!(diagnostics, vec![]);
 
         let (bodies, diagnostics) = hir::lower(
             root,
@@ -257,21 +236,13 @@ mod tests {
             module_name: module,
             comptime,
         }));
-        cfg_if::cfg_if! {
-        if #[cfg(not(feature = "disable_codegen_checks"))] {
-            assert_eq!(diagnostics, vec![]);
-        }
-        }
+        assert_eq!(diagnostics, vec![]);
         world_index.add_module(module, index);
         bodies_map.insert(module, bodies);
 
         let (inference_result, diagnostics) =
             InferenceCtx::new(&bodies_map, &world_index, &twr_arena).finish();
-        cfg_if::cfg_if! {
-        if #[cfg(not(feature = "disable_codegen_checks"))] {
-            assert_eq!(diagnostics, vec![]);
-        }
-        }
+        assert_eq!(diagnostics, vec![]);
 
         println!("comptime:");
 

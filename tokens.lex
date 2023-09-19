@@ -13,8 +13,10 @@ Struct = 'struct'
 Import = 'import'
 Comptime = 'comptime'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
-Float = /[0-9]*\.[0-9]+([eE][-+]?[0-9]+)?/
-Int = /[0-9]+/
+// these basically match numbers that can contain `_`,
+// but must contain a digit as the first char
+Float = /(\d[\d_]*)?\.(\d[\d_]*)+([eE][-+]?(\d[\d_]*)+)?/
+Int = /(\d[\d_]*)+([eE](\d[\d_]*)+)?/
 Bool = /true|false/
 _SingleQuote
 _DoubleQuote

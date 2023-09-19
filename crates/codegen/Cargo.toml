@@ -5,9 +5,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-disable_codegen_checks = []
-
 [dependencies]
 interner = { path = "../interner" }
 la-arena = "0.2.0"

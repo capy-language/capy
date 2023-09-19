@@ -6,13 +6,12 @@ use interner::Interner;
 use la_arena::Idx;
 use num_traits::ToBytes;
 use rustc_hash::FxHashMap;
-use std::{collections::VecDeque, mem, rc::Rc};
+use std::{alloc::Layout, collections::VecDeque, mem};
 use uid_gen::UIDGenerator;
 
 use crate::{
     convert::{CompType, ToCompSize, ToCompType},
     mangle::Mangle,
-    slice_utils::IntoRcSlice,
 };
 
 use super::Compiler;
@@ -25,14 +24,14 @@ pub struct ComptimeToCompile {
 
 #[derive(Debug, Clone)]
 pub enum ComptimeResult {
-    Integer { num: u64, bytes: Rc<[u8]> },
-    Float { num: f64, bytes: Rc<[u8]> },
-    Data(Rc<[u8]>),
+    Integer { num: u64, bytes: Box<[u8]> },
+    Float { num: f64, bytes: Box<[u8]> },
+    Data(Box<[u8]>),
     Void,
 }
 
 impl ComptimeResult {
-    pub(crate) fn into_bytes(self) -> Option<Rc<[u8]>> {
+    pub(crate) fn into_bytes(self) -> Option<Box<[u8]>> {
         match self {
             ComptimeResult::Integer { bytes, .. } => Some(bytes),
             ComptimeResult::Float { bytes, .. } => Some(bytes),
@@ -136,7 +135,7 @@ pub fn eval_comptime_blocks<'a>(
 
         ComptimeResult::Float {
             num: result.into(),
-            bytes: result.to_ne_bytes().as_ref().into_rc_slice(),
+            bytes: result.to_ne_bytes().as_ref().to_vec().into_boxed_slice(),
         }
     }
 
@@ -146,7 +145,7 @@ pub fn eval_comptime_blocks<'a>(
 
         ComptimeResult::Integer {
             num: result.into(),
-            bytes: result.to_ne_bytes().as_ref().into_rc_slice(),
+            bytes: result.to_ne_bytes().as_ref().to_vec().into_boxed_slice(),
         }
     }
 
@@ -168,7 +167,7 @@ pub fn eval_comptime_blocks<'a>(
                         let comptime = unsafe { mem::transmute::<_, fn() -> u128>(code_ptr) };
                         let result = comptime();
 
-                        ComptimeResult::Data(result.to_ne_bytes().into_rc_slice())
+                        ComptimeResult::Data(result.to_ne_bytes().to_vec().into_boxed_slice())
                     }
                     _ => unreachable!(),
                 };
@@ -176,15 +175,19 @@ pub fn eval_comptime_blocks<'a>(
                 results.insert(ctc, result);
             }
             CompType::Pointer(_) => {
-                let bytes = vec![0u8; size as usize].into_rc_slice();
+                let layout = Layout::from_size_align(size as usize, std::mem::align_of::<u8>())
+                    .expect("Invalid layout");
+                let raw = unsafe { std::alloc::alloc(layout) };
 
-                let comptime =
-                    unsafe { mem::transmute::<_, fn(*const [u8]) -> *const u8>(code_ptr) };
+                let comptime = unsafe { mem::transmute::<_, fn(*const u8) -> *const u8>(code_ptr) };
 
-                let bytes = Rc::into_raw(bytes);
-                comptime(bytes);
+                comptime(raw);
 
-                let bytes = unsafe { Rc::from_raw(bytes) };
+                let bytes = unsafe {
+                    let slice = std::ptr::slice_from_raw_parts(raw, size as usize) as *mut [u8];
+
+                    Box::from_raw(slice)
+                };
 
                 results.insert(ctc, ComptimeResult::Data(bytes));
             }

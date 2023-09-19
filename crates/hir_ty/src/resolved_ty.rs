@@ -504,14 +504,18 @@ impl ResolvedTy {
                 found_fields.len() == expected_fields.len()
                     && found_fields.iter().zip(expected_fields.iter()).all(
                         |((found_name, found_ty), (expected_name, expected_ty))| {
-                            found_name == expected_name && found_ty.is_equal_to(expected_ty)
+                            found_name == expected_name
+                                && found_ty.is_functionally_equivalent_to(expected_ty)
                         },
                     )
             }
             (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
                 from.primitive_castable(to)
             }
-            (ResolvedTy::Distinct { ty: from, .. }, to) => from.primitive_castable(to),
+            (ResolvedTy::Distinct { ty: distinct, .. }, other)
+            | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
+                distinct.primitive_castable(other)
+            }
             (
                 ResolvedTy::Pointer {
                     mutable: found_mutable,
@@ -537,7 +541,7 @@ impl ResolvedTy {
                     ResolvedTy::Any | ResolvedTy::UInt(8) | ResolvedTy::Char
                 )
             }
-            _ => self.can_fit_into(primitive_ty),
+            _ => self.is_functionally_equivalent_to(primitive_ty),
         }
     }
 

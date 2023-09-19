@@ -59,7 +59,7 @@ ftoa :: (n: f32, buf: ^mut u8, afterpoint: usize) {
 
     ipart := n as i32;
 
-    fpart := n - {ipart as f32};
+    fpart := n - ipart as f32;
 
     idx := int_to_string(ipart, buf, 0, 0);
 
