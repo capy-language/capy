@@ -618,23 +618,25 @@ impl ResolvedTy {
                     (true, _) | (false, false)
                 ) && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
             }
-            (
-                ResolvedTy::Struct {
-                    fields: found_fields,
-                    ..
-                },
-                ResolvedTy::Struct {
-                    fields: expected_fields,
-                    ..
-                },
-            ) => {
-                self.can_fit_into(expected)
-                    && found_fields.iter().zip(expected_fields.iter()).any(
-                        |((_, found_ty), (_, expected_ty))| {
-                            found_ty.is_weak_type_replaceable_by(expected_ty)
-                        },
-                    )
-            }
+            // Right now there are no weak structs, so having this doesn't make sense
+            // Maybe in the future if we have `.{}` syntax we can figure something out
+            // (
+            //     ResolvedTy::Struct {
+            //         fields: found_fields,
+            //         ..
+            //     },
+            //     ResolvedTy::Struct {
+            //         fields: expected_fields,
+            //         ..
+            //     },
+            // ) => {
+            //     self.can_fit_into(expected)
+            //         && found_fields.iter().zip(expected_fields.iter()).any(
+            //             |((_, found_ty), (_, expected_ty))| {
+            //                 found_ty.is_weak_type_replaceable_by(expected_ty)
+            //             },
+            //         )
+            // }
             (
                 ResolvedTy::Distinct { uid: found_uid, .. },
                 ResolvedTy::Distinct {

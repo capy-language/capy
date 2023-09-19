@@ -177,20 +177,31 @@ impl InferenceCtx<'_> {
     /// y : u16 = x;    // x's type is changed to be u16 instead of {uint}
     /// ```
     ///
+    /// This also has to account for usages of local variables
+    ///
+    /// ```text
+    /// x := 42;            // x is a weak {uint}
+    /// if x > 10 { ... }   // the type of x here is {uint}
+    /// y : u16 = x;        // not only is x's type changed, but the above if condition is changed
+    /// ```
+    ///
     /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
     fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: Intern<ResolvedTy>) -> bool {
-        let found_ty = &current_module!(self).expr_tys[expr];
-
-        // println!("  replace_weak_tys {:?} {:?}", found_ty, new_ty);
-        if !found_ty.is_weak_type_replaceable_by(&new_ty) {
-            // println!("no");
+        let expr_body = &current_bodies!(self)[expr];
+        if matches!(expr_body, Expr::Missing) {
             return false;
         }
-        // println!("yeah");
+
+        let found_ty = &current_module!(self).expr_tys[expr];
+        if !found_ty.is_weak_type_replaceable_by(&new_ty) {
+            return false;
+        }
+
+        let expr_body = expr_body.clone();
 
         current_module!(self).expr_tys.insert(expr, new_ty);
 
-        match current_bodies!(self)[expr].clone() {
+        match expr_body {
             Expr::IntLiteral(num) => {
                 if let Some(max_size) = new_ty.get_max_int_size() {
                     if num > max_size {
