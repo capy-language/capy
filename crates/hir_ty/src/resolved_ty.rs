@@ -1,4 +1,4 @@
-use hir::UnaryOp;
+use hir::{PrimitiveTy, UnaryOp};
 use internment::Intern;
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
@@ -35,7 +35,7 @@ pub enum ResolvedTy {
     Module(hir::FileName),
     // this is only ever used for functions defined locally
     Function {
-        params: Vec<Intern<ResolvedTy>>,
+        param_tys: Vec<Intern<ResolvedTy>>,
         return_ty: Intern<ResolvedTy>,
     },
     Struct {
@@ -52,6 +52,20 @@ pub(crate) struct BinaryOutputTy {
 }
 
 impl ResolvedTy {
+    pub(crate) fn from_primitive(primitive: PrimitiveTy) -> Self {
+        match primitive {
+            PrimitiveTy::IInt { bit_width, .. } => Self::IInt(bit_width),
+            PrimitiveTy::UInt { bit_width, .. } => Self::UInt(bit_width),
+            PrimitiveTy::Float { bit_width, .. } => Self::Float(bit_width),
+            PrimitiveTy::Bool { .. } => Self::Bool,
+            PrimitiveTy::String { .. } => Self::String,
+            PrimitiveTy::Char { .. } => Self::Char,
+            PrimitiveTy::Type { .. } => Self::Type,
+            PrimitiveTy::Any { .. } => Self::Any,
+            PrimitiveTy::Void { .. } => Self::Void,
+        }
+    }
+
     /// If self is a struct, this returns the fields
     pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<ResolvedTy>)>> {
         match self {
@@ -64,7 +78,10 @@ impl ResolvedTy {
     /// If self is a function, this returns the parameters and return type
     pub fn as_function(&self) -> Option<(Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>)> {
         match self {
-            ResolvedTy::Function { params, return_ty } => Some((params.clone(), *return_ty)),
+            ResolvedTy::Function {
+                param_tys: params,
+                return_ty,
+            } => Some((params.clone(), *return_ty)),
             ResolvedTy::Distinct { ty, .. } => ty.as_function(),
             _ => None,
         }
@@ -129,13 +146,42 @@ impl ResolvedTy {
         }
     }
 
-    /// returns true if the type is void, or contains void, or is an empty array, etc.
-    pub fn is_empty(&self) -> bool {
+    /// returns true if the type is zero-sized (void, or solely contains void)
+    pub fn is_zero_sized(&self) -> bool {
+        // todo: this might result in a bug because zero-sized types aren't actually compiled to
+        // anything
+        // ```
+        // x := 5;
+        // ptr : ^i32 = ^x;
+        // ptr : ^void = ptr as ^any as ^void; // <- this variable doesn't actually exist
+        // ptr : ^i32 = ptr as ^any as ^void;
+        // ptr^;
+        // ```
         match self {
             ResolvedTy::Void => true,
             ResolvedTy::Type => true,
-            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_empty(),
-            ResolvedTy::Distinct { ty, .. } => ty.is_empty(),
+            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_zero_sized(),
+            ResolvedTy::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
+            ResolvedTy::Struct { fields, .. } => {
+                fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())
+            }
+            ResolvedTy::Distinct { ty, .. } => ty.is_zero_sized(),
+            _ => false,
+        }
+    }
+
+    pub fn is_void(&self) -> bool {
+        match self {
+            ResolvedTy::Void => true,
+            ResolvedTy::Distinct { ty, .. } => ty.is_void(),
+            _ => false,
+        }
+    }
+
+    pub fn is_int(&self) -> bool {
+        match self {
+            ResolvedTy::IInt(_) | ResolvedTy::UInt(_) => true,
+            ResolvedTy::Distinct { ty, .. } => ty.is_int(),
             _ => false,
         }
     }
@@ -186,11 +232,11 @@ impl ResolvedTy {
             }
             (
                 ResolvedTy::Function {
-                    params: first_params,
+                    param_tys: first_params,
                     return_ty: first_return_ty,
                 },
                 ResolvedTy::Function {
-                    params: second_params,
+                    param_tys: second_params,
                     return_ty: second_return_ty,
                 },
             ) => {

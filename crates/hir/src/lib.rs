@@ -5,10 +5,9 @@ mod world_index;
 
 use std::path::Component;
 
-use ast::{AstNode, AstToken};
+use ast::AstToken;
 pub use body::*;
 pub use index::*;
-use la_arena::{Arena, Idx};
 pub use nameres::*;
 use syntax::SyntaxTree;
 use text_size::TextRange;
@@ -74,19 +73,7 @@ impl Fqn {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TyParseError {
-    ArrayMissingSize,
-    ArraySizeNotConst,
-    ArraySizeOutOfBounds,
-    ArrayHasBody,
-    NotATy,
-    /// only returned if only primitives are asked for
-    NonPrimitive,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TyWithRange {
-    Unknown,
+pub enum PrimitiveTy {
     /// a bit-width of u32::MAX represents an isize
     IInt {
         bit_width: u32,
@@ -110,379 +97,135 @@ pub enum TyWithRange {
     Char {
         range: TextRange,
     },
-    Array {
-        size: u64,
-        sub_ty: Idx<TyWithRange>,
-        range: TextRange,
-    },
-    Pointer {
-        mutable: bool,
-        sub_ty: Idx<TyWithRange>,
-        range: TextRange,
-    },
-    Distinct {
-        uid: u32,
-        ty: Idx<TyWithRange>,
-        range: TextRange,
-    },
-    Function {
-        params: Vec<Idx<TyWithRange>>,
-        return_ty: Idx<TyWithRange>,
-        range: TextRange,
-    },
-    Struct {
-        uid: u32,
-        fields: Vec<(Option<Name>, Idx<TyWithRange>)>,
-        range: TextRange,
-    },
     Type {
         range: TextRange,
     },
     Any {
         range: TextRange,
     },
-    Named {
-        path: PathWithRange,
-    },
     Void {
         range: Option<TextRange>,
     },
 }
 
-impl TyWithRange {
+impl PrimitiveTy {
     pub fn range(&self) -> Option<TextRange> {
         match self {
-            TyWithRange::Unknown => None,
-            TyWithRange::IInt { range, .. }
-            | TyWithRange::UInt { range, .. }
-            | TyWithRange::Float { range, .. }
-            | TyWithRange::Bool { range }
-            | TyWithRange::String { range }
-            | TyWithRange::Char { range }
-            | TyWithRange::Array { range, .. }
-            | TyWithRange::Pointer { range, .. }
-            | TyWithRange::Distinct { range, .. }
-            | TyWithRange::Function { range, .. }
-            | TyWithRange::Struct { range, .. }
-            | TyWithRange::Type { range }
-            | TyWithRange::Any { range } => Some(*range),
-            TyWithRange::Void { range } => *range,
-            TyWithRange::Named { path } => match path {
-                PathWithRange::ThisModule(NameWithRange { range, .. }) => Some(*range),
-                PathWithRange::OtherModule {
-                    module_range,
-                    name_range,
-                    ..
-                } => Some(module_range.cover(*name_range)),
-            },
+            PrimitiveTy::IInt { range, .. }
+            | PrimitiveTy::UInt { range, .. }
+            | PrimitiveTy::Float { range, .. }
+            | PrimitiveTy::Bool { range }
+            | PrimitiveTy::String { range }
+            | PrimitiveTy::Char { range }
+            | PrimitiveTy::Type { range }
+            | PrimitiveTy::Any { range } => Some(*range),
+            PrimitiveTy::Void { range } => *range,
         }
     }
 
     pub fn parse(
         ty: Option<ast::Expr>,
-        uid_gen: &mut UIDGenerator,
-        twr_arena: &mut Arena<TyWithRange>,
         interner: &mut Interner,
         tree: &SyntaxTree,
-        primitives_only: bool,
-    ) -> Result<Self, (TyParseError, TextRange)> {
-        let ty = match ty {
-            Some(ty) => ty,
-            None => return Ok(TyWithRange::Unknown),
-        };
+    ) -> Option<Self> {
+        if let Some(ast::Expr::VarRef(var_ref)) = ty {
+            let ident = var_ref.name(tree)?;
 
-        match ty {
-            ast::Expr::Array(array_ty) => {
-                if let Some(body) = array_ty.body(tree) {
-                    return Err((TyParseError::ArrayHasBody, body.range(tree)));
-                }
+            let key = interner.intern(ident.text(tree));
+            let range = ident.range(tree);
 
-                let brackets = array_ty.size(tree).unwrap();
-
-                let size = match brackets.size(tree) {
-                    Some(ast::Expr::IntLiteral(int_literal)) => {
-                        match int_literal
-                            .value(tree)
-                            .and_then(|int| int.text(tree).parse::<u64>().ok())
-                        {
-                            Some(size) => size,
-                            None => {
-                                return Err((
-                                    TyParseError::ArraySizeOutOfBounds,
-                                    int_literal.range(tree),
-                                ))
-                            }
-                        }
-                    }
-                    Some(other) => {
-                        return Err((TyParseError::ArraySizeNotConst, other.range(tree)))
-                    }
-                    None => {
-                        return Err((TyParseError::ArrayMissingSize, brackets.range(tree)));
-                    }
-                };
-                let sub_ty = Self::parse(
-                    array_ty.ty(tree).and_then(|array_ty| array_ty.expr(tree)),
-                    uid_gen,
-                    twr_arena,
-                    interner,
-                    tree,
-                    primitives_only,
-                )?;
-
-                Ok(TyWithRange::Array {
-                    size,
-                    sub_ty: twr_arena.alloc(sub_ty),
-                    range: array_ty.range(tree),
+            if key == Key::void() {
+                Some(PrimitiveTy::Void { range: Some(range) })
+            } else if key == Key::isize() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: u32::MAX,
+                    range,
                 })
-            }
-            ast::Expr::Ref(ref_expr) => {
-                let sub_ty = Self::parse(
-                    ref_expr.expr(tree),
-                    uid_gen,
-                    twr_arena,
-                    interner,
-                    tree,
-                    primitives_only,
-                )?;
-
-                Ok(TyWithRange::Pointer {
-                    mutable: ref_expr.mutable(tree).is_some(),
-                    sub_ty: twr_arena.alloc(sub_ty),
-                    range: ref_expr.range(tree),
+            } else if key == Key::i128() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: 128,
+                    range,
                 })
-            }
-            ast::Expr::VarRef(var_ref) => {
-                let ident = match var_ref.name(tree) {
-                    Some(path) => path,
-                    None => return Ok(TyWithRange::Unknown),
-                };
-
-                let key = interner.intern(ident.text(tree));
-                let range = ident.range(tree);
-
-                match Self::from_key(key, range) {
-                    Some(primitive) => Ok(primitive),
-                    None => {
-                        if primitives_only {
-                            Err((TyParseError::NonPrimitive, var_ref.range(tree)))
-                        } else {
-                            Ok(TyWithRange::Named {
-                                path: PathWithRange::ThisModule(NameWithRange {
-                                    name: Name(key),
-                                    range,
-                                }),
-                            })
-                        }
-                    }
-                }
-            }
-            // ast::Expr::Path(path) => {
-            //     if primitives_only {
-            //         return Err((TyParseError::NonPrimitive, path.range(tree)));
-            //     }
-
-            //     match path.previous_part(tree) {
-            //         Some(ast::Expr::VarRef(var_ref)) => {
-            //             let module = var_ref.name(tree).unwrap();
-            //             let module_name = interner.intern(module.text(tree));
-
-            //             let global = match path.field_name(tree) {
-            //                 Some(name) => name,
-            //                 None => return Ok(TyWithRange::Unknown),
-            //             };
-            //             let global_name = interner.intern(global.text(tree));
-
-            //             let fqn = Fqn {
-            //                 file_name: module_name,
-            //                 name: Name(global_name),
-            //             };
-
-            //             Ok(TyWithRange::Named {
-            //                 path: PathWithRange::OtherModule {
-            //                     fqn,
-            //                     module_range: module.range(tree),
-            //                     name_range: global.range(tree),
-            //                 },
-            //             })
-            //         }
-            //         _ => Err((TyParseError::NotATy, ty.range(tree))),
-            //     }
-            // }
-            ast::Expr::Distinct(distinct) => {
-                let ty = Self::parse(
-                    distinct.ty(tree).and_then(|ty| ty.expr(tree)),
-                    uid_gen,
-                    twr_arena,
-                    interner,
-                    tree,
-                    primitives_only,
-                )?;
-
-                Ok(TyWithRange::Distinct {
-                    uid: uid_gen.generate_unique_id(),
-                    ty: twr_arena.alloc(ty),
-                    range: distinct.range(tree),
+            } else if key == Key::i64() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: 64,
+                    range,
                 })
-            }
-            ast::Expr::Lambda(lambda) => {
-                let mut params = Vec::new();
-
-                if let Some(param_list) = lambda.param_list(tree) {
-                    for param in param_list.params(tree) {
-                        // let name = param
-                        //     .name(tree)
-                        //     .map(|ident| Name(interner.intern(ident.text(tree))));
-
-                        let ty = Self::parse(
-                            param.ty(tree).and_then(|ty| ty.expr(tree)),
-                            uid_gen,
-                            twr_arena,
-                            interner,
-                            tree,
-                            primitives_only,
-                        )?;
-
-                        params.push(twr_arena.alloc(ty));
-                    }
-                }
-
-                let return_ty = Self::parse(
-                    lambda.return_ty(tree).and_then(|ty| ty.expr(tree)),
-                    uid_gen,
-                    twr_arena,
-                    interner,
-                    tree,
-                    primitives_only,
-                )?;
-
-                Ok(TyWithRange::Function {
-                    params,
-                    return_ty: twr_arena.alloc(return_ty),
-                    range: lambda.range(tree),
+            } else if key == Key::i32() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: 32,
+                    range,
                 })
-            }
-            ast::Expr::StructDecl(struct_decl) => {
-                let mut fields = Vec::new();
-
-                for field in struct_decl.fields(tree) {
-                    let name = field
-                        .name(tree)
-                        .map(|ident| Name(interner.intern(ident.text(tree))));
-
-                    let ty = Self::parse(
-                        field.ty(tree).and_then(|ty| ty.expr(tree)),
-                        uid_gen,
-                        twr_arena,
-                        interner,
-                        tree,
-                        primitives_only,
-                    )?;
-
-                    fields.push((name, twr_arena.alloc(ty)));
-                }
-
-                Ok(TyWithRange::Struct {
-                    uid: uid_gen.generate_unique_id(),
-                    fields,
-                    range: struct_decl.range(tree),
+            } else if key == Key::i16() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: 16,
+                    range,
                 })
+            } else if key == Key::i8() {
+                Some(PrimitiveTy::IInt {
+                    bit_width: 8,
+                    range,
+                })
+            } else if key == Key::usize() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: u32::MAX,
+                    range,
+                })
+            } else if key == Key::u128() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: 128,
+                    range,
+                })
+            } else if key == Key::u64() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: 64,
+                    range,
+                })
+            } else if key == Key::u32() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: 32,
+                    range,
+                })
+            } else if key == Key::u16() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: 16,
+                    range,
+                })
+            } else if key == Key::u8() {
+                Some(PrimitiveTy::UInt {
+                    bit_width: 8,
+                    range,
+                })
+            } else if key == Key::f64() {
+                Some(PrimitiveTy::Float {
+                    bit_width: 64,
+                    range,
+                })
+            } else if key == Key::f32() {
+                Some(PrimitiveTy::Float {
+                    bit_width: 32,
+                    range,
+                })
+            } else if key == Key::bool() {
+                Some(PrimitiveTy::Bool { range })
+            } else if key == Key::string() {
+                Some(PrimitiveTy::String { range })
+            } else if key == Key::char() {
+                Some(PrimitiveTy::Char { range })
+            } else if key == Key::r#type() {
+                Some(PrimitiveTy::Type { range })
+            } else if key == Key::any() {
+                Some(PrimitiveTy::Any { range })
+            } else {
+                None
             }
-            _ => Err((TyParseError::NotATy, ty.range(tree))),
+        } else {
+            None
         }
     }
 
-    pub fn from_key(key: Key, range: TextRange) -> Option<Self> {
-        Some(if key == Key::void() {
-            TyWithRange::Void { range: Some(range) }
-        } else if key == Key::isize() {
-            TyWithRange::IInt {
-                bit_width: u32::MAX,
-                range,
-            }
-        } else if key == Key::i128() {
-            TyWithRange::IInt {
-                bit_width: 128,
-                range,
-            }
-        } else if key == Key::i64() {
-            TyWithRange::IInt {
-                bit_width: 64,
-                range,
-            }
-        } else if key == Key::i32() {
-            TyWithRange::IInt {
-                bit_width: 32,
-                range,
-            }
-        } else if key == Key::i16() {
-            TyWithRange::IInt {
-                bit_width: 16,
-                range,
-            }
-        } else if key == Key::i8() {
-            TyWithRange::IInt {
-                bit_width: 8,
-                range,
-            }
-        } else if key == Key::usize() {
-            TyWithRange::UInt {
-                bit_width: u32::MAX,
-                range,
-            }
-        } else if key == Key::u128() {
-            TyWithRange::UInt {
-                bit_width: 128,
-                range,
-            }
-        } else if key == Key::u64() {
-            TyWithRange::UInt {
-                bit_width: 64,
-                range,
-            }
-        } else if key == Key::u32() {
-            TyWithRange::UInt {
-                bit_width: 32,
-                range,
-            }
-        } else if key == Key::u16() {
-            TyWithRange::UInt {
-                bit_width: 16,
-                range,
-            }
-        } else if key == Key::u8() {
-            TyWithRange::UInt {
-                bit_width: 8,
-                range,
-            }
-        } else if key == Key::f64() {
-            TyWithRange::Float {
-                bit_width: 64,
-                range,
-            }
-        } else if key == Key::f32() {
-            TyWithRange::Float {
-                bit_width: 32,
-                range,
-            }
-        } else if key == Key::bool() {
-            TyWithRange::Bool { range }
-        } else if key == Key::string() {
-            TyWithRange::String { range }
-        } else if key == Key::char() {
-            TyWithRange::Char { range }
-        } else if key == Key::r#type() {
-            TyWithRange::Type { range }
-        } else if key == Key::any() {
-            TyWithRange::Any { range }
-        } else {
-            return None;
-        })
-    }
-
-    pub fn display(&self, twr_arena: &Arena<TyWithRange>, interner: &Interner) -> String {
+    pub fn display(&self) -> String {
         match self {
-            Self::Unknown { .. } => "?".to_string(),
             Self::IInt { bit_width, .. } => {
                 if *bit_width != u32::MAX {
                     format!("i{}", bit_width)
@@ -501,62 +244,8 @@ impl TyWithRange {
             Self::Bool { .. } => "bool".to_string(),
             Self::String { .. } => "string".to_string(),
             Self::Char { .. } => "char".to_string(),
-            Self::Array { size, sub_ty, .. } => {
-                format!(
-                    "[{size}]{}",
-                    twr_arena[*sub_ty].display(twr_arena, interner)
-                )
-            }
-            Self::Pointer { sub_ty, .. } => {
-                format!("^{}", twr_arena[*sub_ty].display(twr_arena, interner))
-            }
             Self::Type { .. } => "type".to_string(),
             Self::Any { .. } => "any".to_string(),
-            Self::Distinct { uid, ty, .. } => {
-                format!(
-                    "distinct'{} {}",
-                    uid,
-                    twr_arena[*ty].display(twr_arena, interner)
-                )
-            }
-            Self::Named { path } => path.path().to_naive_string(interner),
-            Self::Function {
-                params, return_ty, ..
-            } => {
-                let mut res = "(".to_string();
-
-                for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&twr_arena[*param].display(twr_arena, interner));
-
-                    if idx != params.len() - 1 {
-                        res.push_str(", ");
-                    }
-                }
-                res.push_str(") -> ");
-
-                res.push_str(&twr_arena[*return_ty].display(twr_arena, interner));
-
-                res
-            }
-            Self::Struct { fields, .. } => {
-                let mut res = "struct {".to_string();
-
-                for (idx, (name, ty)) in fields.iter().enumerate() {
-                    if let Some(name) = name {
-                        res.push_str(interner.lookup(name.0));
-                        res.push_str(": ");
-                    }
-
-                    res.push_str(&twr_arena[*ty].display(twr_arena, interner));
-
-                    if idx != fields.len() - 1 {
-                        res.push_str(", ");
-                    }
-                }
-                res.push('}');
-
-                res
-            }
             Self::Void { .. } => "void".to_string(),
         }
     }

@@ -6,7 +6,7 @@ use crate::{Definition, FileName, Fqn, Index, RangeInfo};
 pub struct WorldIndex(FxHashMap<FileName, Index>);
 
 impl WorldIndex {
-    pub fn get_definition(&self, fqn: Fqn) -> Result<&Definition, GetDefinitionError> {
+    pub fn get_definition(&self, fqn: Fqn) -> Result<Definition, GetDefinitionError> {
         match self.0.get(&fqn.module) {
             Some(index) => match index.get_definition(fqn.name) {
                 Some(def) => Ok(def),

@@ -2,7 +2,7 @@ use hir::Fqn;
 use interner::Interner;
 
 use crate::{
-    compiler::{comptime::ComptimeToCompile, LambdaToCompile},
+    compiler::{comptime::ComptimeToCompile, FunctionToCompile},
     compiler_defined::CompilerDefinedFunction,
 };
 
@@ -34,8 +34,16 @@ impl Mangle for Fqn {
     }
 }
 
-impl Mangle for LambdaToCompile {
+impl Mangle for FunctionToCompile {
     fn to_mangled_name(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+        if let Some(name) = self.function_name {
+            return hir::Fqn {
+                module: self.module_name,
+                name,
+            }
+            .to_mangled_name(project_root, interner);
+        };
+
         let mut mangled = String::new();
 
         let module_str = self.module_name.to_string(project_root, interner);

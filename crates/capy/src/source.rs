@@ -4,7 +4,6 @@ use ast::{AstNode, Root};
 use diagnostics::{Diagnostic, Severity};
 use hir::{FileName, Name};
 use interner::Interner;
-use la_arena::Arena;
 use line_index::LineIndex;
 use parser::Parse;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -18,7 +17,6 @@ pub(crate) struct SourceFile {
     root: Root,
     diagnostics: Vec<Diagnostic>,
     uid_gen: Rc<RefCell<UIDGenerator>>,
-    twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
     interner: Rc<RefCell<Interner>>,
     bodies_map: Rc<RefCell<FxHashMap<hir::FileName, hir::Bodies>>>,
     world_index: Rc<RefCell<hir::WorldIndex>>,
@@ -32,7 +30,6 @@ impl SourceFile {
         file_name: PathBuf,
         contents: String,
         uid_gen: Rc<RefCell<UIDGenerator>>,
-        twr_arena: Rc<RefCell<Arena<hir::TyWithRange>>>,
         interner: Rc<RefCell<Interner>>,
         bodies_map: Rc<RefCell<FxHashMap<hir::FileName, hir::Bodies>>>,
         world_index: Rc<RefCell<hir::WorldIndex>>,
@@ -53,16 +50,10 @@ impl SourceFile {
         let validation_diagnostics = ast::validation::validate(root, tree);
 
         let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
-        let (index, indexing_diagnostics) = hir::index(
-            root,
-            tree,
-            &mut uid_gen.borrow_mut(),
-            &mut twr_arena.borrow_mut(),
-            &mut interner.borrow_mut(),
-        );
+        let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner.borrow_mut());
 
         if verbose >= 3 && !index.is_empty() {
-            println!("{}", index.debug(&twr_arena.borrow(), &interner.borrow()));
+            println!("{}", index.debug(&interner.borrow()));
         }
 
         let mut res = Self {
@@ -73,7 +64,6 @@ impl SourceFile {
             root,
             diagnostics: Vec::new(),
             uid_gen,
-            twr_arena,
             interner,
             bodies_map,
             index,
@@ -115,7 +105,6 @@ impl SourceFile {
             self.file_name.as_path(),
             &self.index,
             &mut self.uid_gen.borrow_mut(),
-            &mut self.twr_arena.borrow_mut(),
             &mut self.interner.borrow_mut(),
             false,
         );
@@ -128,7 +117,6 @@ impl SourceFile {
             let interner = self.interner.borrow();
             let debug = bodies.debug(
                 self.module,
-                &self.twr_arena.borrow(),
                 &std::env::current_dir().unwrap(),
                 &interner,
                 self.verbose >= 2,
@@ -160,7 +148,7 @@ impl SourceFile {
     }
 
     pub(crate) fn has_fn_of_name(&self, name: Name) -> bool {
-        self.index.function_names().any(|fn_name| fn_name == name)
+        self.bodies_map.borrow()[&self.module].has_global(name)
     }
 
     pub(crate) fn print_diagnostics(&self, project_root: &std::path::Path, with_color: bool) {

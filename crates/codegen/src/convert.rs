@@ -4,7 +4,7 @@ use hir_ty::ResolvedTy;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
-use crate::{CapyFnSignature, CraneliftSignature};
+use crate::CraneliftSignature;
 
 #[derive(Clone, Copy)]
 pub(crate) enum CompType {
@@ -175,17 +175,7 @@ pub(crate) trait ToCraneliftSignature {
     ) -> (CraneliftSignature, FxHashMap<u64, u64>);
 }
 
-impl ToCraneliftSignature for CapyFnSignature {
-    fn to_cranelift_signature(
-        &self,
-        module: &dyn Module,
-        pointer_ty: types::Type,
-    ) -> (CraneliftSignature, FxHashMap<u64, u64>) {
-        (self.param_tys.clone(), self.return_ty).to_cranelift_signature(module, pointer_ty)
-    }
-}
-
-impl ToCraneliftSignature for (Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
+impl ToCraneliftSignature for (&Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>) {
     fn to_cranelift_signature(
         &self,
         module: &dyn Module,

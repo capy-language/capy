@@ -78,7 +78,6 @@ pub fn eval_comptime_blocks<'a>(
         data_description: DataDescription::new(),
         module: &mut module,
         functions_to_compile: VecDeque::new(),
-        lambdas_to_compile: VecDeque::new(),
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -99,7 +98,7 @@ pub fn eval_comptime_blocks<'a>(
         let hir::Comptime { body } = compiler.bodies_map[&ctc.module_name][ctc.comptime];
         let return_ty = tys[ctc.module_name][body];
 
-        let func_id = compiler.compile_function(
+        let func_id = compiler.compile_real_function(
             &format!(
                 "{}.comptime#{}",
                 ctc.module_name

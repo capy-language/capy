@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, ResolvedTy, Signature, TyDiagnostic,
+    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, ResolvedTy, TyDiagnostic,
     TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
@@ -79,22 +79,11 @@ impl ExprMutability {
 }
 
 impl InferenceCtx<'_> {
-    pub(crate) fn finish_body_known(
+    pub(crate) fn finish_body(
         &mut self,
         body: Idx<Expr>,
         param_tys: Option<Vec<Intern<ResolvedTy>>>,
-        expected_ty: Intern<ResolvedTy>,
-        global: bool,
-    ) {
-        let actual_type = self.finish_body_unknown(body, param_tys, global);
-        self.expect_match(actual_type, expected_ty, body);
-        self.replace_weak_tys(body, expected_ty);
-    }
-
-    pub(crate) fn finish_body_unknown(
-        &mut self,
-        body: Idx<Expr>,
-        param_tys: Option<Vec<Intern<ResolvedTy>>>,
+        expected_ty: Option<Intern<ResolvedTy>>,
         global: bool,
     ) -> Intern<ResolvedTy> {
         let old_param_tys = match param_tys {
@@ -116,16 +105,21 @@ impl InferenceCtx<'_> {
 
         let mut actual_ty = self.reinfer_expr(body);
 
-        let i32 = ResolvedTy::IInt(32).into();
-        if global && self.replace_weak_tys(body, i32) {
-            actual_ty = i32;
-        }
-
         if let Some(old_local_usages) = old_local_usages {
             self.local_usages
                 .insert(self.current_module.unwrap(), old_local_usages);
         }
         self.param_tys = old_param_tys;
+
+        let i32 = ResolvedTy::IInt(32).into();
+        if let Some(expected_ty) = expected_ty {
+            self.expect_match(actual_ty, expected_ty, body);
+            self.replace_weak_tys(body, expected_ty);
+
+            actual_ty = expected_ty;
+        } else if global && self.replace_weak_tys(body, i32) {
+            actual_ty = i32;
+        }
 
         if global && !self.is_const(body) {
             self.diagnostics.push(TyDiagnostic {
@@ -148,10 +142,7 @@ impl InferenceCtx<'_> {
                     let user_local_ty = self.reinfer_expr(user_local_body.value);
 
                     // if there is no type annotation on the user, then replace it's type
-                    if matches!(
-                        current_bodies!(self)[user_local_body.ty],
-                        hir::Expr::Missing
-                    ) {
+                    if user_local_body.ty.is_none() {
                         current_module!(self)
                             .local_tys
                             .insert(user_local_def, user_local_ty);
@@ -302,14 +293,20 @@ impl InferenceCtx<'_> {
     fn is_const(&self, expr: Idx<Expr>) -> bool {
         match &current_bodies!(self)[expr] {
             Expr::Missing
+            | Expr::Lambda(_)
             | Expr::Import(_)
             | Expr::PrimitiveTy { .. }
+            | Expr::StructDecl { .. }
+            | Expr::Distinct { .. }
             | Expr::Comptime(_)
             | Expr::StringLiteral(_)
             | Expr::IntLiteral(_)
             | Expr::FloatLiteral(_)
             | Expr::BoolLiteral(_) => true,
-            Expr::Array { items, .. } => items.iter().all(|item| self.is_const(*item)),
+            Expr::Array { items, .. } => match items {
+                Some(items) => items.iter().all(|item| self.is_const(*item)),
+                None => true,
+            },
             _ => *(self.modules[&self.current_module.unwrap()][expr]) == ResolvedTy::Type,
         }
     }
@@ -463,24 +460,25 @@ impl InferenceCtx<'_> {
                 let def_body = &current_bodies!(self)[*local_def];
                 let value_ty = self.infer_expr(def_body.value);
 
-                let def_ty = self.parse_expr_to_ty(def_body.ty, &mut FxHashSet::default());
+                if let Some(ty_annotation) = def_body.ty {
+                    let ty_annotation =
+                        self.parse_expr_to_ty(ty_annotation, &mut FxHashSet::default());
 
-                match *def_ty {
-                    ResolvedTy::Unknown => {
-                        // the definition does not have an annotation, so use the type of it's value
-                        current_module!(self).local_tys.insert(*local_def, value_ty);
+                    // the definition has an annotation, so the value should match
+                    if self.expect_match(value_ty, ty_annotation, def_body.value)
+                        && self.replace_weak_tys(def_body.value, ty_annotation)
+                    {
+                        current_module!(self)
+                            .expr_tys
+                            .insert(def_body.value, ty_annotation);
                     }
-                    _ => {
-                        // the definition has an annotation, so the value should match
-                        if self.expect_match(value_ty, def_ty, def_body.value)
-                            && self.replace_weak_tys(def_body.value, def_ty)
-                        {
-                            current_module!(self)
-                                .expr_tys
-                                .insert(def_body.value, def_ty);
-                        }
-                        current_module!(self).local_tys.insert(*local_def, def_ty);
-                    }
+                    current_module!(self)
+                        .local_tys
+                        .insert(*local_def, ty_annotation);
+                } else {
+                    // the definition does not have an annotation,
+                    // so use the type of it's value
+                    current_module!(self).local_tys.insert(*local_def, value_ty);
                 }
 
                 self.find_usages(&[def_body.value], LocalUsage::Def(*local_def));
@@ -561,8 +559,10 @@ impl InferenceCtx<'_> {
             }
             Expr::Unary { expr, .. } => self.get_referenced_locals(*expr, local_defs),
             Expr::Array { items, .. } => {
-                for item in items {
-                    self.get_referenced_locals(*item, local_defs);
+                if let Some(items) = items {
+                    for item in items {
+                        self.get_referenced_locals(*item, local_defs);
+                    }
                 }
             }
             Expr::Index { array, index } => {
@@ -609,6 +609,8 @@ impl InferenceCtx<'_> {
             Expr::Comptime(_) => {}
             Expr::StructLiteral { .. } => {} // struct literals are always strongly typed
             Expr::PrimitiveTy { .. } => {}
+            Expr::Distinct { .. } => {}
+            Expr::StructDecl { .. } => {}
             Expr::Import(_) => {}
         }
     }
@@ -682,7 +684,9 @@ impl InferenceCtx<'_> {
                     return current_module!(self)[expr];
                 }
             }
-            Expr::Array { items, .. } => {
+            Expr::Array {
+                items: Some(items), ..
+            } => {
                 for item in items {
                     self.reinfer_expr(*item);
                 }
@@ -782,16 +786,20 @@ impl InferenceCtx<'_> {
             hir::Expr::Array { size, items, ty } => {
                 let sub_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 
-                for item in items {
-                    let item_ty = self.infer_expr(*item);
-                    self.expect_match(item_ty, sub_ty, *item);
-                }
+                if let Some(items) = items {
+                    for item in items {
+                        let item_ty = self.infer_expr(*item);
+                        self.expect_match(item_ty, sub_ty, *item);
+                    }
 
-                ResolvedTy::Array {
-                    size: size.unwrap_or(items.len() as u64),
-                    sub_ty,
+                    ResolvedTy::Array {
+                        size: size.unwrap_or(items.len() as u64),
+                        sub_ty,
+                    }
+                    .into()
+                } else {
+                    ResolvedTy::Type.into()
                 }
-                .into()
             }
             hir::Expr::Index { array, index } => {
                 let source_ty = self.infer_expr(*array);
@@ -1071,39 +1079,21 @@ impl InferenceCtx<'_> {
                     name: name.name,
                 };
 
-                let definition = self.world_index.get_definition(fqn).unwrap();
+                let sig = self.get_signature(fqn);
 
-                match definition {
-                    hir::Definition::Global(global) => {
-                        let global_signature = self.get_global_signature(global, fqn);
+                if *sig.0 == ResolvedTy::NotYetResolved {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::NotYetResolved {
+                            path: hir::Path::ThisModule(name.name),
+                        },
+                        module: self.current_module.unwrap(),
+                        range: current_bodies!(self).range_for_expr(expr),
+                        help: None,
+                    });
 
-                        if *global_signature.ty == ResolvedTy::NotYetResolved {
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::NotYetResolved {
-                                    path: hir::Path::ThisModule(name.name),
-                                },
-                                module: self.current_module.unwrap(),
-                                range: current_bodies!(self).range_for_expr(expr),
-                                help: None,
-                            });
-
-                            ResolvedTy::Unknown.into()
-                        } else {
-                            global_signature.ty
-                        }
-                    }
-                    hir::Definition::Function(function) => {
-                        let signature = self.get_function_signature(function, fqn);
-
-                        match signature {
-                            Signature::Function(fn_sig) => ResolvedTy::Function {
-                                params: fn_sig.param_tys,
-                                return_ty: fn_sig.return_ty,
-                            }
-                            .into(),
-                            Signature::Global(global) => global.ty,
-                        }
-                    }
+                    ResolvedTy::Unknown.into()
+                } else {
+                    sig.0
                 }
             }
             hir::Expr::Path { previous, field } => {
@@ -1118,10 +1108,10 @@ impl InferenceCtx<'_> {
                         let definition = self.world_index.get_definition(fqn);
 
                         match definition {
-                            Ok(hir::Definition::Global(global)) => {
-                                let global_signature = self.get_global_signature(global, fqn);
+                            Ok(_) => {
+                                let sig = self.get_signature(fqn);
 
-                                if *global_signature.ty == ResolvedTy::NotYetResolved {
+                                if *sig.0 == ResolvedTy::NotYetResolved {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::NotYetResolved {
                                             path: hir::Path::OtherModule(fqn),
@@ -1133,19 +1123,7 @@ impl InferenceCtx<'_> {
 
                                     ResolvedTy::Unknown.into()
                                 } else {
-                                    global_signature.ty
-                                }
-                            }
-                            Ok(hir::Definition::Function(function)) => {
-                                let signature = self.get_function_signature(function, fqn);
-
-                                match signature {
-                                    Signature::Function(fn_sig) => ResolvedTy::Function {
-                                        params: fn_sig.param_tys,
-                                        return_ty: fn_sig.return_ty,
-                                    }
-                                    .into(),
-                                    Signature::Global(global) => global.ty,
+                                    sig.0
                                 }
                             }
                             Err(hir::GetDefinitionError::UnknownModule) => {
@@ -1255,15 +1233,7 @@ impl InferenceCtx<'_> {
                     ResolvedTy::Unknown.into()
                 }
             }
-            hir::Expr::Lambda(lambda) => {
-                let sig = self.generate_lambda_signature(*lambda);
-
-                ResolvedTy::Function {
-                    params: sig.param_tys,
-                    return_ty: sig.return_ty,
-                }
-                .into()
-            }
+            hir::Expr::Lambda(lambda) => self.infer_lambda(*lambda, None),
             hir::Expr::Comptime(comptime) => {
                 let hir::Comptime { body } = current_bodies!(self)[*comptime];
 
@@ -1361,9 +1331,16 @@ impl InferenceCtx<'_> {
 
                 expected_ty
             }
-            hir::Expr::PrimitiveTy { ty } => {
+            hir::Expr::PrimitiveTy(_) => ResolvedTy::Type.into(),
+            hir::Expr::Distinct { ty, .. } => {
                 // resolving the type might reveal diagnostics such as recursive types
-                self.resolve_ty(*ty, &mut FxHashSet::default());
+                self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
+                ResolvedTy::Type.into()
+            }
+            hir::Expr::StructDecl { fields, .. } => {
+                for (_, ty) in fields {
+                    self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
+                }
                 ResolvedTy::Type.into()
             }
             Expr::Import(file_name) => ResolvedTy::Module(*file_name).into(),
@@ -1375,7 +1352,7 @@ impl InferenceCtx<'_> {
     }
 
     /// If found does not match expected, an error is thrown at the expression
-    fn expect_match(
+    pub(crate) fn expect_match(
         &mut self,
         found: Intern<ResolvedTy>,
         expected: Intern<ResolvedTy>,

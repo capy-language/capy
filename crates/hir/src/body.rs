@@ -8,10 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
-use crate::{
-    nameres::Path, FileName, Fqn, Function, Index, Name, NameWithRange, Param, TyParseError,
-    TyWithRange, UIDGenerator,
-};
+use crate::{nameres::Path, FileName, Fqn, Index, Name, NameWithRange, PrimitiveTy, UIDGenerator};
 
 #[derive(Clone, Debug)]
 pub struct Bodies {
@@ -20,8 +17,8 @@ pub struct Bodies {
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
-    function_bodies: FxHashMap<Name, Idx<Expr>>,
-    globals: FxHashMap<Name, Idx<Expr>>,
+    global_tys: FxHashMap<Name, Idx<Expr>>,
+    global_bodies: FxHashMap<Name, Idx<Expr>>,
     lambdas: Arena<Lambda>,
     comptimes: Arena<Comptime>,
     imports: FxHashSet<FileName>,
@@ -57,7 +54,7 @@ pub enum Expr {
     },
     Array {
         size: Option<u64>,
-        items: Vec<Idx<Expr>>,
+        items: Option<Vec<Idx<Expr>>>,
         ty: Idx<Expr>,
     },
     Index {
@@ -95,8 +92,14 @@ pub enum Expr {
     Comptime(Idx<Comptime>),
     /// either a primitive type (such as `i32`, `bool`, etc.), or an array type,
     /// or a pointer to a primitive type, or a distinct type
-    PrimitiveTy {
-        ty: Idx<TyWithRange>,
+    PrimitiveTy(PrimitiveTy),
+    Distinct {
+        uid: u32,
+        ty: Idx<Expr>,
+    },
+    StructDecl {
+        uid: u32,
+        fields: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
     StructLiteral {
         ty: Idx<Expr>,
@@ -107,8 +110,17 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub struct Lambda {
-    pub function: Function,
+    pub params: Vec<Param>,
+    pub params_range: TextRange,
+    pub return_ty: Option<Idx<Expr>>,
     pub body: Idx<Expr>,
+    pub is_extern: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: Option<Name>,
+    pub ty: Idx<Expr>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -126,7 +138,7 @@ pub enum Stmt {
 #[derive(Clone)]
 pub struct LocalDef {
     pub mutable: bool,
-    pub ty: Idx<Expr>,
+    pub ty: Option<Idx<Expr>>,
     pub value: Idx<Expr>,
     pub ast: ast::Define,
     pub range: TextRange,
@@ -191,6 +203,7 @@ pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
     UndefinedRef { name: Key },
     NonGlobalExtern,
+    ArraySizeNotConst,
     ArraySizeMismatch { found: u32, expected: u32 },
     InvalidEscape,
     TooManyCharsInCharLiteral,
@@ -198,7 +211,6 @@ pub enum LoweringDiagnosticKind {
     NonU8CharLiteral,
     ImportMustEndInDotCapy,
     ImportDoesNotExist { file: String },
-    TyParseError(TyParseError),
 }
 
 #[derive(Clone, Copy)]
@@ -206,7 +218,7 @@ pub enum Symbol {
     Local(Idx<LocalDef>),
     Param(ast::Param),
     Global(Path),
-    PrimitiveTy(Idx<TyWithRange>),
+    PrimitiveTy(Idx<PrimitiveTy>),
     Function(Path),
     Module(Name),
     Unknown,
@@ -219,29 +231,13 @@ pub fn lower(
     file_name: &std::path::Path,
     index: &Index,
     uid_gen: &mut UIDGenerator,
-    twr_arena: &mut Arena<TyWithRange>,
     interner: &mut Interner,
     fake_file_system: bool,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(
-        file_name,
-        index,
-        uid_gen,
-        twr_arena,
-        interner,
-        tree,
-        fake_file_system,
-    );
+    let mut ctx = Ctx::new(file_name, index, uid_gen, interner, tree, fake_file_system);
 
     for def in root.defs(tree) {
-        let (name, value) = match def {
-            ast::Define::Binding(binding) => (binding.name(tree), binding.value(tree)),
-            ast::Define::Variable(variable) => (variable.name(tree), variable.value(tree)),
-        };
-        match value {
-            Some(ast::Expr::Lambda(lambda)) => ctx.lower_function(name, lambda),
-            val => ctx.lower_global(name, val),
-        }
+        ctx.lower_global(def.name(tree), def.ty(tree), def.value(tree))
     }
 
     ctx.bodies.shrink_to_fit();
@@ -254,7 +250,6 @@ struct Ctx<'a> {
     file_name: &'a std::path::Path,
     index: &'a Index,
     uid_gen: &'a mut UIDGenerator,
-    twr_arena: &'a mut Arena<TyWithRange>,
     interner: &'a mut Interner,
     tree: &'a SyntaxTree,
     diagnostics: Vec<LoweringDiagnostic>,
@@ -268,7 +263,6 @@ impl<'a> Ctx<'a> {
         file_name: &'a std::path::Path,
         index: &'a Index,
         uid_gen: &'a mut UIDGenerator,
-        twr_arena: &'a mut Arena<TyWithRange>,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
         fake_file_system: bool,
@@ -280,8 +274,8 @@ impl<'a> Ctx<'a> {
                 stmts: Arena::new(),
                 exprs: Arena::new(),
                 expr_ranges: ArenaMap::default(),
-                function_bodies: FxHashMap::default(),
-                globals: FxHashMap::default(),
+                global_tys: FxHashMap::default(),
+                global_bodies: FxHashMap::default(),
                 lambdas: Arena::new(),
                 comptimes: Arena::new(),
                 imports: FxHashSet::default(),
@@ -289,7 +283,6 @@ impl<'a> Ctx<'a> {
             file_name,
             index,
             uid_gen,
-            twr_arena,
             interner,
             tree,
             diagnostics: Vec::new(),
@@ -299,28 +292,12 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn lower_ty(&mut self, ty: Option<ast::Ty>) -> TyWithRange {
-        match TyWithRange::parse(
-            ty.and_then(|ty| ty.expr(self.tree)),
-            self.uid_gen,
-            self.twr_arena,
-            self.interner,
-            self.tree,
-            false,
-        ) {
-            Ok(ty) => ty,
-            Err((why, range)) => {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::TyParseError(why),
-                    range,
-                });
-
-                TyWithRange::Unknown
-            }
-        }
-    }
-
-    fn lower_global(&mut self, name_token: Option<ast::Ident>, expr: Option<ast::Expr>) {
+    fn lower_global(
+        &mut self,
+        name_token: Option<ast::Ident>,
+        ty_annotation: Option<ast::Ty>,
+        expr: Option<ast::Expr>,
+    ) {
         let name = match name_token {
             Some(ident) => Name(self.interner.intern(ident.text(self.tree))),
             None => return,
@@ -331,80 +308,35 @@ impl<'a> Ctx<'a> {
         //
         // we don’t have to worry about emitting a diagnostic here
         // because indexing already handles this
-        if self.bodies.globals.contains_key(&name) {
+        if self.bodies.global_bodies.contains_key(&name) {
             return;
         }
 
-        let body = self.lower_expr(expr);
-        self.bodies.globals.insert(name, body);
-    }
+        if let Some(ty) = ty_annotation {
+            let ty = self.lower_expr(ty.expr(self.tree));
 
-    fn lower_function(&mut self, name_token: Option<ast::Ident>, lambda: ast::Lambda) {
-        let name = match name_token {
-            Some(ident) => Name(self.interner.intern(ident.text(self.tree))),
-            None => return,
+            self.bodies.global_tys.insert(name, ty);
+        }
+
+        let body = match expr {
+            Some(ast::Expr::Lambda(lambda)) => {
+                let body = self.lower_lambda(lambda, true);
+                let body = self.bodies.exprs.alloc(body);
+
+                self.bodies
+                    .expr_ranges
+                    .insert(body, expr.unwrap().range(self.tree));
+
+                body
+            }
+            _ => self.lower_expr(expr),
         };
-
-        // if this is an external function, there are no expr's to lower
-        if lambda.r#extern(self.tree).is_some() {
-            return;
-        }
-
-        // if we’ve already seen a function with this name,
-        // we ignore all other functions with that name
-        //
-        // we don’t have to worry about emitting a diagnostic here
-        // because indexing already handles this
-        if self.bodies.function_bodies.contains_key(&name) {
-            return;
-        }
-
-        if let Some(param_list) = lambda.param_list(self.tree) {
-            for (idx, param) in param_list.params(self.tree).enumerate() {
-                if let Some(ident) = param.name(self.tree) {
-                    self.params.insert(
-                        self.interner.intern(ident.text(self.tree)),
-                        (idx as u32, param),
-                    );
-                }
-            }
-        }
-
-        let body = self.lower_expr(lambda.body(self.tree));
-        self.params.clear();
-        self.bodies.function_bodies.insert(name, body);
+        self.bodies.global_bodies.insert(name, body);
     }
 
-    fn lower_lambda(&mut self, lambda: ast::Lambda) -> Expr {
-        if lambda.body(self.tree).is_none() && lambda.r#extern(self.tree).is_none() {
-            match TyWithRange::parse(
-                Some(ast::Expr::Lambda(lambda)),
-                self.uid_gen,
-                self.twr_arena,
-                self.interner,
-                self.tree,
-                false,
-            ) {
-                Ok(ty) => {
-                    return Expr::PrimitiveTy {
-                        ty: self.twr_arena.alloc(ty),
-                    }
-                }
-                Err((why, range)) => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::TyParseError(why),
-                        range,
-                    });
-
-                    return Expr::Missing;
-                }
-            }
-        }
-
-        let old_params = mem::take(&mut self.params);
-        let old_scopes = mem::take(&mut self.scopes);
-
+    fn lower_lambda(&mut self, lambda: ast::Lambda, allow_extern: bool) -> Expr {
         let mut params = Vec::new();
+        let mut param_keys = FxHashMap::default();
         let mut param_type_ranges = Vec::new();
 
         if let Some(param_list) = lambda.param_list(self.tree) {
@@ -416,44 +348,46 @@ impl<'a> Ctx<'a> {
                 let ty = param.ty(self.tree);
                 param_type_ranges.push(ty.map(|type_| type_.range(self.tree)));
 
-                let ty = self.lower_ty(ty);
+                let ty = self.lower_expr(ty.and_then(|ty| ty.expr(self.tree)));
 
                 params.push(Param {
                     name: key.map(Name),
-                    ty: self.twr_arena.alloc(ty),
+                    ty,
                 });
 
                 if let Some(key) = key {
-                    self.params.insert(key, (idx as u32, param));
+                    param_keys.insert(key, (idx as u32, param));
                 }
             }
         }
 
-        if let Some(r#extern) = lambda.r#extern(self.tree) {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::NonGlobalExtern,
-                range: r#extern.range(self.tree),
-            });
+        let return_ty = lambda
+            .return_ty(self.tree)
+            .and_then(|ty| ty.expr(self.tree))
+            .map(|return_ty| self.lower_expr(Some(return_ty)));
+
+        if !allow_extern {
+            if let Some(r#extern) = lambda.r#extern(self.tree) {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::NonGlobalExtern,
+                    range: r#extern.range(self.tree),
+                });
+            }
         }
+
+        let old_params = mem::replace(&mut self.params, param_keys);
+        let old_scopes = mem::take(&mut self.scopes);
 
         let body = self.lower_expr(lambda.body(self.tree));
 
         self.params = old_params;
         self.scopes = old_scopes;
 
-        let return_ty = lambda
-            .return_ty(self.tree)
-            .map_or(TyWithRange::Void { range: None }, |ty| {
-                self.lower_ty(Some(ty))
-            });
-
         Expr::Lambda(self.bodies.lambdas.alloc(Lambda {
-            function: Function {
-                params,
-                return_ty: self.twr_arena.alloc(return_ty),
-                ty_annotation: self.twr_arena.alloc(TyWithRange::Unknown),
-                is_extern: lambda.r#extern(self.tree).is_some(), // this doesn't matter since lambdas can't be extern
-            },
+            params,
+            params_range: lambda.param_list(self.tree).unwrap().range(self.tree),
+            return_ty,
+            is_extern: lambda.r#extern(self.tree).is_some(),
             body,
         }))
     }
@@ -482,7 +416,13 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
-        let ty = self.lower_expr(local_def.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+        let ty = local_def.ty(self.tree).and_then(|ty| ty.expr(self.tree));
+        let ty = if ty.is_some() {
+            Some(self.lower_expr(ty))
+        } else {
+            None
+        };
+
         let value = self.lower_expr(local_def.value(self.tree));
         let id = self.bodies.local_defs.alloc(LocalDef {
             mutable: matches!(local_def, ast::Define::Variable(_)),
@@ -551,7 +491,7 @@ impl<'a> Ctx<'a> {
             ast::Expr::CharLiteral(char_literal) => self.lower_char_literal(char_literal),
             ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
             ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
-            ast::Expr::Lambda(lambda) => self.lower_lambda(lambda),
+            ast::Expr::Lambda(lambda) => self.lower_lambda(lambda, false),
             ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
             ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
             ast::Expr::Import(import_expr) => self.lower_import(import_expr),
@@ -567,41 +507,6 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
-        match TyWithRange::parse(
-            ref_expr.expr(self.tree),
-            self.uid_gen,
-            self.twr_arena,
-            self.interner,
-            self.tree,
-            true,
-        ) {
-            Ok(sub_ty) => {
-                return Expr::PrimitiveTy {
-                    ty: {
-                        let sub_ty = self.twr_arena.alloc(sub_ty);
-                        self.twr_arena.alloc(TyWithRange::Pointer {
-                            mutable: ref_expr.mutable(self.tree).is_some(),
-                            sub_ty,
-                            range: ref_expr.range(self.tree),
-                        })
-                    },
-                }
-            }
-            Err((
-                TyParseError::NonPrimitive | TyParseError::NotATy | TyParseError::ArrayHasBody,
-                _,
-            )) => {}
-            Err((why, range)) => {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::TyParseError(why),
-                    range,
-                });
-                return Expr::PrimitiveTy {
-                    ty: self.twr_arena.alloc(TyWithRange::Unknown),
-                };
-            }
-        }
-
         let expr = self.lower_expr(ref_expr.expr(self.tree));
 
         Expr::Ref {
@@ -617,52 +522,32 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_distinct(&mut self, distinct: ast::Distinct) -> Expr {
-        let ty = match TyWithRange::parse(
-            Some(ast::Expr::Distinct(distinct)),
-            self.uid_gen,
-            self.twr_arena,
-            self.interner,
-            self.tree,
-            false,
-        ) {
-            Ok(ty) => ty,
-            Err((why, range)) => {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::TyParseError(why),
-                    range,
-                });
+        let ty = self.lower_expr(distinct.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-                TyWithRange::Unknown
-            }
-        };
-
-        Expr::PrimitiveTy {
-            ty: self.twr_arena.alloc(ty),
+        Expr::Distinct {
+            uid: self.uid_gen.generate_unique_id(),
+            ty,
         }
     }
 
     fn lower_struct_declaration(&mut self, struct_decl: ast::StructDeclaration) -> Expr {
-        let ty = match TyWithRange::parse(
-            Some(ast::Expr::StructDecl(struct_decl)),
-            self.uid_gen,
-            self.twr_arena,
-            self.interner,
-            self.tree,
-            false,
-        ) {
-            Ok(ty) => ty,
-            Err((why, range)) => {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::TyParseError(why),
-                    range,
+        let fields = struct_decl
+            .fields(self.tree)
+            .map(|field| {
+                let name = field.name(self.tree).map(|ident| NameWithRange {
+                    name: Name(self.interner.intern(ident.text(self.tree))),
+                    range: ident.range(self.tree),
                 });
 
-                TyWithRange::Unknown
-            }
-        };
+                let ty = self.lower_expr(field.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-        Expr::PrimitiveTy {
-            ty: self.twr_arena.alloc(ty),
+                (name, ty)
+            })
+            .collect();
+
+        Expr::StructDecl {
+            uid: self.uid_gen.generate_unique_id(),
+            fields,
         }
     }
 
@@ -783,39 +668,13 @@ impl<'a> Ctx<'a> {
     fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
         let ty = self.lower_expr(array_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-        let items = match array_expr.body(self.tree) {
-            Some(body) => body
-                .items(self.tree)
+        let items = array_expr.body(self.tree).map(|body| {
+            body.items(self.tree)
                 .map(|item| self.lower_expr(item.value(self.tree)))
-                .collect::<Vec<_>>(),
-            None => {
-                // if the array doesn't have a body, parse it as a type
+                .collect::<Vec<_>>()
+        });
 
-                let ty = match TyWithRange::parse(
-                    Some(ast::Expr::Array(array_expr)),
-                    self.uid_gen,
-                    self.twr_arena,
-                    self.interner,
-                    self.tree,
-                    false,
-                ) {
-                    Ok(ty) => ty,
-                    Err((why, range)) => {
-                        self.diagnostics.push(LoweringDiagnostic {
-                            kind: LoweringDiagnosticKind::TyParseError(why),
-                            range,
-                        });
-
-                        return Expr::Missing;
-                    }
-                };
-
-                return Expr::PrimitiveTy {
-                    ty: self.twr_arena.alloc(ty),
-                };
-            }
-        };
-
+        let items_len = items.as_ref().map(|items| items.len());
         let size = array_expr
             .size(self.tree)
             .and_then(|size| size.size(self.tree))
@@ -823,18 +682,18 @@ impl<'a> Ctx<'a> {
                 ast::Expr::IntLiteral(_) => Some(self.lower_expr_raw(size)),
                 other => {
                     self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
+                        kind: LoweringDiagnosticKind::ArraySizeNotConst,
                         range: other.range(self.tree),
                     });
                     None
                 }
             })
-            .and_then(|size| match size {
-                Expr::IntLiteral(size) => {
-                    if size as usize != items.len() {
+            .and_then(|size| match (size, items_len) {
+                (Expr::IntLiteral(size), Some(items_len)) => {
+                    if size as usize != items_len {
                         self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::ArraySizeMismatch {
-                                found: items.len() as u32,
+                                found: items_len as u32,
                                 expected: size as u32,
                             },
                             range: array_expr.body(self.tree).unwrap().range(self.tree),
@@ -842,6 +701,7 @@ impl<'a> Ctx<'a> {
                     }
                     Some(size)
                 }
+                (Expr::IntLiteral(size), None) => Some(size),
                 _ => None,
             });
 
@@ -969,10 +829,10 @@ impl<'a> Ctx<'a> {
             });
         }
 
-        if let Some(ty) = TyWithRange::from_key(name.0, ident.range(self.tree)) {
-            let ty = self.twr_arena.alloc(ty);
-
-            return Expr::PrimitiveTy { ty };
+        if let Some(ty) =
+            PrimitiveTy::parse(Some(ast::Expr::VarRef(var_ref)), self.interner, self.tree)
+        {
+            return Expr::PrimitiveTy(ty);
         }
 
         self.diagnostics.push(LoweringDiagnostic {
@@ -1201,12 +1061,16 @@ impl<'a> Ctx<'a> {
 }
 
 impl Bodies {
-    pub fn function_body(&self, name: Name) -> Idx<Expr> {
-        self.function_bodies[&name]
+    pub fn has_global(&self, name: Name) -> bool {
+        self.global_bodies.contains_key(&name)
     }
 
-    pub fn global(&self, name: Name) -> Idx<Expr> {
-        self.globals[&name]
+    pub fn global_body(&self, name: Name) -> Idx<Expr> {
+        self.global_bodies[&name]
+    }
+
+    pub fn global_ty(&self, name: Name) -> Option<Idx<Expr>> {
+        self.global_tys.get(&name).copied()
     }
 
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
@@ -1226,10 +1090,10 @@ impl Bodies {
             local_defs,
             stmts,
             exprs,
-            function_bodies,
             assigns,
             expr_ranges: _,
-            globals,
+            global_tys,
+            global_bodies,
             lambdas,
             comptimes,
             imports,
@@ -1238,9 +1102,9 @@ impl Bodies {
         local_defs.shrink_to_fit();
         stmts.shrink_to_fit();
         exprs.shrink_to_fit();
-        function_bodies.shrink_to_fit();
         assigns.shrink_to_fit();
-        globals.shrink_to_fit();
+        global_tys.shrink_to_fit();
+        global_bodies.shrink_to_fit();
         lambdas.shrink_to_fit();
         comptimes.shrink_to_fit();
         imports.shrink_to_fit();
@@ -1299,19 +1163,18 @@ impl Bodies {
     pub fn debug(
         &self,
         module: FileName,
-        twr_arena: &Arena<TyWithRange>,
         project_root: &std::path::Path,
         interner: &Interner,
         show_expr_idx: bool,
     ) -> String {
         let mut s = String::new();
 
-        let mut globals: Vec<_> = self.globals.iter().collect();
+        let mut globals: Vec<_> = self.global_bodies.iter().collect();
         globals.sort_unstable_by_key(|(name, _)| *name);
 
         for (name, expr_id) in globals {
             s.push_str(&format!(
-                "{} := ",
+                "{} :: ",
                 Fqn {
                     module,
                     name: *name,
@@ -1323,32 +1186,6 @@ impl Bodies {
                 *expr_id,
                 show_expr_idx,
                 self,
-                twr_arena,
-                project_root,
-                interner,
-                0,
-            );
-            s.push_str(";\n");
-        }
-
-        let mut function_bodies: Vec<_> = self.function_bodies.iter().collect();
-        function_bodies.sort_unstable_by_key(|(name, _)| *name);
-
-        for (name, expr_id) in function_bodies {
-            s.push_str(&format!(
-                "{} := () -> ",
-                Fqn {
-                    module,
-                    name: *name,
-                }
-                .to_string(project_root, interner)
-            ));
-            write_expr(
-                &mut s,
-                *expr_id,
-                show_expr_idx,
-                self,
-                twr_arena,
                 project_root,
                 interner,
                 0,
@@ -1364,7 +1201,6 @@ impl Bodies {
             idx: Idx<Expr>,
             show_idx: bool,
             bodies: &Bodies,
-            twr_arena: &Arena<TyWithRange>,
             project_root: &std::path::Path,
             interner: &Interner,
             mut indentation: usize,
@@ -1397,32 +1233,32 @@ impl Bodies {
                         *ty,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
                     );
 
-                    s.push('{');
+                    if let Some(items) = items {
+                        s.push('{');
 
-                    for (idx, item) in items.iter().enumerate() {
-                        s.push(' ');
-                        write_expr(
-                            s,
-                            *item,
-                            show_idx,
-                            bodies,
-                            twr_arena,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
-                        if idx != items.len() - 1 {
-                            s.push(',');
+                        for (idx, item) in items.iter().enumerate() {
+                            s.push(' ');
+                            write_expr(
+                                s,
+                                *item,
+                                show_idx,
+                                bodies,
+                                project_root,
+                                interner,
+                                indentation,
+                            );
+                            if idx != items.len() - 1 {
+                                s.push(',');
+                            }
                         }
-                    }
 
-                    s.push_str(" }");
+                        s.push_str(" }");
+                    }
                 }
 
                 Expr::Index { array, index } => {
@@ -1431,7 +1267,6 @@ impl Bodies {
                         *array,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1442,7 +1277,6 @@ impl Bodies {
                         *index,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1456,7 +1290,6 @@ impl Bodies {
                         *expr,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1469,7 +1302,6 @@ impl Bodies {
                         *ty,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1488,7 +1320,6 @@ impl Bodies {
                         *expr,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1501,7 +1332,6 @@ impl Bodies {
                         *pointer,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1516,7 +1346,6 @@ impl Bodies {
                         *lhs,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1547,7 +1376,6 @@ impl Bodies {
                         *rhs,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1566,7 +1394,6 @@ impl Bodies {
                         *expr,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1590,7 +1417,6 @@ impl Bodies {
                         *tail_expr,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation + 4,
@@ -1628,7 +1454,6 @@ impl Bodies {
                             stmt,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1643,7 +1468,6 @@ impl Bodies {
                             *tail_expr,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1668,7 +1492,6 @@ impl Bodies {
                         *condition,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1679,7 +1502,6 @@ impl Bodies {
                         *body,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1691,7 +1513,6 @@ impl Bodies {
                             *else_branch,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1707,7 +1528,6 @@ impl Bodies {
                             *condition,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1721,7 +1541,6 @@ impl Bodies {
                         *body,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1738,7 +1557,6 @@ impl Bodies {
                         *callee,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1755,7 +1573,6 @@ impl Bodies {
                             *arg,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1774,7 +1591,6 @@ impl Bodies {
                         *previous,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1786,41 +1602,65 @@ impl Bodies {
                 }
 
                 Expr::Lambda(lambda) => {
-                    let Lambda { function, body } = &bodies.lambdas[*lambda];
+                    let Lambda {
+                        params,
+                        return_ty,
+                        body,
+                        is_extern,
+                        ..
+                    } = &bodies.lambdas[*lambda];
 
                     s.push('(');
-                    for (idx, param) in function.params.iter().enumerate() {
-                        if let Some(name) = param.name {
-                            s.push_str(interner.lookup(name.0));
-                            s.push_str(": ");
-                        }
+                    for (idx, param) in params.iter().enumerate() {
+                        s.push('p');
+                        s.push_str(idx.to_string().as_str());
+                        s.push_str(": ");
 
-                        s.push_str(twr_arena[param.ty].display(twr_arena, interner).as_str());
+                        write_expr(
+                            s,
+                            param.ty,
+                            show_idx,
+                            bodies,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
 
-                        if idx != function.params.len() - 1 {
+                        if idx != params.len() - 1 {
                             s.push_str(", ");
                         }
                     }
-                    s.push_str(") -> ");
+                    s.push_str(") ");
 
-                    s.push_str(
-                        twr_arena[function.return_ty]
-                            .display(twr_arena, interner)
-                            .as_str(),
-                    );
+                    if let Some(return_ty) = return_ty {
+                        s.push_str("-> ");
 
-                    s.push(' ');
+                        write_expr(
+                            s,
+                            *return_ty,
+                            show_idx,
+                            bodies,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
 
-                    write_expr(
-                        s,
-                        *body,
-                        show_idx,
-                        bodies,
-                        twr_arena,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                        s.push(' ');
+                    }
+
+                    if *is_extern {
+                        s.push_str("extern");
+                    } else {
+                        write_expr(
+                            s,
+                            *body,
+                            show_idx,
+                            bodies,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
+                    }
                 }
 
                 Expr::Comptime(comptime) => {
@@ -1833,7 +1673,6 @@ impl Bodies {
                         body,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1846,7 +1685,6 @@ impl Bodies {
                         *ty,
                         show_idx,
                         bodies,
-                        twr_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1865,7 +1703,6 @@ impl Bodies {
                             *value,
                             show_idx,
                             bodies,
-                            twr_arena,
                             project_root,
                             interner,
                             indentation,
@@ -1879,8 +1716,49 @@ impl Bodies {
                     s.push('}');
                 }
 
-                Expr::PrimitiveTy { ty } => {
-                    s.push_str(&twr_arena[*ty].display(twr_arena, interner))
+                Expr::PrimitiveTy(ty) => s.push_str(&ty.display()),
+
+                Expr::Distinct { uid, ty } => {
+                    s.push_str("distinct'");
+                    s.push_str(&uid.to_string());
+                    s.push(' ');
+                    write_expr(
+                        s,
+                        *ty,
+                        show_idx,
+                        bodies,
+                        project_root,
+                        interner,
+                        indentation,
+                    );
+                }
+
+                Expr::StructDecl { uid, fields } => {
+                    s.push_str("struct'");
+                    s.push_str(&uid.to_string());
+                    s.push_str(" {");
+                    for (idx, (name, ty)) in fields.iter().enumerate() {
+                        s.push(' ');
+                        if let Some(name) = name {
+                            s.push_str(interner.lookup(name.name.0));
+                        } else {
+                            s.push('?');
+                        }
+                        s.push(':');
+                        write_expr(
+                            s,
+                            *ty,
+                            show_idx,
+                            bodies,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
+                        if idx != fields.len() - 1 {
+                            s.push(',');
+                        }
+                    }
+                    s.push_str(" }");
                 }
 
                 Expr::Import(file_name) => {
@@ -1901,7 +1779,6 @@ impl Bodies {
             expr: Idx<Stmt>,
             show_idx: bool,
             bodies: &Bodies,
-            ty_arena: &Arena<TyWithRange>,
             project_root: &std::path::Path,
             interner: &Interner,
             indentation: usize,
@@ -1913,7 +1790,6 @@ impl Bodies {
                         *expr_id,
                         show_idx,
                         bodies,
-                        ty_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1921,13 +1797,23 @@ impl Bodies {
                     s.push(';');
                 }
                 Stmt::LocalDef(local_def_id) => {
-                    s.push_str(&format!("l{} := ", local_def_id.into_raw()));
+                    s.push_str(&format!("l{} :", local_def_id.into_raw()));
+
+                    let local_def = &bodies[*local_def_id];
+
+                    if let Some(ty) = local_def.ty {
+                        s.push(' ');
+                        write_expr(s, ty, show_idx, bodies, project_root, interner, indentation);
+                        s.push(' ');
+                    }
+
+                    s.push_str("= ");
+
                     write_expr(
                         s,
-                        bodies[*local_def_id].value,
+                        local_def.value,
                         show_idx,
                         bodies,
-                        ty_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1940,7 +1826,6 @@ impl Bodies {
                         bodies[*local_set_id].source,
                         show_idx,
                         bodies,
-                        ty_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1951,7 +1836,6 @@ impl Bodies {
                         bodies[*local_set_id].value,
                         show_idx,
                         bodies,
-                        ty_arena,
                         project_root,
                         interner,
                         indentation,
@@ -1977,12 +1861,11 @@ mod tests {
     ) {
         let mut interner = Interner::default();
         let mut uid_gen = UIDGenerator::default();
-        let mut twr_arena = Arena::default();
 
         let tokens = lexer::lex(input);
         let tree = parser::parse_source_file(&tokens, input).into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, _) = crate::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+        let (index, _) = crate::index(root, &tree, &mut interner);
 
         let (bodies, actual_diagnostics) = lower(
             root,
@@ -1990,14 +1873,12 @@ mod tests {
             std::path::Path::new("main.capy"),
             &index,
             &mut uid_gen,
-            &mut twr_arena,
             &mut interner,
             true,
         );
 
         expect.assert_eq(&bodies.debug(
             FileName(interner.intern("main.capy")),
-            &twr_arena,
             std::path::Path::new(""),
             &interner,
             false,
@@ -2028,7 +1909,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {};
+                main::foo :: () {};
             "#]],
             |_| [],
         )
@@ -2043,7 +1924,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     1 + 1;
                 };
             "#]],
@@ -2062,8 +1943,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := 5;
-                main::bar := () -> {
+                main::foo :: 5;
+                main::bar :: () {
                     foo;
                 };
             "#]],
@@ -2082,7 +1963,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 5;
                     l0;
                 };
@@ -2100,7 +1981,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: (p0: i32) {
                     p0;
                 };
             "#]],
@@ -2119,8 +2000,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::other_file := import "other_file.capy";
-                main::foo := () -> {
+                main::other_file :: import "other_file.capy";
+                main::foo :: () {
                     other_file.global;
                 };
             "#]],
@@ -2139,7 +2020,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := <missing>;
                     l0.global;
                 };
@@ -2157,7 +2038,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 18446744073709551615;
                 };
             "#]],
@@ -2175,7 +2056,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 123000000000;
                 };
             "#]],
@@ -2193,7 +2074,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 4560000000000;
                 };
             "#]],
@@ -2210,7 +2091,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := <missing>;
                 };
             "#]],
@@ -2227,7 +2108,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := <missing>;
                 };
             "#]],
@@ -2244,7 +2125,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 0.123;
                 };
             "#]],
@@ -2261,7 +2142,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 1000;
                 };
             "#]],
@@ -2278,7 +2159,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := "🦀";
                 };
             "#]],
@@ -2295,7 +2176,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := "\0\u{7}\u{8}\n\u{c}\r\t\u{b}\u{1b}'\"\\";
                 };
             "#]],
@@ -2312,7 +2193,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := "abc";
                 };
             "#]],
@@ -2334,7 +2215,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 'a';
                 };
             "#]],
@@ -2351,7 +2232,7 @@ mod tests {
                 }
             "#,
             expect![[r"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := '\0';
                 };
             "]],
@@ -2368,7 +2249,7 @@ mod tests {
                 }
             "#,
             expect![[r"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := '\0';
                 };
             "]],
@@ -2385,7 +2266,7 @@ mod tests {
                 }
             "#,
             expect![[r"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := '\0';
                 };
             "]],
@@ -2413,7 +2294,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := '\0';
                     l1 := '\u{7}';
                     l2 := '\u{8}';
@@ -2441,7 +2322,7 @@ mod tests {
                 }
             ",
             expect![[r"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := '\0';
                 };
             "]],
@@ -2458,7 +2339,7 @@ mod tests {
                 }
             ",
             expect![[r#"
-                main::foo := () -> { 1 + 2 * 3 - 4 / 5 };
+                main::foo :: () -> i32 { 1 + 2 * 3 - 4 / 5 };
             "#]],
             |_| [],
         )
@@ -2476,7 +2357,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     l0 := 1;
                     l1 := 2;
                     l2 := 3;
@@ -2497,10 +2378,10 @@ mod tests {
                 qux :: () {}
             "#,
             expect![[r#"
-                main::foo := () -> {};
-                main::bar := () -> {};
-                main::baz := () -> {};
-                main::qux := () -> {};
+                main::foo :: () {};
+                main::bar :: () {};
+                main::baz :: () {};
+                main::qux :: () {};
             "#]],
             |_| [],
         )
@@ -2519,8 +2400,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> { bar() };
-                main::bar := () -> { foo() };
+                main::foo :: () { bar() };
+                main::bar :: () { foo() };
             "#]],
             |_| [],
         )
@@ -2535,7 +2416,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> { <missing>() };
+                main::foo :: () { <missing>() };
             "#]],
             |i| {
                 [(
@@ -2557,7 +2438,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () {
                     foo();
                 };
             "#]],
@@ -2574,8 +2455,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
-                    l0 := () -> void {};
+                main::foo :: () {
+                    l0 := () {};
                 };
             "#]],
             |_| [],
@@ -2595,7 +2476,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: (p0: i32) {
                     l0 := 5;
                     l1 := () -> i32 { <missing> + <missing> };
                 };
@@ -2632,7 +2513,37 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> { { (x: i32, y: i32) -> i32 { p0 + p1 } }(1, 2) };
+                main::foo :: () -> i32 { { (p0: i32, p1: i32) -> i32 { p0 + p1 } }(1, 2) };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn extern_lambda() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    puts := (s: string) extern;
+                }
+            "#,
+            expect![[r#"
+                main::main :: () -> i32 {
+                    l0 := (p0: string) extern;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 77..83)],
+        )
+    }
+
+    #[test]
+    fn extern_function() {
+        check(
+            r#"
+                puts :: (s: string) -> i32 extern;
+            "#,
+            expect![[r#"
+                main::puts :: (p0: string) -> i32 extern;
             "#]],
             |_| [],
         )
@@ -2651,7 +2562,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := () -> {
+                main::foo :: () -> i32 {
                     {
                         l0 := 5;
                     };
@@ -2670,7 +2581,7 @@ mod tests {
     }
 
     #[test]
-    fn locals_take_precedence_over_functions() {
+    fn locals_take_precedence_over_globals() {
         check(
             r#"
                 bar :: () -> i32 { 0 };
@@ -2682,8 +2593,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::bar := () -> { 0 };
-                main::foo := () -> {
+                main::bar :: () -> i32 { 0 };
+                main::foo :: () -> i32 {
                     l0 := 25;
                     l0
                 };
@@ -2708,7 +2619,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l2 := {
                         l1 := {
                             l0 := 9;
@@ -2724,23 +2635,6 @@ mod tests {
     }
 
     #[test]
-    fn extern_lambda() {
-        check(
-            r#"
-                main :: () -> i32 {
-                    puts := (s: string) extern;
-                }
-            "#,
-            expect![[r#"
-                main::main := () -> {
-                    l0 := (s: string) -> void <missing>;
-                };
-            "#]],
-            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 77..83)],
-        )
-    }
-
-    #[test]
     fn array_with_inferred_size() {
         check(
             r#"
@@ -2749,7 +2643,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l0 := []i32{ 4, 8, 15, 16, 23, 42 };
                 };
             "#]],
@@ -2766,7 +2660,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l0 := [6]i32{ 4, 8, 15, 16, 23, 42 };
                 };
             "#]],
@@ -2783,7 +2677,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l0 := [3]i32{ 4, 8, 15, 16, 23, 42 };
                 };
             "#]],
@@ -2810,17 +2704,12 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l0 := 6;
                     l1 := []i32{ 4, 8, 15, 16, 23, 42 };
                 };
             "#]],
-            |_| {
-                [(
-                    LoweringDiagnosticKind::TyParseError(TyParseError::ArraySizeNotConst),
-                    102..106,
-                )]
-            },
+            |_| [(LoweringDiagnosticKind::ArraySizeNotConst, 102..106)],
         )
     }
 
@@ -2835,7 +2724,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: () -> i32 {
                     l0 := comptime { 1 + 1 };
                 };
             "#]],
@@ -2856,7 +2745,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::main := () -> {
+                main::main :: (p0: i32) -> i32 {
                     l0 := 5;
                     l1 := comptime { <missing> + <missing> };
                 };
@@ -2893,10 +2782,84 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo := 5;
-                main::main := () -> {
+                main::foo :: 5;
+                main::main :: () -> i32 {
                     l0 := comptime { foo * 2 };
                 };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_undefined_types() {
+        check(
+            r#"
+                foo :: (x: bar, y: baz) -> qux.quux {
+    
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: <missing>, p1: <missing>) -> <missing>.quux {};
+            "#]],
+            |i| {
+                [
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("bar"),
+                        },
+                        28..31,
+                    ),
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("baz"),
+                        },
+                        36..39,
+                    ),
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("qux"),
+                        },
+                        44..47,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn function_with_unnamed_params() {
+        check(
+            r#"
+                foo :: (: i32, y: bool) -> i8 {
+                    if y {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: i32, p1: bool) -> i8 { if p1 { 0 } else { 1 } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_untyped_params() {
+        check(
+            r#"
+                foo :: (x, y) -> i8 {
+                    if y {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: <missing>, p1: <missing>) -> i8 { if p1 { 0 } else { 1 } };
             "#]],
             |_| [],
         )

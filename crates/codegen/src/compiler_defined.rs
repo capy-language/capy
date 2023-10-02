@@ -3,7 +3,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use hir_ty::ResolvedTy;
 use interner::Interner;
 
-use crate::{mangle::Mangle, CapyFnSignature, CraneliftSignature};
+use crate::{compiler::FunctionToCompile, mangle::Mangle, CraneliftSignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CompilerDefinedFunction {
@@ -18,7 +18,7 @@ impl CompilerDefinedFunction {
         project_root: &std::path::Path,
         interner: &Interner,
     ) -> (String, CraneliftSignature, FuncId) {
-        let sig = match self {
+        let ftc = match self {
             CompilerDefinedFunction::PtrBitcast => CraneliftSignature {
                 params: vec![AbiParam::new(pointer_ty)],
                 returns: vec![AbiParam::new(pointer_ty)],
@@ -27,21 +27,30 @@ impl CompilerDefinedFunction {
         };
         let mangled = self.to_mangled_name(project_root, interner);
         let func_id = module
-            .declare_function(&mangled, Linkage::Export, &sig)
+            .declare_function(&mangled, Linkage::Export, &ftc)
             .unwrap();
 
-        (mangled, sig, func_id)
+        (mangled, ftc, func_id)
     }
 }
 
 pub(crate) fn as_compiler_defined(
-    sig: &CapyFnSignature,
-    fqn: hir::Fqn,
+    is_extern: bool,
+    ftc: &FunctionToCompile,
     interner: &Interner,
 ) -> Option<CompilerDefinedFunction> {
-    if !sig.is_extern {
+    if !is_extern {
         return None;
     }
+
+    let fqn = if let Some(name) = ftc.function_name {
+        hir::Fqn {
+            module: ftc.module_name,
+            name,
+        }
+    } else {
+        return None;
+    };
 
     let module = interner.lookup(fqn.module.0);
     let module = std::path::Path::new(module);
@@ -61,17 +70,17 @@ pub(crate) fn as_compiler_defined(
 
     match filename.as_ref() {
         "ptr.capy" => match function_name {
-            "to_raw" => as_ptr_to_usize(sig),
-            "const_from_raw" => as_usize_to_ptr(sig, false),
-            "mut_from_raw" => as_usize_to_ptr(sig, true),
+            "to_raw" => as_ptr_to_usize(ftc),
+            "const_from_raw" => as_usize_to_ptr(ftc, false),
+            "mut_from_raw" => as_usize_to_ptr(ftc, true),
             _ => None,
         },
         _ => None,
     }
 }
 
-fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
-    let mut params = sig.param_tys.iter();
+fn as_ptr_to_usize(ftc: &FunctionToCompile) -> Option<CompilerDefinedFunction> {
+    let mut params = ftc.param_tys.iter();
 
     let first = params.next()?;
     if !first
@@ -86,15 +95,15 @@ fn as_ptr_to_usize(sig: &CapyFnSignature) -> Option<CompilerDefinedFunction> {
         return None;
     }
 
-    if *sig.return_ty != ResolvedTy::UInt(u32::MAX) {
+    if *ftc.return_ty != ResolvedTy::UInt(u32::MAX) {
         return None;
     }
 
     Some(CompilerDefinedFunction::PtrBitcast)
 }
 
-fn as_usize_to_ptr(sig: &CapyFnSignature, mutable: bool) -> Option<CompilerDefinedFunction> {
-    let mut params = sig.param_tys.iter();
+fn as_usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> Option<CompilerDefinedFunction> {
+    let mut params = ftc.param_tys.iter();
 
     let first = params.next()?;
     if **first != ResolvedTy::UInt(u32::MAX) {
@@ -105,7 +114,7 @@ fn as_usize_to_ptr(sig: &CapyFnSignature, mutable: bool) -> Option<CompilerDefin
         return None;
     }
 
-    if !sig
+    if !ftc
         .return_ty
         .as_pointer()
         .map(|(ptr_mut, sub_ty)| ptr_mut == mutable && *sub_ty == hir_ty::ResolvedTy::Any)

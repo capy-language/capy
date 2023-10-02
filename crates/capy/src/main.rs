@@ -7,7 +7,6 @@ use std::{
 use clap::{Parser, Subcommand};
 use hir::WorldIndex;
 use itertools::Itertools;
-use la_arena::Arena;
 use line_index::LineIndex;
 use path_clean::PathClean;
 use rustc_hash::FxHashMap;
@@ -172,7 +171,6 @@ fn compile_file(
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
-    let twr_arena = Rc::new(RefCell::new(Arena::new()));
 
     let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
 
@@ -185,7 +183,6 @@ fn compile_file(
         file_name.clone(),
         file_contents.clone(),
         uid_gen.clone(),
-        twr_arena.clone(),
         interner.clone(),
         bodies_map.clone(),
         world_index.clone(),
@@ -242,7 +239,6 @@ fn compile_file(
                 file_name,
                 file_contents.clone(),
                 uid_gen.clone(),
-                twr_arena.clone(),
                 interner.clone(),
                 bodies_map.clone(),
                 world_index.clone(),
@@ -260,13 +256,19 @@ fn compile_file(
     }
 
     // infer types
+    let main_modules = source_files
+        .iter()
+        .filter(|(_, sf)| sf.has_fn_of_name(main_fn))
+        .map(|(name, _)| *name)
+        .collect_vec();
+    let main_module = main_modules.first();
+    let entry_point = main_module.map(|module| hir::Fqn {
+        module: *module,
+        name: main_fn,
+    });
 
-    let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
-        &bodies_map.borrow(),
-        &world_index.borrow(),
-        &twr_arena.borrow(),
-    )
-    .finish();
+    let (inference, ty_diagnostics) =
+        hir_ty::InferenceCtx::new(&bodies_map.borrow(), &world_index.borrow()).finish(entry_point);
     if verbose >= 2 {
         let debug = inference.debug(&project_root, &interner.borrow(), true);
         println!("=== types ===\n");
@@ -304,23 +306,22 @@ fn compile_file(
         exit(1);
     }
 
-    let main_modules = source_files
-        .iter()
-        .filter(|(_, sf)| sf.has_fn_of_name(main_fn))
-        .map(|(name, _)| *name)
-        .collect_vec();
-    if main_modules.is_empty() {
-        println!(
-            "{ansi_red}error{ansi_white}: there is no `{}` function{ansi_reset}",
-            interner.borrow().lookup(main_fn.0)
-        );
-        std::process::exit(1);
-    } else if main_modules.len() > 1 {
-        println!(
-            "{ansi_red}error{ansi_white}: there are multiple `{}` functions{ansi_reset}",
-            interner.borrow().lookup(main_fn.0)
-        );
-        std::process::exit(1);
+    match main_modules.len().cmp(&1) {
+        std::cmp::Ordering::Less => {
+            println!(
+                "{ansi_red}error{ansi_white}: there is no `{}` function{ansi_reset}",
+                interner.borrow().lookup(main_fn.0)
+            );
+            std::process::exit(1);
+        }
+        std::cmp::Ordering::Equal => {}
+        std::cmp::Ordering::Greater => {
+            println!(
+                "{ansi_red}error{ansi_white}: there are multiple `{}` functions{ansi_reset}",
+                interner.borrow().lookup(main_fn.0)
+            );
+            std::process::exit(1);
+        }
     }
 
     let parse_finish = compilation_start.elapsed();
@@ -353,14 +354,10 @@ fn compile_file(
         println!("\nactual program:\n");
     }
 
-    let main_module = main_modules.first().unwrap();
     if config == CompilationConfig::Jit {
         let jit_fn = codegen::compile_jit(
             verbose >= 1,
-            hir::Fqn {
-                module: *main_module,
-                name: main_fn,
-            },
+            entry_point.unwrap(),
             &project_root,
             &interner,
             &bodies_map.borrow(),
@@ -370,12 +367,12 @@ fn compile_file(
 
         println!(
             "{ansi_green}Finished{ansi_reset}   {} (JIT) in {:.2}s",
-            main_module.to_string(&project_root, &interner),
+            main_module.unwrap().to_string(&project_root, &interner),
             compilation_start.elapsed().as_secs_f32(),
         );
         println!(
             "{ansi_green}Running{ansi_reset}    `{}`\n",
-            main_module.to_string(&project_root, &interner)
+            main_module.unwrap().to_string(&project_root, &interner)
         );
         let status = jit_fn(0, 0);
         println!("\nProcess exited with {}", status);
@@ -385,10 +382,7 @@ fn compile_file(
 
     let bytes = match codegen::compile_obj(
         verbose >= 1,
-        hir::Fqn {
-            module: *main_module,
-            name: main_fn,
-        },
+        entry_point.unwrap(),
         &project_root,
         &interner,
         &bodies_map.borrow(),
@@ -408,7 +402,7 @@ fn compile_file(
     let _ = fs::create_dir(&output_folder);
 
     let output = output.unwrap_or_else(|| {
-        let main_file = std::path::PathBuf::from(interner.lookup(main_module.0));
+        let main_file = std::path::PathBuf::from(interner.lookup(main_module.unwrap().0));
         main_file.file_stem().unwrap().to_string_lossy().to_string()
     });
     let mut object_file = output_folder.join(&output);

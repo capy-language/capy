@@ -19,7 +19,6 @@ use std::process::{exit, Command};
 use target_lexicon::Triple;
 
 pub(crate) type CraneliftSignature = cranelift::prelude::Signature;
-pub(crate) type CapyFnSignature = hir_ty::FunctionSignature;
 
 pub use compiler::comptime::{eval_comptime_blocks, ComptimeToCompile};
 
@@ -140,15 +139,15 @@ mod tests {
     use std::{env, fs, path::Path};
 
     use ast::AstNode;
+    use backtrace::Backtrace;
     use expect_test::{expect, Expect};
     use hir_ty::InferenceCtx;
-    use la_arena::Arena;
     use path_clean::PathClean;
     use uid_gen::UIDGenerator;
 
     use super::*;
 
-    fn check(
+    fn check_files(
         main_file: &str,
         other_files: &[&str],
         entry_point: &str,
@@ -158,19 +157,67 @@ mod tests {
         let current_dir = env!("CARGO_MANIFEST_DIR");
         env::set_current_dir(current_dir).unwrap();
 
+        let mut modules = FxHashMap::default();
+
+        for file in other_files {
+            let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
+            let file = Path::new(current_dir).join(file).clean();
+            let text = fs::read_to_string(&file).unwrap();
+
+            modules.insert(file.to_string_lossy().to_string(), text);
+        }
+
+        let main_file = main_file.replace('/', std::path::MAIN_SEPARATOR_STR);
+        let main_file = Path::new(current_dir).join(main_file).clean();
+        let text = fs::read_to_string(&main_file).unwrap();
+        modules.insert(main_file.to_string_lossy().to_string(), text);
+
+        compile(
+            modules
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect(),
+            &main_file.to_string_lossy(),
+            entry_point,
+            false,
+            stdout_expect,
+            expected_status,
+        )
+    }
+
+    fn check_raw(input: &str, entry_point: &str, stdout_expect: Expect, expected_status: i32) {
+        let modules = test_utils::split_multi_module_test_data(input);
+
+        compile(
+            modules,
+            "main.capy",
+            entry_point,
+            true,
+            stdout_expect,
+            expected_status,
+        )
+    }
+
+    fn compile(
+        modules: FxHashMap<&str, &str>,
+        main_file: &str,
+        entry_point: &str,
+        fake_file_system: bool,
+        stdout_expect: Expect,
+        expected_status: i32,
+    ) {
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
 
         let mut uid_gen = UIDGenerator::default();
-        let mut twr_arena = Arena::new();
         let mut bodies_map = FxHashMap::default();
 
         let mut comptimes = Vec::new();
 
-        for file in other_files {
-            let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
-            let file_path = Path::new(current_dir).join(file).clean();
-            let text = &fs::read_to_string(&file_path).unwrap();
+        for (file, text) in &modules {
+            if *file == main_file {
+                continue;
+            }
 
             let tokens = lexer::lex(text);
             let parse = parser::parse_source_file(&tokens, text);
@@ -178,22 +225,20 @@ mod tests {
 
             let tree = parse.into_syntax_tree();
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
-            let (index, diagnostics) =
-                hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+            let (index, diagnostics) = hir::index(root, &tree, &mut interner);
 
             assert_eq!(diagnostics, vec![]);
 
-            let module = hir::FileName(interner.intern(&file_path.to_string_lossy()));
+            let module = hir::FileName(interner.intern(file));
 
             let (bodies, diagnostics) = hir::lower(
                 root,
                 &tree,
-                &file_path,
+                std::path::Path::new(*file),
                 &index,
                 &mut uid_gen,
-                &mut twr_arena,
                 &mut interner,
-                false,
+                fake_file_system,
             );
 
             comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
@@ -207,30 +252,26 @@ mod tests {
             bodies_map.insert(module, bodies);
         }
 
-        let main_file = main_file.replace('/', std::path::MAIN_SEPARATOR_STR);
-        let main_file_path = Path::new(current_dir).join(main_file).clean();
-        let text = &fs::read_to_string(&main_file_path).unwrap();
-        let module = hir::FileName(interner.intern(&main_file_path.to_string_lossy()));
+        let text = &modules[main_file];
+        let module = hir::FileName(interner.intern(main_file));
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
         assert_eq!(parse.errors(), &[]);
 
         let tree = parse.into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, diagnostics) =
-            hir::index(root, &tree, &mut uid_gen, &mut twr_arena, &mut interner);
+        let (index, diagnostics) = hir::index(root, &tree, &mut interner);
 
         assert_eq!(diagnostics, vec![]);
 
         let (bodies, diagnostics) = hir::lower(
             root,
             &tree,
-            &main_file_path,
+            std::path::Path::new(main_file),
             &index,
             &mut uid_gen,
-            &mut twr_arena,
             &mut interner,
-            false,
+            fake_file_system,
         );
         comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
             module_name: module,
@@ -240,8 +281,13 @@ mod tests {
         world_index.add_module(module, index);
         bodies_map.insert(module, bodies);
 
+        let entry_point = hir::Fqn {
+            module,
+            name: hir::Name(interner.intern(entry_point)),
+        };
+
         let (inference_result, diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &twr_arena).finish();
+            InferenceCtx::new(&bodies_map, &world_index).finish(Some(entry_point));
         assert_eq!(diagnostics, vec![]);
 
         println!("comptime:");
@@ -260,10 +306,7 @@ mod tests {
 
         let bytes = compile_obj(
             true,
-            hir::Fqn {
-                module,
-                name: hir::Name(interner.intern(entry_point)),
-            },
+            entry_point,
             Path::new(""),
             &interner,
             &bodies_map,
@@ -277,8 +320,35 @@ mod tests {
 
         let _ = fs::create_dir(&output_folder);
 
-        let main_name = main_file_path.file_stem().unwrap().to_string_lossy();
-        let file = output_folder.join(format!("{}.o", main_name));
+        let bt = Backtrace::new();
+
+        // here we use the name of the calling function for the name of the object file and
+        // final exectuable
+
+        const CHECK_FUNCTIONS: &[&str] = &[
+            "codegen::tests::check_raw",
+            "codegen::tests::check_files",
+            "codegen::tests::compile",
+        ];
+
+        let caller = bt
+            .frames()
+            .iter()
+            .flat_map(|frame| frame.symbols())
+            .filter_map(|symbol| symbol.name())
+            .find(|name| {
+                name.as_str().map_or(false, |name| {
+                    name.starts_with("codegen::tests") && !CHECK_FUNCTIONS.contains(&name)
+                })
+            })
+            .and_then(|caller_name| {
+                caller_name
+                    .as_str()
+                    .map(|caller_name| caller_name.split("::").last().unwrap().to_string())
+            })
+            .unwrap();
+
+        let file = output_folder.join(format!("{}.o", caller));
         fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
             panic!("{}: {why}", file.display());
         });
@@ -296,14 +366,59 @@ mod tests {
             .replace('\r', "");
         let stdout = format!("{}\n", stdout);
 
-        println!("{:?}", stdout);
+        println!("stdout: {:?}", stdout);
 
+        dbg!(&stdout_expect.data());
+        println!("expected: {:?}", trim_indent(stdout_expect.data()));
         stdout_expect.assert_eq(&stdout);
+    }
+
+    fn trim_indent(mut text: &str) -> String {
+        if text.starts_with('\n') {
+            text = &text[1..];
+        }
+        let indent = text
+            .lines()
+            .filter(|it| !it.trim().is_empty())
+            .map(|it| it.len() - it.trim_start().len())
+            .min()
+            .unwrap_or(0);
+
+        lines_with_ends(text)
+            .map(|line| {
+                if line.len() <= indent {
+                    line.trim_start_matches(' ')
+                } else {
+                    &line[indent..]
+                }
+            })
+            .collect()
+    }
+
+    fn lines_with_ends(text: &str) -> LinesWithEnds {
+        LinesWithEnds { text }
+    }
+
+    struct LinesWithEnds<'a> {
+        text: &'a str,
+    }
+
+    impl<'a> Iterator for LinesWithEnds<'a> {
+        type Item = &'a str;
+        fn next(&mut self) -> Option<&'a str> {
+            if self.text.is_empty() {
+                return None;
+            }
+            let idx = self.text.find('\n').map_or(self.text.len(), |it| it + 1);
+            let (res, next) = self.text.split_at(idx);
+            self.text = next;
+            Some(res)
+        }
     }
 
     #[test]
     fn hello_world() {
-        check(
+        check_files(
             "../../examples/hello_world.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -317,7 +432,7 @@ mod tests {
 
     #[test]
     fn vectors() {
-        check(
+        check_files(
             "../../examples/vectors.capy",
             &[],
             "main",
@@ -331,7 +446,7 @@ mod tests {
 
     #[test]
     fn fib() {
-        check(
+        check_files(
             "../../examples/fib.capy",
             &["../../examples/io.capy"],
             "main",
@@ -347,7 +462,7 @@ mod tests {
 
     #[test]
     fn entry_point() {
-        check(
+        check_files(
             "../../examples/entry_point.capy",
             &[],
             "_start",
@@ -363,7 +478,7 @@ mod tests {
 
     #[test]
     fn drink() {
-        check(
+        check_files(
             "../../examples/drink.capy",
             &[],
             "main",
@@ -376,7 +491,7 @@ mod tests {
 
     #[test]
     fn arrays() {
-        check(
+        check_files(
             "../../examples/arrays.capy",
             &[],
             "main",
@@ -395,7 +510,7 @@ mod tests {
 
     #[test]
     fn array_of_arrays() {
-        check(
+        check_files(
             "../../examples/arrays_of_arrays.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -463,7 +578,7 @@ mod tests {
 
     #[test]
     fn files() {
-        check(
+        check_files(
             "../../examples/files.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -479,7 +594,7 @@ mod tests {
 
     #[test]
     fn ptr_assign() {
-        check(
+        check_files(
             "../../examples/ptr_assign.capy",
             &[],
             "main",
@@ -497,7 +612,7 @@ mod tests {
 
     #[test]
     fn pretty() {
-        check(
+        check_files(
             "../../examples/pretty.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -517,7 +632,7 @@ mod tests {
 
     #[test]
     fn float_to_string() {
-        check(
+        check_files(
             "../../examples/float_to_string.capy",
             &[
                 "../../examples/std/libc.capy",
@@ -544,7 +659,7 @@ mod tests {
 
     #[test]
     fn first_class_functions() {
-        check(
+        check_files(
             "../../examples/first_class_functions.capy",
             &[],
             "main",
@@ -562,7 +677,7 @@ mod tests {
 
     #[test]
     fn structs() {
-        check(
+        check_files(
             "../../examples/structs.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -582,7 +697,7 @@ mod tests {
 
     #[test]
     fn comptime() {
-        check(
+        check_files(
             "../../examples/comptime.capy",
             &[
                 "../../examples/std/libc.capy",
@@ -606,7 +721,7 @@ mod tests {
 
     #[test]
     fn string() {
-        check(
+        check_files(
             "../../examples/string.capy",
             &[
                 "../../examples/std/libc.capy",
@@ -636,7 +751,7 @@ mod tests {
 
     #[test]
     fn auto_deref() {
-        check(
+        check_files(
             "../../examples/auto_deref.capy",
             &["../../examples/std/libc.capy"],
             "main",
@@ -691,6 +806,61 @@ mod tests {
 
             "#]],
             0,
+        )
+    }
+
+    #[test]
+    fn cast_f32_to_i32() {
+        check_raw(
+            r#"
+                main :: () -> i32 {
+                    f : f32 = 2.5;
+
+                    f as i32
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            2,
+        )
+    }
+
+    #[test]
+    fn local_tys() {
+        check_raw(
+            r#"
+                main :: () -> i32 {
+                    int :: i32;
+                    imaginary :: distinct int;
+                    imaginary_vec3 :: distinct [3] imaginary;
+                    complex :: struct {
+                        real_part: int,
+                        imaginary_part: imaginary,
+                    };
+                
+                    my_complex := complex {
+                        real_part: 5,
+                        imaginary_part: 42,
+                    };
+                
+                    do_math :: (c: complex) -> imaginary_vec3 {
+                        // this is kind of akward because while we can access locals
+                        // in the parameters and return type, we can't access `imaginary`
+                        // from inside the body of this lambda
+                        // this could be alleviated by adding a `type_of` builtin
+                        [3] i32 { 1, c.real_part * c.imaginary_part as i32, 3 }
+                    };
+                
+                    do_math(my_complex)[1] as i32
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            5 * 42,
         )
     }
 

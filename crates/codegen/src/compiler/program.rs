@@ -11,7 +11,7 @@ use uid_gen::UIDGenerator;
 
 use crate::{convert::*, ComptimeToCompile};
 
-use super::{cast, comptime::ComptimeResult, Compiler};
+use super::{cast, comptime::ComptimeResult, Compiler, FunctionToCompile};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
@@ -24,6 +24,28 @@ pub(crate) fn compile_program<'a>(
     module: &'a mut dyn Module,
     comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
 ) -> FuncId {
+    let entry_point_ftc = {
+        let (param_tys, return_ty) = tys[entry_point]
+            .0
+            .as_function()
+            .expect("tried to compile non-function as entry point");
+
+        let global_body = bodies_map[&entry_point.module].global_body(entry_point.name);
+
+        let lambda = match bodies_map[&entry_point.module][global_body] {
+            hir::Expr::Lambda(lambda) => lambda,
+            _ => todo!("entry point does not have a lambda as it's body"),
+        };
+
+        FunctionToCompile {
+            module_name: entry_point.module,
+            function_name: Some(entry_point.name),
+            lambda,
+            param_tys: param_tys.clone(),
+            return_ty,
+        }
+    };
+
     let mut compiler = Compiler {
         verbose,
         project_root,
@@ -35,8 +57,7 @@ pub(crate) fn compile_program<'a>(
         pointer_ty: module.target_config().pointer_type(),
         module,
         data_description: DataDescription::new(),
-        functions_to_compile: VecDeque::from([entry_point]),
-        lambdas_to_compile: VecDeque::new(),
+        functions_to_compile: VecDeque::from([entry_point_ftc]),
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -94,10 +115,9 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
 
     let call = builder.ins().call(local_entry_point, &[]);
 
-    let entry_point_signature = compiler.tys[entry_point].as_function().unwrap();
+    let (_, entry_return_ty) = compiler.tys[entry_point].0.as_function().unwrap();
 
-    let exit_code = match entry_point_signature
-        .return_ty
+    let exit_code = match entry_return_ty
         .to_comp_type(compiler.pointer_ty)
         .into_number_type()
     {

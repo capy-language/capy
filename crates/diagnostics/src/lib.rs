@@ -1,10 +1,7 @@
 use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
-use hir::{
-    IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind,
-    TyParseError,
-};
+use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
 use hir_ty::{TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use line_index::{ColNr, LineIndex, LineNr};
@@ -409,7 +406,6 @@ fn indexing_diagnostic_message(d: &IndexingDiagnostic, interner: &Interner) -> S
         IndexingDiagnosticKind::AlreadyDefined { name } => {
             format!("name `{}` already defined", interner.lookup(*name))
         }
-        IndexingDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
     }
 }
 
@@ -423,6 +419,9 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
+        LoweringDiagnosticKind::ArraySizeNotConst => {
+            "array sizes mut be constant integer literals".to_string()
+        }
         LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
             format!("expected `{}` elements, found `{}`", expected, found)
         }
@@ -441,18 +440,6 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::NonU8CharLiteral => {
             "character literals cannot contain non-ASCII characters".to_string()
         }
-        LoweringDiagnosticKind::TyParseError(parse_error) => lower_ty_parse_error(parse_error),
-    }
-}
-
-fn lower_ty_parse_error(d: &TyParseError) -> String {
-    match d {
-        TyParseError::ArrayMissingSize => "array is missing an explicit size".to_string(),
-        TyParseError::ArraySizeNotConst => "array size must be a constant integer".to_string(),
-        TyParseError::ArraySizeOutOfBounds => "integer literal out of range".to_string(),
-        TyParseError::ArrayHasBody => "array type cannot have a body".to_string(),
-        TyParseError::NotATy => "expression cannot be converted into a type".to_string(),
-        TyParseError::NonPrimitive => unreachable!(),
     }
 }
 
@@ -609,6 +596,18 @@ fn ty_diagnostic_message(
         }
         hir_ty::TyDiagnosticKind::GlobalNotConst => {
             "globals must be constant values. try wrapping this in `comptime { ... }`".to_string()
+        }
+        hir_ty::TyDiagnosticKind::EntryNotFunction => {
+            "the entry point must be a function".to_string()
+        }
+        hir_ty::TyDiagnosticKind::EntryHasParams => {
+            "the entry point cannot have any parameters".to_string()
+        }
+        hir_ty::TyDiagnosticKind::EntryBadReturn => {
+            "the entry point must either return `{int}` or `void`".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ArraySizeRequired => {
+            "array types must have a size".to_string()
         }
     }
 }

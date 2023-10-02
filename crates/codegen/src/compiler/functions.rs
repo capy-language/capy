@@ -23,7 +23,7 @@ use crate::{
     ComptimeToCompile, CraneliftSignature,
 };
 
-use super::{comptime::ComptimeResult, LambdaToCompile};
+use super::{comptime::ComptimeResult, FunctionToCompile};
 
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) module_name: hir::FileName,
@@ -39,8 +39,7 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) data_description: &'a mut DataDescription,
     pub(crate) pointer_ty: types::Type,
 
-    pub(crate) functions_to_compile: &'a mut VecDeque<hir::Fqn>,
-    pub(crate) lambdas_to_compile: &'a mut VecDeque<LambdaToCompile>,
+    pub(crate) functions_to_compile: &'a mut VecDeque<FunctionToCompile>,
 
     pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
     pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
@@ -219,7 +218,9 @@ impl FunctionCompiler<'_> {
                 text.push('\0');
                 text.into_bytes().into()
             }
-            hir::Expr::Array { items, .. } => {
+            hir::Expr::Array {
+                items: Some(items), ..
+            } => {
                 assert_ne!(items.len(), 0);
 
                 let item_size = self.tys[module][items[0]].get_size_in_bytes(self.pointer_ty);
@@ -238,12 +239,12 @@ impl FunctionCompiler<'_> {
         }
     }
 
-    fn compile_global(&mut self, fqn: hir::Fqn) -> DataId {
+    fn compile_global_binding_data(&mut self, fqn: hir::Fqn) -> DataId {
         if let Some(global) = self.globals.get(&fqn) {
             return *global;
         }
 
-        let value = self.bodies_map[&fqn.module].global(fqn.name);
+        let value = self.bodies_map[&fqn.module].global_body(fqn.name);
 
         let bytes = if let hir::Expr::Comptime(comptime) = self.bodies_map[&self.module_name][value]
         {
@@ -301,6 +302,7 @@ impl FunctionCompiler<'_> {
             self.compiler_defined_functions,
             self.functions_to_compile,
             self.tys,
+            self.bodies_map,
             self.interner,
             fqn,
         )
@@ -320,6 +322,39 @@ impl FunctionCompiler<'_> {
         local_func
     }
 
+    fn compile_global(&mut self, fqn: hir::Fqn, no_load: bool) -> Option<Value> {
+        let ty = &self.tys[fqn].0;
+
+        if ty.is_zero_sized() {
+            return None;
+        } else if ty.is_function() {
+            let local_func = self.get_local_func(fqn);
+
+            return Some(self.builder.ins().func_addr(self.pointer_ty, local_func));
+        }
+
+        let global_data = self.compile_global_binding_data(fqn);
+
+        let local_id = self
+            .module
+            .declare_data_in_func(global_data, self.builder.func);
+
+        let global_ptr = self.builder.ins().symbol_value(self.pointer_ty, local_id);
+
+        let comp_ty = ty.to_comp_type(self.pointer_ty);
+
+        if no_load || comp_ty.is_pointer_type() {
+            Some(global_ptr)
+        } else {
+            Some(self.builder.ins().load(
+                comp_ty.into_real_type().unwrap(),
+                MemFlags::trusted(),
+                global_ptr,
+                0,
+            ))
+        }
+    }
+
     fn compile_stmt(&mut self, stmt: &Idx<hir::Stmt>) {
         match self.bodies_map[&self.module_name][*stmt] {
             hir::Stmt::Expr(expr) => {
@@ -335,7 +370,7 @@ impl FunctionCompiler<'_> {
 
                 let ty = &self.tys[self.module_name][local_def];
 
-                if ty.is_empty() {
+                if ty.is_zero_sized() {
                     return;
                 }
 
@@ -408,9 +443,9 @@ impl FunctionCompiler<'_> {
         }
 
         match &self.bodies_map[&self.module_name][expr] {
-            hir::Expr::Array { items, .. } => {
-                self.store_array_items(items.clone(), stack_slot, stack_addr, offset)
-            }
+            hir::Expr::Array {
+                items: Some(items), ..
+            } => self.store_array_items(items.clone(), stack_slot, stack_addr, offset),
             hir::Expr::StructLiteral {
                 fields: field_values,
                 ..
@@ -550,8 +585,10 @@ impl FunctionCompiler<'_> {
                 Some(self.builder.ins().symbol_value(self.pointer_ty, local_id))
             }
             hir::Expr::CharLiteral(char) => Some(self.builder.ins().iconst(types::I8, char as i64)),
-            hir::Expr::Array { items, .. } => {
-                if self.tys[self.module_name][expr].is_empty() {
+            hir::Expr::Array {
+                items: Some(items), ..
+            } => {
+                if self.tys[self.module_name][expr].is_zero_sized() {
                     return None;
                 }
 
@@ -572,8 +609,9 @@ impl FunctionCompiler<'_> {
 
                 Some(stack_addr)
             }
+            hir::Expr::Array { items: None, .. } => None,
             hir::Expr::Index { array, index } => {
-                if self.tys[self.module_name][expr].is_empty() {
+                if self.tys[self.module_name][expr].is_zero_sized() {
                     return None;
                 }
 
@@ -967,13 +1005,13 @@ impl FunctionCompiler<'_> {
 
                         if let hir::Expr::Lambda(lambda) = self.bodies_map[&self.module_name][value]
                         {
-                            let local_func = self.lambda_to_local_func(callee, lambda);
+                            let local_func = self.unnamed_func_to_local(callee, lambda);
 
                             self.builder.ins().call(local_func, &arg_values)
                         } else {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let (comp_sig, _) = (param_tys, return_ty)
+                            let (comp_sig, _) = (&param_tys, return_ty)
                                 .to_cranelift_signature(self.module, self.pointer_ty);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
@@ -999,7 +1037,7 @@ impl FunctionCompiler<'_> {
                         _ => {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let (comp_sig, _) = (param_tys, return_ty)
+                            let (comp_sig, _) = (&param_tys, return_ty)
                                 .to_cranelift_signature(self.module, self.pointer_ty);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
@@ -1010,14 +1048,14 @@ impl FunctionCompiler<'_> {
                         }
                     },
                     hir::Expr::Lambda(lambda) => {
-                        let local_func = self.lambda_to_local_func(callee, lambda);
+                        let local_func = self.unnamed_func_to_local(callee, lambda);
 
                         self.builder.ins().call(local_func, &arg_values)
                     }
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let (comp_sig, _) = (param_tys, return_ty)
+                        let (comp_sig, _) = (&param_tys, return_ty)
                             .to_cranelift_signature(self.module, self.pointer_ty);
 
                         let sig_ref = self.builder.import_signature(comp_sig);
@@ -1028,7 +1066,7 @@ impl FunctionCompiler<'_> {
                     }
                 };
 
-                if return_ty.is_empty() {
+                if return_ty.is_zero_sized() {
                     None
                 } else {
                     Some(self.builder.inst_results(call)[0])
@@ -1172,43 +1210,7 @@ impl FunctionCompiler<'_> {
                     name: name.name,
                 };
 
-                match &self.tys[fqn] {
-                    hir_ty::Signature::Function(_) => {
-                        let local_func = self.get_local_func(fqn);
-
-                        Some(self.builder.ins().func_addr(self.pointer_ty, local_func))
-                    }
-                    hir_ty::Signature::Global(hir_ty::GlobalSignature { ty }) => {
-                        if ty.is_empty() {
-                            return None;
-                        }
-
-                        let global_data = self.compile_global(fqn);
-
-                        let local_id = self
-                            .module
-                            .declare_data_in_func(global_data, self.builder.func);
-
-                        let global_ptr = self.builder.ins().symbol_value(self.pointer_ty, local_id);
-
-                        let comp_ty = self.tys[fqn]
-                            .as_global()
-                            .unwrap()
-                            .ty
-                            .to_comp_type(self.pointer_ty);
-
-                        if no_load || comp_ty.is_pointer_type() {
-                            Some(global_ptr)
-                        } else {
-                            Some(self.builder.ins().load(
-                                comp_ty.into_real_type().unwrap(),
-                                MemFlags::trusted(),
-                                global_ptr,
-                                0,
-                            ))
-                        }
-                    }
-                }
+                self.compile_global(fqn, no_load)
             }
             hir::Expr::Path {
                 previous, field, ..
@@ -1221,40 +1223,7 @@ impl FunctionCompiler<'_> {
                             name: field.name,
                         };
 
-                        match &self.tys[fqn] {
-                            hir_ty::Signature::Function(_) => {
-                                let local_func = self.get_local_func(fqn);
-
-                                Some(self.builder.ins().func_addr(self.pointer_ty, local_func))
-                            }
-                            hir_ty::Signature::Global(_) => {
-                                let global_data = self.compile_global(fqn);
-
-                                let local_id = self
-                                    .module
-                                    .declare_data_in_func(global_data, self.builder.func);
-
-                                let global_ptr =
-                                    self.builder.ins().symbol_value(self.pointer_ty, local_id);
-
-                                let global_ty = self.tys[fqn]
-                                    .as_global()
-                                    .unwrap()
-                                    .ty
-                                    .to_comp_type(self.pointer_ty);
-
-                                if no_load || global_ty.is_pointer_type() {
-                                    Some(global_ptr)
-                                } else {
-                                    Some(self.builder.ins().load(
-                                        global_ty.into_real_type().unwrap(),
-                                        MemFlags::trusted(),
-                                        global_ptr,
-                                        0,
-                                    ))
-                                }
-                            }
-                        }
+                        self.compile_global(fqn, no_load)
                     }
                     _ => {
                         let field_ty = &self.tys[self.module_name][expr];
@@ -1310,7 +1279,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Lambda(lambda) => {
-                let local_func = self.lambda_to_local_func(expr, lambda);
+                let local_func = self.unnamed_func_to_local(expr, lambda);
 
                 Some(self.builder.ins().func_addr(self.pointer_ty, local_func))
             }
@@ -1348,6 +1317,8 @@ impl FunctionCompiler<'_> {
                 Some(stack_addr)
             }
             hir::Expr::PrimitiveTy { .. } => None,
+            hir::Expr::Distinct { .. } => None,
+            hir::Expr::StructDecl { .. } => None,
             hir::Expr::Import(_) => None,
             hir::Expr::Comptime(comptime) => {
                 let ctc = ComptimeToCompile {
@@ -1405,25 +1376,26 @@ impl FunctionCompiler<'_> {
         }
     }
 
-    fn lambda_to_local_func(&mut self, expr: Idx<hir::Expr>, lambda: Idx<hir::Lambda>) -> FuncRef {
+    fn unnamed_func_to_local(&mut self, expr: Idx<hir::Expr>, lambda: Idx<hir::Lambda>) -> FuncRef {
         if let Some(func_ref) = self.local_lambdas.get(&lambda) {
             return *func_ref;
         }
 
         let (param_tys, return_ty) = self.tys[self.module_name][expr].as_function().unwrap();
 
-        let ltc = LambdaToCompile {
+        let (sig, _) = (&param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
+
+        let ftc = FunctionToCompile {
             module_name: self.module_name,
+            function_name: None,
             lambda,
-            param_tys: param_tys.clone(),
+            param_tys,
             return_ty,
         };
 
-        let mangled = ltc.to_mangled_name(self.project_root, self.interner);
+        let mangled = ftc.to_mangled_name(self.project_root, self.interner);
 
-        self.lambdas_to_compile.push_back(ltc);
-
-        let (sig, _) = (param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
+        self.functions_to_compile.push_back(ftc);
 
         let func_id = self
             .module

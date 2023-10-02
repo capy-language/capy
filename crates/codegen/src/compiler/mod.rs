@@ -15,13 +15,14 @@ use uid_gen::UIDGenerator;
 
 use crate::compiler_defined::{as_compiler_defined, CompilerDefinedFunction};
 use crate::mangle::Mangle;
-use crate::{convert::*, CapyFnSignature, ComptimeToCompile, CraneliftSignature};
+use crate::{convert::*, ComptimeToCompile, CraneliftSignature};
 
 use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
 
-pub(crate) struct LambdaToCompile {
+pub(crate) struct FunctionToCompile {
     pub(crate) module_name: hir::FileName,
+    pub(crate) function_name: Option<hir::Name>,
     pub(crate) lambda: Idx<hir::Lambda>,
     pub(crate) param_tys: Vec<Intern<ResolvedTy>>,
     pub(crate) return_ty: Intern<ResolvedTy>,
@@ -43,8 +44,7 @@ pub(crate) struct Compiler<'a> {
     pub(crate) pointer_ty: types::Type,
 
     // bodies to compile
-    pub(crate) functions_to_compile: VecDeque<hir::Fqn>,
-    pub(crate) lambdas_to_compile: VecDeque<LambdaToCompile>,
+    pub(crate) functions_to_compile: VecDeque<FunctionToCompile>,
 
     // globals
     pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
@@ -56,15 +56,8 @@ pub(crate) struct Compiler<'a> {
 
 impl Compiler<'_> {
     fn compile_queued_functions(&mut self) {
-        while let Some(fqn) = self.functions_to_compile.pop_front() {
-            let sig = self.tys[fqn]
-                .as_function()
-                .expect("tried to compile non-function as function");
-
-            self.compile_real_function(sig, fqn);
-        }
-        while let Some(ltc) = self.lambdas_to_compile.pop_front() {
-            self.compile_lambda(ltc);
+        while let Some(ftc) = self.functions_to_compile.pop_front() {
+            self.compile_ftc(ftc);
         }
     }
 
@@ -77,29 +70,19 @@ impl Compiler<'_> {
             &mut self.compiler_defined_functions,
             &mut self.functions_to_compile,
             self.tys,
+            self.bodies_map,
             self.interner,
             fqn,
         )
     }
 
-    fn compile_lambda(&mut self, ltc: LambdaToCompile) {
-        self.compile_function(
-            &format!(
-                "{}.lambda#{}",
-                ltc.module_name.to_string(self.project_root, self.interner),
-                ltc.lambda.into_raw()
-            ),
-            &ltc.to_mangled_name(self.project_root, self.interner),
-            ltc.module_name,
-            self.bodies_map[&ltc.module_name][ltc.lambda].body,
-            ltc.param_tys,
-            ltc.return_ty,
-        );
-    }
+    fn compile_ftc(&mut self, ftc: FunctionToCompile) {
+        let hir::Lambda {
+            body, is_extern, ..
+        } = &self.bodies_map[&ftc.module_name][ftc.lambda];
 
-    fn compile_real_function(&mut self, sig: &CapyFnSignature, fqn: hir::Fqn) {
-        if sig.is_extern {
-            if let Some(compiler_defined) = as_compiler_defined(sig, fqn, self.interner) {
+        if *is_extern {
+            if let Some(compiler_defined) = as_compiler_defined(*is_extern, &ftc, self.interner) {
                 let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
                     self.module,
                     self.pointer_ty,
@@ -116,13 +99,28 @@ impl Compiler<'_> {
             return;
         }
 
-        self.compile_function(
-            &fqn.to_string(self.project_root, self.interner),
-            &fqn.to_mangled_name(self.project_root, self.interner),
-            fqn.module,
-            self.bodies_map[&fqn.module].function_body(fqn.name),
-            sig.param_tys.clone(),
-            sig.return_ty,
+        let unmangled_name = if let Some(name) = ftc.function_name {
+            let fqn = hir::Fqn {
+                module: ftc.module_name,
+                name,
+            };
+
+            fqn.to_string(self.project_root, self.interner)
+        } else {
+            format!(
+                "{}.lambda#{}",
+                ftc.module_name.to_string(self.project_root, self.interner),
+                ftc.lambda.into_raw()
+            )
+        };
+
+        self.compile_real_function(
+            &unmangled_name,
+            &ftc.to_mangled_name(self.project_root, self.interner),
+            ftc.module_name,
+            *body,
+            ftc.param_tys,
+            ftc.return_ty,
         );
     }
 
@@ -178,7 +176,7 @@ impl Compiler<'_> {
         self.module.clear_context(&mut self.ctx);
     }
 
-    fn compile_function(
+    fn compile_real_function(
         &mut self,
         unmangled_name: &str,
         mangled_name: &str,
@@ -188,7 +186,7 @@ impl Compiler<'_> {
         return_ty: Intern<ResolvedTy>,
     ) -> FuncId {
         let (comp_sig, new_idx_to_old_idx) =
-            (param_tys.clone(), return_ty).to_cranelift_signature(self.module, self.pointer_ty);
+            (&param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -211,7 +209,6 @@ impl Compiler<'_> {
             pointer_ty: self.pointer_ty,
             data_description: &mut self.data_description,
             functions_to_compile: &mut self.functions_to_compile,
-            lambdas_to_compile: &mut self.lambdas_to_compile,
             local_functions: FxHashMap::default(),
             local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,
@@ -258,8 +255,9 @@ fn get_func_id(
     project_root: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
     compiler_defined_functions: &mut FxHashMap<CompilerDefinedFunction, FuncId>,
-    functions_to_compile: &mut VecDeque<hir::Fqn>,
+    functions_to_compile: &mut VecDeque<FunctionToCompile>,
     tys: &hir_ty::InferenceResult,
+    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     interner: &Interner,
     fqn: hir::Fqn,
 ) -> FuncId {
@@ -267,11 +265,29 @@ fn get_func_id(
         return *func_id;
     }
 
-    let sig = tys[fqn]
+    let (param_tys, return_ty) = tys[fqn]
+        .0
         .as_function()
         .expect("tried to compile non-function as function");
 
-    if let Some(compiler_defined) = as_compiler_defined(sig, fqn, interner) {
+    let global_body = bodies_map[&fqn.module].global_body(fqn.name);
+
+    let lambda = match bodies_map[&fqn.module][global_body] {
+        hir::Expr::Lambda(lambda) => lambda,
+        _ => todo!("global with function type does not have a lambda as it's body"),
+    };
+
+    let is_extern = bodies_map[&fqn.module][lambda].is_extern;
+
+    let ftc = FunctionToCompile {
+        module_name: fqn.module,
+        function_name: Some(fqn.name),
+        lambda,
+        param_tys: param_tys.clone(),
+        return_ty,
+    };
+
+    if let Some(compiler_defined) = as_compiler_defined(is_extern, &ftc, interner) {
         if let Some(func_id) = compiler_defined_functions.get(&compiler_defined) {
             functions.insert(fqn, *func_id);
 
@@ -281,7 +297,7 @@ fn get_func_id(
         let (_, _, func_id) =
             compiler_defined.to_sig_and_func_id(module, pointer_ty, project_root, interner);
 
-        functions_to_compile.push_back(fqn);
+        functions_to_compile.push_back(ftc);
 
         compiler_defined_functions.insert(compiler_defined, func_id);
         functions.insert(fqn, func_id);
@@ -289,11 +305,11 @@ fn get_func_id(
         return func_id;
     }
 
-    functions_to_compile.push_back(fqn);
+    functions_to_compile.push_back(ftc);
 
-    let (comp_sig, _) = sig.to_cranelift_signature(module, pointer_ty);
+    let (comp_sig, _) = (&param_tys, return_ty).to_cranelift_signature(module, pointer_ty);
 
-    let func_id = if sig.is_extern {
+    let func_id = if is_extern {
         module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
             .expect("There are multiple extern functions with the same name")
