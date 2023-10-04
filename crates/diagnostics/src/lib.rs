@@ -21,6 +21,7 @@ enum Repr {
 
 #[derive(PartialEq)]
 pub enum Severity {
+    Help,
     Warning,
     Error,
 }
@@ -63,22 +64,30 @@ impl Diagnostic {
         // unlike TextRange which is always exclusive
         let (end_line, end_col) = line_index.line_col(range.end() - TextSize::from(1));
 
-        let (ansi_yellow, ansi_red, ansi_white, ansi_blue) = if with_colors {
-            ("\x1B[1;93m", "\x1B[1;91m", "\x1B[1;97m", "\x1B[1;94m")
+        let (ansi_reset, ansi_yellow, ansi_red, ansi_white, ansi_blue) = if with_colors {
+            (
+                "\x1B[0m",
+                "\x1B[1;93m",
+                "\x1B[1;91m",
+                "\x1B[1;97m",
+                "\x1B[1;94m",
+            )
         } else {
-            ("", "", "", "")
+            ("", "", "", "", "")
         };
 
         let severity = match self.severity() {
+            Severity::Help => format!("{}help", ansi_blue),
             Severity::Warning => format!("{}warning", ansi_yellow),
             Severity::Error => format!("{}error", ansi_red),
         };
 
         let mut lines = vec![format!(
-            "{}{}: {}",
+            "{}{}: {}{}",
             severity,
             ansi_white,
-            self.message(project_root, interner)
+            self.message(project_root, interner),
+            ansi_reset,
         )];
 
         input_snippet(
@@ -88,17 +97,19 @@ impl Diagnostic {
             start_col,
             end_line,
             end_col,
-            range,
             &mut lines,
+            self.severity(),
             with_colors,
+            self.arrow(),
         );
 
         if let Some(help) = self.help() {
             lines.push(format!(
-                "{}help{}: {}",
+                "{}help{}: {}{}",
                 ansi_blue,
                 ansi_white,
-                help.message(project_root, interner)
+                help.message(project_root, interner),
+                ansi_reset
             ));
 
             let range = help.range();
@@ -116,9 +127,10 @@ impl Diagnostic {
                 start_col,
                 end_line,
                 end_col,
-                range,
                 &mut lines,
+                Severity::Help,
                 with_colors,
+                false,
             );
         }
 
@@ -156,6 +168,16 @@ impl Diagnostic {
                 }
             }
         }
+    }
+
+    pub fn arrow(&self) -> bool {
+        matches!(
+            self.0,
+            Repr::Syntax(SyntaxError {
+                kind: SyntaxErrorKind::Missing { .. },
+                ..
+            })
+        )
     }
 
     pub fn message(&self, project_root: &std::path::Path, interner: &Interner) -> String {
@@ -205,12 +227,21 @@ fn input_snippet(
     start_col: ColNr,
     end_line: LineNr,
     end_col: ColNr,
-    range: TextRange,
     lines: &mut Vec<String>,
+    severity: Severity,
     with_colors: bool,
+    missing_arrow: bool,
 ) {
-    let (ansi_reset, ansi_gray, ansi_yellow) = if with_colors {
-        ("\x1B[0m", "\x1B[1;90m", "\x1B[1;93m")
+    let (ansi_reset, ansi_gray, ansi_selection) = if with_colors {
+        (
+            "\x1B[0m",
+            "\x1B[90m",
+            match severity {
+                Severity::Help => "\x1B[94m",
+                Severity::Error => "\x1B[91m",
+                Severity::Warning => "\x1B[93m",
+            },
+        )
     } else {
         ("", "", "")
     };
@@ -219,55 +250,9 @@ fn input_snippet(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| filename.to_string());
 
-    const PADDING: &str = " | ";
-    const POINTER_UP: &str = "^";
-    // const POINTER_DOWN: &str = "v";
+    const PADDING: &str = " │ ";
 
     let file_lines: Vec<_> = input.lines().collect();
-
-    let is_single_line = start_line == end_line;
-    if is_single_line {
-        let line_number_padding = " ".repeat(count_digits(start_line.0 + 1, 10));
-
-        lines.push(format!(
-            "{}{}--> at {}:{}:{}",
-            ansi_gray,
-            line_number_padding,
-            filename,
-            start_line.0 + 1,
-            start_col.0 + 1,
-        ));
-
-        lines.push(format!("{}{}{}", ansi_gray, line_number_padding, PADDING));
-
-        let line = file_lines[start_line.0 as usize];
-
-        lines.push(format!(
-            "{}{}{}{}{}",
-            ansi_gray,
-            start_line.0 + 1,
-            PADDING,
-            ansi_reset,
-            line.replace('\t', "    ")
-        ));
-
-        // since tabs are converted to 4 spaces, we need to add an extra 3 spaces for the POINTER_UP for every tab
-        lines.push(format!(
-            "{}{}{}{}{}{}{}",
-            ansi_gray,
-            line_number_padding,
-            PADDING,
-            " ".repeat(start_col.0 as usize + (line.chars().filter(|ch| *ch == '\t').count() * 3)),
-            ansi_yellow,
-            POINTER_UP.repeat(range.len().try_into().unwrap()),
-            ansi_reset
-        ));
-
-        return;
-    }
-
-    // multi-line errors:
-
     let line_number_padding = " ".repeat(count_digits(end_line.0 + 1, 10));
 
     lines.push(format!(
@@ -278,81 +263,86 @@ fn input_snippet(
         start_line.0 + 1,
         start_col.0 + 1,
     ));
-
-    // blank line
-    lines.push(format!("{}{}{}", ansi_gray, line_number_padding, PADDING));
-
-    // now start printing the actual lines of code
-    let first_line = file_lines[start_line.0 as usize];
-    lines.push(format!(
-        "{}{}{}{}{}{}{}",
-        ansi_gray,
-        start_line.0 + 1,
-        " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(start_line.0 + 1, 10)),
-        PADDING,
-        "  ",
-        ansi_reset,
-        first_line.replace('\t', "    ")
-    ));
-
-    // arrow below first line
-    let extra_tab_spaces = first_line.chars().filter(|ch| *ch == '\t').count() * 3;
-    lines.push(format!(
-        "{}{}{}{}{}{}{}",
-        ansi_gray,
-        line_number_padding,
-        PADDING,
-        ansi_yellow,
-        " ",
-        "_".repeat(start_col.0 as usize + 1 + extra_tab_spaces),
-        POINTER_UP,
-        //"-".repeat(first_line.len() - start_col.0 as usize + 2)
-    ));
+    lines.push(String::new());
 
     for (num, file_line) in file_lines
         .iter()
         .enumerate()
-        .take(start_line.0 as usize + 1)
-        .skip(end_line.0 as usize)
+        .take(end_line.0 as usize + 3)
+        .skip((start_line.0 as usize).saturating_sub(2))
     {
+        let error_line = num >= start_line.0 as usize && num <= end_line.0 as usize;
+        let arrow = error_line && (missing_arrow || start_col.0 as usize >= file_line.len());
+        let file_line = match (num == start_line.0 as usize, num == end_line.0 as usize) {
+            (true, true) => {
+                if arrow {
+                    format!("{}{}", ansi_reset, file_line)
+                } else {
+                    format!(
+                        "{}{}{}{}{}{}",
+                        ansi_reset,
+                        &file_line[..start_col.0 as usize],
+                        ansi_selection,
+                        &file_line[start_col.0 as usize..end_col.0 as usize + 1],
+                        ansi_reset,
+                        &file_line[end_col.0 as usize + 1..],
+                    )
+                }
+            }
+            (true, false) => {
+                format!(
+                    "{}{}{}{}",
+                    ansi_reset,
+                    &file_line[..start_col.0 as usize],
+                    ansi_selection,
+                    &file_line[start_col.0 as usize..]
+                )
+            }
+            (false, true) => {
+                format!(
+                    "{}{}{}{}",
+                    ansi_selection,
+                    &file_line[..end_col.0 as usize + 1],
+                    ansi_reset,
+                    &file_line[end_col.0 as usize + 1..]
+                )
+            }
+            (false, false) if error_line => format!("{}{}", ansi_selection, file_line),
+            (false, false) => format!("{}{}", ansi_reset, file_line),
+        };
+
         lines.push(format!(
-            "{}{}{}{}{}{}{}{}",
-            ansi_gray,
+            "{}{:>digits$}{}{}{}",
+            if error_line {
+                ansi_selection
+            } else {
+                ansi_reset
+            },
             num + 1,
-            " ".repeat(count_digits(end_line.0 + 1, 10) - count_digits(num as u32 + 1, 10)),
+            ansi_gray,
             PADDING,
-            ansi_yellow,
-            "| ",
-            ansi_reset,
-            file_line.replace('\t', "    ")
+            file_line.replace('\t', "    "),
+            digits = count_digits(end_line.0 + 3, 10)
         ));
+
+        if arrow {
+            lines.push(format!(
+                "{}{}{}{}{}{}{}",
+                ansi_reset,
+                " ".repeat(count_digits(end_line.0 + 3, 10)),
+                ansi_gray,
+                PADDING,
+                " ".repeat(
+                    start_col.0 as usize
+                        + file_line.chars().filter(|char| *char == '\t').count() * 3
+                ),
+                ansi_selection,
+                "^",
+            ));
+        }
     }
 
-    let last_line = file_lines[end_line.0 as usize];
-    lines.push(format!(
-        "{}{}{}{}{}{}{}",
-        ansi_gray,
-        end_line.0 + 1,
-        PADDING,
-        ansi_yellow,
-        "| ",
-        ansi_reset,
-        last_line.replace('\t', "    ")
-    ));
-
-    // final arrow
-    let extra_tab_spaces = last_line.chars().filter(|ch| *ch == '\t').count() * 3;
-    lines.push(format!(
-        "{}{}{}{}{}{}{}{}",
-        ansi_gray,
-        line_number_padding,
-        PADDING,
-        ansi_yellow,
-        "|",
-        "_".repeat(end_col.0 as usize + 1 + extra_tab_spaces),
-        POINTER_UP,
-        ansi_reset
-    ));
+    lines.push(String::new());
 }
 
 // count the digits in a number e.g.
@@ -498,9 +488,9 @@ fn ty_diagnostic_message(
         }
         hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
             format!(
-                "`if` and `else` have different types, expected `{}` but found `{}`",
+                "the first branch is `{}` but the second branch is `{}`. they must be the same",
+                expected.display(project_root, interner),
                 found.display(project_root, interner),
-                expected.display(project_root, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
@@ -643,6 +633,9 @@ fn ty_diagnostic_help_message(
         }
         hir_ty::TyDiagnosticHelpKind::MutableVariable => {
             "`:=` bindings are immutable. consider changing it to `::`".to_string()
+        }
+        hir_ty::TyDiagnosticHelpKind::TailExprReturnsHere => {
+            "this is the actual value that is being returned".to_string()
         }
     }
 }

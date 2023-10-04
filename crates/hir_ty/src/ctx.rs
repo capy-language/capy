@@ -406,7 +406,6 @@ impl InferenceCtx<'_> {
                         {
                             ExprMutability::Mutable
                         } else {
-                            println!("here");
                             // todo: use the actual range of the struct literal, not the range of this field name
                             ExprMutability::ImmutableRef(field.range)
                         }
@@ -733,17 +732,24 @@ impl InferenceCtx<'_> {
             } => {
                 self.reinfer_expr(*condition);
 
-                let old_body = current_module!(self)[*body];
                 let new_body = self.reinfer_expr(*body);
 
-                if let Some(else_branch) = else_branch {
-                    self.reinfer_expr(*else_branch);
-                }
+                let max = if let Some(else_branch) = else_branch {
+                    let new_else = self.reinfer_expr(*else_branch);
 
-                if old_body != new_body {
                     new_body
+                        .max(&new_else)
+                        .unwrap_or(ResolvedTy::Unknown)
+                        .into()
                 } else {
-                    return old_body;
+                    new_body
+                };
+
+                let old_if = current_module!(self)[expr];
+                if old_if != max {
+                    max
+                } else {
+                    return old_if;
                 }
             }
             Expr::While { condition, body } => {
@@ -1033,7 +1039,7 @@ impl InferenceCtx<'_> {
                             help: None,
                         });
 
-                        body_ty
+                        ResolvedTy::Unknown.into()
                     }
                 } else {
                     if *body_ty != ResolvedTy::Void && !body_ty.is_unknown() {
@@ -1394,19 +1400,22 @@ impl InferenceCtx<'_> {
         }
 
         if !found.can_fit_into(&expected) {
-            let expr = match current_bodies!(self)[expr] {
+            let help = match current_bodies!(self)[expr] {
                 hir::Expr::Block {
                     tail_expr: Some(tail_expr),
                     ..
-                } => tail_expr,
-                _ => expr,
+                } => Some(TyDiagnosticHelp {
+                    kind: TyDiagnosticHelpKind::TailExprReturnsHere,
+                    range: current_bodies!(self).range_for_expr(tail_expr),
+                }),
+                _ => None,
             };
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch { expected, found },
                 module: self.current_module.unwrap(),
                 range: current_bodies!(self).range_for_expr(expr),
-                help: None,
+                help,
             });
 
             false

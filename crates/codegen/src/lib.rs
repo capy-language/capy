@@ -864,5 +864,93 @@ mod tests {
         )
     }
 
+    #[test]
+    fn logical_operators() {
+        check_raw(
+            r#"
+                a :: (x: bool) -> bool {
+                    if x {
+                        puts("a: true");
+                    } else {
+                        puts("a: false");
+                    }
+                    x
+                }
+
+                b :: (x: bool) -> bool {
+                    if x {
+                        puts("b: true");
+                    } else {
+                        puts("b: false");
+                    }
+                    x
+                }
+
+                main :: () {
+                    puts("logical AND:\n");
+
+                    print_bool(a(true) && b(true));
+                    print_bool(a(true) && b(false));
+                    print_bool(a(false) && b(true));
+                    print_bool(a(false) && b(false));
+
+                    puts("logical OR:\n");
+
+                    print_bool(a(true) || b(true));
+                    print_bool(a(true) || b(false));
+                    print_bool(a(false) || b(true));
+                    print_bool(a(false) || b(false));
+                }
+
+                print_bool :: (b: bool) {
+                    if b {
+                        puts("true\n");
+                    } else {
+                        puts("false\n");
+                    }
+                }
+
+                puts :: (s: string) extern;
+            "#,
+            "main",
+            expect![[r#"
+                logical AND:
+
+                a: true
+                b: true
+                true
+
+                a: true
+                b: false
+                false
+
+                a: false
+                false
+
+                a: false
+                false
+
+                logical OR:
+
+                a: true
+                true
+
+                a: true
+                true
+
+                a: false
+                b: true
+                true
+
+                a: false
+                b: false
+                false
+
+
+            "#]],
+            0,
+        )
+    }
+
     // the "ptrs_to_ptrs.capy" test is not reproducible
 }

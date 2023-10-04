@@ -790,6 +790,8 @@ impl FunctionCompiler<'_> {
                         let rhs_block = self.builder.create_block();
                         let exit_block = self.builder.create_block();
 
+                        // if the lhs is true, exit early
+                        // if the lhs is false, test the rhs
                         let lhs = self.compile_expr(lhs_expr).unwrap();
                         self.builder
                             .ins()

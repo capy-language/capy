@@ -167,6 +167,7 @@ pub enum TyDiagnosticHelpKind {
     NotMutatingRefThroughDeref,
     IfReturnsTypeHere { found: Intern<ResolvedTy> },
     MutableVariable,
+    TailExprReturnsHere,
 }
 
 #[derive(Debug)]
@@ -1751,8 +1752,8 @@ mod tests {
                         expected: ResolvedTy::UInt(8).into(),
                         found: ResolvedTy::IInt(0).into(),
                     },
-                    300..303,
-                    None,
+                    34..321,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 300..303)),
                 )]
             },
         );
@@ -2254,8 +2255,8 @@ mod tests {
                         expected: ResolvedTy::UInt(8).into(),
                         found: ResolvedTy::IInt(0).into(),
                     },
-                    35..37,
-                    None,
+                    33..39,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 35..37)),
                 )]
             },
         );
@@ -2316,8 +2317,8 @@ mod tests {
                         expected: ResolvedTy::String.into(),
                         found: ResolvedTy::UInt(0).into(),
                     },
-                    37..39,
-                    None,
+                    35..41,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 37..39)),
                 )]
             },
         );
@@ -2503,8 +2504,8 @@ mod tests {
                         expected: ResolvedTy::IInt(32).into(),
                         found: ResolvedTy::String.into(),
                     },
-                    123..128,
-                    None,
+                    59..150,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 123..128)),
                 )]
             },
         );
@@ -2546,8 +2547,8 @@ mod tests {
                         }
                         .into(),
                     },
-                    147..148,
-                    None,
+                    85..166,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 147..148)),
                 )]
             },
         );
@@ -4819,24 +4820,25 @@ mod tests {
     fn if_mismatch() {
         check(
             r#"
-                foo :: (bar: bool) {
+                foo :: (bar: bool) -> bool {
+                    // this evaluates to `<unknown>`, so the function's return type isn't checked
                     if bar {
                         "Hello!"
                     } else {
                         100
-                    };
-                };
+                    }
+                }
             "#,
             expect![[r#"
-                main::foo : (bool) -> void
-                1 : bool
-                2 : string
+                main::foo : (bool) -> bool
+                2 : bool
                 3 : string
-                4 : {uint}
+                4 : string
                 5 : {uint}
-                6 : string
-                7 : void
-                8 : (bool) -> void
+                6 : {uint}
+                7 : <unknown>
+                8 : <unknown>
+                9 : (bool) -> bool
             "#]],
             |_| {
                 [(
@@ -4844,7 +4846,7 @@ mod tests {
                         found: ResolvedTy::UInt(0).into(),
                         expected: ResolvedTy::String.into(),
                     },
-                    58..178,
+                    164..284,
                     None,
                 )]
             },
