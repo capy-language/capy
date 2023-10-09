@@ -139,7 +139,6 @@ mod tests {
     use std::{env, fs, path::Path};
 
     use ast::AstNode;
-    use backtrace::Backtrace;
     use expect_test::{expect, Expect};
     use hir_ty::InferenceCtx;
     use path_clean::PathClean;
@@ -147,6 +146,7 @@ mod tests {
 
     use super::*;
 
+    #[track_caller]
     fn check_files(
         main_file: &str,
         other_files: &[&str],
@@ -185,6 +185,7 @@ mod tests {
         )
     }
 
+    #[track_caller]
     fn check_raw(input: &str, entry_point: &str, stdout_expect: Expect, expected_status: i32) {
         let modules = test_utils::split_multi_module_test_data(input);
 
@@ -198,6 +199,7 @@ mod tests {
         )
     }
 
+    #[track_caller]
     fn compile(
         modules: FxHashMap<&str, &str>,
         main_file: &str,
@@ -320,35 +322,10 @@ mod tests {
 
         let _ = fs::create_dir(&output_folder);
 
-        let bt = Backtrace::new();
+        let caller = core::panic::Location::caller();
+        let out_name = format!("test{}", caller.line());
 
-        // here we use the name of the calling function for the name of the object file and
-        // final exectuable
-
-        const CHECK_FUNCTIONS: &[&str] = &[
-            "codegen::tests::check_raw",
-            "codegen::tests::check_files",
-            "codegen::tests::compile",
-        ];
-
-        let caller = bt
-            .frames()
-            .iter()
-            .flat_map(|frame| frame.symbols())
-            .filter_map(|symbol| symbol.name())
-            .find(|name| {
-                name.as_str().map_or(false, |name| {
-                    name.starts_with("codegen::tests") && !CHECK_FUNCTIONS.contains(&name)
-                })
-            })
-            .and_then(|caller_name| {
-                caller_name
-                    .as_str()
-                    .map(|caller_name| caller_name.split("::").last().unwrap().to_string())
-            })
-            .unwrap();
-
-        let file = output_folder.join(format!("{}.o", caller));
+        let file = output_folder.join(format!("{}.o", out_name));
         fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
             panic!("{}: {why}", file.display());
         });
