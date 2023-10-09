@@ -4,7 +4,7 @@ Person {
 };
 ===
 Root@0..46
-  ExprStmt@0..45
+  ExprStmt@0..46
     StructLiteral@0..45
       Ty@0..6
         VarRef@0..6
@@ -30,4 +30,4 @@ Root@0..46
           Int@41..43 "31"
       Whitespace@43..44 "\n"
       RBrace@44..45 "}"
-  Semicolon@45..46 ";"
+    Semicolon@45..46 ";"

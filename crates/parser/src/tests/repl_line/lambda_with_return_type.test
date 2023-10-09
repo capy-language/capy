@@ -1,7 +1,7 @@
 () -> i32 {};
 ===
 Root@0..13
-  ExprStmt@0..12
+  ExprStmt@0..13
     Lambda@0..12
       ParamList@0..2
         LParen@0..1 "("
@@ -16,4 +16,4 @@ Root@0..13
       Block@10..12
         LBrace@10..11 "{"
         RBrace@11..12 "}"
-  Semicolon@12..13 ";"
+    Semicolon@12..13 ";"

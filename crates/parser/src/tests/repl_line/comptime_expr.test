@@ -1,0 +1,15 @@
+comptime 1 + 1
+===
+Root@0..14
+  ExprStmt@0..14
+    ComptimeExpr@0..14
+      Comptime@0..8 "comptime"
+      Whitespace@8..9 " "
+      BinaryExpr@9..14
+        IntLiteral@9..10
+          Int@9..10 "1"
+        Whitespace@10..11 " "
+        Plus@11..12 "+"
+        Whitespace@12..13 " "
+        IntLiteral@13..14
+          Int@13..14 "1"

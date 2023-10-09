@@ -1,7 +1,7 @@
 foo: bar.baz = qux;
 ===
 Root@0..19
-  VarDef@0..18
+  VarDef@0..19
     Ident@0..3 "foo"
     Colon@3..4 ":"
     Whitespace@4..5 " "
@@ -16,4 +16,4 @@ Root@0..19
     Whitespace@14..15 " "
     VarRef@15..18
       Ident@15..18 "qux"
-  Semicolon@18..19 ";"
+    Semicolon@18..19 ";"

@@ -1,7 +1,7 @@
 foo :: () -> extern;
 ===
 Root@0..20
-  Binding@0..19
+  Binding@0..20
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
@@ -15,5 +15,5 @@ Root@0..20
       Arrow@10..12 "->"
       Whitespace@12..13 " "
       Extern@13..19 "extern"
-  Semicolon@19..20 ";"
+    Semicolon@19..20 ";"
 error at 12: missing return type

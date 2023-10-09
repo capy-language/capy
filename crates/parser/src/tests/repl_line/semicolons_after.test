@@ -1,7 +1,7 @@
 foo := bar;;;;
 ===
 Root@0..14
-  VarDef@0..10
+  VarDef@0..11
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
@@ -9,7 +9,7 @@ Root@0..14
     Whitespace@6..7 " "
     VarRef@7..10
       Ident@7..10 "bar"
-  Semicolon@10..11 ";"
+    Semicolon@10..11 ";"
   Semicolon@11..12 ";"
   Semicolon@12..13 ";"
   Semicolon@13..14 ";"

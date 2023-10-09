@@ -1,0 +1,60 @@
+`my_loop loop {
+  break my_loop` 5;
+  break 42;
+  continue my_loop` 5;
+  continue 42;
+}
+===
+Root@0..87
+  ExprStmt@0..87
+    WhileExpr@0..87
+      LabelDecl@0..8
+        Backtick@0..1 "`"
+        Ident@1..8 "my_loop"
+      Whitespace@8..9 " "
+      Loop@9..13 "loop"
+      Whitespace@13..14 " "
+      Block@14..87
+        LBrace@14..15 "{"
+        Whitespace@15..18 "\n  "
+        BreakStmt@18..35
+          Break@18..23 "break"
+          Whitespace@23..24 " "
+          LabelRef@24..32
+            Ident@24..31 "my_loop"
+            Backtick@31..32 "`"
+          Whitespace@32..33 " "
+          IntLiteral@33..34
+            Int@33..34 "5"
+          Semicolon@34..35 ";"
+        Whitespace@35..38 "\n  "
+        BreakStmt@38..47
+          Break@38..43 "break"
+          Whitespace@43..44 " "
+          IntLiteral@44..46
+            Int@44..46 "42"
+          Semicolon@46..47 ";"
+        Whitespace@47..50 "\n  "
+        ContinueStmt@50..67
+          Continue@50..58 "continue"
+          Whitespace@58..59 " "
+          LabelRef@59..67
+            Ident@59..66 "my_loop"
+            Backtick@66..67 "`"
+        Whitespace@67..68 " "
+        ExprStmt@68..70
+          IntLiteral@68..69
+            Int@68..69 "5"
+          Semicolon@69..70 ";"
+        Whitespace@70..73 "\n  "
+        ContinueStmt@73..81
+          Continue@73..81 "continue"
+        Whitespace@81..82 " "
+        ExprStmt@82..85
+          IntLiteral@82..84
+            Int@82..84 "42"
+          Semicolon@84..85 ";"
+        Whitespace@85..86 "\n"
+        RBrace@86..87 "}"
+error at 67: missing Semicolon
+error at 81: missing Semicolon

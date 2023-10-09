@@ -12,6 +12,9 @@ Extern = 'extern'
 Struct = 'struct'
 Import = 'import'
 Comptime = 'comptime'
+Return = 'return'
+Break = 'break'
+Continue = 'continue'
 Ident = /[A-Za-z_][A-Za-z0-9_]*/
 // these basically match numbers that can contain `_`,
 // but must contain a digit as the first char
@@ -41,6 +44,7 @@ Comma = ','
 Dot = '.'
 Arrow = '->'
 Caret = '^'
+Backtick = '`'
 LParen = '('
 RParen = ')'
 LBrack = '['

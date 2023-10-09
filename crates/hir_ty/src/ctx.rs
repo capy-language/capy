@@ -213,6 +213,16 @@ impl InferenceCtx<'_> {
                 tail_expr: Some(tail_expr),
                 ..
             } => {
+                if let Some(scope_id) = current_bodies!(self).block_to_scope_id(expr) {
+                    for usage in current_bodies!(self).scope_id_usages(scope_id) {
+                        if let hir::Stmt::Break {
+                            value: Some(value), ..
+                        } = current_bodies!(self)[*usage]
+                        {
+                            self.replace_weak_tys(value, new_ty);
+                        }
+                    }
+                }
                 self.replace_weak_tys(tail_expr, new_ty);
             }
             Expr::If {
@@ -221,6 +231,20 @@ impl InferenceCtx<'_> {
                 self.replace_weak_tys(body, new_ty);
                 if let Some(else_branch) = else_branch {
                     self.replace_weak_tys(else_branch, new_ty);
+                }
+            }
+            Expr::While {
+                condition: None, ..
+            } => {
+                if let Some(scope_id) = current_bodies!(self).block_to_scope_id(expr) {
+                    for usage in current_bodies!(self).scope_id_usages(scope_id) {
+                        if let hir::Stmt::Break {
+                            value: Some(value), ..
+                        } = current_bodies!(self)[*usage]
+                        {
+                            self.replace_weak_tys(value, new_ty);
+                        }
+                    }
                 }
             }
             Expr::Comptime(comptime) => {
@@ -446,14 +470,12 @@ impl InferenceCtx<'_> {
         }
     }
 
-    fn infer_stmt(&mut self, stmt: Idx<hir::Stmt>) -> Option<ResolvedTy> {
+    fn infer_stmt(&mut self, stmt: Idx<hir::Stmt>) {
         match &current_bodies!(self)[stmt] {
             hir::Stmt::Expr(expr) => {
                 self.infer_expr(*expr);
 
                 self.find_usages(&[*expr], LocalUsage::Expr(*expr));
-
-                None
             }
             hir::Stmt::LocalDef(local_def) => {
                 let def_body = &current_bodies!(self)[*local_def];
@@ -481,8 +503,6 @@ impl InferenceCtx<'_> {
                 }
 
                 self.find_usages(&[def_body.value], LocalUsage::Def(*local_def));
-
-                None
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &current_bodies!(self)[*assign];
@@ -511,8 +531,58 @@ impl InferenceCtx<'_> {
                     &[assign_body.source, assign_body.value],
                     LocalUsage::Assign(*assign),
                 );
+            }
+            hir::Stmt::Break { label, value, .. } => {
+                let Some(label) = label else { return };
+                let referenced_expr = current_bodies!(self)[*label];
 
-                None
+                let value_ty =
+                    value.map_or(ResolvedTy::Void.into(), |value| self.infer_expr(value));
+
+                let must_be_void = matches!(
+                    current_bodies!(self)[referenced_expr],
+                    Expr::Block {
+                        tail_expr: None,
+                        ..
+                    } | Expr::While {
+                        condition: Some(_),
+                        ..
+                    }
+                );
+
+                match self.modules[&self.current_module.unwrap()]
+                    .expr_tys
+                    .get(referenced_expr)
+                {
+                    Some(expected_ty) => {
+                        self.expect_block_match(
+                            value.unwrap(),
+                            value_ty,
+                            referenced_expr,
+                            *expected_ty,
+                        );
+                    }
+                    None => {
+                        if must_be_void && !value_ty.is_void() {
+                            self.diagnostics.push(TyDiagnostic {
+                                kind: TyDiagnosticKind::Mismatch {
+                                    expected: ResolvedTy::Void.into(),
+                                    found: value_ty,
+                                },
+                                module: self.current_module.unwrap(),
+                                range: current_bodies!(self).range_for_expr(value.unwrap()),
+                                help: None,
+                            });
+                        } else {
+                            current_module!(self)
+                                .expr_tys
+                                .insert(referenced_expr, value_ty);
+                        }
+                    }
+                }
+            }
+            hir::Stmt::Continue { .. } => {
+                // there's not really anything to check here
             }
         }
     }
@@ -614,7 +684,22 @@ impl InferenceCtx<'_> {
         }
     }
 
+    fn reinfer_stmt(&mut self, stmt: Idx<hir::Stmt>) -> Option<Intern<ResolvedTy>> {
+        match current_bodies!(self)[stmt] {
+            hir::Stmt::Break {
+                value: Some(value), ..
+            } => Some(self.reinfer_expr(value)),
+            hir::Stmt::Break { value: None, .. } => Some(ResolvedTy::Void.into()),
+            _ => None,
+        }
+    }
+
     fn reinfer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<ResolvedTy> {
+        let previous_ty = current_module!(self)[expr];
+        if *previous_ty == ResolvedTy::Unknown {
+            return previous_ty;
+        }
+
         let new_ty = match &current_bodies!(self)[expr] {
             Expr::Cast { expr: inner, .. } => {
                 self.reinfer_expr(*inner);
@@ -711,13 +796,25 @@ impl InferenceCtx<'_> {
                 tail_expr: Some(tail_expr),
                 ..
             } => {
-                let old_tail = current_module!(self)[*tail_expr];
                 let new_tail = self.reinfer_expr(*tail_expr);
+                let new_ty = if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
+                    let usages = current_bodies!(self).scope_id_usages(label_id);
 
-                if old_tail != new_tail {
+                    let first_usage_ty = usages.first().and_then(|first| self.reinfer_stmt(*first));
+                    for usage in usages.iter().skip(1) {
+                        self.reinfer_stmt(*usage);
+                    }
+
+                    first_usage_ty.unwrap_or(new_tail)
+                } else {
+                    new_tail
+                };
+
+                let old_ty = current_module!(self)[expr];
+                if old_ty != new_ty {
                     new_tail
                 } else {
-                    return old_tail;
+                    return old_ty;
                 }
             }
             Expr::Block {
@@ -757,13 +854,27 @@ impl InferenceCtx<'_> {
                     self.reinfer_expr(*condition);
                 }
 
-                let old_body = current_module!(self)[*body];
                 let new_body = self.reinfer_expr(*body);
+                let new_ty = if condition.is_some() {
+                    ResolvedTy::Void.into()
+                } else if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
+                    let usages = current_bodies!(self).scope_id_usages(label_id);
 
-                if old_body != new_body {
+                    let first_usage_ty = usages.first().and_then(|first| self.reinfer_stmt(*first));
+                    for usage in usages.iter().skip(1) {
+                        self.reinfer_stmt(*usage);
+                    }
+
+                    first_usage_ty.unwrap_or(new_body)
+                } else {
+                    new_body
+                };
+
+                let old_ty = current_module!(self)[expr];
+                if old_ty != new_ty {
                     new_body
                 } else {
-                    return old_body;
+                    return old_ty;
                 }
             }
             Expr::Local(local) => current_module!(self).local_tys[*local],
@@ -1006,7 +1117,41 @@ impl InferenceCtx<'_> {
                 }
 
                 match tail_expr {
-                    Some(tail) => self.infer_expr(*tail),
+                    Some(tail) => {
+                        let tail_ty = self.infer_expr(*tail);
+
+                        // there might've been a break within this block
+                        // that break would've set the type of this block
+                        let previous_ty = self.modules[&self.current_module.unwrap()]
+                            .expr_tys
+                            .get(expr)
+                            .copied();
+
+                        match previous_ty {
+                            Some(previous_ty) => {
+                                if let Some(max) =
+                                    self.expect_block_match(*tail, tail_ty, expr, previous_ty)
+                                {
+                                    // if there was a previous_ty, then there must've been a break,
+                                    // and so this block must have a scope id
+                                    let id = current_bodies!(self).block_to_scope_id(expr).unwrap();
+                                    for usage in current_bodies!(self).scope_id_usages(id) {
+                                        if let hir::Stmt::Break {
+                                            value: Some(value), ..
+                                        } = current_bodies!(self)[*usage]
+                                        {
+                                            self.replace_weak_tys(value, max);
+                                        }
+                                    }
+
+                                    max
+                                } else {
+                                    ResolvedTy::Unknown.into()
+                                }
+                            }
+                            None => tail_ty,
+                        }
+                    }
                     None => ResolvedTy::Void.into(),
                 }
             }
@@ -1075,7 +1220,11 @@ impl InferenceCtx<'_> {
                 let body_ty = self.infer_expr(*body);
                 self.expect_match(body_ty, ResolvedTy::Void.into(), *body);
 
-                ResolvedTy::Void.into()
+                if let Some(previous_ty) = current_module!(self).expr_tys.get(expr) {
+                    *previous_ty
+                } else {
+                    ResolvedTy::Void.into()
+                }
             }
             hir::Expr::Local(local) => current_module!(self).local_tys[*local],
             hir::Expr::Param { idx, .. } => self.param_tys.as_ref().unwrap()[*idx as usize],
@@ -1355,6 +1504,52 @@ impl InferenceCtx<'_> {
         current_module!(self).expr_tys.insert(expr, ty);
 
         ty
+    }
+
+    /// Only call for blocks which had their type previously set by a `break`
+    ///
+    /// returns the max of the found expression and the current type of the block
+    fn expect_block_match(
+        &mut self,
+        found_expr: Idx<hir::Expr>,
+        found_ty: Intern<ResolvedTy>,
+        block_expr: Idx<hir::Expr>,
+        block_ty: Intern<ResolvedTy>,
+    ) -> Option<Intern<ResolvedTy>> {
+        if found_ty.is_unknown() || block_ty.is_unknown() {
+            return None;
+        }
+
+        if let Some(max) = block_ty.max(&found_ty) {
+            let max = max.into();
+            current_module!(self).expr_tys[block_expr] = max;
+            self.replace_weak_tys(found_expr, max);
+
+            Some(max)
+        } else {
+            // there must be a usage since the block has a type
+            let id = current_bodies!(self).block_to_scope_id(block_expr).unwrap();
+            let first_usage = current_bodies!(self)
+                .scope_id_usages(id)
+                .iter()
+                .next()
+                .unwrap();
+
+            self.diagnostics.push(TyDiagnostic {
+                kind: TyDiagnosticKind::Mismatch {
+                    expected: block_ty,
+                    found: found_ty,
+                },
+                module: self.current_module.unwrap(),
+                range: current_bodies!(self).range_for_expr(found_expr),
+                help: Some(TyDiagnosticHelp {
+                    kind: TyDiagnosticHelpKind::BreakHere { break_ty: block_ty },
+                    range: current_bodies!(self).range_for_stmt(*first_usage),
+                }),
+            });
+
+            None
+        }
     }
 
     /// If found does not match expected, an error is thrown at the expression

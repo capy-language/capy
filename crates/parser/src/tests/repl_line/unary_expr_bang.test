@@ -1,9 +1,9 @@
 !true;
 ===
 Root@0..6
-  ExprStmt@0..5
+  ExprStmt@0..6
     UnaryExpr@0..5
       Bang@0..1 "!"
       BoolLiteral@1..5
         Bool@1..5 "true"
-  Semicolon@5..6 ";"
+    Semicolon@5..6 ";"

@@ -1,0 +1,36 @@
+`blk { x := 5; x = 2; x }
+===
+Root@0..25
+  ExprStmt@0..25
+    Block@0..25
+      LabelDecl@0..4
+        Backtick@0..1 "`"
+        Ident@1..4 "blk"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      Whitespace@6..7 " "
+      VarDef@7..14
+        Ident@7..8 "x"
+        Whitespace@8..9 " "
+        Colon@9..10 ":"
+        Equals@10..11 "="
+        Whitespace@11..12 " "
+        IntLiteral@12..13
+          Int@12..13 "5"
+        Semicolon@13..14 ";"
+      Whitespace@14..15 " "
+      Assign@15..21
+        Source@15..16
+          VarRef@15..16
+            Ident@15..16 "x"
+        Whitespace@16..17 " "
+        Equals@17..18 "="
+        Whitespace@18..19 " "
+        IntLiteral@19..20
+          Int@19..20 "2"
+        Semicolon@20..21 ";"
+      Whitespace@21..22 " "
+      VarRef@22..23
+        Ident@22..23 "x"
+      Whitespace@23..24 " "
+      RBrace@24..25 "}"

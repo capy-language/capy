@@ -1,7 +1,7 @@
 foo.bar.baz;
 ===
 Root@0..12
-  ExprStmt@0..11
+  ExprStmt@0..12
     Path@0..11
       Path@0..7
         VarRef@0..3
@@ -10,4 +10,4 @@ Root@0..12
         Ident@4..7 "bar"
       Dot@7..8 "."
       Ident@8..11 "baz"
-  Semicolon@11..12 ";"
+    Semicolon@11..12 ";"

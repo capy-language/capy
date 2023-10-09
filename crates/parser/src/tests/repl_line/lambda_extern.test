@@ -1,7 +1,7 @@
 (x: i32) extern;
 ===
 Root@0..16
-  ExprStmt@0..15
+  ExprStmt@0..16
     Lambda@0..15
       ParamList@0..8
         LParen@0..1 "("
@@ -15,4 +15,4 @@ Root@0..16
         RParen@7..8 ")"
       Whitespace@8..9 " "
       Extern@9..15 "extern"
-  Semicolon@15..16 ";"
+    Semicolon@15..16 ";"

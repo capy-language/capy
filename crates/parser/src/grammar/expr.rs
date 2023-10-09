@@ -101,6 +101,10 @@ fn parse_lhs(
 
     // println!("parse_lhs @ {:?}", p.peek());
 
+    const LOOP_TOKENS: TokenSet = TokenSet::new([TokenKind::While, TokenKind::Loop]);
+    const PREFIX_TOKENS: TokenSet =
+        TokenSet::new([TokenKind::Hyphen, TokenKind::Plus, TokenKind::Bang]);
+
     let cm = if p.at(TokenKind::Int) {
         parse_int_literal(p)
     } else if p.at(TokenKind::Float) {
@@ -120,24 +124,43 @@ fn parse_lhs(
     } else if p.at(TokenKind::Import) {
         parse_import(p)
     } else if p.at(TokenKind::Comptime) {
-        parse_comptime(p, recovery_set)
+        parse_comptime(p)
     } else if p.at(TokenKind::Struct) {
         parse_struct_def(p, recovery_set)
-    } else if p.at(TokenKind::Hyphen) || p.at(TokenKind::Plus) || p.at(TokenKind::Bang) {
+    } else if p.at_set(PREFIX_TOKENS) {
         parse_prefix_expr(p, recovery_set)
     } else if p.at(TokenKind::If) {
         parse_if(
             p,
             recovery_set.union(TokenSet::new([TokenKind::If, TokenKind::Else])),
         )
-    } else if p.at(TokenKind::While) || p.at(TokenKind::Loop) {
-        parse_loop(p, recovery_set)
+    } else if p.at_set(LOOP_TOKENS) {
+        parse_loop(p, None, recovery_set)
     } else if p.at(TokenKind::LParen) {
         parse_lambda(p, recovery_set)
     } else if p.at(TokenKind::LBrack) {
         parse_array(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
-        parse_block(p, recovery_set)
+        parse_block(p, None, recovery_set)
+    } else if p.at(TokenKind::Backtick) {
+        let label = p.start();
+        p.bump();
+
+        let _guard = p.expected_syntax_name("label name");
+        p.expect_with_no_skip(TokenKind::Ident);
+
+        let label = label.complete(p, NodeKind::LabelDecl);
+
+        if p.at_set(LOOP_TOKENS) {
+            parse_loop(p, Some(label), recovery_set)
+        } else if p.at(TokenKind::LBrace) {
+            parse_block(p, Some(label), recovery_set)
+        } else {
+            let _guard = p.expected_syntax_name("block");
+            p.error_with_no_skip();
+
+            return parse_lhs(p, recovery_set, expected_syntax_name);
+        }
     } else {
         // println!("error {:?} {} {:?}", p.peek(), p.at_eof(), p.peek_range());
         return p.error_with_recovery_set(recovery_set);
@@ -154,6 +177,14 @@ fn parse_post_operators(
     restrict: bool,
 ) -> CompletedMarker {
     let mut cm = cm;
+
+    if matches!(cm.kind(), NodeKind::VarRef)
+        && !recovery_set.contains(TokenKind::LBrace)
+        && p.at(TokenKind::LBrace)
+    {
+        let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
+        cm = parse_struct_literal(p, ty_cm, recovery_set);
+    }
 
     loop {
         match p.kind() {
@@ -351,13 +382,6 @@ fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker 
     m.complete(p, NodeKind::UnaryExpr)
 }
 
-// const LAMBDA_EXPECTED: TokenSet = TokenSet::new([
-//     TokenKind::Ident,
-//     TokenKind::Dot,
-//     TokenKind::Colon,
-//     TokenKind::Whitespace,
-// ]);
-
 fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     assert!(p.at(TokenKind::LParen));
 
@@ -419,7 +443,7 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     }
 
     if p.at(TokenKind::LBrace) {
-        parse_block(p, recovery_set);
+        parse_block(p, None, recovery_set);
     } else if p.at(TokenKind::Extern) {
         p.bump();
     }
@@ -440,7 +464,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         let _guard = p.expected_syntax_name("struct body");
         p.error_with_recovery_set(recovery_set);
 
-        return m.complete(p, NodeKind::StructDeclaration);
+        return m.complete(p, NodeKind::StructDecl);
     }
 
     loop {
@@ -460,7 +484,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
             recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RBrace])),
         );
 
-        field_m.complete(p, NodeKind::FieldDeclaration);
+        field_m.complete(p, NodeKind::FieldDecl);
 
         if p.at_eof() || p.at_default_recovery_set() {
             break;
@@ -472,7 +496,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     }
     p.expect(TokenKind::RBrace);
 
-    m.complete(p, NodeKind::StructDeclaration)
+    m.complete(p, NodeKind::StructDecl)
 }
 
 fn parse_struct_literal(
@@ -491,7 +515,7 @@ fn parse_struct_literal(
         let _guard = p.expected_syntax_name("struct instance body");
         p.error_with_recovery_set(recovery_set);
 
-        return m.complete(p, NodeKind::StructDeclaration);
+        return m.complete(p, NodeKind::StructDecl);
     }
 
     loop {
@@ -539,7 +563,7 @@ fn parse_if(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     );
 
     if p.at(TokenKind::LBrace) {
-        parse_block(p, recovery_set);
+        parse_block(p, None, recovery_set);
     } else {
         let _guard = p.expected_syntax_name("if body");
         p.error_with_recovery_set(recovery_set);
@@ -552,7 +576,7 @@ fn parse_if(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         if p.at(TokenKind::If) {
             parse_if(p, recovery_set);
         } else if p.at(TokenKind::LBrace) {
-            parse_block(p, recovery_set);
+            parse_block(p, None, recovery_set);
         } else {
             let _guard = p.expected_syntax_name("else body");
             p.error_with_recovery_set(recovery_set);
@@ -564,12 +588,21 @@ fn parse_if(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::IfExpr)
 }
 
-fn parse_loop(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+fn parse_loop(
+    p: &mut Parser,
+    label: Option<CompletedMarker>,
+    recovery_set: TokenSet,
+) -> CompletedMarker {
     let at_while = p.at(TokenKind::While);
     let at_loop = p.at(TokenKind::Loop);
     assert!(at_while || at_loop);
 
-    let m = p.start();
+    let m = if let Some(label) = label {
+        label.precede(p)
+    } else {
+        p.start()
+    };
+
     p.bump();
 
     if at_while {
@@ -583,7 +616,7 @@ fn parse_loop(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     }
 
     if p.at(TokenKind::LBrace) {
-        parse_block(p, recovery_set);
+        parse_block(p, None, recovery_set);
     } else {
         let _guard = if at_while {
             p.expected_syntax_name("while body")
@@ -596,26 +629,30 @@ fn parse_loop(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::WhileExpr)
 }
 
-fn parse_comptime(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+fn parse_comptime(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Comptime));
 
     let m = p.start();
     p.bump();
 
-    if !p.at(TokenKind::LBrace) {
-        let _guard = p.expected_syntax_name("comptime block");
-        p.error_with_no_skip();
-    } else {
-        parse_block(p, recovery_set);
-    }
+    parse_expr(p, "comptime body");
 
     m.complete(p, NodeKind::ComptimeExpr)
 }
 
-fn parse_block(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+fn parse_block(
+    p: &mut Parser,
+    label: Option<CompletedMarker>,
+    recovery_set: TokenSet,
+) -> CompletedMarker {
     assert!(p.at(TokenKind::LBrace));
 
-    let m = p.start();
+    let m = if let Some(label) = label {
+        label.precede(p)
+    } else {
+        p.start()
+    };
+
     p.bump();
 
     while !p.at(TokenKind::RBrace) && !p.at_eof() {

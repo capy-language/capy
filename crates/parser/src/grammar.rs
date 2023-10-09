@@ -22,10 +22,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
             p.error_with_recovery_set_no_default(TokenSet::NONE);
             continue;
         }
-        let (_, lambda_def) = stmt::parse_def(p, true);
-        if !lambda_def {
-            p.expect_with_no_skip(TokenKind::Semicolon);
-        }
+        stmt::parse_def(p, true);
     }
 
     m.complete(p, NodeKind::Root);

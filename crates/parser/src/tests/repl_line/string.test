@@ -1,9 +1,9 @@
 "Hello, World!";
 ===
 Root@0..16
-  ExprStmt@0..15
+  ExprStmt@0..16
     StringLiteral@0..15
       DoubleQuote@0..1 "\""
       StringContents@1..14 "Hello, World!"
       DoubleQuote@14..15 "\""
-  Semicolon@15..16 ";"
+    Semicolon@15..16 ";"

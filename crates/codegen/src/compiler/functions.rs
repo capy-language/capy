@@ -3,12 +3,12 @@ use std::collections::VecDeque;
 use cranelift::{
     codegen::ir::{Endianness, FuncRef, StackSlot},
     prelude::{
-        types, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
-        StackSlotKind, Value, Variable,
+        types, Block, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
+        StackSlotData, StackSlotKind, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use hir::LocalDef;
+use hir::{LocalDef, ScopeId};
 use hir_ty::ResolvedTy;
 use interner::Interner;
 use internment::Intern;
@@ -55,6 +55,10 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) var_id_gen: UIDGenerator,
     pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
     pub(crate) params: FxHashMap<u64, Variable>,
+
+    // for control flow (breaks and continues)
+    pub(crate) exits: FxHashMap<ScopeId, Block>,
+    pub(crate) continues: FxHashMap<ScopeId, Block>,
 }
 
 impl FunctionCompiler<'_> {
@@ -420,6 +424,48 @@ impl FunctionCompiler<'_> {
                         .store(MemFlags::trusted(), value, source, 0);
                 }
             }
+            hir::Stmt::Break {
+                label: Some(label),
+                value,
+                ..
+            } => {
+                let exit_block = self.exits[&label];
+
+                if let Some(value) = value {
+                    let value_ty = self.tys[self.module_name][value];
+                    let Some(value) = self.compile_expr(value) else {
+                        self.builder.ins().jump(exit_block, &[]);
+                        return;
+                    };
+
+                    let value = if let Some(value_ty) =
+                        value_ty.to_comp_type(self.pointer_ty).into_number_type()
+                    {
+                        let referenced_block_ty = self.tys[self.module_name]
+                            [self.bodies_map[&self.module_name][label]]
+                            .to_comp_type(self.pointer_ty)
+                            .into_number_type()
+                            .unwrap();
+
+                        super::cast(&mut self.builder, value, value_ty, referenced_block_ty)
+                    } else {
+                        value
+                    };
+
+                    self.builder.ins().jump(exit_block, &[value]);
+                } else {
+                    self.builder.ins().jump(exit_block, &[]);
+                };
+            }
+            hir::Stmt::Break { label: None, .. } => unreachable!(),
+            hir::Stmt::Continue {
+                label: Some(label), ..
+            } => {
+                let continue_block = self.exits[&label];
+
+                self.builder.ins().jump(continue_block, &[]);
+            }
+            hir::Stmt::Continue { label: None, .. } => unreachable!(),
         }
     }
 
@@ -623,8 +669,6 @@ impl FunctionCompiler<'_> {
                     array_ty = sub_ty;
                     required_derefs += 1;
                 }
-
-                println!("required derefs: {}", required_derefs);
 
                 for _ in 1..required_derefs {
                     array = self
@@ -1075,13 +1119,59 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Block { stmts, tail_expr } => {
-                for stmt in stmts {
-                    self.compile_stmt(&stmt);
+                let ty = self.tys[self.module_name][expr].to_comp_type(self.pointer_ty);
+
+                let body_block = self.builder.create_block();
+                let exit_block = self.builder.create_block();
+                if let Some(ty) = ty.into_real_type() {
+                    self.builder.append_block_param(exit_block, ty);
+                }
+                if let Some(scope_id) = self.bodies_map[&self.module_name].block_to_scope_id(expr) {
+                    self.exits.insert(scope_id, exit_block);
                 }
 
-                if let Some(val) = tail_expr {
-                    self.compile_expr_with_args(val, no_load)
+                self.builder.ins().jump(body_block, &[]);
+
+                self.builder.switch_to_block(body_block);
+                self.builder.seal_block(body_block);
+
+                let mut did_break = false;
+                for stmt in stmts {
+                    self.compile_stmt(&stmt);
+                    if matches!(
+                        self.bodies_map[&self.module_name][stmt],
+                        hir::Stmt::Break { .. } | hir::Stmt::Continue { .. }
+                    ) {
+                        did_break = true;
+                        break;
+                    }
+                }
+
+                if let Some(value) = tail_expr {
+                    if !did_break {
+                        if let Some(value) = self.compile_expr_with_args(value, no_load) {
+                            self.builder.ins().jump(exit_block, &[value]);
+                        } else {
+                            self.builder.ins().jump(exit_block, &[]);
+                        };
+                    }
+
+                    self.builder.switch_to_block(exit_block);
+                    self.builder.seal_block(exit_block);
+
+                    if ty.into_real_type().is_some() {
+                        Some(self.builder.block_params(exit_block)[0])
+                    } else {
+                        None
+                    }
                 } else {
+                    if !did_break {
+                        self.builder.ins().jump(exit_block, &[]);
+                    }
+
+                    self.builder.switch_to_block(exit_block);
+                    self.builder.seal_block(exit_block);
+
                     None
                 }
             }
@@ -1155,8 +1245,19 @@ impl FunctionCompiler<'_> {
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
 
+                let ty = self.tys[self.module_name][expr].to_comp_type(self.pointer_ty);
+
+                if let Some(ty) = ty.into_real_type() {
+                    self.builder.append_block_param(exit_block, ty);
+                }
+                if let Some(scope_id) = self.bodies_map[&self.module_name].block_to_scope_id(expr) {
+                    self.continues.insert(scope_id, header_block);
+                    self.exits.insert(scope_id, exit_block);
+                }
+
                 self.builder.ins().jump(header_block, &[]);
                 self.builder.switch_to_block(header_block);
+                // don't seal the header yet
 
                 if let Some(condition) =
                     condition.and_then(|condition| self.compile_expr(condition))
@@ -1176,13 +1277,17 @@ impl FunctionCompiler<'_> {
                 self.builder.ins().jump(header_block, &[]);
 
                 // We've reached the bottom of the loop, so there will be no
-                // more back edges to the header
+                // more jumps to the header
                 self.builder.seal_block(header_block);
 
                 self.builder.switch_to_block(exit_block);
                 self.builder.seal_block(exit_block);
 
-                None
+                if ty.into_real_type().is_some() {
+                    Some(self.builder.block_params(exit_block)[0])
+                } else {
+                    None
+                }
             }
             hir::Expr::Local(local_def) => {
                 let ptr = *self.locals.get(&local_def)?;

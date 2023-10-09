@@ -1,7 +1,7 @@
 foo;
 ===
 Root@0..4
-  ExprStmt@0..3
+  ExprStmt@0..4
     VarRef@0..3
       Ident@0..3 "foo"
-  Semicolon@3..4 ";"
+    Semicolon@3..4 ";"

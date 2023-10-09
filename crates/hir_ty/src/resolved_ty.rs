@@ -148,19 +148,9 @@ impl ResolvedTy {
 
     /// returns true if the type is zero-sized (void, or solely contains void)
     pub fn is_zero_sized(&self) -> bool {
-        // todo: this might result in a bug because zero-sized types aren't actually compiled to
-        // anything
-        // ```
-        // x := 5;
-        // ptr : ^i32 = ^x;
-        // ptr : ^void = ptr as ^any as ^void; // <- this variable doesn't actually exist
-        // ptr : ^i32 = ptr as ^any as ^void;
-        // ptr^;
-        // ```
         match self {
             ResolvedTy::Void => true,
             ResolvedTy::Type => true,
-            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_zero_sized(),
             ResolvedTy::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
             ResolvedTy::Struct { fields, .. } => {
                 fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())

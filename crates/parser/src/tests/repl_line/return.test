@@ -1,0 +1,27 @@
+() {
+  return;
+  return 5;
+}
+===
+Root@0..28
+  ExprStmt@0..28
+    Lambda@0..28
+      ParamList@0..2
+        LParen@0..1 "("
+        RParen@1..2 ")"
+      Whitespace@2..3 " "
+      Block@3..28
+        LBrace@3..4 "{"
+        Whitespace@4..7 "\n  "
+        ReturnStmt@7..14
+          Return@7..13 "return"
+          Semicolon@13..14 ";"
+        Whitespace@14..17 "\n  "
+        ReturnStmt@17..26
+          Return@17..23 "return"
+          Whitespace@23..24 " "
+          IntLiteral@24..25
+            Int@24..25 "5"
+          Semicolon@25..26 ";"
+        Whitespace@26..27 "\n"
+        RBrace@27..28 "}"

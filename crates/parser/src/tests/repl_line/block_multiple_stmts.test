@@ -4,12 +4,12 @@ Root@0..21
   ExprStmt@0..20
     Block@0..20
       LBrace@0..1 "{"
-      ExprStmt@1..3
+      ExprStmt@1..4
         IntLiteral@1..3
           Int@1..3 "42"
-      Semicolon@3..4 ";"
+        Semicolon@3..4 ";"
       Whitespace@4..5 " "
-      VarDef@5..11
+      VarDef@5..12
         Ident@5..6 "a"
         Whitespace@6..7 " "
         Colon@7..8 ":"
@@ -17,13 +17,13 @@ Root@0..21
         Whitespace@9..10 " "
         IntLiteral@10..11
           Int@10..11 "5"
-      Semicolon@11..12 ";"
+        Semicolon@11..12 ";"
       Whitespace@12..13 " "
-      ExprStmt@13..18
+      ExprStmt@13..19
         StringLiteral@13..18
           DoubleQuote@13..14 "\""
           StringContents@14..17 "foo"
           DoubleQuote@17..18 "\""
-      Semicolon@18..19 ";"
+        Semicolon@18..19 ";"
       RBrace@19..20 "}"
   Semicolon@20..21 ";"

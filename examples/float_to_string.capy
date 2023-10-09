@@ -90,35 +90,35 @@ main :: () {
     printf("\n");
 
     printf("ln 10 = ");
-    ftoa(comptime { math.ln(10) as f32 }, buf, 3);
+    ftoa(comptime math.ln(10) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 50 = ");
-    ftoa(comptime { math.ln(50) as f32 }, buf, 3);
+    ftoa(comptime math.ln(50) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 100 = ");
-    ftoa(comptime { math.ln(100) as f32 }, buf, 3);
+    ftoa(comptime math.ln(100) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 500 = ");
-    ftoa(comptime { math.ln(500) as f32 }, buf, 3);
+    ftoa(comptime math.ln(500) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 10 = ");
-    ftoa(comptime { math.log10(10) as f32 }, buf, 3);
+    ftoa(comptime math.log10(10) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 50 = ");
-    ftoa(comptime { math.log10(50) as f32 }, buf, 3);
+    ftoa(comptime math.log10(50) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 100 = ");
-    ftoa(comptime { math.log10(100) as f32 }, buf, 3);
+    ftoa(comptime math.log10(100) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 500 = ");
-    ftoa(comptime { math.log10(500) as f32 }, buf, 3);
+    ftoa(comptime math.log10(500) as f32, buf, 3);
     print_buf(buf);
 
     libc.free(buf);

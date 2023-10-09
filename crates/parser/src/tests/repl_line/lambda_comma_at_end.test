@@ -1,7 +1,7 @@
 (x: foo, y: bar, z: baz, w: qux,) {};
 ===
 Root@0..37
-  ExprStmt@0..36
+  ExprStmt@0..37
     Lambda@0..36
       ParamList@0..33
         LParen@0..1 "("
@@ -45,4 +45,4 @@ Root@0..37
       Block@34..36
         LBrace@34..35 "{"
         RBrace@35..36 "}"
-  Semicolon@36..37 ";"
+    Semicolon@36..37 ";"

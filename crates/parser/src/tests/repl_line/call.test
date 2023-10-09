@@ -1,11 +1,11 @@
 foo();
 ===
 Root@0..6
-  ExprStmt@0..5
+  ExprStmt@0..6
     Call@0..5
       VarRef@0..3
         Ident@0..3 "foo"
       ArgList@3..5
         LParen@3..4 "("
         RParen@4..5 ")"
-  Semicolon@5..6 ";"
+    Semicolon@5..6 ";"

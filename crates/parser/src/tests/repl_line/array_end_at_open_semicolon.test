@@ -1,7 +1,7 @@
 []i32{;
 ===
 Root@0..7
-  ExprStmt@0..6
+  ExprStmt@0..7
     Array@0..6
       ArraySize@0..2
         LBrack@0..1 "["
@@ -11,6 +11,6 @@ Root@0..7
           Ident@2..5 "i32"
       ArrayBody@5..6
         LBrace@5..6 "{"
-  Semicolon@6..7 ";"
+    Semicolon@6..7 ";"
 error at 6: missing item
 error at 6: missing RBrace

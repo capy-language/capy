@@ -21,7 +21,7 @@ Root@0..34
   Semicolon@16..17 ";"
   Semicolon@17..18 ";"
   Semicolon@18..19 ";"
-  Binding@19..31
+  Binding@19..32
     Ident@19..22 "foo"
     Whitespace@22..23 " "
     Colon@23..24 ":"
@@ -31,6 +31,6 @@ Root@0..34
       DoubleQuote@26..27 "\""
       StringContents@27..30 "bar"
       DoubleQuote@30..31 "\""
-  Semicolon@31..32 ";"
+    Semicolon@31..32 ";"
   Semicolon@32..33 ";"
   Semicolon@33..34 ";"

@@ -234,6 +234,9 @@ def_multi_node! {
     Stmt:
     Assign -> Assign
     Expr -> ExprStmt
+    Return -> ReturnStmt
+    Break -> BreakStmt
+    Continue -> ContinueStmt
     ;
     Define -> Define
     ;
@@ -331,6 +334,34 @@ impl ExprStmt {
     }
 }
 
+def_ast_node!(ReturnStmt);
+
+impl ReturnStmt {
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(BreakStmt);
+
+impl BreakStmt {
+    pub fn label(self, tree: &SyntaxTree) -> Option<LabelRef> {
+        node(self, tree)
+    }
+
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(ContinueStmt);
+
+impl ContinueStmt {
+    pub fn label(self, tree: &SyntaxTree) -> Option<LabelRef> {
+        node(self, tree)
+    }
+}
+
 def_multi_node! {
     Expr:
     Cast -> CastExpr
@@ -343,7 +374,7 @@ def_multi_node! {
     BoolLiteral -> BoolLiteral
     CharLiteral -> CharLiteral
     StringLiteral -> StringLiteral
-    StructDecl -> StructDeclaration
+    StructDecl -> StructDecl
     StructLiteral -> StructLiteral
     Array -> Array
     IndexExpr -> IndexExpr
@@ -420,6 +451,10 @@ impl Distinct {
 def_ast_node!(Block);
 
 impl Block {
+    pub fn label(self, tree: &SyntaxTree) -> Option<LabelDecl> {
+        node(self, tree)
+    }
+
     pub fn stmts(self, tree: &SyntaxTree) -> impl Iterator<Item = Stmt> + '_ {
         nodes(self, tree)
     }
@@ -456,12 +491,32 @@ impl ElseBranch {
 def_ast_node!(WhileExpr);
 
 impl WhileExpr {
+    pub fn label(self, tree: &SyntaxTree) -> Option<LabelDecl> {
+        node(self, tree)
+    }
+
     pub fn condition(self, tree: &SyntaxTree) -> Option<Condition> {
         node(self, tree)
     }
 
     pub fn body(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
+    }
+}
+
+def_ast_node!(LabelDecl);
+
+impl LabelDecl {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+}
+
+def_ast_node!(LabelRef);
+
+impl LabelRef {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
     }
 }
 
@@ -473,17 +528,17 @@ impl Condition {
     }
 }
 
-def_ast_node!(StructDeclaration);
+def_ast_node!(StructDecl);
 
-impl StructDeclaration {
-    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldDeclaration> + '_ {
+impl StructDecl {
+    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldDecl> + '_ {
         nodes(self, tree)
     }
 }
 
-def_ast_node!(FieldDeclaration);
+def_ast_node!(FieldDecl);
 
-impl FieldDeclaration {
+impl FieldDecl {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
@@ -1444,6 +1499,26 @@ mod tests {
     }
 
     #[test]
+    fn get_block_label() {
+        let (tree, root) = parse("`blk { x := 42; x };");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let block = match expr {
+            Some(Expr::Block(block)) => block,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            block.label(&tree).unwrap().name(&tree).unwrap().text(&tree),
+            "blk"
+        );
+    }
+
+    #[test]
     fn get_block_tail() {
         let (tree, root) = parse("{ a = 10; b = a * {a - 1}; b + 5 };");
         let statement = root.stmts(&tree).next().unwrap();
@@ -1460,6 +1535,96 @@ mod tests {
         let tail_expr = block.tail_expr(&tree);
 
         assert!(matches!(tail_expr, Some(Expr::Binary(_))));
+    }
+
+    #[test]
+    fn get_return_value() {
+        let (tree, root) = parse("return 1 + 2;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let return_stmt = match statement {
+            Stmt::Return(return_stmt) => return_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(matches!(return_stmt.value(&tree), Some(Expr::Binary(_))));
+    }
+
+    #[test]
+    fn get_empty_return() {
+        let (tree, root) = parse("return;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let return_stmt = match statement {
+            Stmt::Return(return_stmt) => return_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(return_stmt.value(&tree).is_none());
+    }
+
+    #[test]
+    fn get_break_label_and_value() {
+        let (tree, root) = parse("break blk` 1 + 2;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let break_stmt = match statement {
+            Stmt::Break(break_stmt) => break_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(matches!(break_stmt.value(&tree), Some(Expr::Binary(_))));
+        assert_eq!(
+            break_stmt
+                .label(&tree)
+                .unwrap()
+                .name(&tree)
+                .unwrap()
+                .text(&tree),
+            "blk"
+        );
+    }
+
+    #[test]
+    fn get_empty_break() {
+        let (tree, root) = parse("break;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let break_stmt = match statement {
+            Stmt::Break(break_stmt) => break_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(break_stmt.value(&tree).is_none());
+        assert!(break_stmt.label(&tree).is_none());
+    }
+
+    #[test]
+    fn get_continue_label() {
+        let (tree, root) = parse("continue blk`;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let continue_stmt = match statement {
+            Stmt::Continue(continue_stmt) => continue_stmt,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            continue_stmt
+                .label(&tree)
+                .unwrap()
+                .name(&tree)
+                .unwrap()
+                .text(&tree),
+            "blk"
+        );
+    }
+
+    #[test]
+    fn get_empty_continue() {
+        let (tree, root) = parse("continue;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let continue_stmt = match statement {
+            Stmt::Continue(continue_stmt) => continue_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(continue_stmt.label(&tree).is_none());
     }
 
     #[test]
@@ -1601,6 +1766,31 @@ mod tests {
     }
 
     #[test]
+    fn get_while_label() {
+        let (tree, root) = parse("`outer while true { break outer` }");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let while_expr = match expr {
+            Some(Expr::While(while_expr)) => while_expr,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            while_expr
+                .label(&tree)
+                .unwrap()
+                .name(&tree)
+                .unwrap()
+                .text(&tree),
+            "outer"
+        );
+    }
+
+    #[test]
     fn get_loop_condition() {
         let (tree, root) = parse("loop { bar(); }");
         let statement = root.stmts(&tree).next().unwrap();
@@ -1615,6 +1805,31 @@ mod tests {
         };
 
         assert!(while_expr.condition(&tree).is_none());
+    }
+
+    #[test]
+    fn get_loop_label() {
+        let (tree, root) = parse("`outer loop { break outer` }");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let while_expr = match expr {
+            Some(Expr::While(while_expr)) => while_expr,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            while_expr
+                .label(&tree)
+                .unwrap()
+                .name(&tree)
+                .unwrap()
+                .text(&tree),
+            "outer"
+        );
     }
 
     #[test]

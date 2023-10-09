@@ -1,7 +1,7 @@
 -15 as usize;
 ===
 Root@0..13
-  ExprStmt@0..12
+  ExprStmt@0..13
     CastExpr@0..12
       UnaryExpr@0..3
         Hyphen@0..1 "-"
@@ -13,4 +13,4 @@ Root@0..13
       Ty@7..12
         VarRef@7..12
           Ident@7..12 "usize"
-  Semicolon@12..13 ";"
+    Semicolon@12..13 ";"

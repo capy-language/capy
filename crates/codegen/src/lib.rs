@@ -952,5 +952,80 @@ mod tests {
         )
     }
 
+    #[test]
+    fn control_flow() {
+        check_raw(
+            r#"
+                fib :: (n: i32) -> i32 {
+                    if n <= 1 {
+                        return n;
+                    }
+                
+                    fib(n - 1) + fib(n - 2)
+                }
+                
+                main :: () -> i32 {
+                    {
+                        puts("before return");
+                        return {
+                            puts("before break");
+                            x := 5;
+                            break loop {
+                                res := fib(x);
+                                if res > 1_000 {
+                                    printf("fib(%i) = %i\n", x, res);
+                                    break x;
+                                }
+                                x = x + 1;
+                            };
+                            puts("after break");
+                            42
+                        };
+                        puts("after return");
+                        1 + 1
+                    }
+                
+                    puts("hello!");
+                
+                    0
+                }
+                
+                puts :: (s: string) extern;
+                printf :: (s: string, n1: i32, n2: i32) -> i32 extern;
+            "#,
+            "main",
+            expect![[r#"
+                before return
+                before break
+                fib(17) = 1597
+
+            "#]],
+            17,
+        )
+    }
+
+    #[test]
+    fn break_casting() {
+        check_raw(
+            r#"
+            main :: () -> i64 {
+                {
+                    if true {
+                        y : i8 = 5;
+                        break y;
+                    }
+
+                    y : i16 = 42;
+                    y
+                }
+            }
+        "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            5,
+        )
+    }
     // the "ptrs_to_ptrs.capy" test is not reproducible
 }

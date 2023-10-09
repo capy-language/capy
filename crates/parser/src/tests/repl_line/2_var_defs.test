@@ -2,7 +2,7 @@ foo := bar;
 baz := qux;
 ===
 Root@0..23
-  VarDef@0..10
+  VarDef@0..11
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
@@ -10,9 +10,9 @@ Root@0..23
     Whitespace@6..7 " "
     VarRef@7..10
       Ident@7..10 "bar"
-  Semicolon@10..11 ";"
+    Semicolon@10..11 ";"
   Whitespace@11..12 "\n"
-  VarDef@12..22
+  VarDef@12..23
     Ident@12..15 "baz"
     Whitespace@15..16 " "
     Colon@16..17 ":"
@@ -20,4 +20,4 @@ Root@0..23
     Whitespace@18..19 " "
     VarRef@19..22
       Ident@19..22 "qux"
-  Semicolon@22..23 ";"
+    Semicolon@22..23 ";"

@@ -1,0 +1,26 @@
+while true {
+  break;
+  continue;
+}
+===
+Root@0..35
+  ExprStmt@0..35
+    WhileExpr@0..35
+      While@0..5 "while"
+      Whitespace@5..6 " "
+      Condition@6..10
+        BoolLiteral@6..10
+          Bool@6..10 "true"
+      Whitespace@10..11 " "
+      Block@11..35
+        LBrace@11..12 "{"
+        Whitespace@12..15 "\n  "
+        BreakStmt@15..21
+          Break@15..20 "break"
+          Semicolon@20..21 ";"
+        Whitespace@21..24 "\n  "
+        ContinueStmt@24..33
+          Continue@24..32 "continue"
+          Semicolon@32..33 ";"
+        Whitespace@33..34 "\n"
+        RBrace@34..35 "}"

@@ -1,12 +1,12 @@
 (;
 ===
 Root@0..2
-  ExprStmt@0..1
+  ExprStmt@0..2
     Lambda@0..1
       ParamList@0..1
         LParen@0..1 "("
         Param@1..1
-  Semicolon@1..2 ";"
+    Semicolon@1..2 ";"
 error at 1: missing parameter name
 error at 1: missing Colon
 error at 1: missing parameter type

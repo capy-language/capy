@@ -4,13 +4,13 @@ struct {
 };
 ===
 Root@0..43
-  ExprStmt@0..42
-    StructDeclaration@0..42
+  ExprStmt@0..43
+    StructDecl@0..42
       Struct@0..6 "struct"
       Whitespace@6..7 " "
       LBrace@7..8 "{"
       Whitespace@8..13 "\n    "
-      FieldDeclaration@13..25
+      FieldDecl@13..25
         Ident@13..17 "name"
         Colon@17..18 ":"
         Whitespace@18..19 " "
@@ -19,7 +19,7 @@ Root@0..43
             Ident@19..25 "string"
       Comma@25..26 ","
       Whitespace@26..31 "\n    "
-      FieldDeclaration@31..39
+      FieldDecl@31..39
         Ident@31..34 "age"
         Colon@34..35 ":"
         Whitespace@35..36 " "
@@ -29,4 +29,4 @@ Root@0..43
       Comma@39..40 ","
       Whitespace@40..41 "\n"
       RBrace@41..42 "}"
-  Semicolon@42..43 ";"
+    Semicolon@42..43 ";"

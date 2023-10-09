@@ -1,8 +1,8 @@
 "";
 ===
 Root@0..3
-  ExprStmt@0..2
+  ExprStmt@0..3
     StringLiteral@0..2
       DoubleQuote@0..1 "\""
       DoubleQuote@1..2 "\""
-  Semicolon@2..3 ";"
+    Semicolon@2..3 ";"

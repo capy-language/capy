@@ -40,6 +40,8 @@ pub enum NodeKind {
     ElseBranch,
     WhileExpr,
     Condition,
+    LabelDecl,
+    LabelRef,
     IntLiteral,
     FloatLiteral,
     BoolLiteral,
@@ -54,13 +56,16 @@ pub enum NodeKind {
     VarDef,  // `x := 5`
     Assign,
     ExprStmt,
+    ReturnStmt,
+    BreakStmt,
+    ContinueStmt,
     Lambda,
     ParamList,
     Param,
-    StructDeclaration, // `struct { foo: i32 }`
-    FieldDeclaration,  // `foo: i32`
-    StructLiteral,     // `My_Struct { foo: 123 }`
-    FieldLiteral,      // `foo: 123`
+    StructDecl,    // `struct { foo: i32 }`
+    FieldDecl,     // `foo: i32`
+    StructLiteral, // `My_Struct { foo: 123 }`
+    FieldLiteral,  // `foo: 123`
     ImportExpr,
     Ty,
     Path,

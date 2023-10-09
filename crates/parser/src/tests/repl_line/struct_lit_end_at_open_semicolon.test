@@ -1,7 +1,7 @@
 Foo {;
 ===
 Root@0..6
-  ExprStmt@0..5
+  ExprStmt@0..6
     StructLiteral@0..5
       Ty@0..3
         VarRef@0..3
@@ -9,7 +9,7 @@ Root@0..6
       Whitespace@3..4 " "
       LBrace@4..5 "{"
       FieldLiteral@5..5
-  Semicolon@5..6 ";"
+    Semicolon@5..6 ";"
 error at 5: missing field name
 error at 5: missing Colon
 error at 5: missing field value

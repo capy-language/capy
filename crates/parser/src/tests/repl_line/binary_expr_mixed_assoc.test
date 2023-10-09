@@ -1,7 +1,7 @@
 1+2*3-4;
 ===
 Root@0..8
-  ExprStmt@0..7
+  ExprStmt@0..8
     BinaryExpr@0..7
       BinaryExpr@0..5
         IntLiteral@0..1
@@ -16,4 +16,4 @@ Root@0..8
       Hyphen@5..6 "-"
       IntLiteral@6..7
         Int@6..7 "4"
-  Semicolon@7..8 ";"
+    Semicolon@7..8 ";"

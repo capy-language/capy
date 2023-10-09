@@ -5,7 +5,7 @@ Root@0..32
   Semicolon@1..2 ";"
   Semicolon@2..3 ";"
   Semicolon@3..4 ";"
-  VarDef@4..14
+  VarDef@4..15
     Ident@4..7 "foo"
     Whitespace@7..8 " "
     Colon@8..9 ":"
@@ -13,11 +13,11 @@ Root@0..32
     Whitespace@10..11 " "
     VarRef@11..14
       Ident@11..14 "bar"
-  Semicolon@14..15 ";"
+    Semicolon@14..15 ";"
   Semicolon@15..16 ";"
   Semicolon@16..17 ";"
   Semicolon@17..18 ";"
-  VarDef@18..28
+  VarDef@18..29
     Ident@18..21 "bar"
     Whitespace@21..22 " "
     Colon@22..23 ":"
@@ -25,7 +25,7 @@ Root@0..32
     Whitespace@24..25 " "
     VarRef@25..28
       Ident@25..28 "baz"
-  Semicolon@28..29 ";"
+    Semicolon@28..29 ";"
   Semicolon@29..30 ";"
   Semicolon@30..31 ";"
   Semicolon@31..32 ";"

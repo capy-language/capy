@@ -2,14 +2,14 @@ a :=;
 b := a;
 ===
 Root@0..13
-  VarDef@0..4
+  VarDef@0..5
     Ident@0..1 "a"
     Whitespace@1..2 " "
     Colon@2..3 ":"
     Equals@3..4 "="
-  Semicolon@4..5 ";"
+    Semicolon@4..5 ";"
   Whitespace@5..6 "\n"
-  VarDef@6..12
+  VarDef@6..13
     Ident@6..7 "b"
     Whitespace@7..8 " "
     Colon@8..9 ":"
@@ -17,5 +17,5 @@ Root@0..13
     Whitespace@10..11 " "
     VarRef@11..12
       Ident@11..12 "a"
-  Semicolon@12..13 ";"
+    Semicolon@12..13 ";"
 error at 4: missing value

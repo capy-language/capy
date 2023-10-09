@@ -19,6 +19,8 @@ pub struct Bodies {
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
     global_tys: FxHashMap<Name, Idx<Expr>>,
     global_bodies: FxHashMap<Name, Idx<Expr>>,
+    label_decls: bimap::BiMap<ScopeId, Idx<Expr>>,
+    label_usages: FxHashMap<ScopeId, Vec<Idx<Stmt>>>,
     lambdas: Arena<Lambda>,
     comptimes: Arena<Comptime>,
     imports: FxHashSet<FileName>,
@@ -133,6 +135,17 @@ pub enum Stmt {
     Expr(Idx<Expr>),
     LocalDef(Idx<LocalDef>),
     Assign(Idx<Assign>),
+    Break {
+        // `None` only for errors
+        label: Option<ScopeId>,
+        value: Option<Idx<Expr>>,
+        range: TextRange,
+    },
+    Continue {
+        // `None` only for errors
+        label: Option<ScopeId>,
+        range: TextRange,
+    },
 }
 
 #[derive(Clone)]
@@ -202,6 +215,7 @@ pub struct LoweringDiagnostic {
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
     UndefinedRef { name: Key },
+    UndefinedLabel { name: Key },
     NonGlobalExtern,
     ArraySizeNotConst,
     ArraySizeMismatch { found: u32, expected: u32 },
@@ -211,6 +225,7 @@ pub enum LoweringDiagnosticKind {
     NonU8CharLiteral,
     ImportMustEndInDotCapy,
     ImportDoesNotExist { file: String },
+    ContinueNonLoop { name: Option<Key> },
 }
 
 #[derive(Clone, Copy)]
@@ -245,6 +260,21 @@ pub fn lower(
     (ctx.bodies, ctx.diagnostics)
 }
 
+#[derive(PartialEq)]
+enum ScopeKind {
+    Block((Option<Key>, ScopeId)),
+    Loop((Option<Key>, ScopeId)),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub struct ScopeId(u32);
+
+impl ToString for ScopeId {
+    fn to_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
 struct Ctx<'a> {
     bodies: Bodies,
     file_name: &'a std::path::Path,
@@ -254,6 +284,8 @@ struct Ctx<'a> {
     tree: &'a SyntaxTree,
     diagnostics: Vec<LoweringDiagnostic>,
     scopes: Vec<FxHashMap<Key, Idx<LocalDef>>>,
+    label_kinds: Vec<ScopeKind>,
+    label_gen: UIDGenerator,
     params: FxHashMap<Key, (u32, ast::Param)>,
     fake_file_system: bool, // used for importing files in tests
 }
@@ -276,6 +308,8 @@ impl<'a> Ctx<'a> {
                 expr_ranges: ArenaMap::default(),
                 global_tys: FxHashMap::default(),
                 global_bodies: FxHashMap::default(),
+                label_decls: bimap::BiMap::default(),
+                label_usages: FxHashMap::default(),
                 lambdas: Arena::new(),
                 comptimes: Arena::new(),
                 imports: FxHashSet::default(),
@@ -287,6 +321,8 @@ impl<'a> Ctx<'a> {
             tree,
             diagnostics: Vec::new(),
             scopes: vec![FxHashMap::default()],
+            label_kinds: Vec::new(),
+            label_gen: UIDGenerator::default(),
             params: FxHashMap::default(),
             fake_file_system,
         }
@@ -335,6 +371,8 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_lambda(&mut self, lambda: ast::Lambda, allow_extern: bool) -> Expr {
+        let old_labels = mem::take(&mut self.label_kinds);
+
         let mut params = Vec::new();
         let mut param_keys = FxHashMap::default();
         let mut param_type_ranges = Vec::new();
@@ -375,6 +413,7 @@ impl<'a> Ctx<'a> {
             }
         }
 
+        // todo: maybe self.params should be `replace`d before we parse this lambda's params
         let old_params = mem::replace(&mut self.params, param_keys);
         let old_scopes = mem::take(&mut self.scopes);
 
@@ -382,6 +421,7 @@ impl<'a> Ctx<'a> {
 
         self.params = old_params;
         self.scopes = old_scopes;
+        self.label_kinds = old_labels;
 
         Expr::Lambda(self.bodies.lambdas.alloc(Lambda {
             params,
@@ -412,7 +452,113 @@ impl<'a> Ctx<'a> {
                 let expr = self.lower_expr(expr_stmt.expr(self.tree));
                 Stmt::Expr(expr)
             }
+            ast::Stmt::Return(return_stmt) => self.lower_return(return_stmt),
+            ast::Stmt::Break(break_stmt) => self.lower_break(break_stmt),
+            ast::Stmt::Continue(continue_stmt) => self.lower_continue(continue_stmt),
         }
+    }
+
+    fn lower_return(&mut self, return_stmt: ast::ReturnStmt) -> Stmt {
+        let label = self.label_kinds.first().map(|kind| match kind {
+            ScopeKind::Block((_, id)) => *id,
+            // this should be unreachable, but you never know
+            ScopeKind::Loop((_, id)) => *id,
+        });
+
+        Stmt::Break {
+            label,
+            value: return_stmt
+                .value(self.tree)
+                .map(|value| self.lower_expr(Some(value))),
+            range: return_stmt.range(self.tree),
+        }
+    }
+
+    fn lower_break(&mut self, break_stmt: ast::BreakStmt) -> Stmt {
+        Stmt::Break {
+            label: self.resolve_label(
+                break_stmt.range(self.tree),
+                break_stmt.label(self.tree),
+                false,
+            ),
+            value: break_stmt
+                .value(self.tree)
+                .map(|value| self.lower_expr(Some(value))),
+            range: break_stmt.range(self.tree),
+        }
+    }
+
+    fn lower_continue(&mut self, continue_stmt: ast::ContinueStmt) -> Stmt {
+        Stmt::Continue {
+            label: self.resolve_label(
+                continue_stmt.range(self.tree),
+                continue_stmt.label(self.tree),
+                true,
+            ),
+            range: continue_stmt.range(self.tree),
+        }
+    }
+
+    fn resolve_label(
+        &mut self,
+        whole_range: TextRange,
+        label: Option<ast::LabelRef>,
+        require_loop: bool,
+    ) -> Option<ScopeId> {
+        let label_name = label
+            .and_then(|label| label.name(self.tree))
+            .map(|name| name.text(self.tree))
+            .map(|name| self.interner.intern(name));
+
+        if let Some(label_name) = label_name {
+            for code in self.label_kinds.iter().rev() {
+                match code {
+                    ScopeKind::Block((Some(name), id)) if *name == label_name => {
+                        if require_loop {
+                            self.diagnostics.push(LoweringDiagnostic {
+                                kind: LoweringDiagnosticKind::ContinueNonLoop { name: Some(*name) },
+                                range: label.unwrap().range(self.tree),
+                            });
+                        }
+                        return Some(*id);
+                    }
+                    ScopeKind::Loop((Some(name), id)) if *name == label_name => {
+                        return Some(*id);
+                    }
+                    _ => continue,
+                }
+            }
+
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::UndefinedLabel { name: label_name },
+                range: label.unwrap().range(self.tree),
+            });
+
+            return None;
+        }
+
+        for code in self.label_kinds.iter().rev() {
+            match code {
+                ScopeKind::Block((_, id)) if !require_loop => {
+                    return Some(*id);
+                }
+                ScopeKind::Loop((_, id)) => {
+                    return Some(*id);
+                }
+                _ => continue,
+            }
+        }
+
+        self.diagnostics.push(LoweringDiagnostic {
+            kind: if require_loop {
+                LoweringDiagnosticKind::ContinueNonLoop { name: None }
+            } else {
+                unreachable!("breaks (statements) can only be inside blocks")
+            },
+            range: whole_range,
+        });
+
+        None
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
@@ -462,41 +608,53 @@ impl<'a> Ctx<'a> {
 
         let range = expr_ast.range(self.tree);
 
-        let expr = self.lower_expr_raw(expr_ast);
+        let (expr, scope_id) = self.lower_expr_raw(expr_ast);
 
         let id = self.bodies.exprs.alloc(expr);
         self.bodies.expr_ranges.insert(id, range);
 
+        if scope_id.map_or(false, |id| self.bodies.label_usages.contains_key(&id)) {
+            self.bodies.label_decls.insert(scope_id.unwrap(), id);
+        }
+
         id
     }
 
-    fn lower_expr_raw(&mut self, expr: ast::Expr) -> Expr {
-        match expr {
-            ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
-            ast::Expr::Ref(ref_expr) => self.lower_ref_expr(ref_expr),
-            ast::Expr::Deref(deref_expr) => self.lower_deref_expr(deref_expr),
-            ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
-            ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
-            ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
-            ast::Expr::Block(block) => self.lower_block(block),
-            ast::Expr::If(if_expr) => self.lower_if(if_expr),
-            ast::Expr::While(while_expr) => self.lower_while(while_expr),
-            ast::Expr::Call(call) => self.lower_call(call),
-            ast::Expr::IndexExpr(index_expr) => self.lower_index_expr(index_expr),
-            ast::Expr::VarRef(var_ref) => self.lower_var_ref(var_ref),
-            ast::Expr::Path(path) => self.lower_path(path),
-            ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
-            ast::Expr::FloatLiteral(float_literal) => self.lower_float_literal(float_literal),
-            ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
-            ast::Expr::CharLiteral(char_literal) => self.lower_char_literal(char_literal),
-            ast::Expr::StringLiteral(string_literal) => self.lower_string_literal(string_literal),
-            ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
-            ast::Expr::Lambda(lambda) => self.lower_lambda(lambda, false),
-            ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
-            ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
-            ast::Expr::Import(import_expr) => self.lower_import(import_expr),
-            ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
-        }
+    fn lower_expr_raw(&mut self, expr: ast::Expr) -> (Expr, Option<ScopeId>) {
+        (
+            match expr {
+                ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
+                ast::Expr::Ref(ref_expr) => self.lower_ref_expr(ref_expr),
+                ast::Expr::Deref(deref_expr) => self.lower_deref_expr(deref_expr),
+                ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
+                ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
+                ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
+                ast::Expr::Block(block) => return self.lower_block(block, true),
+                ast::Expr::If(if_expr) => self.lower_if(if_expr),
+                ast::Expr::While(while_expr) => {
+                    let res = self.lower_while(while_expr);
+                    return (res.0, Some(res.1));
+                }
+                ast::Expr::Call(call) => self.lower_call(call),
+                ast::Expr::IndexExpr(index_expr) => self.lower_index_expr(index_expr),
+                ast::Expr::VarRef(var_ref) => self.lower_var_ref(var_ref),
+                ast::Expr::Path(path) => self.lower_path(path),
+                ast::Expr::IntLiteral(int_literal) => self.lower_int_literal(int_literal),
+                ast::Expr::FloatLiteral(float_literal) => self.lower_float_literal(float_literal),
+                ast::Expr::BoolLiteral(bool_literal) => self.lower_bool_literal(bool_literal),
+                ast::Expr::CharLiteral(char_literal) => self.lower_char_literal(char_literal),
+                ast::Expr::StringLiteral(string_literal) => {
+                    self.lower_string_literal(string_literal)
+                }
+                ast::Expr::Distinct(distinct) => self.lower_distinct(distinct),
+                ast::Expr::Lambda(lambda) => self.lower_lambda(lambda, false),
+                ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
+                ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
+                ast::Expr::Import(import_expr) => self.lower_import(import_expr),
+                ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
+            },
+            None,
+        )
     }
 
     fn lower_cast_expr(&mut self, cast_expr: ast::CastExpr) -> Expr {
@@ -530,7 +688,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn lower_struct_declaration(&mut self, struct_decl: ast::StructDeclaration) -> Expr {
+    fn lower_struct_declaration(&mut self, struct_decl: ast::StructDecl) -> Expr {
         let fields = struct_decl
             .fields(self.tree)
             .map(|field| {
@@ -679,7 +837,7 @@ impl<'a> Ctx<'a> {
             .size(self.tree)
             .and_then(|size| size.size(self.tree))
             .and_then(|size| match size {
-                ast::Expr::IntLiteral(_) => Some(self.lower_expr_raw(size)),
+                ast::Expr::IntLiteral(_) => Some(self.lower_expr_raw(size).0),
                 other => {
                     self.diagnostics.push(LoweringDiagnostic {
                         kind: LoweringDiagnosticKind::ArraySizeNotConst,
@@ -708,14 +866,43 @@ impl<'a> Ctx<'a> {
         Expr::Array { size, items, ty }
     }
 
-    fn lower_block(&mut self, block: ast::Block) -> Expr {
+    fn lower_block(&mut self, block: ast::Block, add_block_label: bool) -> (Expr, Option<ScopeId>) {
+        let label_id = if add_block_label {
+            let label_id = ScopeId(self.label_gen.generate_unique_id());
+            let label_name = block
+                .label(self.tree)
+                .and_then(|label| label.name(self.tree))
+                .map(|name| self.interner.intern(name.text(self.tree)));
+            self.label_kinds
+                .push(ScopeKind::Block((label_name, label_id)));
+            Some(label_id)
+        } else {
+            None
+        };
+
         self.create_new_child_scope();
 
         let mut stmts = Vec::new();
 
         for stmt in block.stmts(self.tree) {
             let statement = self.lower_stmt(stmt);
-            stmts.push(self.bodies.stmts.alloc(statement));
+
+            let label_id = match statement {
+                Stmt::Break { label, .. } => label,
+                Stmt::Continue { label, .. } => label,
+                _ => None,
+            };
+
+            let stmt_id = self.bodies.stmts.alloc(statement);
+            stmts.push(stmt_id);
+
+            if let Some(label_id) = label_id {
+                self.bodies
+                    .label_usages
+                    .entry(label_id)
+                    .or_default()
+                    .push(stmt_id);
+            }
         }
 
         let tail_expr = block
@@ -724,13 +911,24 @@ impl<'a> Ctx<'a> {
 
         self.destroy_current_scope();
 
-        Expr::Block { stmts, tail_expr }
+        (Expr::Block { stmts, tail_expr }, label_id)
     }
 
     fn lower_if(&mut self, if_expr: ast::IfExpr) -> Expr {
         let condition = self.lower_expr(if_expr.condition(self.tree));
 
-        let body = self.lower_expr(if_expr.body(self.tree));
+        let body = if let Some(ast::Expr::Block(body)) = if_expr.body(self.tree) {
+            let range = body.range(self.tree);
+
+            let (expr, _) = self.lower_block(body, false);
+
+            let id = self.bodies.exprs.alloc(expr);
+            self.bodies.expr_ranges.insert(id, range);
+
+            id
+        } else {
+            self.bodies.exprs.alloc(Expr::Missing)
+        };
 
         let else_branch = if let Some(else_branch) = if_expr.else_branch(self.tree) {
             Some(self.lower_expr(else_branch.body(self.tree)))
@@ -745,15 +943,34 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn lower_while(&mut self, while_expr: ast::WhileExpr) -> Expr {
+    fn lower_while(&mut self, while_expr: ast::WhileExpr) -> (Expr, ScopeId) {
+        let label_id = ScopeId(self.label_gen.generate_unique_id());
+        let label_name = while_expr
+            .label(self.tree)
+            .and_then(|label| label.name(self.tree))
+            .map(|name| self.interner.intern(name.text(self.tree)));
+        self.label_kinds
+            .push(ScopeKind::Loop((label_name, label_id)));
+
         let condition = while_expr
             .condition(self.tree)
             .and_then(|condition| condition.value(self.tree))
             .map(|condition| self.lower_expr(Some(condition)));
 
-        let body = self.lower_expr(while_expr.body(self.tree));
+        let body = if let Some(ast::Expr::Block(body)) = while_expr.body(self.tree) {
+            let range = body.range(self.tree);
 
-        Expr::While { condition, body }
+            let (expr, _) = self.lower_block(body, false);
+
+            let id = self.bodies.exprs.alloc(expr);
+            self.bodies.expr_ranges.insert(id, range);
+
+            id
+        } else {
+            self.bodies.exprs.alloc(Expr::Missing)
+        };
+
+        (Expr::While { condition, body }, label_id)
     }
 
     fn lower_call(&mut self, call: ast::Call) -> Expr {
@@ -1077,12 +1294,36 @@ impl Bodies {
         self.expr_ranges[expr]
     }
 
+    pub fn range_for_stmt(&self, stmt: Idx<Stmt>) -> TextRange {
+        match self.stmts[stmt] {
+            Stmt::Expr(expr) => self.range_for_expr(expr),
+            Stmt::LocalDef(def) => self.local_defs[def].range,
+            Stmt::Assign(assign) => self.assigns[assign].range,
+            Stmt::Break { range, .. } => range,
+            Stmt::Continue { range, .. } => range,
+        }
+    }
+
     pub fn comptimes(&self) -> impl Iterator<Item = Idx<Comptime>> + '_ {
         self.comptimes.iter().map(|(idx, _)| idx)
     }
 
     pub fn imports(&self) -> &FxHashSet<FileName> {
         &self.imports
+    }
+
+    /// only blocks which are actually `break`d or `continue`d out of will get a scopeid
+    pub fn block_to_scope_id(&self, expr: Idx<Expr>) -> Option<ScopeId> {
+        self.label_decls.get_by_right(&expr).copied()
+    }
+
+    pub fn scope_id_to_block(&self, id: ScopeId) -> Idx<Expr> {
+        *self.label_decls.get_by_left(&id).unwrap()
+    }
+
+    // a `ScopeId` will only be stored if it has usages
+    pub fn scope_id_usages(&self, id: ScopeId) -> &Vec<Idx<Stmt>> {
+        self.label_usages.get(&id).unwrap()
     }
 
     fn shrink_to_fit(&mut self) {
@@ -1094,6 +1335,8 @@ impl Bodies {
             expr_ranges: _,
             global_tys,
             global_bodies,
+            label_decls,
+            label_usages,
             lambdas,
             comptimes,
             imports,
@@ -1108,6 +1351,8 @@ impl Bodies {
         lambdas.shrink_to_fit();
         comptimes.shrink_to_fit();
         imports.shrink_to_fit();
+        label_decls.shrink_to_fit();
+        label_usages.shrink_to_fit()
     }
 }
 
@@ -1116,6 +1361,14 @@ impl std::ops::Index<Idx<LocalDef>> for Bodies {
 
     fn index(&self, id: Idx<LocalDef>) -> &Self::Output {
         &self.local_defs[id]
+    }
+}
+
+impl std::ops::Index<ScopeId> for Bodies {
+    type Output = Idx<Expr>;
+
+    fn index(&self, id: ScopeId) -> &Self::Output {
+        self.label_decls.get_by_left(&id).unwrap()
     }
 }
 
@@ -1411,6 +1664,12 @@ impl Bodies {
                     stmts,
                     tail_expr: Some(tail_expr),
                 } if stmts.is_empty() => {
+                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                        s.push('`');
+                        s.push_str(&label_id.to_string());
+                        s.push(' ');
+                    }
+
                     let mut inner = String::new();
                     write_expr(
                         &mut inner,
@@ -1444,6 +1703,12 @@ impl Bodies {
 
                 Expr::Block { stmts, tail_expr } => {
                     indentation += 4;
+
+                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                        s.push('`');
+                        s.push_str(&label_id.to_string());
+                        s.push(' ');
+                    }
 
                     s.push_str("{\n");
 
@@ -1521,6 +1786,12 @@ impl Bodies {
                 }
 
                 Expr::While { condition, body } => {
+                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                        s.push('`');
+                        s.push_str(&label_id.to_string());
+                        s.push(' ');
+                    }
+
                     if let Some(condition) = condition {
                         s.push_str("while ");
                         write_expr(
@@ -1840,6 +2111,38 @@ impl Bodies {
                         interner,
                         indentation,
                     );
+                    s.push(';');
+                }
+                Stmt::Break { label, value, .. } => {
+                    s.push_str("break ");
+                    if let Some(label) = label {
+                        s.push_str(&label.to_string());
+                    } else {
+                        s.push_str("<unknown>");
+                    }
+                    s.push('`');
+                    if let Some(value) = value {
+                        s.push(' ');
+                        write_expr(
+                            s,
+                            *value,
+                            show_idx,
+                            bodies,
+                            project_root,
+                            interner,
+                            indentation,
+                        );
+                    }
+                    s.push(';');
+                }
+                Stmt::Continue { label, .. } => {
+                    s.push_str("continue ");
+                    if let Some(label) = label {
+                        s.push_str(&label.to_string());
+                    } else {
+                        s.push_str("<unknown>")
+                    }
+                    s.push('`');
                     s.push(';');
                 }
             }
@@ -2860,6 +3163,326 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: (p0: <missing>, p1: <missing>) -> i8 { if p1 { 0 } else { 1 } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_block() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        {
+                            break;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () { { `2 {
+                            break 2`;
+                        } } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_loop() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        loop {
+                            break;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () { { `2 loop {
+                            break 2`;
+                        } } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_block_with_label() {
+        check(
+            r#"
+                foo :: () {
+                    `blk {
+                        {
+                            break blk`;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () { `1 { {
+                            break 1`;
+                        } } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_non_existent_label() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        {
+                            break blk`;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () { { {
+                            break <unknown>`;
+                        } } };
+            "#]],
+            |i| {
+                [(
+                    LoweringDiagnosticKind::UndefinedLabel {
+                        name: i.intern("blk"),
+                    },
+                    111..115,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_block_with_value() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    `blk {
+                        {
+                            break blk` 1 + 1;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 { `1 { {
+                            break 1` 1 + 1;
+                        } } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_if() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        if true {
+                            break true;
+                        }
+
+                        1 + 1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 {
+                    `1 {
+                        if true {
+                            break 1` true;
+                        };
+                        1 + 1
+                    }
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn continue_loop() {
+        check(
+            r#"
+                foo :: () {
+                    loop {
+                        while false {
+                            {
+                                continue;
+                            }
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    loop {
+                        `2 while false { {
+                                continue 2`;
+                            } }
+                    }
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn continue_loop_with_label() {
+        check(
+            r#"
+                foo :: () {
+                    `outer loop {
+                        while false {
+                            {
+                                continue outer`;
+                            }
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    `1 loop { while false { {
+                                continue 1`;
+                            } } }
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn continue_block_with_label() {
+        check(
+            r#"
+                foo :: () {
+                    `blk {
+                        while false {
+                            {
+                                continue blk`;
+                            }
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    `1 { while false { {
+                                continue 1`;
+                            } } }
+                };
+            "#]],
+            |i| {
+                [(
+                    LoweringDiagnosticKind::ContinueNonLoop {
+                        name: Some(i.intern("blk")),
+                    },
+                    165..169,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn continue_block() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        {
+                            continue;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () { { {
+                            continue <unknown>`;
+                        } } };
+            "#]],
+            |_| {
+                [(
+                    LoweringDiagnosticKind::ContinueNonLoop { name: None },
+                    105..114,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_function() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    break 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 `0 {
+                    break 0` 5;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_function() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    return 5;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 `0 {
+                    break 0` 5;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_function_nested() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        return 5;
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 `0 { {
+                        break 0` 5;
+                    } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_outside_function() {
+        check(
+            r#"
+                foo :: {
+                    return 5;
+                };
+            "#,
+            expect![[r#"
+                main::foo :: `0 {
+                    break 0` 5;
+                };
             "#]],
             |_| [],
         )

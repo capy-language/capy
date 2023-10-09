@@ -17,6 +17,7 @@ regex = "1.9.4"
 path-clean = "1.0.1"
 uid_gen = { path = "../uid_gen" }
 pathdiff = "0.2.1"
+bimap = "0.6.3"
 
 [dev-dependencies]
 ast = { path = "../ast" }

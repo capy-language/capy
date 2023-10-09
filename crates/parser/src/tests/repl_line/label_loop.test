@@ -1,0 +1,41 @@
+`my_loop while x > 0 {
+  print("Hello!");
+}
+===
+Root@0..43
+  ExprStmt@0..43
+    WhileExpr@0..43
+      LabelDecl@0..8
+        Backtick@0..1 "`"
+        Ident@1..8 "my_loop"
+      Whitespace@8..9 " "
+      While@9..14 "while"
+      Whitespace@14..15 " "
+      Condition@15..20
+        BinaryExpr@15..20
+          VarRef@15..16
+            Ident@15..16 "x"
+          Whitespace@16..17 " "
+          Greater@17..18 ">"
+          Whitespace@18..19 " "
+          IntLiteral@19..20
+            Int@19..20 "0"
+      Whitespace@20..21 " "
+      Block@21..43
+        LBrace@21..22 "{"
+        Whitespace@22..25 "\n  "
+        ExprStmt@25..41
+          Call@25..40
+            VarRef@25..30
+              Ident@25..30 "print"
+            ArgList@30..40
+              LParen@30..31 "("
+              Arg@31..39
+                StringLiteral@31..39
+                  DoubleQuote@31..32 "\""
+                  StringContents@32..38 "Hello!"
+                  DoubleQuote@38..39 "\""
+              RParen@39..40 ")"
+          Semicolon@40..41 ";"
+        Whitespace@41..42 "\n"
+        RBrace@42..43 "}"

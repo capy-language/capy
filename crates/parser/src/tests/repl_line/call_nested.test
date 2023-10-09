@@ -1,7 +1,7 @@
 foo.bar(42);
 ===
 Root@0..12
-  ExprStmt@0..11
+  ExprStmt@0..12
     Call@0..11
       Path@0..7
         VarRef@0..3
@@ -14,4 +14,4 @@ Root@0..12
           IntLiteral@8..10
             Int@8..10 "42"
         RParen@10..11 ")"
-  Semicolon@11..12 ";"
+    Semicolon@11..12 ";"

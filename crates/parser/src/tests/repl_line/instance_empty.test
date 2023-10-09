@@ -1,7 +1,7 @@
 My_Struct {};
 ===
 Root@0..13
-  ExprStmt@0..12
+  ExprStmt@0..13
     StructLiteral@0..12
       Ty@0..9
         VarRef@0..9
@@ -9,4 +9,4 @@ Root@0..13
       Whitespace@9..10 " "
       LBrace@10..11 "{"
       RBrace@11..12 "}"
-  Semicolon@12..13 ";"
+    Semicolon@12..13 ";"

@@ -219,6 +219,8 @@ impl Compiler<'_> {
             var_id_gen: UIDGenerator::default(),
             locals: FxHashMap::default(),
             params: FxHashMap::default(),
+            exits: FxHashMap::default(),
+            continues: FxHashMap::default(),
         };
 
         function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);

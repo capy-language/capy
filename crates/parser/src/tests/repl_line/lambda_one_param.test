@@ -1,7 +1,7 @@
 (x: i32) {};
 ===
 Root@0..12
-  ExprStmt@0..11
+  ExprStmt@0..12
     Lambda@0..11
       ParamList@0..8
         LParen@0..1 "("
@@ -17,4 +17,4 @@ Root@0..12
       Block@9..11
         LBrace@9..10 "{"
         RBrace@10..11 "}"
-  Semicolon@11..12 ";"
+    Semicolon@11..12 ";"

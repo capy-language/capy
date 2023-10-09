@@ -272,7 +272,7 @@ fn input_snippet(
         .skip((start_line.0 as usize).saturating_sub(2))
     {
         let error_line = num >= start_line.0 as usize && num <= end_line.0 as usize;
-        let arrow = error_line && (missing_arrow || start_col.0 as usize >= file_line.len());
+        let arrow = error_line && missing_arrow;
         let file_line = match (num == start_line.0 as usize, num == end_line.0 as usize) {
             (true, true) => {
                 if arrow {
@@ -405,6 +405,9 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::UndefinedRef { name } => {
             format!("undefined reference to `{}`", interner.lookup(*name))
         }
+        LoweringDiagnosticKind::UndefinedLabel { name } => {
+            format!("there is no label named `{}`", interner.lookup(*name))
+        }
         LoweringDiagnosticKind::NonGlobalExtern => {
             "non-global functions cannot be extern".to_string()
         }
@@ -430,6 +433,13 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::NonU8CharLiteral => {
             "character literals cannot contain non-ASCII characters".to_string()
         }
+        LoweringDiagnosticKind::ContinueNonLoop { name } => match *name {
+            Some(name) => format!(
+                "cannot continue from `{}`, a non-loop",
+                interner.lookup(name)
+            ),
+            None => "can only `continue` from loops".to_string(),
+        },
     }
 }
 
@@ -637,6 +647,9 @@ fn ty_diagnostic_help_message(
         hir_ty::TyDiagnosticHelpKind::TailExprReturnsHere => {
             "this is the actual value that is being returned".to_string()
         }
+        hir_ty::TyDiagnosticHelpKind::BreakHere { break_ty } => {
+            format!("expected because this break returns a `{}`", break_ty.display(project_root, interner))
+        }
     }
 }
 
@@ -654,6 +667,9 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Struct => "`struct`",
         TokenKind::Import => "`import`",
         TokenKind::Comptime => "`comptime`",
+        TokenKind::Return => "`return`",
+        TokenKind::Break => "`break`",
+        TokenKind::Continue => "`continue`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",
@@ -682,6 +698,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Semicolon => "`;`",
         TokenKind::Arrow => "`->`",
         TokenKind::Caret => "`^`",
+        TokenKind::Backtick => "'`'", // this one is a little weird lol
         TokenKind::LParen => "`(`",
         TokenKind::RParen => "`)`",
         TokenKind::LBrack => "`[`",

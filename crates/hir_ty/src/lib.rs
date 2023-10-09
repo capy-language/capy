@@ -168,6 +168,7 @@ pub enum TyDiagnosticHelpKind {
     IfReturnsTypeHere { found: Intern<ResolvedTy> },
     MutableVariable,
     TailExprReturnsHere,
+    BreakHere { break_ty: Intern<ResolvedTy> },
 }
 
 #[derive(Debug)]
@@ -1090,10 +1091,7 @@ mod tests {
                 #- main.capy
                 numbers :: import "numbers.capy";
 
-                // todo: allow functions to return types defined in other modules w/o having to do this
-                imaginary :: numbers.imaginary;
-
-                fun :: () -> imaginary {
+                fun :: () -> numbers.imaginary {
                     foo : numbers.imaginary = 0;
 
                     my_magic := numbers.Magic_Struct {
@@ -1111,7 +1109,6 @@ mod tests {
             "#,
             expect![[r#"
                 main::fun : () -> numbers::imaginary
-                main::imaginary : type
                 main::numbers : module numbers
                 numbers::Magic_Struct : type
                 numbers::imaginary : type
@@ -1121,18 +1118,17 @@ mod tests {
                 main:
                   0 : module numbers
                   1 : module numbers
-                  2 : type
-                  4 : module numbers
-                  6 : numbers::imaginary
-                  7 : module numbers
-                  9 : numbers::imaginary
-                  10 : module numbers
-                  12 : numbers::imaginary
+                  3 : module numbers
+                  5 : numbers::imaginary
+                  6 : module numbers
+                  8 : numbers::imaginary
+                  9 : module numbers
+                  11 : numbers::imaginary
+                  12 : numbers::Magic_Struct
                   13 : numbers::Magic_Struct
-                  14 : numbers::Magic_Struct
+                  14 : numbers::imaginary
                   15 : numbers::imaginary
-                  16 : numbers::imaginary
-                  17 : () -> numbers::imaginary
+                  16 : () -> numbers::imaginary
                   l0 : numbers::imaginary
                   l1 : numbers::Magic_Struct
             "#]],
@@ -3150,8 +3146,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    81..89,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 50..58)),
+                    81..90,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 50..59)),
                 )]
             },
         );
@@ -3184,7 +3180,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    115..124,
+                    115..125,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 87..91)),
                 )]
             },
@@ -3239,7 +3235,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    50..59,
+                    50..60,
                     Some((TyDiagnosticHelpKind::FoundToBeImmutable, 50..55)),
                 )]
             },
@@ -3297,7 +3293,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::MutableRefToImmutableData,
                     87..95,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 50..58)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 50..59)),
                 )]
             },
         );
@@ -3380,8 +3376,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    297..318,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 167..274)),
+                    297..319,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 167..275)),
                 )]
             },
         );
@@ -3528,8 +3524,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    870..931,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 265..847)),
+                    870..932,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 265..848)),
                 )]
             },
         );
@@ -3587,7 +3583,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    480..517,
+                    480..518,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 484..490)),
                 )]
             },
@@ -3702,8 +3698,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    98..112,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..75)),
+                    98..113,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..76)),
                 )]
             },
         );
@@ -3727,7 +3723,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    55..60,
+                    55..61,
                     Some((
                         TyDiagnosticHelpKind::ImmutableParam { assignment: true },
                         25..31,
@@ -3832,7 +3828,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    62..74,
+                    62..75,
                     Some((
                         TyDiagnosticHelpKind::ImmutableParam { assignment: true },
                         25..38,
@@ -3861,7 +3857,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    59..68,
+                    59..69,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 25..35)),
                 )]
             },
@@ -3906,7 +3902,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    59..67,
+                    59..68,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 25..35)),
                 )]
             },
@@ -3931,7 +3927,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    63..71,
+                    63..72,
                     Some((TyDiagnosticHelpKind::NotMutatingRefThroughDeref, 63..67)),
                 )]
             },
@@ -3960,8 +3956,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    76..83,
-                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..25)),
+                    76..84,
+                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 17..26)),
                 )]
             },
         );
@@ -3997,7 +3993,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    106..125,
+                    106..126,
                     Some((TyDiagnosticHelpKind::ImmutableGlobal, 117..120)),
                 )]
             },
@@ -4031,8 +4027,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    114..122,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..91)),
+                    114..123,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..92)),
                 )]
             },
         );
@@ -4065,8 +4061,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    118..126,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
+                    118..127,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..96)),
                 )]
             },
         );
@@ -4170,7 +4166,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::MutableRefToImmutableData,
                     114..122,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..91)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..92)),
                 )]
             },
         );
@@ -4204,7 +4200,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::MutableRefToImmutableData,
                     118..126,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..95)),
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 80..96)),
                 )]
             },
         );
@@ -4523,7 +4519,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::LocalTyIsMutable,
                     106..115,
-                    Some((TyDiagnosticHelpKind::MutableVariable, 49..74)),
+                    Some((TyDiagnosticHelpKind::MutableVariable, 49..75)),
                 )]
             },
         );
@@ -4556,7 +4552,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::LocalTyIsMutable,
                     108..117,
-                    Some((TyDiagnosticHelpKind::MutableVariable, 49..74)),
+                    Some((TyDiagnosticHelpKind::MutableVariable, 49..75)),
                 )]
             },
         );
@@ -6442,7 +6438,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    133..144,
+                    133..145,
                     Some((TyDiagnosticHelpKind::ImmutableRef, 105..110)),
                 )]
             },
@@ -6509,7 +6505,7 @@ mod tests {
                 main::main : i32
                 0 : i32
             "#]],
-            |_| [(TyDiagnosticKind::EntryNotFunction, 17..26, None)],
+            |_| [(TyDiagnosticKind::EntryNotFunction, 17..27, None)],
             Some("main"),
         )
     }
@@ -6685,6 +6681,387 @@ mod tests {
                 l3 : type
                 l4 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
                 l5 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_void_block_no_tail_match() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        break;
+                        break {};
+                    }               
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : void
+                1 : void
+                2 : void
+                3 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_i32_block_no_tail_mismatch() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        break 123;
+                        break {};
+                    }               
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : void
+                2 : void
+                3 : void
+                4 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Void.into(),
+                        found: ResolvedTy::UInt(0).into(),
+                    },
+                    81..84,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_i32_block_tail_match() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        break 123;
+                        42
+                    }               
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_void_block_tail_mismatch() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        break {};
+                        42
+                    }               
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : void
+                1 : {uint}
+                2 : <unknown>
+                3 : <unknown>
+                4 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Void.into(),
+                        found: ResolvedTy::UInt(0).into(),
+                    },
+                    109..111,
+                    Some((
+                        TyDiagnosticHelpKind::BreakHere {
+                            break_ty: ResolvedTy::Void.into(),
+                        },
+                        75..84,
+                    )),
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_i32_block_from_inner() {
+        check(
+            r#"
+                foo :: () {
+                    `blk {
+                        {
+                            break blk` {};
+                        }
+
+                        42
+                    }               
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : void
+                1 : void
+                2 : {uint}
+                3 : <unknown>
+                4 : <unknown>
+                5 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Void.into(),
+                        found: ResolvedTy::UInt(0).into(),
+                    },
+                    176..178,
+                    Some((
+                        TyDiagnosticHelpKind::BreakHere {
+                            break_ty: ResolvedTy::Void.into(),
+                        },
+                        110..124,
+                    )),
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_unknown_label() {
+        check(
+            r#"
+                foo :: () {
+                    break blk` 42;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : void
+                2 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_match() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    return 100;
+                    42
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_mismatch() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    return "hello";
+                    42
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : string
+                2 : {uint}
+                3 : <unknown>
+                4 : () -> i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::String.into(),
+                        found: ResolvedTy::UInt(0).into(),
+                    },
+                    92..94,
+                    Some((
+                        TyDiagnosticHelpKind::BreakHere {
+                            break_ty: ResolvedTy::String.into(),
+                        },
+                        56..71,
+                    )),
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn break_from_loop() {
+        check(
+            r#"
+                foo :: () {
+                    `my_loop loop {
+                        break my_loop`;
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : void
+                1 : void
+                2 : void
+                3 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_from_loop_with_value() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    `my_loop loop {
+                        break my_loop` 42;
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : i32
+                2 : void
+                3 : i32
+                4 : i32
+                5 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_from_while() {
+        check(
+            r#"
+                foo :: () {
+                    `my_loop while 2 + 2 == 4 {
+                        break my_loop`;
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : bool
+                5 : void
+                6 : void
+                7 : void
+                8 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_from_while_with_void() {
+        check(
+            r#"
+                foo :: () {
+                    `my_loop while 2 + 2 == 4 {
+                        break my_loop` {};
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : bool
+                5 : void
+                6 : void
+                7 : void
+                8 : void
+                9 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_from_while_with_value() {
+        check(
+            r#"
+                foo :: () {
+                    `my_loop while 2 + 2 == 4 {
+                        break my_loop` 42;
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : bool
+                5 : {uint}
+                6 : void
+                7 : void
+                8 : void
+                9 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ResolvedTy::Void.into(),
+                        found: ResolvedTy::UInt(0).into(),
+                    },
+                    116..118,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn continue_works() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    loop {
+                        continue;
+                    }
+                    42
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : void
+                2 : void
+                3 : i32
+                4 : i32
+                5 : () -> i32
             "#]],
             |_| [],
         )

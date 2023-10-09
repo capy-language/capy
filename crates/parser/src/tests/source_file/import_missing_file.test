@@ -2,7 +2,7 @@ foo :: import;
 bar :: 32;
 ===
 Root@0..25
-  Binding@0..13
+  Binding@0..14
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
@@ -10,9 +10,9 @@ Root@0..25
     Whitespace@6..7 " "
     ImportExpr@7..13
       Import@7..13 "import"
-  Semicolon@13..14 ";"
+    Semicolon@13..14 ";"
   Whitespace@14..15 "\n"
-  Binding@15..24
+  Binding@15..25
     Ident@15..18 "bar"
     Whitespace@18..19 " "
     Colon@19..20 ":"
@@ -20,5 +20,5 @@ Root@0..25
     Whitespace@21..22 " "
     IntLiteral@22..24
       Int@22..24 "32"
-  Semicolon@24..25 ";"
+    Semicolon@24..25 ";"
 error at 13: missing file name string
