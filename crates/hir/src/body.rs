@@ -190,9 +190,16 @@ pub enum BinaryOp {
     Eq,
     Ne,
 
-    // boolean operations
-    And,
-    Or,
+    // bitwise operations
+    BAnd,
+    BOr,
+    Xor,
+    LShift,
+    RShift,
+
+    // logical operations
+    LAnd,
+    LOr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -201,8 +208,11 @@ pub enum UnaryOp {
     Pos,
     Neg,
 
-    // boolean operations
-    Not,
+    // bitwise operations
+    BNot,
+
+    // logical operations
+    LNot,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -802,8 +812,13 @@ impl<'a> Ctx<'a> {
             Some(ast::BinaryOp::Ge(_)) => BinaryOp::Ge,
             Some(ast::BinaryOp::Eq(_)) => BinaryOp::Eq,
             Some(ast::BinaryOp::Ne(_)) => BinaryOp::Ne,
-            Some(ast::BinaryOp::And(_)) => BinaryOp::And,
-            Some(ast::BinaryOp::Or(_)) => BinaryOp::Or,
+            Some(ast::BinaryOp::BAnd(_)) => BinaryOp::BAnd,
+            Some(ast::BinaryOp::BOr(_)) => BinaryOp::BOr,
+            Some(ast::BinaryOp::Xor(_)) => BinaryOp::Xor,
+            Some(ast::BinaryOp::LShift(_)) => BinaryOp::LShift,
+            Some(ast::BinaryOp::RShift(_)) => BinaryOp::RShift,
+            Some(ast::BinaryOp::LAnd(_)) => BinaryOp::LAnd,
+            Some(ast::BinaryOp::LOr(_)) => BinaryOp::LOr,
             None => return Expr::Missing,
         };
 
@@ -816,7 +831,8 @@ impl<'a> Ctx<'a> {
         let op = match unary_expr.op(self.tree) {
             Some(ast::UnaryOp::Pos(_)) => UnaryOp::Pos,
             Some(ast::UnaryOp::Neg(_)) => UnaryOp::Neg,
-            Some(ast::UnaryOp::Not(_)) => UnaryOp::Not,
+            Some(ast::UnaryOp::BNot(_)) => UnaryOp::BNot,
+            Some(ast::UnaryOp::LNot(_)) => UnaryOp::LNot,
             None => return Expr::Missing,
         };
 
@@ -1618,8 +1634,13 @@ impl Bodies {
                         BinaryOp::Ge => s.push_str(">="),
                         BinaryOp::Eq => s.push_str("=="),
                         BinaryOp::Ne => s.push_str("!="),
-                        BinaryOp::And => s.push_str("&&"),
-                        BinaryOp::Or => s.push_str("||"),
+                        BinaryOp::BAnd => s.push('&'),
+                        BinaryOp::BOr => s.push('|'),
+                        BinaryOp::Xor => s.push('~'),
+                        BinaryOp::LShift => s.push_str("<<"),
+                        BinaryOp::RShift => s.push_str(">>"),
+                        BinaryOp::LAnd => s.push_str("&&"),
+                        BinaryOp::LOr => s.push_str("||"),
                     }
 
                     s.push(' ');
@@ -1639,7 +1660,8 @@ impl Bodies {
                     match op {
                         UnaryOp::Pos => s.push('+'),
                         UnaryOp::Neg => s.push('-'),
-                        UnaryOp::Not => s.push('!'),
+                        UnaryOp::BNot => s.push('~'),
+                        UnaryOp::LNot => s.push('!'),
                     }
 
                     write_expr(

@@ -56,7 +56,7 @@ pub enum NodeKind {
     VarDef,  // `x := 5`
     Assign,
     ExprStmt,
-    ReturnStmt,
+    ReturnStmt, // todo: change these to void expressions
     BreakStmt,
     ContinueStmt,
     Lambda,

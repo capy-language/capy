@@ -985,23 +985,56 @@ mod tests {
     fn break_casting() {
         check_raw(
             r#"
-            main :: () -> i64 {
-                {
-                    if true {
-                        y : i8 = 5;
-                        break y;
+                main :: () -> i64 {
+                    {
+                        if true {
+                            y : i8 = 5;
+                            break y;
+                        }
+    
+                        y : i16 = 42;
+                        y
                     }
-
-                    y : i16 = 42;
-                    y
                 }
-            }
-        "#,
+            "#,
             "main",
             expect![[r#"
 
 "#]],
             5,
+        )
+    }
+
+    #[test]
+    fn bitwise_operators() {
+        check_raw(
+            r#"
+                main :: () {
+                    printf("~2147483647 =      %i\n", ~{4294967295 as u32});
+                    printf(" 5032 &  25 =     %i\n", 5032 & 32);
+                    printf(" 5000 |  20 =   %i\n", 5000 | 32);
+                    printf(" 5032 ~  36 =   %i\n", 5032 ~ 36);
+                    printf(" 5032 &~ 36 =   %i\n", 5032 &~ 36); 
+                    printf(" 5032 <<  2 =  %i\n", 5032 << 2);
+                    printf(" 5032 >>  2 =   %i\n", 5032 >> 2);
+                    printf("-5032 >>  2 =  %i\n", -5032 >> 2);
+                }
+                
+                printf :: (s: string, n: i64) extern;
+            "#,
+            "main",
+            expect![[r#"
+                ~2147483647 =      0
+                 5032 &  25 =     32
+                 5000 |  20 =   5032
+                 5032 ~  36 =   5004
+                 5032 &~ 36 =   5000
+                 5032 <<  2 =  20128
+                 5032 >>  2 =   1258
+                -5032 >>  2 =  -1258
+
+            "#]],
+            0,
         )
     }
     // the "ptrs_to_ptrs.capy" test is not reproducible

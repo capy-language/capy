@@ -25,7 +25,7 @@ Root@0..36
           IntLiteral@15..16
             Int@15..16 "5"
           Whitespace@16..17 " "
-          LessEquals@17..19 "<="
+          LeftEquals@17..19 "<="
           Whitespace@19..20 " "
           IntLiteral@20..22
             Int@20..22 "10"

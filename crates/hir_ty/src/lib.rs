@@ -2132,7 +2132,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
-                        op: hir::BinaryOp::And,
+                        op: hir::BinaryOp::LAnd,
                         first: ResolvedTy::String.into(),
                         second: ResolvedTy::String.into(),
                     },

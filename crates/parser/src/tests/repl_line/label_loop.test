@@ -16,7 +16,7 @@ Root@0..43
           VarRef@15..16
             Ident@15..16 "x"
           Whitespace@16..17 " "
-          Greater@17..18 ">"
+          Right@17..18 ">"
           Whitespace@18..19 " "
           IntLiteral@19..20
             Int@19..20 "0"

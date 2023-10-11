@@ -807,7 +807,7 @@ impl FunctionCompiler<'_> {
                 op,
             } => {
                 match op {
-                    hir::BinaryOp::And => {
+                    hir::BinaryOp::LAnd => {
                         let rhs_block = self.builder.create_block();
                         let exit_block = self.builder.create_block();
 
@@ -830,7 +830,7 @@ impl FunctionCompiler<'_> {
 
                         return Some(result);
                     }
-                    hir::BinaryOp::Or => {
+                    hir::BinaryOp::LOr => {
                         let rhs_block = self.builder.create_block();
                         let exit_block = self.builder.create_block();
 
@@ -895,7 +895,11 @@ impl FunctionCompiler<'_> {
                         }
                         hir::BinaryOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
                         hir::BinaryOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::And | hir::BinaryOp::Or => unreachable!(),
+                        hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
+                        hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
+                        hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
+                        hir::BinaryOp::LShift | hir::BinaryOp::RShift => unreachable!(),
+                        hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
                     })
                 } else {
                     Some(match op {
@@ -956,7 +960,18 @@ impl FunctionCompiler<'_> {
                         }
                         hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
                         hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::And | hir::BinaryOp::Or => unreachable!(),
+                        hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
+                        hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
+                        hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
+                        hir::BinaryOp::LShift => self.builder.ins().ishl(lhs, rhs),
+                        hir::BinaryOp::RShift => {
+                            if max_ty.signed {
+                                self.builder.ins().sshr(lhs, rhs)
+                            } else {
+                                self.builder.ins().ushr(lhs, rhs)
+                            }
+                        }
+                        hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
                     })
                 }
             }
@@ -972,13 +987,15 @@ impl FunctionCompiler<'_> {
                     match op {
                         hir::UnaryOp::Pos => Some(expr),
                         hir::UnaryOp::Neg => Some(self.builder.ins().fneg(expr)),
-                        hir::UnaryOp::Not => unreachable!(),
+                        hir::UnaryOp::BNot => Some(self.builder.ins().bnot(expr)),
+                        hir::UnaryOp::LNot => unreachable!(),
                     }
                 } else {
                     match op {
                         hir::UnaryOp::Pos => Some(expr),
                         hir::UnaryOp::Neg => Some(self.builder.ins().ineg(expr)),
-                        hir::UnaryOp::Not => {
+                        hir::UnaryOp::BNot => Some(self.builder.ins().bnot(expr)),
+                        hir::UnaryOp::LNot => {
                             let zero = self.builder.ins().iconst(expr_ty.ty, 0);
                             Some(self.builder.ins().icmp(IntCC::Equal, expr, zero))
                         }

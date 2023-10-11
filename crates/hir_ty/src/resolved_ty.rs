@@ -707,15 +707,20 @@ impl BinaryOutput for hir::BinaryOp {
                 | hir::BinaryOp::Sub
                 | hir::BinaryOp::Mul
                 | hir::BinaryOp::Div
-                | hir::BinaryOp::Mod => max_ty,
+                | hir::BinaryOp::Mod
+                | hir::BinaryOp::BAnd
+                | hir::BinaryOp::BOr
+                | hir::BinaryOp::Xor
+                | hir::BinaryOp::LShift
+                | hir::BinaryOp::RShift => max_ty,
                 hir::BinaryOp::Lt
                 | hir::BinaryOp::Gt
                 | hir::BinaryOp::Le
                 | hir::BinaryOp::Ge
                 | hir::BinaryOp::Eq
                 | hir::BinaryOp::Ne
-                | hir::BinaryOp::And
-                | hir::BinaryOp::Or => ResolvedTy::Bool,
+                | hir::BinaryOp::LAnd
+                | hir::BinaryOp::LOr => ResolvedTy::Bool,
             },
         })
     }
@@ -732,7 +737,7 @@ impl UnaryOutput for UnaryOp {
                 ResolvedTy::UInt(bit_width) => ResolvedTy::IInt(bit_width).into(),
                 _ => input,
             },
-            hir::UnaryOp::Pos | hir::UnaryOp::Not => input,
+            hir::UnaryOp::Pos | hir::UnaryOp::BNot | hir::UnaryOp::LNot => input,
         }
     }
 }
@@ -746,17 +751,23 @@ pub(crate) trait TypedOp {
 impl TypedOp for hir::BinaryOp {
     fn can_perform(&self, found: &ResolvedTy) -> bool {
         let expected: &[ResolvedTy] = match self {
-            hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
-                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+            hir::BinaryOp::Add
+            | hir::BinaryOp::Sub
+            | hir::BinaryOp::Mul
+            | hir::BinaryOp::Div
+            | hir::BinaryOp::BAnd
+            | hir::BinaryOp::BOr
+            | hir::BinaryOp::Xor => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
+            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
+                &[ResolvedTy::IInt(0)]
             }
-            hir::BinaryOp::Mod => &[ResolvedTy::IInt(0)],
             hir::BinaryOp::Lt
             | hir::BinaryOp::Gt
             | hir::BinaryOp::Le
             | hir::BinaryOp::Ge
             | hir::BinaryOp::Eq
             | hir::BinaryOp::Ne => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
-            hir::BinaryOp::And | hir::BinaryOp::Or => &[ResolvedTy::Bool],
+            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[ResolvedTy::Bool],
         };
 
         expected
@@ -766,17 +777,23 @@ impl TypedOp for hir::BinaryOp {
 
     fn default_ty(&self) -> ResolvedTy {
         match self {
-            hir::BinaryOp::Add | hir::BinaryOp::Sub | hir::BinaryOp::Mul | hir::BinaryOp::Div => {
+            hir::BinaryOp::Add
+            | hir::BinaryOp::Sub
+            | hir::BinaryOp::Mul
+            | hir::BinaryOp::Div
+            | hir::BinaryOp::BAnd
+            | hir::BinaryOp::BOr
+            | hir::BinaryOp::Xor => ResolvedTy::IInt(0),
+            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
                 ResolvedTy::IInt(0)
             }
-            hir::BinaryOp::Mod => ResolvedTy::IInt(0),
             hir::BinaryOp::Lt
             | hir::BinaryOp::Gt
             | hir::BinaryOp::Le
             | hir::BinaryOp::Ge
             | hir::BinaryOp::Eq
             | hir::BinaryOp::Ne => ResolvedTy::Bool,
-            hir::BinaryOp::And | hir::BinaryOp::Or => ResolvedTy::Bool,
+            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => ResolvedTy::Bool,
         }
     }
 }
@@ -784,8 +801,10 @@ impl TypedOp for hir::BinaryOp {
 impl TypedOp for hir::UnaryOp {
     fn can_perform(&self, found: &ResolvedTy) -> bool {
         let expected: &[ResolvedTy] = match self {
-            hir::UnaryOp::Neg | hir::UnaryOp::Pos => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
-            hir::UnaryOp::Not => &[ResolvedTy::Bool],
+            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => {
+                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+            }
+            hir::UnaryOp::LNot => &[ResolvedTy::Bool],
         };
 
         expected
@@ -795,8 +814,8 @@ impl TypedOp for hir::UnaryOp {
 
     fn default_ty(&self) -> ResolvedTy {
         match self {
-            hir::UnaryOp::Neg | hir::UnaryOp::Pos => ResolvedTy::IInt(0),
-            hir::UnaryOp::Not => ResolvedTy::Bool,
+            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => ResolvedTy::IInt(0),
+            hir::UnaryOp::LNot => ResolvedTy::Bool,
         }
     }
 }

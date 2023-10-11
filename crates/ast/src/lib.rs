@@ -754,16 +754,23 @@ def_multi_token! {
     Mod -> Percent
 
     // comparison operations
-    Lt -> Less
-    Gt -> Greater
-    Le -> LessEquals
-    Ge -> GreaterEquals
+    Lt -> Left
+    Gt -> Right
+    Le -> LeftEquals
+    Ge -> RightEquals
     Eq -> DoubleEquals
     Ne -> BangEquals
 
-    // boolean operations
-    And -> DoubleAnd
-    Or -> DoublePipe
+    // bitwise operations
+    BAnd -> And
+    BOr -> Pipe
+    Xor -> Tilde
+    LShift -> DoubleLeft
+    RShift -> DoubleRight
+
+    // logical operations
+    LAnd -> DoubleAnd
+    LOr -> DoublePipe
 }
 
 def_ast_node!(UnaryExpr);
@@ -784,8 +791,11 @@ def_multi_token! {
     Pos -> Plus
     Neg -> Hyphen
 
-    // boolean operations
-    Not -> Bang
+    // bitwise operations
+    BNot -> Tilde
+
+    // logical operations
+    LNot -> Bang
 }
 
 def_ast_token!(Mut);
@@ -797,15 +807,20 @@ def_ast_token!(Hyphen);
 def_ast_token!(Asterisk);
 def_ast_token!(Slash);
 def_ast_token!(Percent);
-def_ast_token!(Less);
-def_ast_token!(Greater);
-def_ast_token!(LessEquals);
-def_ast_token!(GreaterEquals);
+def_ast_token!(Left);
+def_ast_token!(DoubleLeft);
+def_ast_token!(LeftEquals);
+def_ast_token!(Right);
+def_ast_token!(DoubleRight);
+def_ast_token!(RightEquals);
 def_ast_token!(DoubleEquals);
 def_ast_token!(BangEquals);
+def_ast_token!(Tilde);
 def_ast_token!(Equals);
 def_ast_token!(Bang);
+def_ast_token!(And);
 def_ast_token!(DoubleAnd);
+def_ast_token!(Pipe);
 def_ast_token!(DoublePipe);
 def_ast_token!(Ident);
 def_ast_token!(Int);

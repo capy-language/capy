@@ -62,17 +62,29 @@ fn parse_expr_bp(
         } else if p.at(TokenKind::DoubleAnd) {
             (3, 4)
         } else if p.at_set(TokenSet::new([
-            TokenKind::Less,
-            TokenKind::LessEquals,
-            TokenKind::Greater,
-            TokenKind::GreaterEquals,
+            TokenKind::Left,
+            TokenKind::LeftEquals,
+            TokenKind::Right,
+            TokenKind::RightEquals,
             TokenKind::DoubleEquals,
             TokenKind::BangEquals,
         ])) {
             (5, 6)
-        } else if p.at(TokenKind::Plus) || p.at(TokenKind::Hyphen) {
+        } else if p.at_set(TokenSet::new([
+            TokenKind::Plus,
+            TokenKind::Hyphen,
+            TokenKind::Pipe,
+            TokenKind::Tilde,
+        ])) {
             (7, 8)
-        } else if p.at(TokenKind::Asterisk) || p.at(TokenKind::Slash) || p.at(TokenKind::Percent) {
+        } else if p.at_set(TokenSet::new([
+            TokenKind::Asterisk,
+            TokenKind::Slash,
+            TokenKind::Percent,
+            TokenKind::And,
+            TokenKind::DoubleLeft,
+            TokenKind::DoubleRight,
+        ])) {
             (9, 10)
         } else {
             break;
@@ -102,8 +114,12 @@ fn parse_lhs(
     // println!("parse_lhs @ {:?}", p.peek());
 
     const LOOP_TOKENS: TokenSet = TokenSet::new([TokenKind::While, TokenKind::Loop]);
-    const PREFIX_TOKENS: TokenSet =
-        TokenSet::new([TokenKind::Hyphen, TokenKind::Plus, TokenKind::Bang]);
+    const PREFIX_TOKENS: TokenSet = TokenSet::new([
+        TokenKind::Hyphen,
+        TokenKind::Plus,
+        TokenKind::Bang,
+        TokenKind::Tilde,
+    ]);
 
     let cm = if p.at(TokenKind::Int) {
         parse_int_literal(p)
@@ -369,10 +385,12 @@ fn parse_var_ref(p: &mut Parser) -> CompletedMarker {
 }
 
 fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
-    let minus = p.at(TokenKind::Hyphen);
-    let plus = p.at(TokenKind::Plus);
-    let bang = p.at(TokenKind::Bang);
-    assert!(minus || plus || bang);
+    assert!(p.at_set(TokenSet::new([
+        TokenKind::Hyphen,
+        TokenKind::Plus,
+        TokenKind::Bang,
+        TokenKind::Tilde
+    ])));
 
     let m = p.start();
 

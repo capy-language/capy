@@ -472,15 +472,20 @@ fn ty_diagnostic_message(
                     hir::BinaryOp::Sub => "subtracted by",
                     hir::BinaryOp::Mul => "multiplied by",
                     hir::BinaryOp::Div => "divided by",
-                    hir::BinaryOp::Mod => "modulo'ed by",
+                    hir::BinaryOp::Mod => "modulo'd by",
+                    hir::BinaryOp::BAnd => "bitwise and'd with",
+                    hir::BinaryOp::BOr => "bitwise or'd with",
+                    hir::BinaryOp::Xor => "bitwise xor'd with",
+                    hir::BinaryOp::LShift => "left shifted with",
+                    hir::BinaryOp::RShift => "right shifted with",
                     hir::BinaryOp::Lt
                     | hir::BinaryOp::Gt
                     | hir::BinaryOp::Le
                     | hir::BinaryOp::Ge
                     | hir::BinaryOp::Eq
                     | hir::BinaryOp::Ne
-                    | hir::BinaryOp::And
-                    | hir::BinaryOp::Or => "compared to",
+                    | hir::BinaryOp::LAnd
+                    | hir::BinaryOp::LOr => "compared to",
                 },
                 second.display(project_root, interner)
             )
@@ -491,7 +496,8 @@ fn ty_diagnostic_message(
                 match op {
                     hir::UnaryOp::Neg => '-',
                     hir::UnaryOp::Pos => '+',
-                    hir::UnaryOp::Not => '!',
+                    hir::UnaryOp::BNot => '~',
+                    hir::UnaryOp::LNot => '!',
                 },
                 ty.display(project_root, interner)
             )
@@ -682,15 +688,20 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Asterisk => "`*`",
         TokenKind::Slash => "`/`",
         TokenKind::Percent => "`%`",
-        TokenKind::Less => "`<`",
-        TokenKind::LessEquals => "`<=`",
-        TokenKind::Greater => "`>`",
-        TokenKind::GreaterEquals => "`>=`",
+        TokenKind::Left => "`<`",
+        TokenKind::DoubleLeft => "`<<`",
+        TokenKind::LeftEquals => "`<=`",
+        TokenKind::Right => "`>`",
+        TokenKind::DoubleRight => "`>>`",
+        TokenKind::RightEquals => "`>=`",
         TokenKind::Bang => "`!`",
         TokenKind::BangEquals => "`!=`",
+        TokenKind::And => "`&`",
         TokenKind::DoubleAnd => "`&&`",
+        TokenKind::Pipe => "`|`",
         TokenKind::DoublePipe => "`||`",
         TokenKind::DoubleEquals => "`==`",
+        TokenKind::Tilde => "`~`",
         TokenKind::Equals => "`=`",
         TokenKind::Dot => "`.`",
         TokenKind::Colon => "`:`",

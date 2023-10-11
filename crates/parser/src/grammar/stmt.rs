@@ -24,7 +24,10 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
         let m = p.start();
         p.bump();
 
-        if p.at(TokenKind::Ident) && p.at_ahead(1, TokenSet::new([TokenKind::Backtick])) {
+        if !at_return
+            && p.at(TokenKind::Ident)
+            && p.at_ahead(1, TokenSet::new([TokenKind::Backtick]))
+        {
             let label = p.start();
             p.bump();
             p.bump();
