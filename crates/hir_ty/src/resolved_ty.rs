@@ -761,12 +761,12 @@ impl TypedOp for hir::BinaryOp {
             hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
                 &[ResolvedTy::IInt(0)]
             }
-            hir::BinaryOp::Lt
-            | hir::BinaryOp::Gt
-            | hir::BinaryOp::Le
-            | hir::BinaryOp::Ge
-            | hir::BinaryOp::Eq
-            | hir::BinaryOp::Ne => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
+            hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
+                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+            }
+            hir::BinaryOp::Eq | hir::BinaryOp::Ne => {
+                &[ResolvedTy::Char, ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+            }
             hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[ResolvedTy::Bool],
         };
 

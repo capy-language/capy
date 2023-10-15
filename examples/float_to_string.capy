@@ -1,6 +1,4 @@
-libc :: import "std/libc.capy";
-ptr  :: import "std/ptr.capy";
-math :: import "std/math.capy";
+core :: import "../core/mod.capy";
 
 HYPHEN : u8 : 45;
 PERIOD : u8 : 46;
@@ -12,9 +10,9 @@ reverse :: (buf: ^mut u8, starting_offset: usize, len: usize) {
     temp := 0;
 
     while i < j {
-        temp = ptr.read(buf, i);
-        ptr.write(buf, ptr.read(buf, j), i);
-        ptr.write(buf, temp, j);
+        temp = core.ptr.read(buf, i);
+        core.ptr.write(buf, core.ptr.read(buf, j), i);
+        core.ptr.write(buf, temp, j);
         i = i + 1;
         j = j - 1;
     }
@@ -26,12 +24,12 @@ int_to_string :: (n: i32, buf: ^mut u8, buf_offset: usize, required_digits: usiz
     n := n;
     if n < 0 {
         n = -n;
-        ptr.write(buf, HYPHEN, idx);
+        core.ptr.write(buf, HYPHEN, idx);
         idx = idx + 1;
     }
 
     if n == 0 {
-        ptr.write(buf, ZERO, idx);
+        core.ptr.write(buf, ZERO, idx);
         idx = idx + 1;
     }
 
@@ -39,13 +37,13 @@ int_to_string :: (n: i32, buf: ^mut u8, buf_offset: usize, required_digits: usiz
         remainder := n % 10;
         n = n / 10;
 
-        ptr.write(buf, {ZERO + remainder} as u8, idx);
+        core.ptr.write(buf, {ZERO + remainder} as u8, idx);
 
         idx = idx + 1;
     }
 
     while idx - buf_offset < required_digits {
-        ptr.write(buf, ZERO, idx);
+        core.ptr.write(buf, ZERO, idx);
         idx = idx + 1;
     }
 
@@ -64,9 +62,9 @@ ftoa :: (n: f32, buf: ^mut u8, afterpoint: usize) {
     idx := int_to_string(ipart, buf, 0, 0);
 
     if afterpoint != 0 {
-        ptr.write(buf, PERIOD, idx);
+        core.ptr.write(buf, PERIOD, idx);
 
-        fpart = fpart * math.pow(10, afterpoint as i32) as f32;
+        fpart = fpart * core.math.pow(10, afterpoint as i32) as f32;
 
         // add one for the period
         int_to_string(fpart as i32, buf, idx + 1, afterpoint);
@@ -76,59 +74,59 @@ ftoa :: (n: f32, buf: ^mut u8, afterpoint: usize) {
 clear_buf :: (buf: ^mut u8, len: usize) {
     idx := 0;
     while idx < len {
-        ptr.write(buf, 0, idx);
+        core.ptr.write(buf, 0, idx);
         idx = idx + 1;
     }
 }
 
 main :: () {
-    // libc.malloc returns a `^mut any`, so we must explicitly cast that to the pointer type we want
-    buf := libc.malloc(20) as ^mut u8;
+    // core.libc.malloc returns a `^mut any`, so we must explicitly cast that to the pointer type we want
+    buf := core.libc.malloc(20) as ^mut u8;
 
     ftoa(3.14159, buf, 3);
     print_buf(buf);
     printf("\n");
 
     printf("ln 10 = ");
-    ftoa(comptime math.ln(10) as f32, buf, 3);
+    ftoa(comptime core.math.ln(10) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 50 = ");
-    ftoa(comptime math.ln(50) as f32, buf, 3);
+    ftoa(comptime core.math.ln(50) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 100 = ");
-    ftoa(comptime math.ln(100) as f32, buf, 3);
+    ftoa(comptime core.math.ln(100) as f32, buf, 3);
     print_buf(buf);
 
     printf("ln 500 = ");
-    ftoa(comptime math.ln(500) as f32, buf, 3);
+    ftoa(comptime core.math.ln(500) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 10 = ");
-    ftoa(comptime math.log10(10) as f32, buf, 3);
+    ftoa(comptime core.math.log10(10) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 50 = ");
-    ftoa(comptime math.log10(50) as f32, buf, 3);
+    ftoa(comptime core.math.log10(50) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 100 = ");
-    ftoa(comptime math.log10(100) as f32, buf, 3);
+    ftoa(comptime core.math.log10(100) as f32, buf, 3);
     print_buf(buf);
 
     printf("log 500 = ");
-    ftoa(comptime math.log10(500) as f32, buf, 3);
+    ftoa(comptime core.math.log10(500) as f32, buf, 3);
     print_buf(buf);
 
-    libc.free(buf);
+    core.libc.free(buf);
 }
 
 print_buf :: (buf: ^u8) {
     ptr := buf as ^any;
     ptr := ptr as string;
-    libc.puts(ptr);
+    core.libc.puts(ptr);
 }
 
-// this is only to avoid the newline in `libc.puts`
+// this is only to avoid the newline in `core.libc.puts`
 printf :: (str: string) extern;

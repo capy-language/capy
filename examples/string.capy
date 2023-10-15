@@ -1,5 +1,5 @@
-libc :: import "std/libc.capy";
-ptr :: import "std/ptr.capy";
+libc :: import "../core/libc.capy";
+ptr :: import "../core/ptr.capy";
 
 max :: (x: usize, y: usize) -> usize {
     if x > y {

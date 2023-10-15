@@ -55,14 +55,15 @@ pub(crate) fn as_compiler_defined(
     let module = interner.lookup(fqn.module.0);
     let module = std::path::Path::new(module);
 
+    // todo: fix this
     let is_std = module
         .parent()
         .and_then(|p| p.file_name())
         .map(|n| n == "std")
         .unwrap_or(false);
-    if !is_std {
-        return None;
-    }
+    // if !is_std {
+    //     return None;
+    // }
 
     let filename = module.file_name().unwrap_or_default().to_string_lossy();
 

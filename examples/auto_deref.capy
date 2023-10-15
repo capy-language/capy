@@ -1,4 +1,4 @@
-libc :: import "std/libc.capy";
+libc :: import "../core/libc.capy";
 
 Foo :: struct {
     a: i32,

@@ -7,10 +7,10 @@ edition = "2021"
 
 [dependencies]
 ast = { path = "../ast" }
-la-arena = "0.2.0"
+la-arena = "0.3"
 interner = { path = "../interner" }
 rustc-hash = "1.1"
-smol_str = "0.1.17"
+smol_str = "0.2"
 syntax = { path = "../syntax" }
 text-size = "1.1"
 regex = "1.9.4"

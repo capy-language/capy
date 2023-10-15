@@ -1,5 +1,5 @@
 
-libc :: import "std/libc.capy";
+libc :: import "../core/libc.capy";
 
 // comptime blocks are JIT compiled and the bytes they return are baked into the data segment of the program
 my_global :: comptime {
@@ -18,7 +18,7 @@ main :: () {
     powers_of_two := comptime {
         libc.puts("Doing heavy calculation...");
 
-        math :: import "std/math.capy";
+        math :: import "../core/math.capy";
 
         array := [6] i32 { 0, 0, 0, 0, 0, 0 };
 

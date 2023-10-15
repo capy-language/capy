@@ -1,0 +1,21 @@
+
+libc :: import "libc.capy";
+ptr :: import "ptr.capy";
+math :: import "math.capy";
+
+print :: (str: string) {
+    str := str as ^char;
+    i := 0;
+    loop {
+        ch := ptr.read(str, i) as char;
+        if ch == '\0' {
+            break;
+        }
+
+        libc.putchar(ch);
+    }
+}
+
+println :: (str: string) {
+    libc.puts(str);
+}

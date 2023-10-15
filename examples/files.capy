@@ -1,5 +1,5 @@
 
-libc :: import "std/libc.capy";
+libc :: import "../core/libc.capy";
 
 write_to_file :: (filename: string) {
     my_file := libc.fopen("hello.txt", "w");

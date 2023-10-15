@@ -1,3 +1,4 @@
+mod git;
 mod source;
 
 use std::{
@@ -137,6 +138,16 @@ fn compile_file(
     } else {
         ("", "", "", "")
     };
+
+    let lib_dir = PathBuf::new()
+        .join(std::path::MAIN_SEPARATOR_STR)
+        .join("capy")
+        .join("libs");
+    if !lib_dir.exists() {
+        fs::create_dir_all(&lib_dir)
+            .unwrap_or_else(|why| panic!("couldn't create `{}`: {}", lib_dir.display(), why));
+        git::download_core(&lib_dir);
+    }
 
     if output
         .as_ref()

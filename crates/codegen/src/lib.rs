@@ -397,7 +397,7 @@ mod tests {
     fn hello_world() {
         check_files(
             "../../examples/hello_world.capy",
-            &["../../examples/std/libc.capy"],
+            &["../../core/libc.capy"],
             "main",
             expect![[r#"
             Hello, World!
@@ -489,7 +489,7 @@ mod tests {
     fn array_of_arrays() {
         check_files(
             "../../examples/arrays_of_arrays.capy",
-            &["../../examples/std/libc.capy"],
+            &["../../core/libc.capy"],
             "main",
             expect![[r#"
                 my_array[0][0][0] = 2
@@ -557,7 +557,7 @@ mod tests {
     fn files() {
         check_files(
             "../../examples/files.capy",
-            &["../../examples/std/libc.capy"],
+            &["../../core/libc.capy"],
             "main",
             expect![[r#"
             writing to hello.txt
@@ -591,7 +591,12 @@ mod tests {
     fn pretty() {
         check_files(
             "../../examples/pretty.capy",
-            &["../../examples/std/libc.capy"],
+            &[
+                "../../core/mod.capy",
+                "../../core/libc.capy",
+                "../../core/ptr.capy",
+                "../../core/math.capy",
+            ],
             "main",
             expect![["
                 \u{1b}[32mHello!\u{b}\u{1b}[34mWorld\u{1b}[0m
@@ -612,9 +617,10 @@ mod tests {
         check_files(
             "../../examples/float_to_string.capy",
             &[
-                "../../examples/std/libc.capy",
-                "../../examples/std/ptr.capy",
-                "../../examples/std/math.capy",
+                "../../core/mod.capy",
+                "../../core/libc.capy",
+                "../../core/ptr.capy",
+                "../../core/math.capy",
             ],
             "main",
             expect![[r#"
@@ -656,7 +662,7 @@ mod tests {
     fn structs() {
         check_files(
             "../../examples/structs.capy",
-            &["../../examples/std/libc.capy"],
+            &["../../core/libc.capy"],
             "main",
             expect![[r#"
             people:
@@ -676,10 +682,7 @@ mod tests {
     fn comptime() {
         check_files(
             "../../examples/comptime.capy",
-            &[
-                "../../examples/std/libc.capy",
-                "../../examples/std/math.capy",
-            ],
+            &["../../core/libc.capy", "../../core/math.capy"],
             "main",
             expect![[r#"
             Hello at runtime!
@@ -700,10 +703,7 @@ mod tests {
     fn string() {
         check_files(
             "../../examples/string.capy",
-            &[
-                "../../examples/std/libc.capy",
-                "../../examples/std/ptr.capy",
-            ],
+            &["../../core/libc.capy", "../../core/ptr.capy"],
             "main",
             expect![[r#"
             Reallocating!
@@ -730,7 +730,7 @@ mod tests {
     fn auto_deref() {
         check_files(
             "../../examples/auto_deref.capy",
-            &["../../examples/std/libc.capy"],
+            &["../../core/libc.capy"],
             "main",
             expect![[r#"
             struct auto deref:
