@@ -2,7 +2,7 @@ mod git;
 mod source;
 
 use std::{
-    cell::RefCell, env, io, path::PathBuf, process::exit, rc::Rc, str::FromStr, time::Instant,
+    cell::RefCell, env, io, mem, path::PathBuf, process::exit, rc::Rc, str::FromStr, time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -47,6 +47,11 @@ enum BuildAction {
         #[arg(short, long)]
         output: Option<String>,
 
+        /// The directory to search for modules.
+        /// If this folder does not contain `core` it will be downloaded
+        #[arg(long)]
+        mod_dir: Option<String>,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -68,6 +73,11 @@ enum BuildAction {
         /// The final executable name. This doesn't need a file extension
         #[arg(short, long)]
         output: Option<String>,
+
+        /// The directory to search for modules.
+        /// If this folder does not contain `core` it will be downloaded
+        #[arg(long)]
+        mod_dir: Option<String>,
 
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
@@ -93,8 +103,8 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (file, entry_point, output, verbose, config) =
-        get_build_config!(config.action => file, entry_point, output, verbose);
+    let (file, entry_point, output, verbose, mod_dir, config) =
+        get_build_config!(config.action => file, entry_point, output, verbose, mod_dir);
 
     let file = env::current_dir()
         .unwrap()
@@ -109,7 +119,15 @@ fn main() -> io::Result<()> {
         }
     };
 
-    compile_file(file, contents, entry_point, output, config, verbose)
+    compile_file(
+        file,
+        contents,
+        entry_point,
+        output,
+        mod_dir,
+        config,
+        verbose,
+    )
 }
 
 #[derive(Clone, PartialEq)]
@@ -129,6 +147,7 @@ fn compile_file(
     file_contents: String,
     entry_point: String,
     output: Option<String>,
+    mod_dir: Option<String>,
     config: CompilationConfig,
     verbose: u8,
 ) -> io::Result<()> {
@@ -139,14 +158,24 @@ fn compile_file(
         ("", "", "", "")
     };
 
-    let lib_dir = PathBuf::new()
-        .join(std::path::MAIN_SEPARATOR_STR)
-        .join("capy")
-        .join("libs");
-    if !lib_dir.exists() {
-        fs::create_dir_all(&lib_dir)
-            .unwrap_or_else(|why| panic!("couldn't create `{}`: {}", lib_dir.display(), why));
-        git::download_core(&lib_dir);
+    let mod_dir = if let Some(mod_dir) = mod_dir {
+        env::current_dir().unwrap().join(mod_dir).clean()
+    } else {
+        PathBuf::new()
+            .join(std::path::MAIN_SEPARATOR_STR)
+            .join("capy")
+            .join("modules")
+            .clean()
+    };
+    let core_dir = mod_dir.join("core");
+    if !core_dir.exists() {
+        println!(
+            "{ansi_green}Downloading{ansi_reset}: {}",
+            core_dir.display()
+        );
+        fs::create_dir_all(&mod_dir)
+            .unwrap_or_else(|why| panic!("couldn't create `{}`: {}", mod_dir.display(), why));
+        git::download_core(&mod_dir);
     }
 
     if output
@@ -183,7 +212,7 @@ fn compile_file(
     let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
 
-    let main_fn = hir::Name(interner.borrow_mut().intern(&entry_point));
+    let entry_point_name = hir::Name(interner.borrow_mut().intern(&entry_point));
 
     let mut line_indexes = FxHashMap::default();
     let mut source_files = FxHashMap::default();
@@ -202,17 +231,14 @@ fn compile_file(
 
     line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-    let (mut current_imports, mut comptimes) = source_file.build_bodies();
+    let (mut current_imports, mut comptimes) = source_file.build_bodies(&mod_dir);
     source_files.insert(source_file.module, source_file);
 
     // find all imports in the source file, compile them, then do the same for their imports
 
-    let mut project_root = file_name.parent().unwrap().to_path_buf();
-
     while !current_imports.is_empty() {
-        let cloned_imports = current_imports.clone();
-        current_imports.clear();
-        for file_name in cloned_imports {
+        let old_imports = mem::take(&mut current_imports);
+        for file_name in old_imports {
             if source_files.contains_key(&file_name) {
                 continue;
             }
@@ -229,23 +255,6 @@ fn compile_file(
                 }
             };
 
-            if !file_name.starts_with(&project_root) {
-                let last_common_idx = file_name
-                    .components()
-                    .zip(project_root.components())
-                    .find_position(|(file_name_comp, project_root_comp)| {
-                        file_name_comp != project_root_comp
-                    })
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(0);
-                let least_common_path =
-                    PathBuf::from_iter(project_root.components().take(last_common_idx));
-
-                if project_root != least_common_path {
-                    project_root = least_common_path;
-                }
-            }
-
             let mut source_file = SourceFile::parse(
                 file_name,
                 file_contents.clone(),
@@ -258,7 +267,7 @@ fn compile_file(
 
             line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-            let (imports, new_comptimes) = source_file.build_bodies();
+            let (imports, new_comptimes) = source_file.build_bodies(&mod_dir);
             current_imports.extend(imports);
             comptimes.extend(new_comptimes);
 
@@ -267,21 +276,21 @@ fn compile_file(
     }
 
     // infer types
-    let main_modules = source_files
+    let main_files = source_files
         .iter()
-        .filter(|(_, sf)| sf.has_fn_of_name(main_fn))
+        .filter(|(_, sf)| sf.has_fn_of_name(entry_point_name))
         .map(|(name, _)| *name)
         .collect_vec();
-    let main_module = main_modules.first();
-    let entry_point = main_module.map(|module| hir::Fqn {
-        module: *module,
-        name: main_fn,
+    let main_file = main_files.first();
+    let entry_point = main_file.map(|file| hir::Fqn {
+        file: *file,
+        name: entry_point_name,
     });
 
     let (inference, ty_diagnostics) =
         hir_ty::InferenceCtx::new(&bodies_map.borrow(), &world_index.borrow()).finish(entry_point);
     if verbose >= 2 {
-        let debug = inference.debug(&project_root, &interner.borrow(), true);
+        let debug = inference.debug(&mod_dir, &interner.borrow(), true);
         println!("=== types ===\n");
         println!("{}", debug);
     }
@@ -292,7 +301,7 @@ fn compile_file(
         || source_files.iter().any(|(_, source)| source.has_errors());
     source_files
         .iter()
-        .for_each(|(_, source)| source.print_diagnostics(&project_root, with_color));
+        .for_each(|(_, source)| source.print_diagnostics(&mod_dir, with_color));
     for d in ty_diagnostics {
         let line_index = &line_indexes[&d.module];
         let source_file = &source_files[&d.module];
@@ -303,7 +312,7 @@ fn compile_file(
                 .display(
                     &source_file.file_name.to_string_lossy(),
                     &source_file.contents,
-                    &project_root,
+                    &mod_dir,
                     &interner.borrow(),
                     line_index,
                     with_color,
@@ -317,11 +326,11 @@ fn compile_file(
         exit(1);
     }
 
-    match main_modules.len().cmp(&1) {
+    match main_files.len().cmp(&1) {
         std::cmp::Ordering::Less => {
             println!(
                 "{ansi_red}error{ansi_white}: there is no `{}` function{ansi_reset}",
-                interner.borrow().lookup(main_fn.0)
+                interner.borrow().lookup(entry_point_name.0)
             );
             std::process::exit(1);
         }
@@ -329,7 +338,7 @@ fn compile_file(
         std::cmp::Ordering::Greater => {
             println!(
                 "{ansi_red}error{ansi_white}: there are multiple `{}` functions{ansi_reset}",
-                interner.borrow().lookup(main_fn.0)
+                interner.borrow().lookup(entry_point_name.0)
             );
             std::process::exit(1);
         }
@@ -354,7 +363,7 @@ fn compile_file(
     let comptime_results = codegen::eval_comptime_blocks(
         verbose >= 4,
         comptimes,
-        &project_root,
+        &mod_dir,
         &interner,
         &bodies_map.borrow(),
         &inference,
@@ -369,7 +378,7 @@ fn compile_file(
         let jit_fn = codegen::compile_jit(
             verbose >= 1,
             entry_point.unwrap(),
-            &project_root,
+            &mod_dir,
             &interner,
             &bodies_map.borrow(),
             &inference,
@@ -378,12 +387,12 @@ fn compile_file(
 
         println!(
             "{ansi_green}Finished{ansi_reset}   {} (JIT) in {:.2}s",
-            main_module.unwrap().to_string(&project_root, &interner),
+            main_file.unwrap().to_string(&mod_dir, &interner),
             compilation_start.elapsed().as_secs_f32(),
         );
         println!(
             "{ansi_green}Running{ansi_reset}    `{}`\n",
-            main_module.unwrap().to_string(&project_root, &interner)
+            main_file.unwrap().to_string(&mod_dir, &interner)
         );
         let status = jit_fn(0, 0);
         println!("\nProcess exited with {}", status);
@@ -394,7 +403,7 @@ fn compile_file(
     let bytes = match codegen::compile_obj(
         verbose >= 1,
         entry_point.unwrap(),
-        &project_root,
+        &mod_dir,
         &interner,
         &bodies_map.borrow(),
         &inference,
@@ -413,7 +422,7 @@ fn compile_file(
     let _ = fs::create_dir(&output_folder);
 
     let output = output.unwrap_or_else(|| {
-        let main_file = std::path::PathBuf::from(interner.lookup(main_module.unwrap().0));
+        let main_file = std::path::PathBuf::from(interner.lookup(main_file.unwrap().0));
         main_file.file_stem().unwrap().to_string_lossy().to_string()
     });
     let mut object_file = output_folder.join(&output);

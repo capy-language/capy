@@ -1,4 +1,4 @@
-core :: import "../core/mod.capy";
+core :: mod "core";
 
 HYPHEN : u8 : 45;
 PERIOD : u8 : 46;

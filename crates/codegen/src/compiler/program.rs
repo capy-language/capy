@@ -17,7 +17,7 @@ use super::{cast, comptime::ComptimeResult, Compiler, FunctionToCompile};
 pub(crate) fn compile_program<'a>(
     verbose: bool,
     entry_point: hir::Fqn,
-    project_root: &'a std::path::Path,
+    mod_dir: &'a std::path::Path,
     interner: &'a Interner,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     tys: &'a hir_ty::InferenceResult,
@@ -30,15 +30,15 @@ pub(crate) fn compile_program<'a>(
             .as_function()
             .expect("tried to compile non-function as entry point");
 
-        let global_body = bodies_map[&entry_point.module].global_body(entry_point.name);
+        let global_body = bodies_map[&entry_point.file].global_body(entry_point.name);
 
-        let lambda = match bodies_map[&entry_point.module][global_body] {
+        let lambda = match bodies_map[&entry_point.file][global_body] {
             hir::Expr::Lambda(lambda) => lambda,
             _ => todo!("entry point does not have a lambda as it's body"),
         };
 
         FunctionToCompile {
-            module_name: entry_point.module,
+            file_name: entry_point.file,
             function_name: Some(entry_point.name),
             lambda,
             param_tys: param_tys.clone(),
@@ -48,7 +48,7 @@ pub(crate) fn compile_program<'a>(
 
     let mut compiler = Compiler {
         verbose,
-        project_root,
+        mod_dir,
         interner,
         bodies_map,
         tys,

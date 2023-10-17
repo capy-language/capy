@@ -51,7 +51,7 @@ impl Diagnostic {
         &self,
         filename: &str,
         input: &str,
-        project_root: &std::path::Path,
+        mod_dir: &std::path::Path,
         interner: &Interner,
         line_index: &LineIndex,
         with_colors: bool,
@@ -86,7 +86,7 @@ impl Diagnostic {
             "{}{}: {}{}",
             severity,
             ansi_white,
-            self.message(project_root, interner),
+            self.message(mod_dir, interner),
             ansi_reset,
         )];
 
@@ -108,7 +108,7 @@ impl Diagnostic {
                 "{}help{}: {}{}",
                 ansi_blue,
                 ansi_white,
-                help.message(project_root, interner),
+                help.message(mod_dir, interner),
                 ansi_reset
             ));
 
@@ -180,13 +180,13 @@ impl Diagnostic {
         )
     }
 
-    pub fn message(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+    pub fn message(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
         match &self.0 {
             Repr::Syntax(e) => syntax_error_message(e),
             Repr::Validation(d) => validation_diagnostic_message(d),
             Repr::Indexing(d) => indexing_diagnostic_message(d, interner),
             Repr::Lowering(d) => lowering_diagnostic_message(d, interner),
-            Repr::Ty(d) => ty_diagnostic_message(d, project_root, interner),
+            Repr::Ty(d) => ty_diagnostic_message(d, mod_dir, interner),
         }
     }
 
@@ -212,9 +212,9 @@ impl HelpDiagnostic<'_> {
         }
     }
 
-    pub fn message(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+    pub fn message(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
         match &self {
-            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d, project_root, interner),
+            HelpDiagnostic::Ty(d) => ty_diagnostic_help_message(d, mod_dir, interner),
         }
     }
 }
@@ -418,11 +418,24 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
             format!("expected `{}` elements, found `{}`", expected, found)
         }
+        LoweringDiagnosticKind::ModMustBeAlphanumeric => "modules must be alphanumeric".to_string(),
+        LoweringDiagnosticKind::ModDoesNotExist { module, mod_dir } => {
+            format!("a `{}` module could not be found in `{}`", module, mod_dir)
+        }
+        LoweringDiagnosticKind::ModDoesNotContainModFile { module, mod_dir } => {
+            format!(
+                "the `{}` module exists in `{}`, but doesn't contain a `mod.capy` file",
+                module, mod_dir
+            )
+        }
         LoweringDiagnosticKind::ImportMustEndInDotCapy => {
             "capy files must end in `.capy`".to_string()
         }
         LoweringDiagnosticKind::ImportDoesNotExist { file } => {
             format!("`{}` couldn't be found", file)
+        }
+        LoweringDiagnosticKind::ImportOutsideCWD { file } => {
+            format!("`{}` is outside the current working module", file)
         }
         LoweringDiagnosticKind::TooManyCharsInCharLiteral => {
             "character literals can only contain one character".to_string()
@@ -445,28 +458,28 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
 
 fn ty_diagnostic_message(
     d: &TyDiagnostic,
-    project_root: &std::path::Path,
+    mod_dir: &std::path::Path,
     interner: &Interner,
 ) -> String {
     match &d.kind {
         hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
             format!(
                 "expected `{}` but found `{}`",
-                expected.display(project_root, interner),
-                found.display(project_root, interner)
+                expected.display(mod_dir, interner),
+                found.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::Uncastable { from, to } => {
             format!(
                 "cannot cast `{}` to `{}`",
-                from.display(project_root, interner),
-                to.display(project_root, interner)
+                from.display(mod_dir, interner),
+                to.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::BinaryOpMismatch { op, first, second } => {
             format!(
                 "`{}` cannot be {} `{}`",
-                first.display(project_root, interner),
+                first.display(mod_dir, interner),
                 match op {
                     hir::BinaryOp::Add => "added to",
                     hir::BinaryOp::Sub => "subtracted by",
@@ -487,7 +500,7 @@ fn ty_diagnostic_message(
                     | hir::BinaryOp::LAnd
                     | hir::BinaryOp::LOr => "compared to",
                 },
-                second.display(project_root, interner)
+                second.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::UnaryOpMismatch { op, ty } => {
@@ -499,20 +512,20 @@ fn ty_diagnostic_message(
                     hir::UnaryOp::BNot => '~',
                     hir::UnaryOp::LNot => '!',
                 },
-                ty.display(project_root, interner)
+                ty.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
             format!(
                 "the first branch is `{}` but the second branch is `{}`. they must be the same",
-                expected.display(project_root, interner),
-                found.display(project_root, interner),
+                expected.display(mod_dir, interner),
+                found.display(mod_dir, interner),
             )
         }
         hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
             format!(
                 "tried indexing `[]` a non-array, `{}`",
-                found.display(project_root, interner)
+                found.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::IndexOutOfBounds {
@@ -523,7 +536,7 @@ fn ty_diagnostic_message(
             format!(
                 "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
                 index,
-                array_ty.display(project_root, interner),
+                array_ty.display(mod_dir, interner),
                 actual_size - 1,
             )
         }
@@ -533,13 +546,13 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
             format!(
                 "expected a function, but found {}",
-                found.display(project_root, interner),
+                found.display(mod_dir, interner),
             )
         }
         hir_ty::TyDiagnosticKind::DerefNonPointer { found } => {
             format!(
                 "tried dereferencing `^` a non-pointer, `{}`",
-                found.display(project_root, interner)
+                found.display(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::DerefAny => {
@@ -548,13 +561,13 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
-                expected.display(project_root, interner)
+                expected.display(mod_dir, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::NotYetResolved { path } => {
+        hir_ty::TyDiagnosticKind::NotYetResolved { fqn } => {
             format!(
                 "circular definition, `{}` has not yet been resolved",
-                path.to_string(project_root, interner),
+                fqn.to_string(mod_dir, interner),
             )
         }
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
@@ -569,29 +582,29 @@ fn ty_diagnostic_message(
             format!(
                 "integer literal `{}` is too big for `{}`, which can only hold up to {}",
                 found,
-                ty.display(project_root, interner),
+                ty.display(mod_dir, interner),
                 max
             )
         }
-        hir_ty::TyDiagnosticKind::UnknownModule { name } => {
+        hir_ty::TyDiagnosticKind::UnknownFile { file } => {
             format!(
-                "could not find a module named `{}`",
-                name.to_string(project_root, interner)
+                "could not find a file named `{}`",
+                file.to_string(mod_dir, interner)
             )
         }
         hir_ty::TyDiagnosticKind::UnknownFqn { fqn } => format!(
-            "`{}` does not exist within the module `{}`",
+            "`{}` does not exist within the file `{}`",
             interner.lookup(fqn.name.0),
-            fqn.module.to_string(project_root, interner)
+            fqn.file.to_string(mod_dir, interner)
         ),
         hir_ty::TyDiagnosticKind::NonExistentField { field, found_ty } => format!(
             "there is no field `{}` within `{}`",
             interner.lookup(*field),
-            found_ty.display(project_root, interner)
+            found_ty.display(mod_dir, interner)
         ),
         hir_ty::TyDiagnosticKind::StructLiteralMissingField { field, expected_ty } => format!(
             "`{}` struct literal is missing the field `{}`",
-            expected_ty.display(project_root, interner),
+            expected_ty.display(mod_dir, interner),
             interner.lookup(*field)
         ),
         hir_ty::TyDiagnosticKind::ComptimePointer => {
@@ -620,7 +633,7 @@ fn ty_diagnostic_message(
 
 fn ty_diagnostic_help_message(
     d: &TyDiagnosticHelp,
-    project_root: &std::path::Path,
+    mod_dir: &std::path::Path,
     interner: &Interner,
 ) -> String {
     match &d.kind {
@@ -645,7 +658,7 @@ fn ty_diagnostic_help_message(
                 .to_string()
         }
         hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {
-            format!("here, the `if` returns a {}", found.display(project_root, interner))
+            format!("here, the `if` returns a {}", found.display(mod_dir, interner))
         }
         hir_ty::TyDiagnosticHelpKind::MutableVariable => {
             "`:=` bindings are immutable. consider changing it to `::`".to_string()
@@ -654,7 +667,7 @@ fn ty_diagnostic_help_message(
             "this is the actual value that is being returned".to_string()
         }
         hir_ty::TyDiagnosticHelpKind::BreakHere { break_ty } => {
-            format!("expected because this break returns a `{}`", break_ty.display(project_root, interner))
+            format!("expected because this break returns a `{}`", break_ty.display(mod_dir, interner))
         }
     }
 }
@@ -672,6 +685,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Extern => "`extern`",
         TokenKind::Struct => "`struct`",
         TokenKind::Import => "`import`",
+        TokenKind::Mod => "`mod`",
         TokenKind::Comptime => "`comptime`",
         TokenKind::Return => "`return`",
         TokenKind::Break => "`break`",

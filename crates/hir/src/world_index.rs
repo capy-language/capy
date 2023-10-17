@@ -7,55 +7,46 @@ pub struct WorldIndex(FxHashMap<FileName, Index>);
 
 impl WorldIndex {
     pub fn get_definition(&self, fqn: Fqn) -> Result<Definition, GetDefinitionError> {
-        match self.0.get(&fqn.module) {
+        match self.0.get(&fqn.file) {
             Some(index) => match index.get_definition(fqn.name) {
                 Some(def) => Ok(def),
                 None => Err(GetDefinitionError::UnknownDefinition),
             },
-            None => Err(GetDefinitionError::UnknownModule),
+            None => Err(GetDefinitionError::UnknownFile),
         }
     }
 
     pub fn range_info(&self, fqn: Fqn) -> &RangeInfo {
-        &self.0[&fqn.module].range_info[&fqn.name]
+        &self.0[&fqn.file].range_info[&fqn.name]
     }
 
-    pub fn get_all_modules(&self) -> Vec<(FileName, &Index)> {
-        self.0
-            .iter()
-            .map(|(module, index)| (*module, index))
-            .collect()
+    pub fn get_all_files(&self) -> Vec<(FileName, &Index)> {
+        self.0.iter().map(|(file, index)| (*file, index)).collect()
     }
 
-    pub fn get_module(&self, module: FileName) -> Option<&Index> {
-        self.0.get(&module)
+    pub fn get_file(&self, file: FileName) -> Option<&Index> {
+        self.0.get(&file)
     }
 
-    pub fn add_module(&mut self, module: FileName, index: Index) {
-        assert!(self.0.insert(module, index).is_none());
+    pub fn add_file(&mut self, file: FileName, index: Index) {
+        assert!(self.0.insert(file, index).is_none());
     }
 
-    pub fn update_module(&mut self, module: FileName, index: Index) {
-        *self.0.get_mut(&module).unwrap() = index;
+    pub fn update_file(&mut self, file: FileName, index: Index) {
+        *self.0.get_mut(&file).unwrap() = index;
     }
 
     pub fn ranges(&self) -> impl Iterator<Item = (Fqn, &RangeInfo)> {
-        self.0.iter().flat_map(|(module, index)| {
-            index.ranges().map(|(name, range)| {
-                (
-                    Fqn {
-                        module: *module,
-                        name,
-                    },
-                    range,
-                )
-            })
+        self.0.iter().flat_map(|(file, index)| {
+            index
+                .ranges()
+                .map(|(name, range)| (Fqn { file: *file, name }, range))
         })
     }
 }
 
 #[derive(Debug)]
 pub enum GetDefinitionError {
-    UnknownModule,
+    UnknownFile,
     UnknownDefinition,
 }

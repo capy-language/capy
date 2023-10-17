@@ -1,4 +1,4 @@
-core :: import "../core/mod.capy";
+core :: mod "core";
 
 main :: () {
     // These are the same as odin

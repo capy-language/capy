@@ -96,6 +96,7 @@ impl SourceFile {
 
     pub(crate) fn build_bodies(
         &mut self,
+        mod_dir: &std::path::Path,
     ) -> (FxHashSet<FileName>, Vec<codegen::ComptimeToCompile>) {
         let tree = self.parse.syntax_tree();
 
@@ -106,21 +107,17 @@ impl SourceFile {
             &self.index,
             &mut self.uid_gen.borrow_mut(),
             &mut self.interner.borrow_mut(),
+            mod_dir,
             false,
         );
 
         self.world_index
             .borrow_mut()
-            .add_module(self.module, self.index.clone());
+            .add_file(self.module, self.index.clone());
 
         if self.verbose >= 1 {
             let interner = self.interner.borrow();
-            let debug = bodies.debug(
-                self.module,
-                &std::env::current_dir().unwrap(),
-                &interner,
-                self.verbose >= 2,
-            );
+            let debug = bodies.debug(self.module, mod_dir, &interner, self.verbose >= 2);
             if !debug.is_empty() {
                 println!("{}", debug);
             }
@@ -131,7 +128,7 @@ impl SourceFile {
         let comptimes = bodies
             .comptimes()
             .map(|comptime| codegen::ComptimeToCompile {
-                module_name: self.module,
+                file_name: self.module,
                 comptime,
             })
             .collect();
@@ -151,7 +148,7 @@ impl SourceFile {
         self.bodies_map.borrow()[&self.module].has_global(name)
     }
 
-    pub(crate) fn print_diagnostics(&self, project_root: &std::path::Path, with_color: bool) {
+    pub(crate) fn print_diagnostics(&self, mod_dir: &std::path::Path, with_color: bool) {
         let line_index = LineIndex::new(&self.contents);
         for diagnostic in &self.diagnostics {
             println!(
@@ -160,7 +157,7 @@ impl SourceFile {
                     .display(
                         &self.file_name.to_string_lossy(),
                         &self.contents,
-                        project_root,
+                        mod_dir,
                         &self.interner.borrow(),
                         &line_index,
                         with_color

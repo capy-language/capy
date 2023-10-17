@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, env, mem, vec};
+use std::{cmp::Ordering, env, mem, path::Path, vec};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
-use crate::{nameres::Path, FileName, Fqn, Index, Name, NameWithRange, PrimitiveTy, UIDGenerator};
+use crate::{subdir::SubDir, FileName, Fqn, Index, Name, NameWithRange, PrimitiveTy, UIDGenerator};
 
 #[derive(Clone, Debug)]
 pub struct Bodies {
@@ -77,7 +77,7 @@ pub enum Expr {
         body: Idx<Expr>,
     },
     Local(Idx<LocalDef>),
-    SelfGlobal(NameWithRange),
+    LocalGlobal(NameWithRange),
     Param {
         idx: u32,
         range: TextRange,
@@ -233,20 +233,13 @@ pub enum LoweringDiagnosticKind {
     TooManyCharsInCharLiteral,
     EmptyCharLiteral,
     NonU8CharLiteral,
+    ModMustBeAlphanumeric,
+    ModDoesNotExist { module: String, mod_dir: String },
+    ModDoesNotContainModFile { module: String, mod_dir: String },
     ImportMustEndInDotCapy,
     ImportDoesNotExist { file: String },
+    ImportOutsideCWD { file: String },
     ContinueNonLoop { name: Option<Key> },
-}
-
-#[derive(Clone, Copy)]
-pub enum Symbol {
-    Local(Idx<LocalDef>),
-    Param(ast::Param),
-    Global(Path),
-    PrimitiveTy(Idx<PrimitiveTy>),
-    Function(Path),
-    Module(Name),
-    Unknown,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -257,9 +250,18 @@ pub fn lower(
     index: &Index,
     uid_gen: &mut UIDGenerator,
     interner: &mut Interner,
+    mod_dir: &Path,
     fake_file_system: bool,
 ) -> (Bodies, Vec<LoweringDiagnostic>) {
-    let mut ctx = Ctx::new(file_name, index, uid_gen, interner, tree, fake_file_system);
+    let mut ctx = Ctx::new(
+        file_name,
+        index,
+        uid_gen,
+        interner,
+        tree,
+        mod_dir,
+        fake_file_system,
+    );
 
     for def in root.defs(tree) {
         ctx.lower_global(def.name(tree), def.ty(tree), def.value(tree))
@@ -287,7 +289,7 @@ impl ToString for ScopeId {
 
 struct Ctx<'a> {
     bodies: Bodies,
-    file_name: &'a std::path::Path,
+    file_name: &'a Path,
     index: &'a Index,
     uid_gen: &'a mut UIDGenerator,
     interner: &'a mut Interner,
@@ -297,6 +299,7 @@ struct Ctx<'a> {
     label_kinds: Vec<ScopeKind>,
     label_gen: UIDGenerator,
     params: FxHashMap<Key, (u32, ast::Param)>,
+    mod_dir: &'a Path,
     fake_file_system: bool, // used for importing files in tests
 }
 
@@ -307,6 +310,7 @@ impl<'a> Ctx<'a> {
         uid_gen: &'a mut UIDGenerator,
         interner: &'a mut Interner,
         tree: &'a SyntaxTree,
+        mod_dir: &'a Path,
         fake_file_system: bool,
     ) -> Self {
         Self {
@@ -334,6 +338,7 @@ impl<'a> Ctx<'a> {
             label_kinds: Vec::new(),
             label_gen: UIDGenerator::default(),
             params: FxHashMap::default(),
+            mod_dir,
             fake_file_system,
         }
     }
@@ -423,7 +428,8 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        // todo: maybe self.params should be `replace`d before we parse this lambda's params
+        // todo: when parameter types are added, self.params should be cloned, and then updated in
+        // place
         let old_params = mem::replace(&mut self.params, param_keys);
         let old_scopes = mem::take(&mut self.scopes);
 
@@ -751,6 +757,51 @@ impl<'a> Ctx<'a> {
         if self.diagnostics.len() != old_diags_len {
             return Expr::Missing;
         }
+
+        if import.r#mod(self.tree).is_some() {
+            if !file.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModMustBeAlphanumeric,
+                    range: file_name.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_folder_path = self.mod_dir.join(&file);
+
+            if !self.fake_file_system && !mod_folder_path.is_dir() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModDoesNotExist {
+                        module: file,
+                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
+                    },
+                    range: file_name.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_file_path = mod_folder_path.join("mod.capy").clean();
+
+            if !self.fake_file_system && !mod_file_path.is_file() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModDoesNotContainModFile {
+                        module: file,
+                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
+                    },
+                    range: file_name.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_file_name = FileName(self.interner.intern(&mod_file_path.to_string_lossy()));
+
+            // println!("{}", mod_file_path.display());
+            // println!("{}", mod_file_name.0.to_raw());
+
+            self.bodies.imports.insert(mod_file_name);
+            return Expr::Import(mod_file_name);
+        }
+
         if !file.ends_with(".capy") {
             self.diagnostics.push(LoweringDiagnostic {
                 kind: LoweringDiagnosticKind::ImportMustEndInDotCapy,
@@ -769,9 +820,21 @@ impl<'a> Ctx<'a> {
                 .join(file)
                 .clean();
 
-            if !file.exists() || !file.is_file() {
+            if !file.is_file() {
                 self.diagnostics.push(LoweringDiagnostic {
                     kind: LoweringDiagnosticKind::ImportDoesNotExist {
+                        file: file.to_string_lossy().to_string(),
+                    },
+                    range: file_name.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            if !file.is_sub_dir_of(self.mod_dir)
+                && !file.is_sub_dir_of(&env::current_dir().unwrap())
+            {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ImportOutsideCWD {
                         file: file.to_string_lossy().to_string(),
                     },
                     range: file_name.range(self.tree),
@@ -786,11 +849,8 @@ impl<'a> Ctx<'a> {
 
         let file_name = FileName(self.interner.intern(&file.to_string_lossy()));
 
-        // println!(
-        //     r#"{:?} = "{}""#,
-        //     file_name,
-        //     self.interner.lookup(file_name.0)
-        // );
+        // println!("{}", file.display());
+        // println!("{}", file_name.0.to_raw());
 
         self.bodies.imports.insert(file_name);
         Expr::Import(file_name)
@@ -1056,7 +1116,7 @@ impl<'a> Ctx<'a> {
 
         let name = Name(ident_name);
         if self.index.get_definition(name).is_some() {
-            return Expr::SelfGlobal(NameWithRange {
+            return Expr::LocalGlobal(NameWithRange {
                 name,
                 range: ident.range(self.tree),
             });
@@ -1431,8 +1491,8 @@ impl std::ops::Index<Idx<Expr>> for Bodies {
 impl Bodies {
     pub fn debug(
         &self,
-        module: FileName,
-        project_root: &std::path::Path,
+        file: FileName,
+        mod_dir: &std::path::Path,
         interner: &Interner,
         show_expr_idx: bool,
     ) -> String {
@@ -1444,21 +1504,9 @@ impl Bodies {
         for (name, expr_id) in globals {
             s.push_str(&format!(
                 "{} :: ",
-                Fqn {
-                    module,
-                    name: *name,
-                }
-                .to_string(project_root, interner)
+                Fqn { file, name: *name }.to_string(mod_dir, interner)
             ));
-            write_expr(
-                &mut s,
-                *expr_id,
-                show_expr_idx,
-                self,
-                project_root,
-                interner,
-                0,
-            );
+            write_expr(&mut s, *expr_id, show_expr_idx, self, mod_dir, interner, 0);
             s.push_str(";\n");
         }
 
@@ -1470,7 +1518,7 @@ impl Bodies {
             idx: Idx<Expr>,
             show_idx: bool,
             bodies: &Bodies,
-            project_root: &std::path::Path,
+            mod_dir: &std::path::Path,
             interner: &Interner,
             mut indentation: usize,
         ) {
@@ -1497,30 +1545,14 @@ impl Bodies {
                         s.push_str(&size.to_string());
                     }
                     s.push(']');
-                    write_expr(
-                        s,
-                        *ty,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
 
                     if let Some(items) = items {
                         s.push('{');
 
                         for (idx, item) in items.iter().enumerate() {
                             s.push(' ');
-                            write_expr(
-                                s,
-                                *item,
-                                show_idx,
-                                bodies,
-                                project_root,
-                                interner,
-                                indentation,
-                            );
+                            write_expr(s, *item, show_idx, bodies, mod_dir, interner, indentation);
                             if idx != items.len() - 1 {
                                 s.push(',');
                             }
@@ -1531,50 +1563,18 @@ impl Bodies {
                 }
 
                 Expr::Index { array, index } => {
-                    write_expr(
-                        s,
-                        *array,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *array, show_idx, bodies, mod_dir, interner, indentation);
                     s.push('[');
-                    write_expr(
-                        s,
-                        *index,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *index, show_idx, bodies, mod_dir, interner, indentation);
                     s.push(']');
                 }
 
                 Expr::Cast { expr, ty } => {
-                    write_expr(
-                        s,
-                        *expr,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
 
                     s.push_str(" as ");
 
-                    write_expr(
-                        s,
-                        *ty,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::Ref { mutable, expr } => {
@@ -1584,15 +1584,7 @@ impl Bodies {
                         s.push_str("mut ");
                     }
 
-                    write_expr(
-                        s,
-                        *expr,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::Deref { pointer } => {
@@ -1601,7 +1593,7 @@ impl Bodies {
                         *pointer,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -1610,15 +1602,7 @@ impl Bodies {
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(
-                        s,
-                        *lhs,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *lhs, show_idx, bodies, mod_dir, interner, indentation);
 
                     s.push(' ');
 
@@ -1645,15 +1629,7 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(
-                        s,
-                        *rhs,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *rhs, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::Unary { expr, op } => {
@@ -1664,15 +1640,7 @@ impl Bodies {
                         UnaryOp::LNot => s.push('!'),
                     }
 
-                    write_expr(
-                        s,
-                        *expr,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::Block {
@@ -1698,7 +1666,7 @@ impl Bodies {
                         *tail_expr,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation + 4,
                     );
@@ -1736,15 +1704,7 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(
-                            s,
-                            stmt,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_stmt(s, stmt, show_idx, bodies, mod_dir, interner, indentation);
                         s.push('\n');
                     }
 
@@ -1755,7 +1715,7 @@ impl Bodies {
                             *tail_expr,
                             show_idx,
                             bodies,
-                            project_root,
+                            mod_dir,
                             interner,
                             indentation,
                         );
@@ -1779,20 +1739,12 @@ impl Bodies {
                         *condition,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
                     s.push(' ');
-                    write_expr(
-                        s,
-                        *body,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
                         write_expr(
@@ -1800,7 +1752,7 @@ impl Bodies {
                             *else_branch,
                             show_idx,
                             bodies,
-                            project_root,
+                            mod_dir,
                             interner,
                             indentation,
                         );
@@ -1821,7 +1773,7 @@ impl Bodies {
                             *condition,
                             show_idx,
                             bodies,
-                            project_root,
+                            mod_dir,
                             interner,
                             indentation,
                         );
@@ -1829,15 +1781,7 @@ impl Bodies {
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(
-                        s,
-                        *body,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
@@ -1845,15 +1789,7 @@ impl Bodies {
                 Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
                 Expr::Call { callee, args } => {
-                    write_expr(
-                        s,
-                        *callee,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *callee, show_idx, bodies, mod_dir, interner, indentation);
 
                     s.push('(');
                     for (idx, arg) in args.iter().enumerate() {
@@ -1861,20 +1797,12 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(
-                            s,
-                            *arg,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_expr(s, *arg, show_idx, bodies, mod_dir, interner, indentation);
                     }
                     s.push(')');
                 }
 
-                Expr::SelfGlobal(name) => s.push_str(interner.lookup(name.name.0)),
+                Expr::LocalGlobal(name) => s.push_str(interner.lookup(name.name.0)),
 
                 Expr::Path {
                     previous, field, ..
@@ -1884,7 +1812,7 @@ impl Bodies {
                         *previous,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -1914,7 +1842,7 @@ impl Bodies {
                             param.ty,
                             show_idx,
                             bodies,
-                            project_root,
+                            mod_dir,
                             interner,
                             indentation,
                         );
@@ -1933,7 +1861,7 @@ impl Bodies {
                             *return_ty,
                             show_idx,
                             bodies,
-                            project_root,
+                            mod_dir,
                             interner,
                             indentation,
                         );
@@ -1944,15 +1872,7 @@ impl Bodies {
                     if *is_extern {
                         s.push_str("extern");
                     } else {
-                        write_expr(
-                            s,
-                            *body,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
                     }
                 }
 
@@ -1961,27 +1881,11 @@ impl Bodies {
 
                     s.push_str("comptime ");
 
-                    write_expr(
-                        s,
-                        body,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, body, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::StructLiteral { ty, fields } => {
-                    write_expr(
-                        s,
-                        *ty,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
 
                     s.push_str(" {");
 
@@ -1991,15 +1895,7 @@ impl Bodies {
                             s.push_str(": ");
                         }
 
-                        write_expr(
-                            s,
-                            *value,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
 
                         if idx != fields.len() - 1 {
                             s.push_str(", ");
@@ -2015,15 +1911,7 @@ impl Bodies {
                     s.push_str("distinct'");
                     s.push_str(&uid.to_string());
                     s.push(' ');
-                    write_expr(
-                        s,
-                        *ty,
-                        show_idx,
-                        bodies,
-                        project_root,
-                        interner,
-                        indentation,
-                    );
+                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
                 Expr::StructDecl { uid, fields } => {
@@ -2038,15 +1926,7 @@ impl Bodies {
                             s.push('?');
                         }
                         s.push(':');
-                        write_expr(
-                            s,
-                            *ty,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                         if idx != fields.len() - 1 {
                             s.push(',');
                         }
@@ -2072,7 +1952,7 @@ impl Bodies {
             expr: Idx<Stmt>,
             show_idx: bool,
             bodies: &Bodies,
-            project_root: &std::path::Path,
+            mod_dir: &std::path::Path,
             interner: &Interner,
             indentation: usize,
         ) {
@@ -2083,7 +1963,7 @@ impl Bodies {
                         *expr_id,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -2096,7 +1976,7 @@ impl Bodies {
 
                     if let Some(ty) = local_def.ty {
                         s.push(' ');
-                        write_expr(s, ty, show_idx, bodies, project_root, interner, indentation);
+                        write_expr(s, ty, show_idx, bodies, mod_dir, interner, indentation);
                         s.push(' ');
                     }
 
@@ -2107,7 +1987,7 @@ impl Bodies {
                         local_def.value,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -2119,7 +1999,7 @@ impl Bodies {
                         bodies[*local_set_id].source,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -2129,7 +2009,7 @@ impl Bodies {
                         bodies[*local_set_id].value,
                         show_idx,
                         bodies,
-                        project_root,
+                        mod_dir,
                         interner,
                         indentation,
                     );
@@ -2145,15 +2025,7 @@ impl Bodies {
                     s.push('`');
                     if let Some(value) = value {
                         s.push(' ');
-                        write_expr(
-                            s,
-                            *value,
-                            show_idx,
-                            bodies,
-                            project_root,
-                            interner,
-                            indentation,
-                        );
+                        write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
                     }
                     s.push(';');
                 }
@@ -2195,10 +2067,11 @@ mod tests {
         let (bodies, actual_diagnostics) = lower(
             root,
             &tree,
-            std::path::Path::new("main.capy"),
+            Path::new("main.capy"),
             &index,
             &mut uid_gen,
             &mut interner,
+            Path::new("/capy/modules"),
             true,
         );
 

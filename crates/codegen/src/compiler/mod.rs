@@ -5,7 +5,7 @@ pub mod program;
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{types, FunctionBuilder, FunctionBuilderContext, InstBuilder, Value};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
-use hir_ty::ResolvedTy;
+use hir_ty::Ty;
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -21,17 +21,17 @@ use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
 
 pub(crate) struct FunctionToCompile {
-    pub(crate) module_name: hir::FileName,
+    pub(crate) file_name: hir::FileName,
     pub(crate) function_name: Option<hir::Name>,
     pub(crate) lambda: Idx<hir::Lambda>,
-    pub(crate) param_tys: Vec<Intern<ResolvedTy>>,
-    pub(crate) return_ty: Intern<ResolvedTy>,
+    pub(crate) param_tys: Vec<Intern<Ty>>,
+    pub(crate) return_ty: Intern<Ty>,
 }
 
 pub(crate) struct Compiler<'a> {
     pub(crate) verbose: bool,
 
-    pub(crate) project_root: &'a std::path::Path,
+    pub(crate) mod_dir: &'a std::path::Path,
 
     pub(crate) interner: &'a Interner,
     pub(crate) bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
@@ -65,7 +65,7 @@ impl Compiler<'_> {
         get_func_id(
             self.module,
             self.pointer_ty,
-            self.project_root,
+            self.mod_dir,
             &mut self.functions,
             &mut self.compiler_defined_functions,
             &mut self.functions_to_compile,
@@ -79,14 +79,16 @@ impl Compiler<'_> {
     fn compile_ftc(&mut self, ftc: FunctionToCompile) {
         let hir::Lambda {
             body, is_extern, ..
-        } = &self.bodies_map[&ftc.module_name][ftc.lambda];
+        } = &self.bodies_map[&ftc.file_name][ftc.lambda];
 
         if *is_extern {
-            if let Some(compiler_defined) = as_compiler_defined(*is_extern, &ftc, self.interner) {
+            if let Some(compiler_defined) =
+                as_compiler_defined(*is_extern, &ftc, self.mod_dir, self.interner)
+            {
                 let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
                     self.module,
                     self.pointer_ty,
-                    self.project_root,
+                    self.mod_dir,
                     self.interner,
                 );
 
@@ -101,23 +103,23 @@ impl Compiler<'_> {
 
         let unmangled_name = if let Some(name) = ftc.function_name {
             let fqn = hir::Fqn {
-                module: ftc.module_name,
+                file: ftc.file_name,
                 name,
             };
 
-            fqn.to_string(self.project_root, self.interner)
+            fqn.to_string(self.mod_dir, self.interner)
         } else {
             format!(
                 "{}.lambda#{}",
-                ftc.module_name.to_string(self.project_root, self.interner),
+                ftc.file_name.to_string(self.mod_dir, self.interner),
                 ftc.lambda.into_raw()
             )
         };
 
         self.compile_real_function(
             &unmangled_name,
-            &ftc.to_mangled_name(self.project_root, self.interner),
-            ftc.module_name,
+            &ftc.to_mangled_name(self.mod_dir, self.interner),
+            ftc.file_name,
             *body,
             ftc.param_tys,
             ftc.return_ty,
@@ -182,8 +184,8 @@ impl Compiler<'_> {
         mangled_name: &str,
         module_name: hir::FileName,
         body: Idx<hir::Expr>,
-        param_tys: Vec<Intern<ResolvedTy>>,
-        return_ty: Intern<ResolvedTy>,
+        param_tys: Vec<Intern<Ty>>,
+        return_ty: Intern<Ty>,
     ) -> FuncId {
         let (comp_sig, new_idx_to_old_idx) =
             (&param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
@@ -199,8 +201,8 @@ impl Compiler<'_> {
 
         let function_compiler = FunctionCompiler {
             builder,
-            module_name,
-            project_root: self.project_root,
+            file_name: module_name,
+            mod_dir: self.mod_dir,
             signature: comp_sig,
             interner: self.interner,
             bodies_map: self.bodies_map,
@@ -254,7 +256,7 @@ impl Compiler<'_> {
 fn get_func_id(
     module: &mut dyn Module,
     pointer_ty: types::Type,
-    project_root: &std::path::Path,
+    mod_dir: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
     compiler_defined_functions: &mut FxHashMap<CompilerDefinedFunction, FuncId>,
     functions_to_compile: &mut VecDeque<FunctionToCompile>,
@@ -272,24 +274,24 @@ fn get_func_id(
         .as_function()
         .expect("tried to compile non-function as function");
 
-    let global_body = bodies_map[&fqn.module].global_body(fqn.name);
+    let global_body = bodies_map[&fqn.file].global_body(fqn.name);
 
-    let lambda = match bodies_map[&fqn.module][global_body] {
+    let lambda = match bodies_map[&fqn.file][global_body] {
         hir::Expr::Lambda(lambda) => lambda,
         _ => todo!("global with function type does not have a lambda as it's body"),
     };
 
-    let is_extern = bodies_map[&fqn.module][lambda].is_extern;
+    let is_extern = bodies_map[&fqn.file][lambda].is_extern;
 
     let ftc = FunctionToCompile {
-        module_name: fqn.module,
+        file_name: fqn.file,
         function_name: Some(fqn.name),
         lambda,
         param_tys: param_tys.clone(),
         return_ty,
     };
 
-    if let Some(compiler_defined) = as_compiler_defined(is_extern, &ftc, interner) {
+    if let Some(compiler_defined) = as_compiler_defined(is_extern, &ftc, mod_dir, interner) {
         if let Some(func_id) = compiler_defined_functions.get(&compiler_defined) {
             functions.insert(fqn, *func_id);
 
@@ -297,7 +299,7 @@ fn get_func_id(
         }
 
         let (_, _, func_id) =
-            compiler_defined.to_sig_and_func_id(module, pointer_ty, project_root, interner);
+            compiler_defined.to_sig_and_func_id(module, pointer_ty, mod_dir, interner);
 
         functions_to_compile.push_back(ftc);
 
@@ -318,7 +320,7 @@ fn get_func_id(
     } else {
         module
             .declare_function(
-                &fqn.to_mangled_name(project_root, interner),
+                &fqn.to_mangled_name(mod_dir, interner),
                 Linkage::Export,
                 &comp_sig,
             )

@@ -1,6 +1,8 @@
+use std::path::Path;
+
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::{FuncId, Linkage, Module};
-use hir_ty::ResolvedTy;
+use hir_ty::Ty;
 use interner::Interner;
 
 use crate::{compiler::FunctionToCompile, mangle::Mangle, CraneliftSignature};
@@ -15,7 +17,7 @@ impl CompilerDefinedFunction {
         self,
         module: &mut dyn Module,
         pointer_ty: types::Type,
-        project_root: &std::path::Path,
+        mod_dir: &std::path::Path,
         interner: &Interner,
     ) -> (String, CraneliftSignature, FuncId) {
         let ftc = match self {
@@ -25,7 +27,7 @@ impl CompilerDefinedFunction {
                 call_conv: module.target_config().default_call_conv,
             },
         };
-        let mangled = self.to_mangled_name(project_root, interner);
+        let mangled = self.to_mangled_name(mod_dir, interner);
         let func_id = module
             .declare_function(&mangled, Linkage::Export, &ftc)
             .unwrap();
@@ -37,6 +39,7 @@ impl CompilerDefinedFunction {
 pub(crate) fn as_compiler_defined(
     is_extern: bool,
     ftc: &FunctionToCompile,
+    mod_dir: &Path,
     interner: &Interner,
 ) -> Option<CompilerDefinedFunction> {
     if !is_extern {
@@ -45,31 +48,30 @@ pub(crate) fn as_compiler_defined(
 
     let fqn = if let Some(name) = ftc.function_name {
         hir::Fqn {
-            module: ftc.module_name,
+            file: ftc.file_name,
             name,
         }
     } else {
         return None;
     };
 
-    let module = interner.lookup(fqn.module.0);
-    let module = std::path::Path::new(module);
+    let is_std = fqn
+        .file
+        .get_mod_name(mod_dir, interner)
+        .map_or(false, |n| n == "core");
 
-    // todo: fix this
-    let is_std = module
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n == "std")
-        .unwrap_or(false);
-    // if !is_std {
-    //     return None;
-    // }
+    if !is_std {
+        return None;
+    }
 
-    let filename = module.file_name().unwrap_or_default().to_string_lossy();
+    let file_name = Path::new(interner.lookup(fqn.file.0))
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
 
     let function_name = interner.lookup(fqn.name.0);
 
-    match filename.as_ref() {
+    match file_name.as_ref() {
         "ptr.capy" => match function_name {
             "to_raw" => as_ptr_to_usize(ftc),
             "const_from_raw" => as_usize_to_ptr(ftc, false),
@@ -86,7 +88,7 @@ fn as_ptr_to_usize(ftc: &FunctionToCompile) -> Option<CompilerDefinedFunction> {
     let first = params.next()?;
     if !first
         .as_pointer()
-        .map(|(mutable, sub_ty)| !mutable && *sub_ty == hir_ty::ResolvedTy::Any)
+        .map(|(mutable, sub_ty)| !mutable && *sub_ty == hir_ty::Ty::Any)
         .unwrap_or(false)
     {
         return None;
@@ -96,7 +98,7 @@ fn as_ptr_to_usize(ftc: &FunctionToCompile) -> Option<CompilerDefinedFunction> {
         return None;
     }
 
-    if *ftc.return_ty != ResolvedTy::UInt(u32::MAX) {
+    if *ftc.return_ty != Ty::UInt(u32::MAX) {
         return None;
     }
 
@@ -107,7 +109,7 @@ fn as_usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> Option<CompilerDef
     let mut params = ftc.param_tys.iter();
 
     let first = params.next()?;
-    if **first != ResolvedTy::UInt(u32::MAX) {
+    if **first != Ty::UInt(u32::MAX) {
         return None;
     }
 
@@ -118,7 +120,7 @@ fn as_usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> Option<CompilerDef
     if !ftc
         .return_ty
         .as_pointer()
-        .map(|(ptr_mut, sub_ty)| ptr_mut == mutable && *sub_ty == hir_ty::ResolvedTy::Any)
+        .map(|(ptr_mut, sub_ty)| ptr_mut == mutable && *sub_ty == hir_ty::Ty::Any)
         .unwrap_or(false)
     {
         return None;

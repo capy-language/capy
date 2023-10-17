@@ -18,7 +18,7 @@ use super::Compiler;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ComptimeToCompile {
-    pub module_name: hir::FileName,
+    pub file_name: hir::FileName,
     pub comptime: Idx<hir::Comptime>,
 }
 
@@ -44,7 +44,7 @@ impl ComptimeResult {
 pub fn eval_comptime_blocks<'a>(
     verbose: bool,
     mut comptime_blocks: Vec<ComptimeToCompile>,
-    project_root: &'a std::path::Path,
+    mod_dir: &'a std::path::Path,
     interner: &'a Interner,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     tys: &'a hir_ty::InferenceResult,
@@ -69,7 +69,7 @@ pub fn eval_comptime_blocks<'a>(
 
     let mut compiler = Compiler {
         verbose,
-        project_root,
+        mod_dir,
         interner,
         bodies_map,
         tys,
@@ -95,18 +95,17 @@ pub fn eval_comptime_blocks<'a>(
     let mut comptime_funcs = Vec::new();
 
     while let Some(ctc) = comptime_blocks.pop() {
-        let hir::Comptime { body } = compiler.bodies_map[&ctc.module_name][ctc.comptime];
-        let return_ty = tys[ctc.module_name][body];
+        let hir::Comptime { body } = compiler.bodies_map[&ctc.file_name][ctc.comptime];
+        let return_ty = tys[ctc.file_name][body];
 
         let func_id = compiler.compile_real_function(
             &format!(
                 "{}.comptime#{}",
-                ctc.module_name
-                    .to_string(compiler.project_root, compiler.interner),
+                ctc.file_name.to_string(compiler.mod_dir, compiler.interner),
                 ctc.comptime.into_raw()
             ),
-            &ctc.to_mangled_name(compiler.project_root, compiler.interner),
-            ctc.module_name,
+            &ctc.to_mangled_name(compiler.mod_dir, compiler.interner),
+            ctc.file_name,
             body,
             vec![],
             return_ty,

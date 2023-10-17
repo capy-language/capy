@@ -2,7 +2,7 @@ use hir::{PrimitiveTy, UnaryOp};
 use internment::Intern;
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
-pub enum ResolvedTy {
+pub enum Ty {
     NotYetResolved,
     Unknown,
     /// a bit-width of u32::MAX represents an isize
@@ -19,39 +19,39 @@ pub enum ResolvedTy {
     Char,
     Array {
         size: u64,
-        sub_ty: Intern<ResolvedTy>,
+        sub_ty: Intern<Ty>,
     },
     Pointer {
         mutable: bool,
-        sub_ty: Intern<ResolvedTy>,
+        sub_ty: Intern<Ty>,
     },
     Distinct {
         fqn: Option<hir::Fqn>,
         uid: u32,
-        ty: Intern<ResolvedTy>,
+        ty: Intern<Ty>,
     },
     Type,
     Any,
-    Module(hir::FileName),
+    File(hir::FileName),
     // this is only ever used for functions defined locally
     Function {
-        param_tys: Vec<Intern<ResolvedTy>>,
-        return_ty: Intern<ResolvedTy>,
+        param_tys: Vec<Intern<Ty>>,
+        return_ty: Intern<Ty>,
     },
     Struct {
         fqn: Option<hir::Fqn>,
         uid: u32,
-        fields: Vec<(hir::Name, Intern<ResolvedTy>)>,
+        fields: Vec<(hir::Name, Intern<Ty>)>,
     },
     Void,
 }
 
 pub(crate) struct BinaryOutputTy {
-    pub(crate) max_ty: ResolvedTy,
-    pub(crate) final_output_ty: ResolvedTy,
+    pub(crate) max_ty: Ty,
+    pub(crate) final_output_ty: Ty,
 }
 
-impl ResolvedTy {
+impl Ty {
     pub(crate) fn from_primitive(primitive: PrimitiveTy) -> Self {
         match primitive {
             PrimitiveTy::IInt { bit_width, .. } => Self::IInt(bit_width),
@@ -67,81 +67,81 @@ impl ResolvedTy {
     }
 
     /// If self is a struct, this returns the fields
-    pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<ResolvedTy>)>> {
+    pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<Ty>)>> {
         match self {
-            ResolvedTy::Struct { fields, .. } => Some(fields.clone()),
-            ResolvedTy::Distinct { ty, .. } => ty.as_struct(),
+            Ty::Struct { fields, .. } => Some(fields.clone()),
+            Ty::Distinct { ty, .. } => ty.as_struct(),
             _ => None,
         }
     }
 
     /// If self is a function, this returns the parameters and return type
-    pub fn as_function(&self) -> Option<(Vec<Intern<ResolvedTy>>, Intern<ResolvedTy>)> {
+    pub fn as_function(&self) -> Option<(Vec<Intern<Ty>>, Intern<Ty>)> {
         match self {
-            ResolvedTy::Function {
+            Ty::Function {
                 param_tys: params,
                 return_ty,
             } => Some((params.clone(), *return_ty)),
-            ResolvedTy::Distinct { ty, .. } => ty.as_function(),
+            Ty::Distinct { ty, .. } => ty.as_function(),
             _ => None,
         }
     }
 
     /// If self is a pointer, this returns the mutability and sub type
-    pub fn as_pointer(&self) -> Option<(bool, Intern<ResolvedTy>)> {
+    pub fn as_pointer(&self) -> Option<(bool, Intern<Ty>)> {
         match self {
-            ResolvedTy::Pointer { mutable, sub_ty } => Some((*mutable, *sub_ty)),
-            ResolvedTy::Distinct { ty, .. } => ty.as_pointer(),
+            Ty::Pointer { mutable, sub_ty } => Some((*mutable, *sub_ty)),
+            Ty::Distinct { ty, .. } => ty.as_pointer(),
             _ => None,
         }
     }
 
     /// If self is an array, this returns the length and sub type
-    pub fn as_array(&self) -> Option<(u64, Intern<ResolvedTy>)> {
+    pub fn as_array(&self) -> Option<(u64, Intern<Ty>)> {
         match self {
-            ResolvedTy::Array { size, sub_ty } => Some((*size, *sub_ty)),
-            ResolvedTy::Distinct { ty, .. } => ty.as_array(),
+            Ty::Array { size, sub_ty } => Some((*size, *sub_ty)),
+            Ty::Distinct { ty, .. } => ty.as_array(),
             _ => None,
         }
     }
 
     pub fn is_aggregate(&self) -> bool {
         match self {
-            ResolvedTy::Struct { .. } => true,
-            ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_aggregate(),
+            Ty::Struct { .. } => true,
+            Ty::Array { .. } => true,
+            Ty::Distinct { ty, .. } => ty.is_aggregate(),
             _ => false,
         }
     }
 
     pub fn is_array(&self) -> bool {
         match self {
-            ResolvedTy::Array { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_array(),
+            Ty::Array { .. } => true,
+            Ty::Distinct { ty, .. } => ty.is_array(),
             _ => false,
         }
     }
 
     pub fn is_pointer(&self) -> bool {
         match self {
-            ResolvedTy::Pointer { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_pointer(),
+            Ty::Pointer { .. } => true,
+            Ty::Distinct { ty, .. } => ty.is_pointer(),
             _ => false,
         }
     }
 
     pub fn is_function(&self) -> bool {
         match self {
-            ResolvedTy::Function { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_function(),
+            Ty::Function { .. } => true,
+            Ty::Distinct { ty, .. } => ty.is_function(),
             _ => false,
         }
     }
 
     pub fn is_struct(&self) -> bool {
         match self {
-            ResolvedTy::Struct { .. } => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_struct(),
+            Ty::Struct { .. } => true,
+            Ty::Distinct { ty, .. } => ty.is_struct(),
             _ => false,
         }
     }
@@ -149,29 +149,29 @@ impl ResolvedTy {
     /// returns true if the type is zero-sized (void, or solely contains void)
     pub fn is_zero_sized(&self) -> bool {
         match self {
-            ResolvedTy::Void => true,
-            ResolvedTy::Type => true,
-            ResolvedTy::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
-            ResolvedTy::Struct { fields, .. } => {
+            Ty::Void => true,
+            Ty::Type => true,
+            Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
+            Ty::Struct { fields, .. } => {
                 fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())
             }
-            ResolvedTy::Distinct { ty, .. } => ty.is_zero_sized(),
+            Ty::Distinct { ty, .. } => ty.is_zero_sized(),
             _ => false,
         }
     }
 
     pub fn is_void(&self) -> bool {
         match self {
-            ResolvedTy::Void => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_void(),
+            Ty::Void => true,
+            Ty::Distinct { ty, .. } => ty.is_void(),
             _ => false,
         }
     }
 
     pub fn is_int(&self) -> bool {
         match self {
-            ResolvedTy::IInt(_) | ResolvedTy::UInt(_) => true,
-            ResolvedTy::Distinct { ty, .. } => ty.is_int(),
+            Ty::IInt(_) | Ty::UInt(_) => true,
+            Ty::Distinct { ty, .. } => ty.is_int(),
             _ => false,
         }
     }
@@ -179,12 +179,12 @@ impl ResolvedTy {
     /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
     pub fn is_unknown(&self) -> bool {
         match self {
-            ResolvedTy::NotYetResolved => true,
-            ResolvedTy::Unknown => true,
-            ResolvedTy::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
-            ResolvedTy::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
-            ResolvedTy::Struct { fields, .. } => fields.iter().any(|(_, ty)| ty.is_unknown()),
-            ResolvedTy::Distinct { ty, .. } => ty.is_unknown(),
+            Ty::NotYetResolved => true,
+            Ty::Unknown => true,
+            Ty::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
+            Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
+            Ty::Struct { fields, .. } => fields.iter().any(|(_, ty)| ty.is_unknown()),
+            Ty::Distinct { ty, .. } => ty.is_unknown(),
             _ => false,
         }
     }
@@ -197,35 +197,33 @@ impl ResolvedTy {
 
         match (self, other) {
             (
-                ResolvedTy::Array {
+                Ty::Array {
                     size: first_size,
                     sub_ty: first_sub_ty,
                 },
-                ResolvedTy::Array {
+                Ty::Array {
                     size: second_size,
                     sub_ty: second_sub_ty,
                     ..
                 },
             ) => first_size == second_size && first_sub_ty.is_equal_to(second_sub_ty),
             (
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: first_mutable,
                     sub_ty: first_sub_ty,
                 },
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: second_mutable,
                     sub_ty: second_sub_ty,
                 },
             ) => first_mutable == second_mutable && first_sub_ty.is_equal_to(second_sub_ty),
-            (ResolvedTy::Distinct { uid: first, .. }, ResolvedTy::Distinct { uid: second, .. }) => {
-                first == second
-            }
+            (Ty::Distinct { uid: first, .. }, Ty::Distinct { uid: second, .. }) => first == second,
             (
-                ResolvedTy::Function {
+                Ty::Function {
                     param_tys: first_params,
                     return_ty: first_return_ty,
                 },
-                ResolvedTy::Function {
+                Ty::Function {
                     param_tys: second_params,
                     return_ty: second_return_ty,
                 },
@@ -246,11 +244,11 @@ impl ResolvedTy {
     pub fn is_functionally_equivalent_to(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                ResolvedTy::Array {
+                Ty::Array {
                     size: first_size,
                     sub_ty: first_sub_ty,
                 },
-                ResolvedTy::Array {
+                Ty::Array {
                     size: second_size,
                     sub_ty: second_sub_ty,
                     ..
@@ -260,11 +258,11 @@ impl ResolvedTy {
                     && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
             }
             (
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: first_mutable,
                     sub_ty: first_sub_ty,
                 },
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: second_mutable,
                     sub_ty: second_sub_ty,
                 },
@@ -272,18 +270,18 @@ impl ResolvedTy {
                 first_mutable == second_mutable
                     && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
             }
-            (ResolvedTy::Distinct { ty: first, .. }, ResolvedTy::Distinct { ty: second, .. }) => {
+            (Ty::Distinct { ty: first, .. }, Ty::Distinct { ty: second, .. }) => {
                 first.is_functionally_equivalent_to(second)
             }
             (
-                ResolvedTy::Distinct {
+                Ty::Distinct {
                     ty: distinct_inner, ..
                 },
                 other,
             )
             | (
                 other,
-                ResolvedTy::Distinct {
+                Ty::Distinct {
                     ty: distinct_inner, ..
                 },
             ) => {
@@ -296,21 +294,21 @@ impl ResolvedTy {
 
     pub(crate) fn get_max_int_size(&self) -> Option<u64> {
         match self {
-            ResolvedTy::IInt(bit_width) => match bit_width {
+            Ty::IInt(bit_width) => match bit_width {
                 8 => Some(i8::MAX as u64),
                 16 => Some(i16::MAX as u64),
                 32 => Some(i32::MAX as u64),
                 64 | 128 => Some(i64::MAX as u64),
                 _ => None,
             },
-            ResolvedTy::UInt(bit_width) => match bit_width {
+            Ty::UInt(bit_width) => match bit_width {
                 8 => Some(u8::MAX as u64),
                 16 => Some(u16::MAX as u64),
                 32 => Some(u32::MAX as u64),
                 64 | 128 => Some(u64::MAX),
                 _ => None,
             },
-            ResolvedTy::Distinct { ty, .. } => ty.get_max_int_size(),
+            Ty::Distinct { ty, .. } => ty.get_max_int_size(),
             _ => None,
         }
     }
@@ -330,27 +328,24 @@ impl ResolvedTy {
     /// ```
     ///
     /// diagram stolen from vlang docs bc i liked it
-    pub(crate) fn max(&self, other: &ResolvedTy) -> Option<ResolvedTy> {
+    pub(crate) fn max(&self, other: &Ty) -> Option<Ty> {
         if self == other {
             return Some(self.clone());
         }
 
         match (self, other) {
-            (ResolvedTy::UInt(0), ResolvedTy::UInt(0)) => Some(ResolvedTy::UInt(0)),
-            (
-                ResolvedTy::IInt(0) | ResolvedTy::UInt(0),
-                ResolvedTy::IInt(0) | ResolvedTy::UInt(0),
-            ) => Some(ResolvedTy::IInt(0)),
-            (ResolvedTy::IInt(first_bit_width), ResolvedTy::IInt(second_bit_width)) => {
-                Some(ResolvedTy::IInt(*first_bit_width.max(second_bit_width)))
+            (Ty::UInt(0), Ty::UInt(0)) => Some(Ty::UInt(0)),
+            (Ty::IInt(0) | Ty::UInt(0), Ty::IInt(0) | Ty::UInt(0)) => Some(Ty::IInt(0)),
+            (Ty::IInt(first_bit_width), Ty::IInt(second_bit_width)) => {
+                Some(Ty::IInt(*first_bit_width.max(second_bit_width)))
             }
-            (ResolvedTy::UInt(first_bit_width), ResolvedTy::UInt(second_bit_width)) => {
-                Some(ResolvedTy::UInt(*first_bit_width.max(second_bit_width)))
+            (Ty::UInt(first_bit_width), Ty::UInt(second_bit_width)) => {
+                Some(Ty::UInt(*first_bit_width.max(second_bit_width)))
             }
-            (ResolvedTy::IInt(signed_bit_width), ResolvedTy::UInt(unsigned_bit_width))
-            | (ResolvedTy::UInt(unsigned_bit_width), ResolvedTy::IInt(signed_bit_width)) => {
+            (Ty::IInt(signed_bit_width), Ty::UInt(unsigned_bit_width))
+            | (Ty::UInt(unsigned_bit_width), Ty::IInt(signed_bit_width)) => {
                 if signed_bit_width > unsigned_bit_width {
-                    Some(ResolvedTy::IInt(*signed_bit_width))
+                    Some(Ty::IInt(*signed_bit_width))
                 } else {
                     // println!(
                     //     "{:?} does not fit into {:?}",
@@ -359,34 +354,28 @@ impl ResolvedTy {
                     None
                 }
             }
-            (ResolvedTy::IInt(0) | ResolvedTy::UInt(0), ResolvedTy::Float(float_bit_width))
-            | (ResolvedTy::Float(float_bit_width), ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
-                Some(ResolvedTy::Float(*float_bit_width))
+            (Ty::IInt(0) | Ty::UInt(0), Ty::Float(float_bit_width))
+            | (Ty::Float(float_bit_width), Ty::IInt(0) | Ty::UInt(0)) => {
+                Some(Ty::Float(*float_bit_width))
             }
-            (
-                ResolvedTy::IInt(int_bit_width) | ResolvedTy::UInt(int_bit_width),
-                ResolvedTy::Float(float_bit_width),
-            )
-            | (
-                ResolvedTy::Float(float_bit_width),
-                ResolvedTy::IInt(int_bit_width) | ResolvedTy::UInt(int_bit_width),
-            ) => {
+            (Ty::IInt(int_bit_width) | Ty::UInt(int_bit_width), Ty::Float(float_bit_width))
+            | (Ty::Float(float_bit_width), Ty::IInt(int_bit_width) | Ty::UInt(int_bit_width)) => {
                 if *int_bit_width < 64 && *float_bit_width == 0 {
                     // the int bit width must be smaller than the final float which can only go up to 64 bits,
                     // the int bit width is doubled, to go up to the next largest bit width, and then maxed
                     // with 32 to ensure that we don't accidentally create an f16 type.
-                    Some(ResolvedTy::Float((int_bit_width * 2).max(32)))
+                    Some(Ty::Float((int_bit_width * 2).max(32)))
                 } else if int_bit_width < float_bit_width {
-                    Some(ResolvedTy::Float(*float_bit_width))
+                    Some(Ty::Float(*float_bit_width))
                 } else {
                     None
                 }
             }
-            (ResolvedTy::Float(first_bit_width), ResolvedTy::Float(second_bit_width)) => {
-                Some(ResolvedTy::Float(*first_bit_width.max(second_bit_width)))
+            (Ty::Float(first_bit_width), Ty::Float(second_bit_width)) => {
+                Some(Ty::Float(*first_bit_width.max(second_bit_width)))
             }
             (
-                ResolvedTy::Distinct {
+                Ty::Distinct {
                     fqn,
                     uid,
                     ty: distinct_ty,
@@ -395,13 +384,13 @@ impl ResolvedTy {
             )
             | (
                 other,
-                ResolvedTy::Distinct {
+                Ty::Distinct {
                     fqn,
                     uid,
                     ty: distinct_ty,
                 },
             ) => {
-                let distinct = ResolvedTy::Distinct {
+                let distinct = Ty::Distinct {
                     fqn: *fqn,
                     uid: *uid,
                     ty: *distinct_ty,
@@ -412,7 +401,7 @@ impl ResolvedTy {
                     None
                 }
             }
-            (ResolvedTy::Unknown, other) | (other, ResolvedTy::Unknown) => Some(other.clone()),
+            (Ty::Unknown, other) | (other, Ty::Unknown) => Some(other.clone()),
             _ => None,
         }
     }
@@ -438,7 +427,7 @@ impl ResolvedTy {
     /// Any int can fit into a wildcard int type (bit-width of 0)
     ///
     /// diagram stolen from vlang docs bc i liked it
-    pub(crate) fn can_fit_into(&self, expected: &ResolvedTy) -> bool {
+    pub(crate) fn can_fit_into(&self, expected: &Ty) -> bool {
         if self == expected {
             return true;
         }
@@ -446,31 +435,31 @@ impl ResolvedTy {
         match (self, expected) {
             // the callers of can_fit_into should probably
             // execute their own logic if one of the types is unknown
-            (ResolvedTy::Unknown, _) | (_, ResolvedTy::Unknown) => true,
-            (ResolvedTy::IInt(found_bit_width), ResolvedTy::IInt(expected_bit_width))
-            | (ResolvedTy::UInt(found_bit_width), ResolvedTy::UInt(expected_bit_width)) => {
+            (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+            (Ty::IInt(found_bit_width), Ty::IInt(expected_bit_width))
+            | (Ty::UInt(found_bit_width), Ty::UInt(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width <= expected_bit_width
             }
             // we allow this because the uint is weak
-            (ResolvedTy::IInt(_), ResolvedTy::UInt(0)) => true,
+            (Ty::IInt(_), Ty::UInt(0)) => true,
             // we don't allow this case because of the loss of the sign
-            (ResolvedTy::IInt(_), ResolvedTy::UInt(_)) => false,
-            (ResolvedTy::UInt(found_bit_width), ResolvedTy::IInt(expected_bit_width)) => {
+            (Ty::IInt(_), Ty::UInt(_)) => false,
+            (Ty::UInt(found_bit_width), Ty::IInt(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width < expected_bit_width
             }
             (
-                ResolvedTy::IInt(found_bit_width) | ResolvedTy::UInt(found_bit_width),
-                ResolvedTy::Float(expected_bit_width),
+                Ty::IInt(found_bit_width) | Ty::UInt(found_bit_width),
+                Ty::Float(expected_bit_width),
             ) => *found_bit_width == 0 || found_bit_width < expected_bit_width,
-            (ResolvedTy::Float(found_bit_width), ResolvedTy::Float(expected_bit_width)) => {
+            (Ty::Float(found_bit_width), Ty::Float(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width <= expected_bit_width
             }
             (
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: found_mutable,
                     sub_ty: found_ty,
                 },
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: expected_mutable,
                     sub_ty: expected_ty,
                 },
@@ -478,31 +467,31 @@ impl ResolvedTy {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && (**expected_ty == ResolvedTy::Any || found_ty.can_fit_into(expected_ty))
+                ) && (**expected_ty == Ty::Any || found_ty.can_fit_into(expected_ty))
             }
             (
-                ResolvedTy::Array {
+                Ty::Array {
                     sub_ty: found_ty,
                     size: found_size,
                 },
-                ResolvedTy::Array {
+                Ty::Array {
                     sub_ty: expected_ty,
                     size: expected_size,
                 },
             ) => found_size == expected_size && found_ty.can_fit_into(expected_ty),
             (
-                ResolvedTy::Struct { uid: found_uid, .. },
-                ResolvedTy::Struct {
+                Ty::Struct { uid: found_uid, .. },
+                Ty::Struct {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
             (
-                ResolvedTy::Distinct { uid: found_uid, .. },
-                ResolvedTy::Distinct {
+                Ty::Distinct { uid: found_uid, .. },
+                Ty::Distinct {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, ResolvedTy::Distinct { ty, .. }) => found.can_fit_into(ty),
+            (found, Ty::Distinct { ty, .. }) => found.can_fit_into(ty),
             (found, expected) => found.is_equal_to(expected),
         }
     }
@@ -510,29 +499,21 @@ impl ResolvedTy {
     /// This is used for the `as` operator to see whether something can be casted into something else
     ///
     /// This only allows primitives to be casted to each other, or types that are already equal
-    pub(crate) fn primitive_castable(&self, primitive_ty: &ResolvedTy) -> bool {
+    pub(crate) fn primitive_castable(&self, primitive_ty: &Ty) -> bool {
         match (self, primitive_ty) {
             (
-                ResolvedTy::Bool
-                | ResolvedTy::IInt(_)
-                | ResolvedTy::UInt(_)
-                | ResolvedTy::Float(_)
-                | ResolvedTy::Char,
-                ResolvedTy::Bool
-                | ResolvedTy::IInt(_)
-                | ResolvedTy::UInt(_)
-                | ResolvedTy::Float(_)
-                | ResolvedTy::Char,
+                Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
+                Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
             ) => true,
             // todo: right now all the fields must be exactly equal,
             // technically it would be possible to make it so that fields autocast
             // but I'm lazy and that would require some changes in the codegen crate
             (
-                ResolvedTy::Struct {
+                Ty::Struct {
                     fields: found_fields,
                     ..
                 },
-                ResolvedTy::Struct {
+                Ty::Struct {
                     fields: expected_fields,
                     ..
                 },
@@ -545,19 +526,17 @@ impl ResolvedTy {
                         },
                     )
             }
-            (ResolvedTy::Distinct { ty: from, .. }, ResolvedTy::Distinct { ty: to, .. }) => {
+            (Ty::Distinct { ty: from, .. }, Ty::Distinct { ty: to, .. }) => {
                 from.primitive_castable(to)
             }
-            (ResolvedTy::Distinct { ty: distinct, .. }, other)
-            | (other, ResolvedTy::Distinct { ty: distinct, .. }) => {
-                distinct.primitive_castable(other)
-            }
+            (Ty::Distinct { ty: distinct, .. }, other)
+            | (other, Ty::Distinct { ty: distinct, .. }) => distinct.primitive_castable(other),
             (
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: found_mutable,
                     sub_ty: found_sub_ty,
                 },
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: expected_mutable,
                     sub_ty: expected_sub_ty,
                 },
@@ -566,35 +545,29 @@ impl ResolvedTy {
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
                 ) && (found_sub_ty == expected_sub_ty
-                    || **found_sub_ty == ResolvedTy::Any
-                    || **expected_sub_ty == ResolvedTy::Any)
+                    || **found_sub_ty == Ty::Any
+                    || **expected_sub_ty == Ty::Any)
             }
             // string to and from ^any and ^u8
-            (ResolvedTy::String, ResolvedTy::Pointer { sub_ty, .. })
-            | (ResolvedTy::Pointer { sub_ty, .. }, ResolvedTy::String) => {
-                matches!(
-                    sub_ty.as_ref(),
-                    ResolvedTy::Any | ResolvedTy::UInt(8) | ResolvedTy::Char
-                )
+            (Ty::String, Ty::Pointer { sub_ty, .. }) | (Ty::Pointer { sub_ty, .. }, Ty::String) => {
+                matches!(sub_ty.as_ref(), Ty::Any | Ty::UInt(8) | Ty::Char)
             }
             _ => self.is_functionally_equivalent_to(primitive_ty),
         }
     }
 
     /// allows `distinct` types to have the same semantics as other types as long as the inner type matches
-    pub(crate) fn has_semantics_of(&self, expected: &ResolvedTy) -> bool {
+    pub(crate) fn has_semantics_of(&self, expected: &Ty) -> bool {
         match (self, expected) {
-            (ResolvedTy::Distinct { ty, .. }, ResolvedTy::IInt(0) | ResolvedTy::UInt(0)) => {
+            (Ty::Distinct { ty, .. }, Ty::IInt(0) | Ty::UInt(0)) => {
                 if ty.has_semantics_of(expected) {
                     return true;
                 }
             }
-            (ResolvedTy::Distinct { .. }, ResolvedTy::IInt(_) | ResolvedTy::UInt(_)) => {
-                return false
-            }
+            (Ty::Distinct { .. }, Ty::IInt(_) | Ty::UInt(_)) => return false,
             (
-                ResolvedTy::Distinct { uid: found_uid, .. },
-                ResolvedTy::Distinct {
+                Ty::Distinct { uid: found_uid, .. },
+                Ty::Distinct {
                     uid: expected_uid, ..
                 },
             ) => {
@@ -602,7 +575,7 @@ impl ResolvedTy {
                     return true;
                 }
             }
-            (ResolvedTy::Distinct { ty: inner_ty, .. }, expected) => {
+            (Ty::Distinct { ty: inner_ty, .. }, expected) => {
                 if inner_ty.has_semantics_of(expected) {
                     return true;
                 }
@@ -613,25 +586,25 @@ impl ResolvedTy {
         self.can_fit_into(expected)
     }
 
-    pub(crate) fn is_weak_type_replaceable_by(&self, expected: &ResolvedTy) -> bool {
+    pub(crate) fn is_weak_type_replaceable_by(&self, expected: &Ty) -> bool {
         // println!("  is_weak_type_replaceable({:?}, {:?})", found, expected);
         match (self, expected) {
             // weak signed to strong signed, or weak unsigned to strong unsigned
-            (ResolvedTy::IInt(0), ResolvedTy::IInt(bit_width))
-            | (ResolvedTy::UInt(0), ResolvedTy::UInt(bit_width)) => *bit_width != 0,
+            (Ty::IInt(0), Ty::IInt(bit_width)) | (Ty::UInt(0), Ty::UInt(bit_width)) => {
+                *bit_width != 0
+            }
             // always accept a switch of sign
-            (ResolvedTy::IInt(0), ResolvedTy::UInt(_))
-            | (ResolvedTy::UInt(0), ResolvedTy::IInt(_)) => true,
+            (Ty::IInt(0), Ty::UInt(_)) | (Ty::UInt(0), Ty::IInt(_)) => true,
             // always accept a switch to float
-            (ResolvedTy::IInt(0) | ResolvedTy::UInt(0), ResolvedTy::Float(_)) => true,
+            (Ty::IInt(0) | Ty::UInt(0), Ty::Float(_)) => true,
             // weak float to strong float
-            (ResolvedTy::Float(0), ResolvedTy::Float(bit_width)) => *bit_width != 0,
+            (Ty::Float(0), Ty::Float(bit_width)) => *bit_width != 0,
             (
-                ResolvedTy::Array {
+                Ty::Array {
                     size: found_size,
                     sub_ty: found_sub_ty,
                 },
-                ResolvedTy::Array {
+                Ty::Array {
                     size: expected_size,
                     sub_ty: expected_sub_ty,
                 },
@@ -640,11 +613,11 @@ impl ResolvedTy {
                     && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
             }
             (
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: found_mutable,
                     sub_ty: found_sub_ty,
                 },
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: expected_mutable,
                     sub_ty: expected_sub_ty,
                 },
@@ -674,32 +647,24 @@ impl ResolvedTy {
             //         )
             // }
             (
-                ResolvedTy::Distinct { uid: found_uid, .. },
-                ResolvedTy::Distinct {
+                Ty::Distinct { uid: found_uid, .. },
+                Ty::Distinct {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, ResolvedTy::Distinct { ty, .. }) => found.is_weak_type_replaceable_by(ty),
+            (found, Ty::Distinct { ty, .. }) => found.is_weak_type_replaceable_by(ty),
             _ => false,
         }
     }
 }
 
 pub(crate) trait BinaryOutput {
-    fn get_possible_output_ty(
-        &self,
-        first: &ResolvedTy,
-        second: &ResolvedTy,
-    ) -> Option<BinaryOutputTy>;
+    fn get_possible_output_ty(&self, first: &Ty, second: &Ty) -> Option<BinaryOutputTy>;
 }
 
 impl BinaryOutput for hir::BinaryOp {
     /// should check with `can_perform` before actually using the type emitted from this function
-    fn get_possible_output_ty(
-        &self,
-        first: &ResolvedTy,
-        second: &ResolvedTy,
-    ) -> Option<BinaryOutputTy> {
+    fn get_possible_output_ty(&self, first: &Ty, second: &Ty) -> Option<BinaryOutputTy> {
         first.max(second).map(|max_ty| BinaryOutputTy {
             max_ty: max_ty.clone(),
             final_output_ty: match self {
@@ -720,21 +685,21 @@ impl BinaryOutput for hir::BinaryOp {
                 | hir::BinaryOp::Eq
                 | hir::BinaryOp::Ne
                 | hir::BinaryOp::LAnd
-                | hir::BinaryOp::LOr => ResolvedTy::Bool,
+                | hir::BinaryOp::LOr => Ty::Bool,
             },
         })
     }
 }
 
 pub(crate) trait UnaryOutput {
-    fn get_possible_output_ty(&self, input: Intern<ResolvedTy>) -> Intern<ResolvedTy>;
+    fn get_possible_output_ty(&self, input: Intern<Ty>) -> Intern<Ty>;
 }
 
 impl UnaryOutput for UnaryOp {
-    fn get_possible_output_ty(&self, input: Intern<ResolvedTy>) -> Intern<ResolvedTy> {
+    fn get_possible_output_ty(&self, input: Intern<Ty>) -> Intern<Ty> {
         match self {
             hir::UnaryOp::Neg => match *input {
-                ResolvedTy::UInt(bit_width) => ResolvedTy::IInt(bit_width).into(),
+                Ty::UInt(bit_width) => Ty::IInt(bit_width).into(),
                 _ => input,
             },
             hir::UnaryOp::Pos | hir::UnaryOp::BNot | hir::UnaryOp::LNot => input,
@@ -743,31 +708,27 @@ impl UnaryOutput for UnaryOp {
 }
 
 pub(crate) trait TypedOp {
-    fn can_perform(&self, ty: &ResolvedTy) -> bool;
+    fn can_perform(&self, ty: &Ty) -> bool;
 
-    fn default_ty(&self) -> ResolvedTy;
+    fn default_ty(&self) -> Ty;
 }
 
 impl TypedOp for hir::BinaryOp {
-    fn can_perform(&self, found: &ResolvedTy) -> bool {
-        let expected: &[ResolvedTy] = match self {
+    fn can_perform(&self, found: &Ty) -> bool {
+        let expected: &[Ty] = match self {
             hir::BinaryOp::Add
             | hir::BinaryOp::Sub
             | hir::BinaryOp::Mul
             | hir::BinaryOp::Div
             | hir::BinaryOp::BAnd
             | hir::BinaryOp::BOr
-            | hir::BinaryOp::Xor => &[ResolvedTy::IInt(0), ResolvedTy::Float(0)],
-            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
-                &[ResolvedTy::IInt(0)]
-            }
+            | hir::BinaryOp::Xor => &[Ty::IInt(0), Ty::Float(0)],
+            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => &[Ty::IInt(0)],
             hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
-                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+                &[Ty::IInt(0), Ty::Float(0)]
             }
-            hir::BinaryOp::Eq | hir::BinaryOp::Ne => {
-                &[ResolvedTy::Char, ResolvedTy::IInt(0), ResolvedTy::Float(0)]
-            }
-            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[ResolvedTy::Bool],
+            hir::BinaryOp::Eq | hir::BinaryOp::Ne => &[Ty::Char, Ty::IInt(0), Ty::Float(0)],
+            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[Ty::Bool],
         };
 
         expected
@@ -775,7 +736,7 @@ impl TypedOp for hir::BinaryOp {
             .any(|expected| found.has_semantics_of(expected))
     }
 
-    fn default_ty(&self) -> ResolvedTy {
+    fn default_ty(&self) -> Ty {
         match self {
             hir::BinaryOp::Add
             | hir::BinaryOp::Sub
@@ -783,28 +744,26 @@ impl TypedOp for hir::BinaryOp {
             | hir::BinaryOp::Div
             | hir::BinaryOp::BAnd
             | hir::BinaryOp::BOr
-            | hir::BinaryOp::Xor => ResolvedTy::IInt(0),
-            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
-                ResolvedTy::IInt(0)
-            }
+            | hir::BinaryOp::Xor => Ty::IInt(0),
+            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => Ty::IInt(0),
             hir::BinaryOp::Lt
             | hir::BinaryOp::Gt
             | hir::BinaryOp::Le
             | hir::BinaryOp::Ge
             | hir::BinaryOp::Eq
-            | hir::BinaryOp::Ne => ResolvedTy::Bool,
-            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => ResolvedTy::Bool,
+            | hir::BinaryOp::Ne => Ty::Bool,
+            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => Ty::Bool,
         }
     }
 }
 
 impl TypedOp for hir::UnaryOp {
-    fn can_perform(&self, found: &ResolvedTy) -> bool {
-        let expected: &[ResolvedTy] = match self {
+    fn can_perform(&self, found: &Ty) -> bool {
+        let expected: &[Ty] = match self {
             hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => {
-                &[ResolvedTy::IInt(0), ResolvedTy::Float(0)]
+                &[Ty::IInt(0), Ty::Float(0)]
             }
-            hir::UnaryOp::LNot => &[ResolvedTy::Bool],
+            hir::UnaryOp::LNot => &[Ty::Bool],
         };
 
         expected
@@ -812,10 +771,10 @@ impl TypedOp for hir::UnaryOp {
             .any(|expected| found.has_semantics_of(expected))
     }
 
-    fn default_ty(&self) -> ResolvedTy {
+    fn default_ty(&self) -> Ty {
         match self {
-            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => ResolvedTy::IInt(0),
-            hir::UnaryOp::LNot => ResolvedTy::Bool,
+            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => Ty::IInt(0),
+            hir::UnaryOp::LNot => Ty::Bool,
         }
     }
 }

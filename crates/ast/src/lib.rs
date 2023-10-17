@@ -691,6 +691,10 @@ impl Arg {
 def_ast_node!(ImportExpr);
 
 impl ImportExpr {
+    pub fn r#mod(self, tree: &SyntaxTree) -> Option<Mod> {
+        token(self, tree)
+    }
+
     pub fn file(self, tree: &SyntaxTree) -> Option<StringLiteral> {
         node(self, tree)
     }
@@ -801,6 +805,7 @@ def_multi_token! {
 def_ast_token!(Mut);
 def_ast_token!(Extern);
 def_ast_token!(Import);
+def_ast_token!(Mod);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
 def_ast_token!(Hyphen);

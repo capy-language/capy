@@ -1,7 +1,7 @@
 mod ctx;
 mod resolved_ty;
 
-use hir::{NameWithRange, PathWithRange};
+use hir::FileName;
 use interner::{Interner, Key};
 use internment::Intern;
 use la_arena::{ArenaMap, Idx};
@@ -13,13 +13,13 @@ pub use resolved_ty::*;
 #[derive(Clone)]
 pub struct InferenceResult {
     signatures: FxHashMap<hir::Fqn, Signature>,
-    modules: FxHashMap<hir::FileName, ModuleInference>,
+    files: FxHashMap<hir::FileName, ModuleInference>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleInference {
-    expr_tys: ArenaMap<Idx<hir::Expr>, Intern<ResolvedTy>>,
-    local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<ResolvedTy>>,
+    expr_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
+    local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<Ty>>,
 }
 
 impl std::ops::Index<hir::Fqn> for InferenceResult {
@@ -34,12 +34,12 @@ impl std::ops::Index<hir::FileName> for InferenceResult {
     type Output = ModuleInference;
 
     fn index(&self, module: hir::FileName) -> &Self::Output {
-        &self.modules[&module]
+        &self.files[&module]
     }
 }
 
 impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
-    type Output = Intern<ResolvedTy>;
+    type Output = Intern<Ty>;
 
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
         &self.expr_tys[expr]
@@ -47,7 +47,7 @@ impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
 }
 
 impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
-    type Output = Intern<ResolvedTy>;
+    type Output = Intern<Ty>;
 
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
         &self.local_tys[local_def]
@@ -55,7 +55,7 @@ impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
 }
 
 #[derive(Debug, Clone)]
-pub struct Signature(pub Intern<ResolvedTy>);
+pub struct Signature(pub Intern<Ty>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyDiagnostic {
@@ -74,73 +74,73 @@ impl TyDiagnostic {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TyDiagnosticKind {
     Mismatch {
-        expected: Intern<ResolvedTy>,
-        found: Intern<ResolvedTy>,
+        expected: Intern<Ty>,
+        found: Intern<Ty>,
     },
     Uncastable {
-        from: Intern<ResolvedTy>,
-        to: Intern<ResolvedTy>,
+        from: Intern<Ty>,
+        to: Intern<Ty>,
     },
     BinaryOpMismatch {
         op: hir::BinaryOp,
-        first: Intern<ResolvedTy>,
-        second: Intern<ResolvedTy>,
+        first: Intern<Ty>,
+        second: Intern<Ty>,
     },
     UnaryOpMismatch {
         op: hir::UnaryOp,
-        ty: Intern<ResolvedTy>,
+        ty: Intern<Ty>,
     },
     IfMismatch {
-        found: Intern<ResolvedTy>,
-        expected: Intern<ResolvedTy>,
+        found: Intern<Ty>,
+        expected: Intern<Ty>,
     },
     IndexNonArray {
-        found: Intern<ResolvedTy>,
+        found: Intern<Ty>,
     },
     IndexOutOfBounds {
         index: u64,
         actual_size: u64,
-        array_ty: Intern<ResolvedTy>,
+        array_ty: Intern<Ty>,
     },
     MismatchedArgCount {
         found: usize,
         expected: usize,
     },
     CalledNonFunction {
-        found: Intern<ResolvedTy>,
+        found: Intern<Ty>,
     },
     DerefNonPointer {
-        found: Intern<ResolvedTy>,
+        found: Intern<Ty>,
     },
     DerefAny,
     MissingElse {
-        expected: Intern<ResolvedTy>,
+        expected: Intern<Ty>,
     },
     CannotMutate,
     MutableRefToImmutableData,
     NotYetResolved {
-        path: hir::Path,
+        fqn: hir::Fqn,
     },
     ParamNotATy,
     LocalTyIsMutable,
     IntTooBigForType {
         found: u64,
         max: u64,
-        ty: Intern<ResolvedTy>,
+        ty: Intern<Ty>,
     },
-    UnknownModule {
-        name: hir::FileName,
+    UnknownFile {
+        file: FileName,
     },
     UnknownFqn {
         fqn: hir::Fqn,
     },
     NonExistentField {
         field: Key,
-        found_ty: Intern<ResolvedTy>,
+        found_ty: Intern<Ty>,
     },
     StructLiteralMissingField {
         field: Key,
-        expected_ty: Intern<ResolvedTy>,
+        expected_ty: Intern<Ty>,
     },
     ComptimePointer,
     ComptimeType,
@@ -165,19 +165,19 @@ pub enum TyDiagnosticHelpKind {
     ImmutableParam { assignment: bool },
     ImmutableGlobal,
     NotMutatingRefThroughDeref,
-    IfReturnsTypeHere { found: Intern<ResolvedTy> },
+    IfReturnsTypeHere { found: Intern<Ty> },
     MutableVariable,
     TailExprReturnsHere,
-    BreakHere { break_ty: Intern<ResolvedTy> },
+    BreakHere { break_ty: Intern<Ty> },
 }
 
 #[derive(Debug)]
 pub struct InferenceCtx<'a> {
-    current_module: Option<hir::FileName>,
+    current_file: Option<hir::FileName>,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     world_index: &'a hir::WorldIndex,
     local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
-    param_tys: Option<Vec<Intern<ResolvedTy>>>,
+    param_tys: Option<Vec<Intern<Ty>>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
     modules: FxHashMap<hir::FileName, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
@@ -196,7 +196,7 @@ impl<'a> InferenceCtx<'a> {
         world_index: &'a hir::WorldIndex,
     ) -> InferenceCtx<'a> {
         Self {
-            current_module: None,
+            current_file: None,
             bodies_map,
             world_index,
             local_usages: FxHashMap::default(),
@@ -210,7 +210,7 @@ impl<'a> InferenceCtx<'a> {
     /// only pass `None` to `entry_point` if your testing type checking and you don't want to worry
     /// about the entry point
     pub fn finish(mut self, entry_point: Option<hir::Fqn>) -> (InferenceResult, Vec<TyDiagnostic>) {
-        for (module, _) in self.world_index.get_all_modules() {
+        for (module, _) in self.world_index.get_all_files() {
             self.modules.insert(
                 module,
                 ModuleInference {
@@ -220,9 +220,9 @@ impl<'a> InferenceCtx<'a> {
             );
         }
 
-        for (module, index) in self.world_index.get_all_modules() {
+        for (file, index) in self.world_index.get_all_files() {
             for name in index.definition_names() {
-                let fqn = hir::Fqn { module, name };
+                let fqn = hir::Fqn { file, name };
 
                 if !self.signatures.contains_key(&fqn) {
                     self.get_signature(fqn);
@@ -244,17 +244,17 @@ impl<'a> InferenceCtx<'a> {
                 let ty = self.get_signature(entry_point).0;
 
                 if let Some((param_tys, return_ty)) = ty.as_function() {
-                    let lambda = match self.bodies_map[&entry_point.module]
-                        [self.bodies_map[&entry_point.module].global_body(entry_point.name)]
+                    let lambda = match self.bodies_map[&entry_point.file]
+                        [self.bodies_map[&entry_point.file].global_body(entry_point.name)]
                     {
-                        hir::Expr::Lambda(lambda) => &self.bodies_map[&entry_point.module][lambda],
+                        hir::Expr::Lambda(lambda) => &self.bodies_map[&entry_point.file][lambda],
                         _ => todo!("entry point doesn't have lambda body"),
                     };
 
                     if !param_tys.is_empty() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::EntryHasParams,
-                            module: entry_point.module,
+                            module: entry_point.file,
                             range: lambda.params_range,
                             help: None,
                         });
@@ -263,9 +263,9 @@ impl<'a> InferenceCtx<'a> {
                     if !return_ty.is_void() && !return_ty.is_int() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::EntryBadReturn,
-                            module: entry_point.module,
+                            module: entry_point.file,
                             // unwrap is safe because if the return type didn't exist, it'd be void
-                            range: self.bodies_map[&entry_point.module]
+                            range: self.bodies_map[&entry_point.file]
                                 .range_for_expr(lambda.return_ty.unwrap()),
                             help: None,
                         });
@@ -273,7 +273,7 @@ impl<'a> InferenceCtx<'a> {
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::EntryNotFunction,
-                        module: entry_point.module,
+                        module: entry_point.file,
                         range: range.whole,
                         help: None,
                     });
@@ -283,7 +283,7 @@ impl<'a> InferenceCtx<'a> {
 
         let mut result = InferenceResult {
             signatures: self.signatures,
-            modules: self.modules,
+            files: self.modules,
         };
         result.shrink_to_fit();
 
@@ -295,23 +295,23 @@ impl<'a> InferenceCtx<'a> {
             return sig.clone();
         }
 
-        let old_module = self.current_module.replace(fqn.module);
+        let old_module = self.current_file.replace(fqn.file);
 
         // we do this before parsing the possible type annotation
         // to avoid a stack overflow like this:
         // a : a : 5;
         self.signatures
-            .insert(fqn, Signature(Intern::new(ResolvedTy::NotYetResolved)));
+            .insert(fqn, Signature(Intern::new(Ty::NotYetResolved)));
 
-        let body = self.bodies_map[&self.current_module.unwrap()].global_body(fqn.name);
+        let body = self.bodies_map[&self.current_file.unwrap()].global_body(fqn.name);
 
         // if there's a type annotation to the global, make sure it matches the type of the body
-        let ty_annotation = self.bodies_map[&self.current_module.unwrap()]
+        let ty_annotation = self.bodies_map[&self.current_file.unwrap()]
             .global_ty(fqn.name)
             .map(|ty| self.parse_expr_to_ty(ty, &mut FxHashSet::default()));
 
         // we parse global functions differently to allow recursion
-        let ty = match &self.bodies_map[&self.current_module.unwrap()][body] {
+        let ty = match &self.bodies_map[&self.current_file.unwrap()][body] {
             hir::Expr::Lambda(lambda) => {
                 let ty = if let Some(ty_annotation) = ty_annotation {
                     self.signatures.insert(fqn, Signature(ty_annotation));
@@ -326,7 +326,7 @@ impl<'a> InferenceCtx<'a> {
                 };
 
                 self.modules
-                    .get_mut(&self.current_module.unwrap())
+                    .get_mut(&self.current_file.unwrap())
                     .unwrap()
                     .expr_tys
                     .insert(body, ty);
@@ -342,33 +342,28 @@ impl<'a> InferenceCtx<'a> {
             }
         };
 
-        self.current_module = old_module;
+        self.current_file = old_module;
 
         Signature(ty)
     }
 
-    fn infer_lambda(
-        &mut self,
-        lambda: Idx<hir::Lambda>,
-        fqn: Option<hir::Fqn>,
-    ) -> Intern<ResolvedTy> {
+    fn infer_lambda(&mut self, lambda: Idx<hir::Lambda>, fqn: Option<hir::Fqn>) -> Intern<Ty> {
         let hir::Lambda {
             params,
             return_ty,
             body,
             is_extern,
             ..
-        } = &self.bodies_map[&self.current_module.unwrap()][lambda];
+        } = &self.bodies_map[&self.current_file.unwrap()][lambda];
 
-        if !is_extern && self.bodies_map[&self.current_module.unwrap()][*body] == hir::Expr::Missing
-        {
-            return ResolvedTy::Type.into();
+        if !is_extern && self.bodies_map[&self.current_file.unwrap()][*body] == hir::Expr::Missing {
+            return Ty::Type.into();
         }
 
         let return_ty = if let Some(return_ty) = return_ty {
             self.parse_expr_to_ty(*return_ty, &mut FxHashSet::default())
         } else {
-            ResolvedTy::Void.into()
+            Ty::Void.into()
         };
 
         let param_tys = params
@@ -376,7 +371,7 @@ impl<'a> InferenceCtx<'a> {
             .map(|param| self.parse_expr_to_ty(param.ty, &mut FxHashSet::default()))
             .collect::<Vec<_>>();
 
-        let ty = ResolvedTy::Function {
+        let ty = Ty::Function {
             param_tys: param_tys.clone(),
             return_ty,
         }
@@ -394,88 +389,74 @@ impl<'a> InferenceCtx<'a> {
         ty
     }
 
-    fn path_with_range_to_ty(
+    fn fqn_to_ty(
         &mut self,
-        path: hir::PathWithRange,
-        resolve_chain: &mut FxHashSet<PathWithRange>,
-    ) -> Intern<ResolvedTy> {
+        fqn: hir::Fqn,
+        module_range: Option<TextRange>,
+        name_range: TextRange,
+        resolve_chain: &mut FxHashSet<hir::Fqn>,
+    ) -> Intern<Ty> {
         // this makes sure we don't stack overflow on recursion
-        if !resolve_chain.insert(path) {
-            return ResolvedTy::Unknown.into();
+        if !resolve_chain.insert(fqn) {
+            return Ty::Unknown.into();
         }
-
-        let (fqn, module_range, name_range) = match path {
-            hir::PathWithRange::ThisModule(NameWithRange { name, range }) => (
-                hir::Fqn {
-                    module: self.current_module.unwrap(),
-                    name,
-                },
-                None,
-                range,
-            ),
-            hir::PathWithRange::OtherModule {
-                fqn,
-                module_range,
-                name_range,
-            } => (fqn, Some(module_range), name_range),
-        };
 
         match self.world_index.get_definition(fqn) {
             Ok(_) => {
                 let ty = self.get_signature(fqn).0;
 
-                if *ty == ResolvedTy::Unknown {
-                    return ResolvedTy::Unknown.into();
+                if *ty == Ty::Unknown {
+                    return Ty::Unknown.into();
                 }
 
-                if *ty == ResolvedTy::NotYetResolved {
+                if *ty == Ty::NotYetResolved {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::NotYetResolved { path: path.path() },
-                        module: self.current_module.unwrap(),
+                        kind: TyDiagnosticKind::NotYetResolved { fqn },
+                        module: self.current_file.unwrap(),
                         range: name_range,
                         help: None,
                     });
 
-                    return ResolvedTy::Unknown.into();
+                    return Ty::Unknown.into();
                 }
 
-                if *ty != ResolvedTy::Type {
+                if *ty != Ty::Type {
                     if !ty.is_unknown() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::Mismatch {
-                                expected: ResolvedTy::Type.into(),
+                                expected: Ty::Type.into(),
                                 found: ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: name_range,
                             help: None,
                         });
                     }
-                    return ResolvedTy::Unknown.into();
+                    return Ty::Unknown.into();
                 }
 
-                let global_body = self.bodies_map[&fqn.module].global_body(fqn.name);
+                let global_body = self.bodies_map[&fqn.file].global_body(fqn.name);
 
-                let old_module = self.current_module.replace(fqn.module);
+                let old_module = self.current_file.replace(fqn.file);
 
                 let actual_ty = self.parse_expr_to_ty(global_body, resolve_chain);
 
-                self.current_module = old_module;
+                self.current_file = old_module;
 
                 // it'd be better to mutate the fqn, but that would invalidate the hash
                 // within the internment crate
                 match actual_ty.as_ref() {
-                    ResolvedTy::Distinct { fqn: None, ty, uid } => ResolvedTy::Distinct {
+                    Ty::Distinct { fqn: None, ty, uid } => Ty::Distinct {
                         fqn: Some(fqn),
                         uid: *uid,
                         ty: *ty,
                     }
                     .into(),
-                    ResolvedTy::Struct {
+                    Ty::Struct {
                         fqn: None,
                         fields,
                         uid,
-                    } => ResolvedTy::Struct {
+                    } => Ty::Struct {
                         fqn: Some(fqn),
                         fields: fields.clone(),
                         uid: *uid,
@@ -484,23 +465,23 @@ impl<'a> InferenceCtx<'a> {
                     _ => actual_ty,
                 }
             }
-            Err(hir::GetDefinitionError::UnknownModule) => {
+            Err(hir::GetDefinitionError::UnknownFile) => {
                 self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownModule { name: fqn.module },
-                    module: self.current_module.unwrap(),
+                    kind: TyDiagnosticKind::UnknownFile { file: fqn.file },
+                    module: self.current_file.unwrap(),
                     range: module_range.unwrap(),
                     help: None,
                 });
-                ResolvedTy::Unknown.into()
+                Ty::Unknown.into()
             }
             Err(hir::GetDefinitionError::UnknownDefinition) => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::UnknownFqn { fqn },
-                    module: self.current_module.unwrap(),
+                    module: self.current_file.unwrap(),
                     range: name_range,
                     help: None,
                 });
-                ResolvedTy::Unknown.into()
+                Ty::Unknown.into()
             }
         }
     }
@@ -508,111 +489,115 @@ impl<'a> InferenceCtx<'a> {
     fn parse_expr_to_ty(
         &mut self,
         expr: Idx<hir::Expr>,
-        resolve_chain: &mut FxHashSet<PathWithRange>,
-    ) -> Intern<ResolvedTy> {
-        match &self.bodies_map[&self.current_module.unwrap()][expr] {
-            hir::Expr::Missing => ResolvedTy::Unknown.into(),
+        resolve_chain: &mut FxHashSet<hir::Fqn>,
+    ) -> Intern<Ty> {
+        match &self.bodies_map[&self.current_file.unwrap()][expr] {
+            hir::Expr::Missing => Ty::Unknown.into(),
             hir::Expr::Ref { mutable, expr } => {
                 let sub_ty = self.parse_expr_to_ty(*expr, resolve_chain);
 
-                ResolvedTy::Pointer {
+                Ty::Pointer {
                     mutable: *mutable,
                     sub_ty,
                 }
                 .into()
             }
             hir::Expr::Local(local_def) => {
-                let local_ty = self.modules[&self.current_module.unwrap()].local_tys[*local_def];
+                let local_ty = self.modules[&self.current_file.unwrap()].local_tys[*local_def];
 
-                if *local_ty == ResolvedTy::Unknown {
-                    return ResolvedTy::Unknown.into();
+                if *local_ty == Ty::Unknown {
+                    return Ty::Unknown.into();
                 }
 
-                if *local_ty != ResolvedTy::Type {
+                if *local_ty != Ty::Type {
                     if !local_ty.is_unknown() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::Mismatch {
-                                expected: ResolvedTy::Type.into(),
-                                found: self.modules[&self.current_module.unwrap()].local_tys
+                                expected: Ty::Type.into(),
+                                found: self.modules[&self.current_file.unwrap()].local_tys
                                     [*local_def],
                             },
-                            module: self.current_module.unwrap(),
-                            range: self.bodies_map[&self.current_module.unwrap()]
+                            module: self.current_file.unwrap(),
+                            range: self.bodies_map[&self.current_file.unwrap()]
                                 .range_for_expr(expr),
                             help: None,
                         });
                     }
 
-                    return ResolvedTy::Unknown.into();
+                    return Ty::Unknown.into();
                 }
 
-                let local_def = &self.bodies_map[&self.current_module.unwrap()][*local_def];
+                let local_def = &self.bodies_map[&self.current_file.unwrap()][*local_def];
 
                 if local_def.mutable {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::LocalTyIsMutable,
-                        module: self.current_module.unwrap(),
-                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                        module: self.current_file.unwrap(),
+                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
                         help: Some(TyDiagnosticHelp {
                             kind: TyDiagnosticHelpKind::MutableVariable,
                             range: local_def.range,
                         }),
                     });
 
-                    return ResolvedTy::Unknown.into();
+                    return Ty::Unknown.into();
                 }
 
                 self.parse_expr_to_ty(local_def.value, resolve_chain)
             }
-            hir::Expr::SelfGlobal(name) => {
-                self.path_with_range_to_ty(hir::PathWithRange::ThisModule(*name), resolve_chain)
-            }
+            hir::Expr::LocalGlobal(name) => self.fqn_to_ty(
+                hir::Fqn {
+                    file: self.current_file.unwrap(),
+                    name: name.name,
+                },
+                None,
+                name.range,
+                resolve_chain,
+            ),
             hir::Expr::Param { .. } => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::ParamNotATy,
-                    module: self.current_module.unwrap(),
-                    range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    module: self.current_file.unwrap(),
+                    range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
                     help: None,
                 });
 
-                ResolvedTy::Unknown.into()
+                Ty::Unknown.into()
             }
             hir::Expr::Path { previous, field } => {
                 let previous_ty = self.infer_expr(*previous);
                 match previous_ty.as_ref() {
-                    ResolvedTy::Module(module) => {
-                        let path = hir::PathWithRange::OtherModule {
-                            fqn: hir::Fqn {
-                                module: *module,
-                                name: field.name,
-                            },
-                            module_range: self.bodies_map[&self.current_module.unwrap()]
-                                .range_for_expr(*previous),
-                            name_range: field.range,
-                        };
-
-                        self.path_with_range_to_ty(path, resolve_chain)
-                    }
+                    Ty::File(file) => self.fqn_to_ty(
+                        hir::Fqn {
+                            file: *file,
+                            name: field.name,
+                        },
+                        Some(
+                            self.bodies_map[&self.current_file.unwrap()].range_for_expr(*previous),
+                        ),
+                        field.range,
+                        resolve_chain,
+                    ),
                     _ => {
                         let expr_ty = self.infer_expr(expr);
                         if !expr_ty.is_unknown() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::Mismatch {
-                                    expected: ResolvedTy::Type.into(),
+                                    expected: Ty::Type.into(),
                                     found: expr_ty,
                                 },
-                                module: self.current_module.unwrap(),
-                                range: self.bodies_map[&self.current_module.unwrap()]
+                                module: self.current_file.unwrap(),
+                                range: self.bodies_map[&self.current_file.unwrap()]
                                     .range_for_expr(expr),
                                 help: None,
                             });
                         }
 
-                        ResolvedTy::Unknown.into()
+                        Ty::Unknown.into()
                     }
                 }
             }
-            hir::Expr::PrimitiveTy(ty) => ResolvedTy::from_primitive(*ty).into(),
+            hir::Expr::PrimitiveTy(ty) => Ty::from_primitive(*ty).into(),
             hir::Expr::Array {
                 size,
                 items: None,
@@ -621,7 +606,7 @@ impl<'a> InferenceCtx<'a> {
                 let sub_ty = self.parse_expr_to_ty(*ty, resolve_chain);
 
                 if let Some(size) = size {
-                    ResolvedTy::Array {
+                    Ty::Array {
                         size: *size,
                         sub_ty,
                     }
@@ -629,21 +614,21 @@ impl<'a> InferenceCtx<'a> {
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ArraySizeRequired,
-                        module: self.current_module.unwrap(),
-                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                        module: self.current_file.unwrap(),
+                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
                         help: None,
                     });
 
-                    ResolvedTy::Unknown.into()
+                    Ty::Unknown.into()
                 }
             }
-            hir::Expr::Distinct { uid, ty } => ResolvedTy::Distinct {
+            hir::Expr::Distinct { uid, ty } => Ty::Distinct {
                 fqn: None,
                 uid: *uid,
                 ty: self.parse_expr_to_ty(*ty, resolve_chain),
             }
             .into(),
-            hir::Expr::StructDecl { uid, fields } => ResolvedTy::Struct {
+            hir::Expr::StructDecl { uid, fields } => Ty::Struct {
                 fqn: None,
                 uid: *uid,
                 fields: fields
@@ -666,12 +651,12 @@ impl<'a> InferenceCtx<'a> {
                     body,
                     is_extern,
                     ..
-                } = &self.bodies_map[&self.current_module.unwrap()][*lambda];
+                } = &self.bodies_map[&self.current_file.unwrap()][*lambda];
 
                 let return_ty = if let Some(return_ty) = return_ty {
                     self.parse_expr_to_ty(*return_ty, resolve_chain)
                 } else {
-                    ResolvedTy::Void.into()
+                    Ty::Void.into()
                 };
 
                 let param_tys = params
@@ -679,7 +664,7 @@ impl<'a> InferenceCtx<'a> {
                     .map(|param| self.parse_expr_to_ty(param.ty, resolve_chain))
                     .collect::<Vec<_>>();
 
-                let ty = ResolvedTy::Function {
+                let ty = Ty::Function {
                     param_tys: param_tys.clone(),
                     return_ty,
                 }
@@ -687,19 +672,19 @@ impl<'a> InferenceCtx<'a> {
 
                 // if the function has a body (or is extern), then it isn't a type
                 if *is_extern
-                    || self.bodies_map[&self.current_module.unwrap()][*body] != hir::Expr::Missing
+                    || self.bodies_map[&self.current_file.unwrap()][*body] != hir::Expr::Missing
                 {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::Type.into(),
+                            expected: Ty::Type.into(),
                             found: ty,
                         },
-                        module: self.current_module.unwrap(),
-                        range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                        module: self.current_file.unwrap(),
+                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
                         help: None,
                     });
 
-                    return ResolvedTy::Unknown.into();
+                    return Ty::Unknown.into();
                 }
 
                 ty
@@ -708,15 +693,15 @@ impl<'a> InferenceCtx<'a> {
                 let expr_ty = self.infer_expr(expr);
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Type.into(),
+                        expected: Ty::Type.into(),
                         found: expr_ty,
                     },
-                    module: self.current_module.unwrap(),
-                    range: self.bodies_map[&self.current_module.unwrap()].range_for_expr(expr),
+                    module: self.current_file.unwrap(),
+                    range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
                     help: None,
                 });
 
-                ResolvedTy::Unknown.into()
+                Ty::Unknown.into()
             }
         }
     }
@@ -726,7 +711,7 @@ impl InferenceResult {
     fn shrink_to_fit(&mut self) {
         let Self {
             signatures,
-            modules,
+            files: modules,
         } = self;
         signatures.shrink_to_fit();
         modules.shrink_to_fit();
@@ -734,18 +719,13 @@ impl InferenceResult {
 }
 
 impl InferenceResult {
-    pub fn debug(
-        &self,
-        project_root: &std::path::Path,
-        interner: &Interner,
-        fancy: bool,
-    ) -> String {
+    pub fn debug(&self, mod_dir: &std::path::Path, interner: &Interner, fancy: bool) -> String {
         let mut s = String::new();
 
         let mut signatures = self
             .signatures
             .iter()
-            .map(|(fqn, sig)| (fqn.to_string(project_root, interner), sig))
+            .map(|(fqn, sig)| (fqn.to_string(mod_dir, interner), sig))
             .collect::<Vec<_>>();
 
         signatures.sort_by(|(fqn1, _), (fqn2, _)| fqn1.cmp(fqn2));
@@ -753,36 +733,36 @@ impl InferenceResult {
         for (fqn, sig) in signatures {
             s.push_str(&fqn);
             s.push_str(" : ");
-            s.push_str(&format!("{}\n", sig.0.display(project_root, interner)));
+            s.push_str(&format!("{}\n", sig.0.display(mod_dir, interner)));
         }
 
-        let mut modules = self.modules.iter().collect::<Vec<_>>();
-        modules.sort_by_key(|(name, _)| **name);
+        let mut files = self.files.iter().collect::<Vec<_>>();
+        files.sort_by_key(|(name, _)| **name);
 
-        for (name, module) in modules {
-            if fancy || self.modules.len() > 1 {
-                s.push_str(&format!("{}:\n", name.to_string(project_root, interner)));
+        for (name, tys) in files {
+            if fancy || self.files.len() > 1 {
+                s.push_str(&format!("{}:\n", name.to_string(mod_dir, interner)));
             }
-            for (expr_idx, ty) in module.expr_tys.iter() {
+            for (expr_idx, ty) in tys.expr_tys.iter() {
                 if fancy {
                     s.push_str(&format!("  \x1B[90m#{}\x1B[0m", expr_idx.into_raw(),));
                 } else {
-                    if self.modules.len() > 1 {
+                    if self.files.len() > 1 {
                         s.push_str("  ");
                     }
                     s.push_str(&format!("{}", expr_idx.into_raw(),));
                 }
-                s.push_str(&format!(" : {}\n", ty.display(project_root, interner)));
+                s.push_str(&format!(" : {}\n", ty.display(mod_dir, interner)));
             }
 
-            for (local_def_idx, ty) in module.local_tys.iter() {
-                if fancy || self.modules.len() > 1 {
+            for (local_def_idx, ty) in tys.local_tys.iter() {
+                if fancy || self.files.len() > 1 {
                     s.push_str("  ");
                 }
                 s.push_str(&format!(
                     "l{} : {}\n",
                     local_def_idx.into_raw(),
-                    ty.display(project_root, interner)
+                    ty.display(mod_dir, interner)
                 ));
             }
         }
@@ -791,8 +771,8 @@ impl InferenceResult {
     }
 }
 
-impl ResolvedTy {
-    pub fn display(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+impl Ty {
+    pub fn display(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
         match self {
             Self::NotYetResolved => "!".to_string(),
             Self::Unknown => "<unknown>".to_string(),
@@ -814,18 +794,18 @@ impl ResolvedTy {
             Self::String => "string".to_string(),
             Self::Char => "char".to_string(),
             Self::Array { size, sub_ty } => {
-                format!("[{size}]{}", sub_ty.display(project_root, interner))
+                format!("[{size}]{}", sub_ty.display(mod_dir, interner))
             }
             Self::Pointer { mutable, sub_ty } => {
                 format!(
                     "^{}{}",
                     if *mutable { "mut " } else { "" },
-                    sub_ty.display(project_root, interner)
+                    sub_ty.display(mod_dir, interner)
                 )
             }
-            Self::Distinct { fqn: Some(fqn), .. } => fqn.to_string(project_root, interner),
+            Self::Distinct { fqn: Some(fqn), .. } => fqn.to_string(mod_dir, interner),
             Self::Distinct { fqn: None, uid, ty } => {
-                format!("distinct'{} {}", uid, ty.display(project_root, interner))
+                format!("distinct'{} {}", uid, ty.display(mod_dir, interner))
             }
             Self::Function {
                 param_tys: params,
@@ -834,18 +814,18 @@ impl ResolvedTy {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&param.display(project_root, interner));
+                    res.push_str(&param.display(mod_dir, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
                     }
                 }
                 res.push_str(") -> ");
-                res.push_str(&return_ty.display(project_root, interner));
+                res.push_str(&return_ty.display(mod_dir, interner));
 
                 res
             }
-            Self::Struct { fqn: Some(fqn), .. } => fqn.to_string(project_root, interner),
+            Self::Struct { fqn: Some(fqn), .. } => fqn.to_string(mod_dir, interner),
             Self::Struct {
                 fqn: None,
                 uid,
@@ -857,7 +837,7 @@ impl ResolvedTy {
                     res.push_str(interner.lookup(name.0));
                     res.push_str(": ");
 
-                    res.push_str(&ty.display(project_root, interner));
+                    res.push_str(&ty.display(mod_dir, interner));
 
                     if idx != fields.len() - 1 {
                         res.push_str(", ");
@@ -871,8 +851,8 @@ impl ResolvedTy {
             Self::Type => "type".to_string(),
             Self::Any => "any".to_string(),
             Self::Void => "void".to_string(),
-            Self::Module(file_name) => {
-                format!("module {}", file_name.to_string(project_root, interner))
+            Self::File(file_name) => {
+                format!("file {}", file_name.to_string(mod_dir, interner))
             }
         }
     }
@@ -941,9 +921,10 @@ mod tests {
                 &index,
                 &mut uid_gen,
                 &mut interner,
+                Path::new(""),
                 true,
             );
-            world_index.add_module(module, index);
+            world_index.add_file(module, index);
             bodies_map.insert(module, bodies);
         }
 
@@ -961,14 +942,15 @@ mod tests {
             &index,
             &mut uid_gen,
             &mut interner,
+            Path::new(""),
             true,
         );
-        world_index.add_module(module, index);
+        world_index.add_file(module, index);
         bodies_map.insert(module, bodies);
 
         let (inference_result, actual_diagnostics) = InferenceCtx::new(&bodies_map, &world_index)
             .finish(entry_point.map(|entry_point| hir::Fqn {
-                module,
+                file: module,
                 name: hir::Name(interner.intern(entry_point)),
             }));
 
@@ -1109,20 +1091,20 @@ mod tests {
             "#,
             expect![[r#"
                 main::fun : () -> numbers::imaginary
-                main::numbers : module numbers
+                main::numbers : file numbers
                 numbers::Magic_Struct : type
                 numbers::imaginary : type
                 numbers:
                   1 : type
                   3 : type
                 main:
-                  0 : module numbers
-                  1 : module numbers
-                  3 : module numbers
+                  0 : file numbers
+                  1 : file numbers
+                  3 : file numbers
                   5 : numbers::imaginary
-                  6 : module numbers
+                  6 : file numbers
                   8 : numbers::imaginary
-                  9 : module numbers
+                  9 : file numbers
                   11 : numbers::imaginary
                   12 : numbers::Magic_Struct
                   13 : numbers::Magic_Struct
@@ -1230,8 +1212,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::UInt(16).into(),
-                        second: ResolvedTy::IInt(0).into(),
+                        first: Ty::UInt(16).into(),
+                        second: Ty::IInt(0).into(),
                     },
                     93..102,
                     None,
@@ -1289,8 +1271,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::String.into(),
-                        to: ResolvedTy::UInt(u32::MAX).into(),
+                        from: Ty::String.into(),
+                        to: Ty::UInt(u32::MAX).into(),
                     },
                     108..121,
                     None,
@@ -1600,9 +1582,9 @@ mod tests {
                     TyDiagnosticKind::IndexOutOfBounds {
                         index: 1000,
                         actual_size: 6,
-                        array_ty: ResolvedTy::Array {
+                        array_ty: Ty::Array {
                             size: 6,
-                            sub_ty: ResolvedTy::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
                     },
@@ -1745,8 +1727,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8).into(),
-                        found: ResolvedTy::IInt(0).into(),
+                        expected: Ty::UInt(8).into(),
+                        found: Ty::IInt(0).into(),
                     },
                     34..321,
                     Some((TyDiagnosticHelpKind::TailExprReturnsHere, 300..303)),
@@ -1889,8 +1871,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8).into(),
-                        found: ResolvedTy::UInt(16).into(),
+                        expected: Ty::UInt(8).into(),
+                        found: Ty::UInt(16).into(),
                     },
                     102..105,
                     None,
@@ -1947,8 +1929,8 @@ mod tests {
                 // should fail due to loss of sign
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(16).into(),
-                        found: ResolvedTy::IInt(8).into(),
+                        expected: Ty::UInt(16).into(),
+                        found: Ty::IInt(8).into(),
                     },
                     103..108,
                     None,
@@ -1980,8 +1962,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(16).into(),
-                        found: ResolvedTy::IInt(16).into(),
+                        expected: Ty::UInt(16).into(),
+                        found: Ty::IInt(16).into(),
                     },
                     104..108,
                     None,
@@ -2013,8 +1995,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8).into(),
-                        found: ResolvedTy::IInt(16).into(),
+                        expected: Ty::UInt(8).into(),
+                        found: Ty::IInt(16).into(),
                     },
                     102..105,
                     None,
@@ -2041,8 +2023,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::String.into(),
-                        second: ResolvedTy::UInt(0).into(),
+                        first: Ty::String.into(),
+                        second: Ty::UInt(0).into(),
                     },
                     36..45,
                     None,
@@ -2105,8 +2087,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Lt,
-                        first: ResolvedTy::Bool.into(),
-                        second: ResolvedTy::UInt(0).into(),
+                        first: Ty::Bool.into(),
+                        second: Ty::UInt(0).into(),
                     },
                     35..43,
                     None,
@@ -2133,8 +2115,8 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::LAnd,
-                        first: ResolvedTy::String.into(),
-                        second: ResolvedTy::String.into(),
+                        first: Ty::String.into(),
+                        second: Ty::String.into(),
                     },
                     35..53,
                     None,
@@ -2248,8 +2230,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8).into(),
-                        found: ResolvedTy::IInt(0).into(),
+                        expected: Ty::UInt(8).into(),
+                        found: Ty::IInt(0).into(),
                     },
                     33..39,
                     Some((TyDiagnosticHelpKind::TailExprReturnsHere, 35..37)),
@@ -2310,8 +2292,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::String.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::String.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     35..41,
                     Some((TyDiagnosticHelpKind::TailExprReturnsHere, 37..39)),
@@ -2412,16 +2394,16 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::IInt(32).into(),
-                            found: ResolvedTy::Void.into(),
+                            expected: Ty::IInt(32).into(),
+                            found: Ty::Void.into(),
                         },
                         46..48,
                         None,
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::IInt(32).into(),
-                            found: ResolvedTy::String.into(),
+                            expected: Ty::IInt(32).into(),
+                            found: Ty::String.into(),
                         },
                         50..53,
                         None,
@@ -2452,14 +2434,14 @@ mod tests {
                   3 : string
                   4 : (i32) -> string
                 main:
-                  1 : module greetings
-                  2 : module greetings
+                  1 : file greetings
+                  2 : file greetings
                   3 : (i32) -> string
                   4 : i32
                   5 : string
                   6 : string
                   7 : () -> string
-                  l0 : module greetings
+                  l0 : file greetings
             "#]],
             |_| [],
         );
@@ -2497,8 +2479,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::IInt(32).into(),
-                        found: ResolvedTy::String.into(),
+                        expected: Ty::IInt(32).into(),
+                        found: Ty::String.into(),
                     },
                     59..150,
                     Some((TyDiagnosticHelpKind::TailExprReturnsHere, 123..128)),
@@ -2532,14 +2514,14 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::IInt(32).into(),
-                        found: ResolvedTy::Distinct {
+                        expected: Ty::IInt(32).into(),
+                        found: Ty::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: ResolvedTy::IInt(32).into(),
+                            ty: Ty::IInt(32).into(),
                         }
                         .into(),
                     },
@@ -2637,16 +2619,16 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::Distinct {
+                        first: Ty::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: ResolvedTy::IInt(32).into(),
+                            ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        second: ResolvedTy::IInt(32).into(),
+                        second: Ty::IInt(32).into(),
                     },
                     186..191,
                     None,
@@ -2689,22 +2671,22 @@ mod tests {
                 [(
                     TyDiagnosticKind::BinaryOpMismatch {
                         op: hir::BinaryOp::Add,
-                        first: ResolvedTy::Distinct {
+                        first: Ty::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: ResolvedTy::IInt(32).into(),
+                            ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        second: ResolvedTy::Distinct {
+                        second: Ty::Distinct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("extra_imaginary")),
                             }),
                             uid: 1,
-                            ty: ResolvedTy::IInt(32).into(),
+                            ty: Ty::IInt(32).into(),
                         }
                         .into(),
                     },
@@ -2865,10 +2847,13 @@ mod tests {
                 4 : <unknown>
                 5 : <unknown>
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("foo")),
+                        },
                     },
                     77..80,
                     None,
@@ -2888,10 +2873,13 @@ mod tests {
                 1 : void
                 2 : (<unknown>) -> void
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("foo")),
+                        },
                     },
                     30..33,
                     None,
@@ -2910,10 +2898,13 @@ mod tests {
                 main::foo : <unknown>
                 1 : {uint}
             "#]],
-            |interner| {
+            |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(interner.intern("foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("foo")),
+                        },
                     },
                     23..26,
                     None,
@@ -2958,7 +2949,10 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("Foo")),
+                        },
                     },
                     58..61,
                     None,
@@ -3004,7 +2998,10 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("Foo")),
+                        },
                     },
                     58..61,
                     None,
@@ -3027,7 +3024,10 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("Foo")),
+                        },
                     },
                     33..36,
                     None,
@@ -3067,7 +3067,10 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("Foo"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("Foo")),
+                        },
                     },
                     33..36,
                     None,
@@ -3085,14 +3088,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::a : type
-                main::b : [0][0]<unknown>
+                main::b : [0]<unknown>
                 1 : type
                 3 : {uint}
             "#]],
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
-                        path: hir::Path::ThisModule(hir::Name(i.intern("a"))),
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("a")),
+                        },
                     },
                     26..27,
                     None,
@@ -3978,13 +3984,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::func : () -> void
-                main::other_file : module other_file
+                main::other_file : file other_file
                 other_file::foo : i32
                 other_file:
                   0 : i32
                 main:
-                  0 : module other_file
-                  1 : module other_file
+                  0 : file other_file
+                  1 : file other_file
                   2 : i32
                   3 : {uint}
                   4 : void
@@ -4304,14 +4310,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Pointer {
+                        expected: Ty::Pointer {
                             mutable: true,
-                            sub_ty: ResolvedTy::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        found: ResolvedTy::Pointer {
+                        found: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::UInt(0).into(),
+                            sub_ty: Ty::UInt(0).into(),
                         }
                         .into(),
                     },
@@ -4356,8 +4362,8 @@ mod tests {
                 10 : (i32) -> void
             "#]],
             |_| {
-                let float = ResolvedTy::Float(32).into();
-                let int = ResolvedTy::IInt(32).into();
+                let float = Ty::Float(32).into();
+                let int = Ty::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::MismatchedArgCount {
@@ -4377,14 +4383,14 @@ mod tests {
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::Function {
-                                param_tys: vec![float, ResolvedTy::IInt(8).into()],
-                                return_ty: ResolvedTy::String.into(),
+                            expected: Ty::Function {
+                                param_tys: vec![float, Ty::IInt(8).into()],
+                                return_ty: Ty::String.into(),
                             }
                             .into(),
-                            found: ResolvedTy::Function {
+                            found: Ty::Function {
                                 param_tys: vec![int],
-                                return_ty: ResolvedTy::Void.into(),
+                                return_ty: Ty::Void.into(),
                             }
                             .into(),
                         },
@@ -4413,7 +4419,7 @@ mod tests {
                 6 : (i32) -> void
             "#]],
             |_| {
-                let int = ResolvedTy::IInt(32).into();
+                let int = Ty::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::CalledNonFunction { found: int },
@@ -4423,9 +4429,9 @@ mod tests {
                     (
                         TyDiagnosticKind::Mismatch {
                             expected: int,
-                            found: ResolvedTy::Function {
+                            found: Ty::Function {
                                 param_tys: vec![int],
-                                return_ty: ResolvedTy::Void.into(),
+                                return_ty: Ty::Void.into(),
                             }
                             .into(),
                         },
@@ -4459,12 +4465,12 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::MissingElse {
-                        expected: ResolvedTy::String.into(),
+                        expected: Ty::String.into(),
                     },
                     68..130,
                     Some((
                         TyDiagnosticHelpKind::IfReturnsTypeHere {
-                            found: ResolvedTy::String.into(),
+                            found: Ty::String.into(),
                         },
                         101..108,
                     )),
@@ -4578,7 +4584,7 @@ mod tests {
                     TyDiagnosticKind::IntTooBigForType {
                         found: 128,
                         max: 127,
-                        ty: ResolvedTy::IInt(8).into(),
+                        ty: Ty::IInt(8).into(),
                     },
                     63..66,
                     None,
@@ -4611,7 +4617,7 @@ mod tests {
                     TyDiagnosticKind::IntTooBigForType {
                         found: 128,
                         max: 127,
-                        ty: ResolvedTy::IInt(8).into(),
+                        ty: Ty::IInt(8).into(),
                     },
                     59..62,
                     None,
@@ -4679,15 +4685,15 @@ mod tests {
                 l0 : main::Person
             "#]],
             |i| {
-                let person_ty = ResolvedTy::Struct {
+                let person_ty = Ty::Struct {
                     fqn: Some(hir::Fqn {
-                        module: hir::FileName(i.intern("main.capy")),
+                        file: hir::FileName(i.intern("main.capy")),
                         name: hir::Name(i.intern("Person")),
                     }),
                     uid: 0,
                     fields: vec![
-                        (hir::Name(i.intern("name")), ResolvedTy::String.into()),
-                        (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
+                        (hir::Name(i.intern("name")), Ty::String.into()),
+                        (hir::Name(i.intern("age")), Ty::IInt(32).into()),
                     ],
                 }
                 .into();
@@ -4695,8 +4701,8 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: ResolvedTy::String.into(),
-                            found: ResolvedTy::Bool.into(),
+                            expected: Ty::String.into(),
+                            found: Ty::Bool.into(),
                         },
                         218..223,
                         None,
@@ -4792,15 +4798,15 @@ mod tests {
                 [(
                     TyDiagnosticKind::NonExistentField {
                         field: i.intern("height"),
-                        found_ty: ResolvedTy::Struct {
+                        found_ty: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Person")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("name")), ResolvedTy::String.into()),
-                                (hir::Name(i.intern("age")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("name")), Ty::String.into()),
+                                (hir::Name(i.intern("age")), Ty::IInt(32).into()),
                             ],
                         }
                         .into(),
@@ -4839,8 +4845,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IfMismatch {
-                        found: ResolvedTy::UInt(0).into(),
-                        expected: ResolvedTy::String.into(),
+                        found: Ty::UInt(0).into(),
+                        expected: Ty::String.into(),
                     },
                     164..284,
                     None,
@@ -4872,7 +4878,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IndexNonArray {
-                        found: ResolvedTy::String.into(),
+                        found: Ty::String.into(),
                     },
                     87..93,
                     None,
@@ -4940,7 +4946,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CalledNonFunction {
-                        found: ResolvedTy::String.into(),
+                        found: Ty::String.into(),
                     },
                     85..92,
                     None,
@@ -4971,7 +4977,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::DerefNonPointer {
-                        found: ResolvedTy::String.into(),
+                        found: Ty::String.into(),
                     },
                     85..89,
                     None,
@@ -5067,27 +5073,27 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Struct {
+                        expected: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
-                        found: ResolvedTy::Struct {
+                        found: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
@@ -5184,27 +5190,27 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::Struct {
+                        from: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
-                        to: ResolvedTy::Struct {
+                        to: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
                             fields: vec![
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                             ],
                         }
                         .into(),
@@ -5258,27 +5264,27 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::Struct {
+                        from: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
-                        to: ResolvedTy::Struct {
+                        to: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(16).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(16).into()),
                             ],
                         }
                         .into(),
@@ -5332,27 +5338,27 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::Struct {
+                        from: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
-                        to: ResolvedTy::Struct {
+                        to: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
                             fields: vec![
-                                (hir::Name(i.intern("x")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("y")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("x")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("y")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
@@ -5407,28 +5413,28 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::Struct {
+                        from: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
                         }
                         .into(),
-                        to: ResolvedTy::Struct {
+                        to: Ty::Struct {
                             fqn: Some(hir::Fqn {
-                                module: hir::FileName(i.intern("main.capy")),
+                                file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
                             fields: vec![
-                                (hir::Name(i.intern("a")), ResolvedTy::IInt(32).into()),
-                                (hir::Name(i.intern("b")), ResolvedTy::IInt(8).into()),
-                                (hir::Name(i.intern("c")), ResolvedTy::String.into()),
+                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
+                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                (hir::Name(i.intern("c")), Ty::String.into()),
                             ],
                         }
                         .into(),
@@ -5526,10 +5532,10 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Type.into(),
-                        found: ResolvedTy::Function {
-                            param_tys: vec![ResolvedTy::String.into()],
-                            return_ty: ResolvedTy::Void.into(),
+                        expected: Ty::Type.into(),
+                        found: Ty::Function {
+                            param_tys: vec![Ty::String.into()],
+                            return_ty: Ty::Void.into(),
                         }
                         .into(),
                     },
@@ -5564,8 +5570,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Intern::new(ResolvedTy::String),
-                        found: Intern::new(ResolvedTy::UInt(0)),
+                        expected: Intern::new(Ty::String),
+                        found: Intern::new(Ty::UInt(0)),
                     },
                     64..126,
                     None,
@@ -5686,14 +5692,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Uncastable {
-                        from: ResolvedTy::Pointer {
+                        from: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        to: ResolvedTy::Pointer {
+                        to: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Float(32).into(),
+                            sub_ty: Ty::Float(32).into(),
                         }
                         .into(),
                     },
@@ -5793,14 +5799,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Pointer {
+                        expected: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        found: ResolvedTy::Pointer {
+                        found: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Any.into(),
+                            sub_ty: Ty::Any.into(),
                         }
                         .into(),
                     },
@@ -5969,8 +5975,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::UInt(8).into(),
-                        found: ResolvedTy::Char.into(),
+                        expected: Ty::UInt(8).into(),
+                        found: Ty::Char.into(),
                     },
                     98..105,
                     None,
@@ -6083,11 +6089,11 @@ mod tests {
                 [(
                     TyDiagnosticKind::NonExistentField {
                         field: i.intern("a"),
-                        found_ty: ResolvedTy::Pointer {
+                        found_ty: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Pointer {
+                            sub_ty: Ty::Pointer {
                                 mutable: false,
-                                sub_ty: ResolvedTy::UInt(0).into(),
+                                sub_ty: Ty::UInt(0).into(),
                             }
                             .into(),
                         }
@@ -6138,20 +6144,17 @@ mod tests {
                 [(
                     TyDiagnosticKind::NonExistentField {
                         field: i.intern("b"),
-                        found_ty: ResolvedTy::Pointer {
+                        found_ty: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Pointer {
+                            sub_ty: Ty::Pointer {
                                 mutable: false,
-                                sub_ty: ResolvedTy::Struct {
+                                sub_ty: Ty::Struct {
                                     fqn: Some(hir::Fqn {
-                                        module: hir::FileName(i.intern("main.capy")),
+                                        file: hir::FileName(i.intern("main.capy")),
                                         name: hir::Name(i.intern("Foo")),
                                     }),
                                     uid: 0,
-                                    fields: vec![(
-                                        hir::Name(i.intern("a")),
-                                        ResolvedTy::IInt(32).into(),
-                                    )],
+                                    fields: vec![(hir::Name(i.intern("a")), Ty::IInt(32).into())],
                                 }
                                 .into(),
                             }
@@ -6299,11 +6302,11 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IndexNonArray {
-                        found: ResolvedTy::Pointer {
+                        found: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Pointer {
+                            sub_ty: Ty::Pointer {
                                 mutable: false,
-                                sub_ty: ResolvedTy::UInt(0).into(),
+                                sub_ty: Ty::UInt(0).into(),
                             }
                             .into(),
                         }
@@ -6350,13 +6353,13 @@ mod tests {
                     TyDiagnosticKind::IndexOutOfBounds {
                         index: 10,
                         actual_size: 3,
-                        array_ty: ResolvedTy::Pointer {
+                        array_ty: Ty::Pointer {
                             mutable: false,
-                            sub_ty: ResolvedTy::Pointer {
+                            sub_ty: Ty::Pointer {
                                 mutable: false,
-                                sub_ty: ResolvedTy::Array {
+                                sub_ty: Ty::Array {
                                     size: 3,
-                                    sub_ty: ResolvedTy::IInt(32).into(),
+                                    sub_ty: Ty::IInt(32).into(),
                                 }
                                 .into(),
                             }
@@ -6730,8 +6733,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Void.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::Void.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     81..84,
                     None,
@@ -6785,13 +6788,13 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Void.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::Void.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     109..111,
                     Some((
                         TyDiagnosticHelpKind::BreakHere {
-                            break_ty: ResolvedTy::Void.into(),
+                            break_ty: Ty::Void.into(),
                         },
                         75..84,
                     )),
@@ -6826,13 +6829,13 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Void.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::Void.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     176..178,
                     Some((
                         TyDiagnosticHelpKind::BreakHere {
-                            break_ty: ResolvedTy::Void.into(),
+                            break_ty: Ty::Void.into(),
                         },
                         110..124,
                     )),
@@ -6897,13 +6900,13 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::String.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::String.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     92..94,
                     Some((
                         TyDiagnosticHelpKind::BreakHere {
-                            break_ty: ResolvedTy::String.into(),
+                            break_ty: Ty::String.into(),
                         },
                         56..71,
                     )),
@@ -7034,8 +7037,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: ResolvedTy::Void.into(),
-                        found: ResolvedTy::UInt(0).into(),
+                        expected: Ty::Void.into(),
+                        found: Ty::UInt(0).into(),
                     },
                     116..118,
                     None,

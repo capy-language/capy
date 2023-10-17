@@ -1,4 +1,4 @@
-libc :: import "../core/libc.capy";
+libc :: mod "core".libc;
 
 global :: [][3][3] i8 {
         [][3] i8 { [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 } },

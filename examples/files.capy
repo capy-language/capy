@@ -1,5 +1,5 @@
 
-libc :: import "../core/libc.capy";
+libc :: mod "core".libc;
 
 write_to_file :: (filename: string) {
     my_file := libc.fopen("hello.txt", "w");

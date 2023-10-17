@@ -8,22 +8,19 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, ResolvedTy, TyDiagnostic,
-    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
+    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, Ty, TyDiagnostic, TyDiagnosticHelp,
+    TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
 macro_rules! current_bodies {
     ($self:ident) => {
-        &$self.bodies_map[&$self.current_module.unwrap()]
+        &$self.bodies_map[&$self.current_file.unwrap()]
     };
 }
 
 macro_rules! current_module {
     ($self:ident) => {
-        $self
-            .modules
-            .get_mut(&$self.current_module.unwrap())
-            .unwrap()
+        $self.modules.get_mut(&$self.current_file.unwrap()).unwrap()
     };
 }
 
@@ -31,7 +28,7 @@ macro_rules! current_local_usages {
     ($self:ident) => {
         $self
             .local_usages
-            .entry($self.current_module.unwrap())
+            .entry($self.current_file.unwrap())
             .or_default()
     };
 }
@@ -82,17 +79,17 @@ impl InferenceCtx<'_> {
     pub(crate) fn finish_body(
         &mut self,
         body: Idx<Expr>,
-        param_tys: Option<Vec<Intern<ResolvedTy>>>,
-        expected_ty: Option<Intern<ResolvedTy>>,
+        param_tys: Option<Vec<Intern<Ty>>>,
+        expected_ty: Option<Intern<Ty>>,
         global: bool,
-    ) -> Intern<ResolvedTy> {
+    ) -> Intern<Ty> {
         let old_param_tys = match param_tys {
             Some(new_param_tys) => self.param_tys.replace(new_param_tys),
             None => self.param_tys.take(),
         };
         let old_local_usages = self
             .local_usages
-            .insert(self.current_module.unwrap(), Default::default());
+            .insert(self.current_file.unwrap(), Default::default());
 
         self.infer_expr(body);
 
@@ -107,11 +104,11 @@ impl InferenceCtx<'_> {
 
         if let Some(old_local_usages) = old_local_usages {
             self.local_usages
-                .insert(self.current_module.unwrap(), old_local_usages);
+                .insert(self.current_file.unwrap(), old_local_usages);
         }
         self.param_tys = old_param_tys;
 
-        let i32 = ResolvedTy::IInt(32).into();
+        let i32 = Ty::IInt(32).into();
         if let Some(expected_ty) = expected_ty {
             self.expect_match(actual_ty, expected_ty, body);
             self.replace_weak_tys(body, expected_ty);
@@ -124,7 +121,7 @@ impl InferenceCtx<'_> {
         if global && !self.is_const(body) {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::GlobalNotConst,
-                module: self.current_module.unwrap(),
+                module: self.current_file.unwrap(),
                 range: current_bodies!(self).range_for_expr(body),
                 help: None,
             })
@@ -177,7 +174,7 @@ impl InferenceCtx<'_> {
     /// ```
     ///
     /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
-    fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: Intern<ResolvedTy>) -> bool {
+    fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: Intern<Ty>) -> bool {
         let expr_body = &current_bodies!(self)[expr];
         if matches!(expr_body, Expr::Missing) {
             return false;
@@ -202,7 +199,7 @@ impl InferenceCtx<'_> {
                                 max: max_size,
                                 ty: new_ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
@@ -260,7 +257,7 @@ impl InferenceCtx<'_> {
 
                 self.replace_weak_tys(
                     pointer,
-                    ResolvedTy::Pointer {
+                    Ty::Pointer {
                         mutable,
                         sub_ty: new_ty,
                     }
@@ -331,7 +328,10 @@ impl InferenceCtx<'_> {
                 Some(items) => items.iter().all(|item| self.is_const(*item)),
                 None => true,
             },
-            _ => *(self.modules[&self.current_module.unwrap()][expr]) == ResolvedTy::Type,
+            _ => matches!(
+                *(self.modules[&self.current_file.unwrap()][expr]),
+                Ty::Type | Ty::File(_)
+            ),
         }
     }
 
@@ -353,7 +353,7 @@ impl InferenceCtx<'_> {
             Expr::Index { array, .. } => self.get_mutability(
                 *array,
                 assignment,
-                deref || self.modules[&self.current_module.unwrap()][*array].is_pointer(),
+                deref || self.modules[&self.current_file.unwrap()][*array].is_pointer(),
             ),
             Expr::Block {
                 tail_expr: Some(tail_expr),
@@ -397,31 +397,31 @@ impl InferenceCtx<'_> {
                     _ => ExprMutability::ImmutableParam(*range, assignment),
                 }
             }
-            Expr::SelfGlobal(name) => {
+            Expr::LocalGlobal(name) => {
                 let fqn = hir::Fqn {
-                    module: self.current_module.unwrap(),
+                    file: self.current_file.unwrap(),
                     name: name.name,
                 };
 
                 ExprMutability::ImmutableGlobal(self.world_index.range_info(fqn).whole)
             }
             Expr::Path { previous, field } => {
-                let previous_ty = self.modules[&self.current_module.unwrap()][*previous];
+                let previous_ty = self.modules[&self.current_file.unwrap()][*previous];
                 match previous_ty.as_ref() {
-                    ResolvedTy::Module(module) => {
+                    Ty::File(file) => {
                         let fqn = hir::Fqn {
-                            module: *module,
+                            file: *file,
                             name: field.name,
                         };
 
-                        if *module == self.current_module.unwrap() {
+                        if *file == self.current_file.unwrap() {
                             ExprMutability::ImmutableGlobal(self.world_index.range_info(fqn).whole)
                         } else {
                             ExprMutability::ImmutableGlobal(field.range)
                         }
                     }
                     _ if deref => {
-                        let path_ty = &self.modules[&self.current_module.unwrap()][expr];
+                        let path_ty = &self.modules[&self.current_file.unwrap()][expr];
 
                         if path_ty
                             .as_pointer()
@@ -443,7 +443,7 @@ impl InferenceCtx<'_> {
             }
             Expr::Call { .. } if deref => ExprMutability::Mutable,
             Expr::Cast { .. } if deref => {
-                let ty = self.modules[&self.current_module.unwrap()][expr];
+                let ty = self.modules[&self.current_file.unwrap()][expr];
 
                 match ty.as_pointer() {
                     Some((mutable, _)) if deref => {
@@ -517,7 +517,7 @@ impl InferenceCtx<'_> {
                 if help.is_some() {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::CannotMutate,
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: assign_body.range,
                         help,
                     })
@@ -536,8 +536,7 @@ impl InferenceCtx<'_> {
                 let Some(label) = label else { return };
                 let referenced_expr = current_bodies!(self)[*label];
 
-                let value_ty =
-                    value.map_or(ResolvedTy::Void.into(), |value| self.infer_expr(value));
+                let value_ty = value.map_or(Ty::Void.into(), |value| self.infer_expr(value));
 
                 let must_be_void = matches!(
                     current_bodies!(self)[referenced_expr],
@@ -550,7 +549,7 @@ impl InferenceCtx<'_> {
                     }
                 );
 
-                match self.modules[&self.current_module.unwrap()]
+                match self.modules[&self.current_file.unwrap()]
                     .expr_tys
                     .get(referenced_expr)
                 {
@@ -566,10 +565,10 @@ impl InferenceCtx<'_> {
                         if must_be_void && !value_ty.is_void() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::Mismatch {
-                                    expected: ResolvedTy::Void.into(),
+                                    expected: Ty::Void.into(),
                                     found: value_ty,
                                 },
-                                module: self.current_module.unwrap(),
+                                module: self.current_file.unwrap(),
                                 range: current_bodies!(self).range_for_expr(value.unwrap()),
                                 help: None,
                             });
@@ -663,7 +662,7 @@ impl InferenceCtx<'_> {
             Expr::Local(def) => {
                 local_defs.insert(*def);
             }
-            Expr::SelfGlobal(_) => {}
+            Expr::LocalGlobal(_) => {}
             Expr::Param { .. } => {}
             Expr::Call { callee, args } => {
                 self.get_referenced_locals(*callee, local_defs);
@@ -684,19 +683,19 @@ impl InferenceCtx<'_> {
         }
     }
 
-    fn reinfer_stmt(&mut self, stmt: Idx<hir::Stmt>) -> Option<Intern<ResolvedTy>> {
+    fn reinfer_stmt(&mut self, stmt: Idx<hir::Stmt>) -> Option<Intern<Ty>> {
         match current_bodies!(self)[stmt] {
             hir::Stmt::Break {
                 value: Some(value), ..
             } => Some(self.reinfer_expr(value)),
-            hir::Stmt::Break { value: None, .. } => Some(ResolvedTy::Void.into()),
+            hir::Stmt::Break { value: None, .. } => Some(Ty::Void.into()),
             _ => None,
         }
     }
 
-    fn reinfer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<ResolvedTy> {
+    fn reinfer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<Ty> {
         let previous_ty = current_module!(self)[expr];
-        if *previous_ty == ResolvedTy::Unknown {
+        if *previous_ty == Ty::Unknown {
             return previous_ty;
         }
 
@@ -714,7 +713,7 @@ impl InferenceCtx<'_> {
                 let new_inner = self.reinfer_expr(*inner);
 
                 if old_inner != new_inner {
-                    ResolvedTy::Pointer {
+                    Ty::Pointer {
                         mutable: *mutable,
                         sub_ty: new_inner,
                     }
@@ -732,7 +731,7 @@ impl InferenceCtx<'_> {
                     new_inner
                         .as_pointer()
                         .map(|(_, sub_ty)| sub_ty)
-                        .unwrap_or_else(|| ResolvedTy::Unknown.into())
+                        .unwrap_or_else(|| Ty::Unknown.into())
                 } else {
                     return current_module!(self)[expr];
                 }
@@ -787,7 +786,7 @@ impl InferenceCtx<'_> {
                     new_array
                         .as_array()
                         .map(|(_, sub_ty)| sub_ty)
-                        .unwrap_or_else(|| ResolvedTy::Unknown.into())
+                        .unwrap_or_else(|| Ty::Unknown.into())
                 } else {
                     return current_module!(self)[expr];
                 }
@@ -834,10 +833,7 @@ impl InferenceCtx<'_> {
                 let max = if let Some(else_branch) = else_branch {
                     let new_else = self.reinfer_expr(*else_branch);
 
-                    new_body
-                        .max(&new_else)
-                        .unwrap_or(ResolvedTy::Unknown)
-                        .into()
+                    new_body.max(&new_else).unwrap_or(Ty::Unknown).into()
                 } else {
                     new_body
                 };
@@ -856,7 +852,7 @@ impl InferenceCtx<'_> {
 
                 let new_body = self.reinfer_expr(*body);
                 let new_ty = if condition.is_some() {
-                    ResolvedTy::Void.into()
+                    Ty::Void.into()
                 } else if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
                     let usages = current_bodies!(self).scope_id_usages(label_id);
 
@@ -888,18 +884,18 @@ impl InferenceCtx<'_> {
         new_ty
     }
 
-    pub(crate) fn infer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<ResolvedTy> {
+    pub(crate) fn infer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<Ty> {
         if let Some(ty) = current_module!(self).expr_tys.get(expr) {
             return *ty;
         }
 
         let ty = match &current_bodies!(self)[expr] {
-            hir::Expr::Missing => ResolvedTy::Unknown.into(),
-            hir::Expr::IntLiteral(_) => ResolvedTy::UInt(0).into(),
-            hir::Expr::FloatLiteral(_) => ResolvedTy::Float(0).into(),
-            hir::Expr::BoolLiteral(_) => ResolvedTy::Bool.into(),
-            hir::Expr::StringLiteral(_) => ResolvedTy::String.into(),
-            hir::Expr::CharLiteral(_) => ResolvedTy::Char.into(),
+            hir::Expr::Missing => Ty::Unknown.into(),
+            hir::Expr::IntLiteral(_) => Ty::UInt(0).into(),
+            hir::Expr::FloatLiteral(_) => Ty::Float(0).into(),
+            hir::Expr::BoolLiteral(_) => Ty::Bool.into(),
+            hir::Expr::StringLiteral(_) => Ty::String.into(),
+            hir::Expr::CharLiteral(_) => Ty::Char.into(),
             hir::Expr::Array { size, items, ty } => {
                 let sub_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 
@@ -909,13 +905,13 @@ impl InferenceCtx<'_> {
                         self.expect_match(item_ty, sub_ty, *item);
                     }
 
-                    ResolvedTy::Array {
+                    Ty::Array {
                         size: size.unwrap_or(items.len() as u64),
                         sub_ty,
                     }
                     .into()
                 } else {
-                    ResolvedTy::Type.into()
+                    Ty::Type.into()
                 }
             }
             hir::Expr::Index { array, index } => {
@@ -928,8 +924,8 @@ impl InferenceCtx<'_> {
 
                 let index_ty = self.infer_expr(*index);
 
-                if *deref_source_ty == ResolvedTy::Unknown {
-                    ResolvedTy::Unknown.into()
+                if *deref_source_ty == Ty::Unknown {
+                    Ty::Unknown.into()
                 } else if let Some((actual_size, array_sub_ty)) = deref_source_ty.as_array() {
                     if let hir::Expr::IntLiteral(index) = current_bodies!(self)[*index] {
                         if index >= actual_size {
@@ -939,39 +935,39 @@ impl InferenceCtx<'_> {
                                     actual_size,
                                     array_ty: source_ty,
                                 },
-                                module: self.current_module.unwrap(),
+                                module: self.current_file.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
                                 help: None,
                             });
                         }
                     }
 
-                    if self.expect_match(index_ty, ResolvedTy::UInt(u32::MAX).into(), *index) {
-                        self.replace_weak_tys(*index, ResolvedTy::UInt(u32::MAX).into());
+                    if self.expect_match(index_ty, Ty::UInt(u32::MAX).into(), *index) {
+                        self.replace_weak_tys(*index, Ty::UInt(u32::MAX).into());
                     }
 
                     array_sub_ty
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
 
-                    ResolvedTy::Unknown.into()
+                    Ty::Unknown.into()
                 }
             }
             hir::Expr::Cast { expr: sub_expr, ty } => {
                 let expr_ty = self.infer_expr(*sub_expr);
 
-                if *expr_ty == ResolvedTy::Unknown {
-                    ResolvedTy::Unknown.into()
+                if *expr_ty == Ty::Unknown {
+                    Ty::Unknown.into()
                 } else {
                     let cast_ty = self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
 
                     if cast_ty.is_unknown() {
-                        ResolvedTy::Unknown.into()
+                        Ty::Unknown.into()
                     } else {
                         if !expr_ty.primitive_castable(&cast_ty) {
                             self.diagnostics.push(TyDiagnostic {
@@ -979,7 +975,7 @@ impl InferenceCtx<'_> {
                                     from: expr_ty,
                                     to: cast_ty,
                                 },
-                                module: self.current_module.unwrap(),
+                                module: self.current_file.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
                                 help: None,
                             });
@@ -998,7 +994,7 @@ impl InferenceCtx<'_> {
             } => {
                 let inner_ty = self.infer_expr(*inner);
 
-                if *inner_ty == ResolvedTy::Type {
+                if *inner_ty == Ty::Type {
                     inner_ty
                 } else {
                     if *mutable {
@@ -1007,14 +1003,14 @@ impl InferenceCtx<'_> {
                         if help.is_some() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::MutableRefToImmutableData,
-                                module: self.current_module.unwrap(),
+                                module: self.current_file.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
                                 help,
                             })
                         }
                     }
 
-                    ResolvedTy::Pointer {
+                    Ty::Pointer {
                         mutable: *mutable,
                         sub_ty: inner_ty,
                     }
@@ -1025,28 +1021,28 @@ impl InferenceCtx<'_> {
                 let deref_ty = self.infer_expr(*pointer);
 
                 match *deref_ty {
-                    ResolvedTy::Pointer { sub_ty, .. } if *sub_ty == ResolvedTy::Any => {
+                    Ty::Pointer { sub_ty, .. } if *sub_ty == Ty::Any => {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::DerefAny,
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
 
-                        ResolvedTy::Unknown.into()
+                        Ty::Unknown.into()
                     }
-                    ResolvedTy::Pointer { sub_ty, .. } => sub_ty,
+                    Ty::Pointer { sub_ty, .. } => sub_ty,
                     _ => {
                         if !deref_ty.is_unknown() {
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::DerefNonPointer { found: deref_ty },
-                                module: self.current_module.unwrap(),
+                                module: self.current_file.unwrap(),
                                 range: current_bodies!(self).range_for_expr(expr),
                                 help: None,
                             });
                         }
 
-                        ResolvedTy::Unknown.into()
+                        Ty::Unknown.into()
                     }
                 }
             }
@@ -1055,8 +1051,8 @@ impl InferenceCtx<'_> {
                 let rhs_ty = self.infer_expr(*rhs);
 
                 if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
-                    if *lhs_ty != ResolvedTy::Unknown
-                        && *rhs_ty != ResolvedTy::Unknown
+                    if *lhs_ty != Ty::Unknown
+                        && *rhs_ty != Ty::Unknown
                         && !op.can_perform(&output_ty.max_ty)
                     {
                         self.diagnostics.push(TyDiagnostic {
@@ -1065,7 +1061,7 @@ impl InferenceCtx<'_> {
                                 first: lhs_ty,
                                 second: rhs_ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
@@ -1084,7 +1080,7 @@ impl InferenceCtx<'_> {
                             first: lhs_ty,
                             second: rhs_ty,
                         },
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
@@ -1101,7 +1097,7 @@ impl InferenceCtx<'_> {
                             op: *op,
                             ty: expr_ty,
                         },
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(*expr),
                         help: None,
                     });
@@ -1122,7 +1118,7 @@ impl InferenceCtx<'_> {
 
                         // there might've been a break within this block
                         // that break would've set the type of this block
-                        let previous_ty = self.modules[&self.current_module.unwrap()]
+                        let previous_ty = self.modules[&self.current_file.unwrap()]
                             .expr_tys
                             .get(expr)
                             .copied();
@@ -1146,13 +1142,13 @@ impl InferenceCtx<'_> {
 
                                     max
                                 } else {
-                                    ResolvedTy::Unknown.into()
+                                    Ty::Unknown.into()
                                 }
                             }
                             None => tail_ty,
                         }
                     }
-                    None => ResolvedTy::Void.into(),
+                    None => Ty::Void.into(),
                 }
             }
             hir::Expr::If {
@@ -1161,7 +1157,7 @@ impl InferenceCtx<'_> {
                 else_branch,
             } => {
                 let cond_ty = self.infer_expr(*condition);
-                self.expect_match(cond_ty, ResolvedTy::Bool.into(), *condition);
+                self.expect_match(cond_ty, Ty::Bool.into(), *condition);
 
                 let body_ty = self.infer_expr(*body);
 
@@ -1179,15 +1175,15 @@ impl InferenceCtx<'_> {
                                 found: else_ty,
                                 expected: body_ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
 
-                        ResolvedTy::Unknown.into()
+                        Ty::Unknown.into()
                     }
                 } else {
-                    if *body_ty != ResolvedTy::Void && !body_ty.is_unknown() {
+                    if *body_ty != Ty::Void && !body_ty.is_unknown() {
                         // only get the range if the body isn't unknown
                         // otherwise we might be getting the range of something that doesn't exist
                         let help_range = match &current_bodies!(self)[*body] {
@@ -1200,7 +1196,7 @@ impl InferenceCtx<'_> {
 
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::MissingElse { expected: body_ty },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: Some(TyDiagnosticHelp {
                                 kind: TyDiagnosticHelpKind::IfReturnsTypeHere { found: body_ty },
@@ -1215,38 +1211,36 @@ impl InferenceCtx<'_> {
             hir::Expr::While { condition, body } => {
                 if let Some(condition) = condition {
                     let cond_ty = self.infer_expr(*condition);
-                    self.expect_match(cond_ty, ResolvedTy::Bool.into(), *condition);
+                    self.expect_match(cond_ty, Ty::Bool.into(), *condition);
                 }
                 let body_ty = self.infer_expr(*body);
-                self.expect_match(body_ty, ResolvedTy::Void.into(), *body);
+                self.expect_match(body_ty, Ty::Void.into(), *body);
 
                 if let Some(previous_ty) = current_module!(self).expr_tys.get(expr) {
                     *previous_ty
                 } else {
-                    ResolvedTy::Void.into()
+                    Ty::Void.into()
                 }
             }
             hir::Expr::Local(local) => current_module!(self).local_tys[*local],
             hir::Expr::Param { idx, .. } => self.param_tys.as_ref().unwrap()[*idx as usize],
-            hir::Expr::SelfGlobal(name) => {
+            hir::Expr::LocalGlobal(name) => {
                 let fqn = hir::Fqn {
-                    module: self.current_module.unwrap(),
+                    file: self.current_file.unwrap(),
                     name: name.name,
                 };
 
                 let sig = self.get_signature(fqn);
 
-                if *sig.0 == ResolvedTy::NotYetResolved {
+                if *sig.0 == Ty::NotYetResolved {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::NotYetResolved {
-                            path: hir::Path::ThisModule(name.name),
-                        },
-                        module: self.current_module.unwrap(),
+                        kind: TyDiagnosticKind::NotYetResolved { fqn },
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
 
-                    ResolvedTy::Unknown.into()
+                    Ty::Unknown.into()
                 } else {
                     sig.0
                 }
@@ -1254,9 +1248,9 @@ impl InferenceCtx<'_> {
             hir::Expr::Path { previous, field } => {
                 let previous_ty = self.infer_expr(*previous);
                 match previous_ty.as_ref() {
-                    ResolvedTy::Module(module) => {
+                    Ty::File(file) => {
                         let fqn = hir::Fqn {
-                            module: *module,
+                            file: *file,
                             name: field.name,
                         };
 
@@ -1266,33 +1260,31 @@ impl InferenceCtx<'_> {
                             Ok(_) => {
                                 let sig = self.get_signature(fqn);
 
-                                if *sig.0 == ResolvedTy::NotYetResolved {
+                                if *sig.0 == Ty::NotYetResolved {
                                     self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::NotYetResolved {
-                                            path: hir::Path::OtherModule(fqn),
-                                        },
-                                        module: self.current_module.unwrap(),
+                                        kind: TyDiagnosticKind::NotYetResolved { fqn },
+                                        module: self.current_file.unwrap(),
                                         range: current_bodies!(self).range_for_expr(expr),
                                         help: None,
                                     });
 
-                                    ResolvedTy::Unknown.into()
+                                    Ty::Unknown.into()
                                 } else {
                                     sig.0
                                 }
                             }
-                            Err(hir::GetDefinitionError::UnknownModule) => {
-                                unreachable!("a module wasn't added: {:?}", module)
+                            Err(hir::GetDefinitionError::UnknownFile) => {
+                                unreachable!("a module wasn't added: {:?}", file)
                             }
                             Err(hir::GetDefinitionError::UnknownDefinition) => {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::UnknownFqn { fqn },
-                                    module: self.current_module.unwrap(),
+                                    module: self.current_file.unwrap(),
                                     range: current_bodies!(self).range_for_expr(expr),
                                     help: None,
                                 });
 
-                                ResolvedTy::Unknown.into()
+                                Ty::Unknown.into()
                             }
                         }
                     }
@@ -1315,13 +1307,13 @@ impl InferenceCtx<'_> {
                                             field: field.name.0,
                                             found_ty: previous_ty,
                                         },
-                                        module: self.current_module.unwrap(),
+                                        module: self.current_file.unwrap(),
                                         range: current_bodies!(self).range_for_expr(expr),
                                         help: None,
                                     });
                                 }
 
-                                ResolvedTy::Unknown.into()
+                                Ty::Unknown.into()
                             }
                         } else {
                             if !previous_ty.is_unknown() {
@@ -1330,13 +1322,13 @@ impl InferenceCtx<'_> {
                                         field: field.name.0,
                                         found_ty: previous_ty,
                                     },
-                                    module: self.current_module.unwrap(),
+                                    module: self.current_file.unwrap(),
                                     range: current_bodies!(self).range_for_expr(expr),
                                     help: None,
                                 });
                             }
 
-                            ResolvedTy::Unknown.into()
+                            Ty::Unknown.into()
                         }
                     }
                 }
@@ -1351,7 +1343,7 @@ impl InferenceCtx<'_> {
                                 found: args.len(),
                                 expected: params.len(),
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
@@ -1376,16 +1368,16 @@ impl InferenceCtx<'_> {
                         self.infer_expr(*arg);
                     }
 
-                    if *callee_ty != ResolvedTy::Unknown {
+                    if *callee_ty != Ty::Unknown {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::CalledNonFunction { found: callee_ty },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         });
                     }
 
-                    ResolvedTy::Unknown.into()
+                    Ty::Unknown.into()
                 }
             }
             hir::Expr::Lambda(lambda) => self.infer_lambda(*lambda, None),
@@ -1397,21 +1389,21 @@ impl InferenceCtx<'_> {
                 if ty.is_pointer() || ty.is_function() {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ComptimePointer,
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
 
-                    ResolvedTy::Unknown.into()
-                } else if *ty == ResolvedTy::Type {
+                    Ty::Unknown.into()
+                } else if *ty == Ty::Type {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ComptimeType,
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
 
-                    ResolvedTy::Unknown.into()
+                    Ty::Unknown.into()
                 } else {
                     ty
                 }
@@ -1437,9 +1429,9 @@ impl InferenceCtx<'_> {
                     None => {
                         current_module!(self)
                             .expr_tys
-                            .insert(expr, ResolvedTy::Unknown.into());
+                            .insert(expr, Ty::Unknown.into());
 
-                        return ResolvedTy::Unknown.into();
+                        return Ty::Unknown.into();
                     }
                 }
                 .into_iter()
@@ -1459,7 +1451,7 @@ impl InferenceCtx<'_> {
                                 field: found_field_name.0,
                                 found_ty: expected_ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: *found_field_range,
                             help: None,
                         })
@@ -1477,7 +1469,7 @@ impl InferenceCtx<'_> {
                                 field: expected_field_name.0,
                                 expected_ty,
                             },
-                            module: self.current_module.unwrap(),
+                            module: self.current_file.unwrap(),
                             range: current_bodies!(self).range_for_expr(expr),
                             help: None,
                         })
@@ -1486,19 +1478,19 @@ impl InferenceCtx<'_> {
 
                 expected_ty
             }
-            hir::Expr::PrimitiveTy(_) => ResolvedTy::Type.into(),
+            hir::Expr::PrimitiveTy(_) => Ty::Type.into(),
             hir::Expr::Distinct { ty, .. } => {
                 // resolving the type might reveal diagnostics such as recursive types
                 self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
-                ResolvedTy::Type.into()
+                Ty::Type.into()
             }
             hir::Expr::StructDecl { fields, .. } => {
                 for (_, ty) in fields {
                     self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
                 }
-                ResolvedTy::Type.into()
+                Ty::Type.into()
             }
-            Expr::Import(file_name) => ResolvedTy::Module(*file_name).into(),
+            Expr::Import(file_name) => Ty::File(*file_name).into(),
         };
 
         current_module!(self).expr_tys.insert(expr, ty);
@@ -1512,10 +1504,10 @@ impl InferenceCtx<'_> {
     fn expect_block_match(
         &mut self,
         found_expr: Idx<hir::Expr>,
-        found_ty: Intern<ResolvedTy>,
+        found_ty: Intern<Ty>,
         block_expr: Idx<hir::Expr>,
-        block_ty: Intern<ResolvedTy>,
-    ) -> Option<Intern<ResolvedTy>> {
+        block_ty: Intern<Ty>,
+    ) -> Option<Intern<Ty>> {
         if found_ty.is_unknown() || block_ty.is_unknown() {
             return None;
         }
@@ -1540,7 +1532,7 @@ impl InferenceCtx<'_> {
                     expected: block_ty,
                     found: found_ty,
                 },
-                module: self.current_module.unwrap(),
+                module: self.current_file.unwrap(),
                 range: current_bodies!(self).range_for_expr(found_expr),
                 help: Some(TyDiagnosticHelp {
                     kind: TyDiagnosticHelpKind::BreakHere { break_ty: block_ty },
@@ -1555,17 +1547,15 @@ impl InferenceCtx<'_> {
     /// If found does not match expected, an error is thrown at the expression
     pub(crate) fn expect_match(
         &mut self,
-        found: Intern<ResolvedTy>,
-        expected: Intern<ResolvedTy>,
+        found: Intern<Ty>,
+        expected: Intern<Ty>,
         expr: Idx<hir::Expr>,
     ) -> bool {
         // if the expression we're checking against is an
         // int literal (which can be inferred into any int type),
         // then we can just quickly set it's type here
-        if let (
-            hir::Expr::IntLiteral(num),
-            ResolvedTy::IInt(bit_width) | ResolvedTy::UInt(bit_width),
-        ) = (&current_bodies!(self)[expr], expected.as_ref())
+        if let (hir::Expr::IntLiteral(num), Ty::IInt(bit_width) | Ty::UInt(bit_width)) =
+            (&current_bodies!(self)[expr], expected.as_ref())
         {
             if *bit_width != u32::MAX {
                 current_module!(self).expr_tys[expr] = expected;
@@ -1579,7 +1569,7 @@ impl InferenceCtx<'_> {
                             max: max_size,
                             ty: expected,
                         },
-                        module: self.current_module.unwrap(),
+                        module: self.current_file.unwrap(),
                         range: current_bodies!(self).range_for_expr(expr),
                         help: None,
                     });
@@ -1608,7 +1598,7 @@ impl InferenceCtx<'_> {
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch { expected, found },
-                module: self.current_module.unwrap(),
+                module: self.current_file.unwrap(),
                 range: current_bodies!(self).range_for_expr(expr),
                 help,
             });

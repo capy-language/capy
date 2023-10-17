@@ -1,4 +1,4 @@
-libc :: import "../core/libc.capy";
+libc :: mod "core".libc;
 
 Person :: struct {
     name: string,

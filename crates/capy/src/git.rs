@@ -103,5 +103,4 @@ fn download_file(url: &str, path: &Path) {
     .expect("Failed to copy data");
 
     writer.flush().expect("Failed to flush writer");
-    println!(" {}", file_path.display());
 }

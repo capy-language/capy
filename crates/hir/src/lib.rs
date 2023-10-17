@@ -1,14 +1,17 @@
 mod body;
 mod index;
-mod nameres;
+mod subdir;
 mod world_index;
 
-use std::path::Component;
+use std::{
+    env,
+    path::{Component, Path},
+};
 
 use ast::AstToken;
 pub use body::*;
 pub use index::*;
-pub use nameres::*;
+use subdir::SubDir;
 use syntax::SyntaxTree;
 use text_size::TextRange;
 use uid_gen::UIDGenerator;
@@ -20,11 +23,20 @@ use interner::{Interner, Key};
 pub struct FileName(pub Key);
 
 impl FileName {
-    pub fn to_string(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+    pub fn to_string(&self, mod_dir: &Path, interner: &Interner) -> String {
         let mut res = String::new();
 
-        let file_name = interner.lookup(self.0);
-        let relative_path = pathdiff::diff_paths(file_name, project_root).unwrap();
+        let file_name = Path::new(interner.lookup(self.0));
+        let curr_dir = env::current_dir().unwrap();
+
+        let mut is_mod = file_name.is_sub_dir_of(mod_dir);
+        let relative_path = if is_mod {
+            pathdiff::diff_paths(file_name, mod_dir).unwrap()
+        } else if file_name.is_sub_dir_of(&curr_dir) {
+            pathdiff::diff_paths(file_name, curr_dir).unwrap()
+        } else {
+            unreachable!()
+        };
 
         let components = relative_path
             .components()
@@ -36,7 +48,12 @@ impl FileName {
             if idx < components.len() - 1 {
                 res.push_str(&component);
 
-                res.push('.');
+                if is_mod {
+                    res.push_str("::");
+                    is_mod = false
+                } else {
+                    res.push('.');
+                }
             } else {
                 res.push_str(
                     &component
@@ -49,27 +66,51 @@ impl FileName {
 
         res
     }
+
+    pub fn get_mod_name(&self, mod_dir: &Path, interner: &Interner) -> Option<String> {
+        let file_name = Path::new(interner.lookup(self.0));
+
+        file_name.get_sub_dir_divergence(mod_dir)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileNameWithRange {
+    pub file: FileName,
+    pub range: TextRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(pub Key);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NameWithRange {
+    pub name: Name,
+    pub range: TextRange,
+}
+
 // short for Fully Qualified Name
-// not only the name of whatever we're referring to, but also the module it's contained in.
+// not only the name of whatever we're referring to, but also the file it's contained in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fqn {
-    pub module: FileName,
+    pub file: FileName,
     pub name: Name,
 }
 
 impl Fqn {
-    pub fn to_string(&self, project_root: &std::path::Path, interner: &Interner) -> String {
+    pub fn to_string(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
         format!(
             r#"{}::{}"#,
-            self.module.to_string(project_root, interner),
+            self.file.to_string(mod_dir, interner),
             interner.lookup(self.name.0),
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LocalFqn {
+    Full(Fqn),
+    Local(Name),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

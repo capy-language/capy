@@ -137,8 +137,8 @@ fn parse_lhs(
         parse_ref(p, recovery_set)
     } else if p.at(TokenKind::Distinct) {
         parse_distinct(p, recovery_set)
-    } else if p.at(TokenKind::Import) {
-        parse_import(p)
+    } else if p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])) {
+        parse_import_or_mod(p)
     } else if p.at(TokenKind::Comptime) {
         parse_comptime(p)
     } else if p.at(TokenKind::Struct) {
@@ -232,7 +232,6 @@ fn parse_post_operators(
                         arg_m.precede(p).complete(p, NodeKind::Arg);
                     }
 
-                    // todo: this might just be replaceable with at_default_recovery_set
                     if p.at_eof() || p.at_default_recovery_set() {
                         break;
                     }
@@ -360,8 +359,8 @@ fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::Distinct)
 }
 
-fn parse_import(p: &mut Parser) -> CompletedMarker {
-    assert!(p.at(TokenKind::Import));
+fn parse_import_or_mod(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])));
     let m = p.start();
     p.bump();
 

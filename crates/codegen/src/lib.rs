@@ -25,7 +25,7 @@ pub use compiler::comptime::{eval_comptime_blocks, ComptimeToCompile};
 pub fn compile_jit(
     verbose: bool,
     entry_point: hir::Fqn,
-    project_root: &std::path::Path,
+    mod_dir: &std::path::Path,
     interner: &Interner,
     bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
@@ -47,7 +47,7 @@ pub fn compile_jit(
     let cmain = compile_program(
         verbose,
         entry_point,
-        project_root,
+        mod_dir,
         interner,
         bodies_map,
         tys,
@@ -70,7 +70,7 @@ pub fn compile_jit(
 pub fn compile_obj(
     verbose: bool,
     entry_point: hir::Fqn,
-    project_root: &std::path::Path,
+    mod_dir: &std::path::Path,
     interner: &Interner,
     bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
     tys: &hir_ty::InferenceResult,
@@ -91,7 +91,7 @@ pub fn compile_obj(
 
     let builder = ObjectBuilder::new(
         isa,
-        entry_point.module.to_string(project_root, interner),
+        entry_point.file.to_string(mod_dir, interner),
         cranelift_module::default_libcall_names(),
     )
     .unwrap();
@@ -100,7 +100,7 @@ pub fn compile_obj(
     compile_program(
         verbose,
         entry_point,
-        project_root,
+        mod_dir,
         interner,
         bodies_map,
         tys,
@@ -159,7 +159,14 @@ mod tests {
 
         let mut modules = FxHashMap::default();
 
-        for file in other_files {
+        const CORE_DEPS: &[&str] = &[
+            "../../core/mod.capy",
+            "../../core/ptr.capy",
+            "../../core/libc.capy",
+            "../../core/math.capy",
+        ];
+
+        for file in other_files.iter().chain(CORE_DEPS.iter()) {
             let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
             let file = Path::new(current_dir).join(file).clean();
             let text = fs::read_to_string(&file).unwrap();
@@ -208,6 +215,8 @@ mod tests {
         stdout_expect: Expect,
         expected_status: i32,
     ) {
+        let mod_dir = env::current_dir().unwrap().join("../../").clean();
+
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
 
@@ -240,22 +249,23 @@ mod tests {
                 &index,
                 &mut uid_gen,
                 &mut interner,
+                &mod_dir,
                 fake_file_system,
             );
 
             comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
-                module_name: module,
+                file_name: module,
                 comptime,
             }));
 
             assert_eq!(diagnostics, vec![]);
 
-            world_index.add_module(module, index);
+            world_index.add_file(module, index);
             bodies_map.insert(module, bodies);
         }
 
         let text = &modules[main_file];
-        let module = hir::FileName(interner.intern(main_file));
+        let file = hir::FileName(interner.intern(main_file));
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
         assert_eq!(parse.errors(), &[]);
@@ -273,18 +283,19 @@ mod tests {
             &index,
             &mut uid_gen,
             &mut interner,
+            &mod_dir,
             fake_file_system,
         );
         comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
-            module_name: module,
+            file_name: file,
             comptime,
         }));
         assert_eq!(diagnostics, vec![]);
-        world_index.add_module(module, index);
-        bodies_map.insert(module, bodies);
+        world_index.add_file(file, index);
+        bodies_map.insert(file, bodies);
 
         let entry_point = hir::Fqn {
-            module,
+            file,
             name: hir::Name(interner.intern(entry_point)),
         };
 
@@ -309,7 +320,11 @@ mod tests {
         let bytes = compile_obj(
             true,
             entry_point,
-            Path::new(""),
+            if fake_file_system {
+                Path::new("")
+            } else {
+                &mod_dir
+            },
             &interner,
             &bodies_map,
             &inference_result,
@@ -397,7 +412,7 @@ mod tests {
     fn hello_world() {
         check_files(
             "../../examples/hello_world.capy",
-            &["../../core/libc.capy"],
+            &[],
             "main",
             expect![[r#"
             Hello, World!
@@ -489,7 +504,7 @@ mod tests {
     fn array_of_arrays() {
         check_files(
             "../../examples/arrays_of_arrays.capy",
-            &["../../core/libc.capy"],
+            &[],
             "main",
             expect![[r#"
                 my_array[0][0][0] = 2
@@ -557,7 +572,7 @@ mod tests {
     fn files() {
         check_files(
             "../../examples/files.capy",
-            &["../../core/libc.capy"],
+            &[],
             "main",
             expect![[r#"
             writing to hello.txt
@@ -591,12 +606,7 @@ mod tests {
     fn pretty() {
         check_files(
             "../../examples/pretty.capy",
-            &[
-                "../../core/mod.capy",
-                "../../core/libc.capy",
-                "../../core/ptr.capy",
-                "../../core/math.capy",
-            ],
+            &[],
             "main",
             expect![["
                 \u{1b}[32mHello!\u{b}\u{1b}[34mWorld\u{1b}[0m
@@ -616,12 +626,7 @@ mod tests {
     fn float_to_string() {
         check_files(
             "../../examples/float_to_string.capy",
-            &[
-                "../../core/mod.capy",
-                "../../core/libc.capy",
-                "../../core/ptr.capy",
-                "../../core/math.capy",
-            ],
+            &[],
             "main",
             expect![[r#"
             3.141
@@ -662,7 +667,7 @@ mod tests {
     fn structs() {
         check_files(
             "../../examples/structs.capy",
-            &["../../core/libc.capy"],
+            &[],
             "main",
             expect![[r#"
             people:
@@ -682,7 +687,7 @@ mod tests {
     fn comptime() {
         check_files(
             "../../examples/comptime.capy",
-            &["../../core/libc.capy", "../../core/math.capy"],
+            &[],
             "main",
             expect![[r#"
             Hello at runtime!
@@ -703,7 +708,7 @@ mod tests {
     fn string() {
         check_files(
             "../../examples/string.capy",
-            &["../../core/libc.capy", "../../core/ptr.capy"],
+            &[],
             "main",
             expect![[r#"
             Reallocating!
@@ -730,7 +735,7 @@ mod tests {
     fn auto_deref() {
         check_files(
             "../../examples/auto_deref.capy",
-            &["../../core/libc.capy"],
+            &[],
             "main",
             expect![[r#"
             struct auto deref:
