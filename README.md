@@ -3,18 +3,17 @@
 # The Capy Programming Language
 
 A statically typed, compiled programming language, largely inspired by Jai, Odin, and Zig.
-It even has arbitrary compile-time evaluation!
+It even has arbitrary compile-time execution!
 
 Now on all your favorite Operating Systems! Thanks [cranelift](https://cranelift.dev/)!
 
 ```capy
-libc :: import "std/libc.capy";
+core :: mod "core";
 
 to_print :: "Hello, World!";
 
 main :: () -> i32 {
-    // prints "Hello, World!" to the screen
-    libc.puts(to_print);
+    core.println(to_print);
 
     // exit with code 0
     0
@@ -61,7 +60,7 @@ gandalf := Person {
 gandalf.age = gandalf.age + 1;
 ```
 
-Arbitrary Compile-Time Evaluation,
+Arbitrary Compile-Time Execution,
 
 ```capy
 math :: import "std/math.capy";
@@ -106,6 +105,7 @@ First clone this repo,
 
 ```shell
 git clone https://github.com/capy-language/capy.git
+cd capy
 ```
 
 Then install the capy command with cargo,
@@ -122,7 +122,7 @@ Then compile and run your code,
 capy run examples/hello_world.capy
 ```
 
-Or if you just want to build the final executable,
+Or if you just want to build a binary,
 
 ```shell
 capy build examples/hello_world.capy
