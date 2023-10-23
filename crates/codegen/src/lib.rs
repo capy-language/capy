@@ -357,7 +357,7 @@ mod tests {
             panic!("{}: {why}", file.display());
         });
 
-        let exec = link_to_exec(&file);
+        let exec = link_to_exec(&file, None);
 
         let output = std::process::Command::new(exec.clone())
             .output()
