@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    resolved_ty::BinaryOutput, InferenceCtx, LocalUsage, Ty, TyDiagnostic, TyDiagnosticHelp,
+    ty::BinaryOutput, InferenceCtx, LocalUsage, Ty, TyDiagnostic, TyDiagnosticHelp,
     TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
@@ -911,6 +911,7 @@ impl InferenceCtx<'_> {
                     }
                     .into()
                 } else {
+                    self.parse_expr_to_ty(expr, &mut FxHashSet::default());
                     Ty::Type.into()
                 }
             }
@@ -995,6 +996,7 @@ impl InferenceCtx<'_> {
                 let inner_ty = self.infer_expr(*inner);
 
                 if *inner_ty == Ty::Type {
+                    self.parse_expr_to_ty(expr, &mut FxHashSet::default());
                     inner_ty
                 } else {
                     if *mutable {
@@ -1380,7 +1382,7 @@ impl InferenceCtx<'_> {
                     Ty::Unknown.into()
                 }
             }
-            hir::Expr::Lambda(lambda) => self.infer_lambda(*lambda, None),
+            hir::Expr::Lambda(lambda) => self.infer_lambda(expr, *lambda, None),
             hir::Expr::Comptime(comptime) => {
                 let hir::Comptime { body } = current_bodies!(self)[*comptime];
 
@@ -1478,16 +1480,13 @@ impl InferenceCtx<'_> {
 
                 expected_ty
             }
-            hir::Expr::PrimitiveTy(_) => Ty::Type.into(),
-            hir::Expr::Distinct { ty, .. } => {
+            hir::Expr::Distinct { .. } | hir::Expr::PrimitiveTy(_) => {
                 // resolving the type might reveal diagnostics such as recursive types
-                self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
+                self.parse_expr_to_ty(expr, &mut FxHashSet::default());
                 Ty::Type.into()
             }
-            hir::Expr::StructDecl { fields, .. } => {
-                for (_, ty) in fields {
-                    self.parse_expr_to_ty(*ty, &mut FxHashSet::default());
-                }
+            hir::Expr::StructDecl { .. } => {
+                self.parse_expr_to_ty(expr, &mut FxHashSet::default());
                 Ty::Type.into()
             }
             Expr::Import(file_name) => Ty::File(*file_name).into(),

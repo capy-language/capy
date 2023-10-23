@@ -11,7 +11,7 @@ use uid_gen::UIDGenerator;
 
 use crate::{convert::*, ComptimeToCompile};
 
-use super::{cast, comptime::ComptimeResult, Compiler, FunctionToCompile};
+use super::{cast, comptime::ComptimeResult, Compiler, FunctionToCompile, MetaTyData};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
@@ -58,6 +58,7 @@ pub(crate) fn compile_program<'a>(
         module,
         data_description: DataDescription::new(),
         functions_to_compile: VecDeque::from([entry_point_ftc]),
+        meta_tys: MetaTyData::default(),
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -65,7 +66,7 @@ pub(crate) fn compile_program<'a>(
         comptime_results,
     };
 
-    compiler.compile_queued_functions();
+    compiler.compile_queued();
 
     generate_main_function(compiler, entry_point)
 }

@@ -10,6 +10,8 @@ use crate::{compiler::FunctionToCompile, mangle::Mangle, CraneliftSignature};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CompilerDefinedFunction {
     PtrBitcast,
+    SizeOf,
+    AlignOf,
 }
 
 impl CompilerDefinedFunction {
@@ -26,6 +28,13 @@ impl CompilerDefinedFunction {
                 returns: vec![AbiParam::new(pointer_ty)],
                 call_conv: module.target_config().default_call_conv,
             },
+            CompilerDefinedFunction::SizeOf | CompilerDefinedFunction::AlignOf => {
+                CraneliftSignature {
+                    params: vec![AbiParam::new(types::I32)],
+                    returns: vec![AbiParam::new(pointer_ty)],
+                    call_conv: module.target_config().default_call_conv,
+                }
+            }
         };
         let mangled = self.to_mangled_name(mod_dir, interner);
         let func_id = module
@@ -55,12 +64,12 @@ pub(crate) fn as_compiler_defined(
         return None;
     };
 
-    let is_std = fqn
+    let is_core = fqn
         .file
         .get_mod_name(mod_dir, interner)
         .map_or(false, |n| n == "core");
 
-    if !is_std {
+    if !is_core {
         return None;
     }
 
@@ -71,13 +80,12 @@ pub(crate) fn as_compiler_defined(
 
     let function_name = interner.lookup(fqn.name.0);
 
-    match file_name.as_ref() {
-        "ptr.capy" => match function_name {
-            "to_raw" => as_ptr_to_usize(ftc),
-            "const_from_raw" => as_usize_to_ptr(ftc, false),
-            "mut_from_raw" => as_usize_to_ptr(ftc, true),
-            _ => None,
-        },
+    match (file_name.as_ref(), function_name) {
+        ("ptr.capy", "to_raw") => as_ptr_to_usize(ftc),
+        ("ptr.capy", "const_from_raw") => as_usize_to_ptr(ftc, false),
+        ("ptr.capy", "mut_from_raw") => as_usize_to_ptr(ftc, true),
+        ("meta.capy", "size_of") => as_meta_to_uint(ftc, true),
+        ("meta.capy", "align_of") => as_meta_to_uint(ftc, false),
         _ => None,
     }
 }
@@ -127,4 +135,28 @@ fn as_usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> Option<CompilerDef
     }
 
     Some(CompilerDefinedFunction::PtrBitcast)
+}
+
+/// size = false, will output a CompilerDefinedFunction::AlignOf
+fn as_meta_to_uint(ftc: &FunctionToCompile, size: bool) -> Option<CompilerDefinedFunction> {
+    let mut params = ftc.param_tys.iter();
+
+    let first = params.next()?;
+    if **first != Ty::Type {
+        return None;
+    }
+
+    if params.next().is_some() {
+        return None;
+    }
+
+    if *ftc.return_ty != Ty::UInt(u32::MAX) {
+        return None;
+    }
+
+    if size {
+        Some(CompilerDefinedFunction::SizeOf)
+    } else {
+        Some(CompilerDefinedFunction::AlignOf)
+    }
 }
