@@ -1,5 +1,5 @@
 mod ctx;
-mod resolved_ty;
+mod ty;
 
 use hir::FileName;
 use interner::{Interner, Key};
@@ -8,7 +8,7 @@ use la_arena::{ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
 
-pub use resolved_ty::*;
+pub use ty::*;
 
 #[derive(Clone)]
 pub struct InferenceResult {
@@ -19,6 +19,8 @@ pub struct InferenceResult {
 #[derive(Debug, Clone)]
 pub struct ModuleInference {
     expr_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
+    /// the actual types of type expressions
+    meta_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
     local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<Ty>>,
 }
 
@@ -35,6 +37,12 @@ impl std::ops::Index<hir::FileName> for InferenceResult {
 
     fn index(&self, module: hir::FileName) -> &Self::Output {
         &self.files[&module]
+    }
+}
+
+impl ModuleInference {
+    pub fn get_meta_ty(&self, expr: Idx<hir::Expr>) -> Option<Intern<Ty>> {
+        self.meta_tys.get(expr).copied()
     }
 }
 
@@ -215,6 +223,7 @@ impl<'a> InferenceCtx<'a> {
                 module,
                 ModuleInference {
                     expr_tys: ArenaMap::default(),
+                    meta_tys: ArenaMap::default(),
                     local_tys: ArenaMap::default(),
                 },
             );
@@ -316,13 +325,13 @@ impl<'a> InferenceCtx<'a> {
                 let ty = if let Some(ty_annotation) = ty_annotation {
                     self.signatures.insert(fqn, Signature(ty_annotation));
 
-                    let ty = self.infer_lambda(*lambda, None);
+                    let ty = self.infer_lambda(body, *lambda, None);
 
                     self.expect_match(ty, ty_annotation, body);
 
                     ty
                 } else {
-                    self.infer_lambda(*lambda, Some(fqn))
+                    self.infer_lambda(body, *lambda, Some(fqn))
                 };
 
                 self.modules
@@ -347,7 +356,12 @@ impl<'a> InferenceCtx<'a> {
         Signature(ty)
     }
 
-    fn infer_lambda(&mut self, lambda: Idx<hir::Lambda>, fqn: Option<hir::Fqn>) -> Intern<Ty> {
+    fn infer_lambda(
+        &mut self,
+        expr: Idx<hir::Expr>,
+        lambda: Idx<hir::Lambda>,
+        fqn: Option<hir::Fqn>,
+    ) -> Intern<Ty> {
         let hir::Lambda {
             params,
             return_ty,
@@ -355,10 +369,6 @@ impl<'a> InferenceCtx<'a> {
             is_extern,
             ..
         } = &self.bodies_map[&self.current_file.unwrap()][lambda];
-
-        if !is_extern && self.bodies_map[&self.current_file.unwrap()][*body] == hir::Expr::Missing {
-            return Ty::Type.into();
-        }
 
         let return_ty = if let Some(return_ty) = return_ty {
             self.parse_expr_to_ty(*return_ty, &mut FxHashSet::default())
@@ -376,6 +386,16 @@ impl<'a> InferenceCtx<'a> {
             return_ty,
         }
         .into();
+
+        if !is_extern && self.bodies_map[&self.current_file.unwrap()][*body] == hir::Expr::Missing {
+            self.modules
+                .get_mut(&self.current_file.unwrap())
+                .unwrap()
+                .meta_tys
+                .insert(expr, ty);
+
+            return Ty::Type.into();
+        }
 
         // this allows recursion
         if let Some(fqn) = fqn {
@@ -491,7 +511,11 @@ impl<'a> InferenceCtx<'a> {
         expr: Idx<hir::Expr>,
         resolve_chain: &mut FxHashSet<hir::Fqn>,
     ) -> Intern<Ty> {
-        match &self.bodies_map[&self.current_file.unwrap()][expr] {
+        if let Some(meta_ty) = self.modules[&self.current_file.unwrap()].get_meta_ty(expr) {
+            return meta_ty;
+        }
+
+        let ty = match &self.bodies_map[&self.current_file.unwrap()][expr] {
             hir::Expr::Missing => Ty::Unknown.into(),
             hir::Expr::Ref { mutable, expr } => {
                 let sub_ty = self.parse_expr_to_ty(*expr, resolve_chain);
@@ -703,7 +727,15 @@ impl<'a> InferenceCtx<'a> {
 
                 Ty::Unknown.into()
             }
-        }
+        };
+
+        self.modules
+            .get_mut(&self.current_file.unwrap())
+            .unwrap()
+            .meta_tys
+            .insert(expr, ty);
+
+        ty
     }
 }
 

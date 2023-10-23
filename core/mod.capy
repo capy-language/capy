@@ -2,6 +2,7 @@
 libc :: import "libc.capy";
 ptr :: import "ptr.capy";
 math :: import "math.capy";
+meta :: import "meta.capy";
 
 print :: (str: string) {
     str := str as ^char;
@@ -13,6 +14,8 @@ print :: (str: string) {
         }
 
         libc.putchar(ch);
+
+        i = i + 1;
     }
 }
 

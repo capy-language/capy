@@ -1,0 +1,119 @@
+// Pretty simple. The amount of space a type takes up in memory.
+//
+// i8 takes 1 byte to store, i32 takes four bytes.
+//
+// For structs it is the size of all the fields in a struct, plus any padding between those fields.
+// (see `align_of` for more info on padding/alignment)
+//
+// The size of this struct,
+//
+// struct {
+//     a: i64, // 8 bytes (align = 8)
+//     b: i32, // 4 bytes (align = 4)
+// }
+//
+// would be 12 bytes
+//
+// The size of this struct,
+//
+// struct {
+//     a: i32, // 4 bytes (align = 4)
+//     // 4 bytes of padding here
+//     b: i64, // 8 bytes (align = 8)
+// }
+//
+// would be 16 bytes
+// 
+// If you need to store multiple structs in a row (as in an array or buffer),
+// `stride_of` is the function to use
+size_of :: (ty: type) -> usize extern;
+
+// The stride of a type is the space allocated for a single element in an array.
+//
+// Imagine a struct like so:
+//
+// struct {
+//     a: i64, // 8 bytes (align = 8)
+//     b: i32, // 4 bytes (align = 4)
+// }
+//
+// The size of this struct is 12 bytes and its alignment is 8.
+// If we naively allocated an array for this struct using its size (12 bytes), it would look like this,
+//
+// 0          12         24         36
+// [    s    ][    s    ][    s    ]
+//
+// But wait! This struct's alignment is 8 and the second element of this array starts on address 12.
+// 12 is not a multiple of 8, and some architectures might complain if try to access the second field.
+// So some padding needs to be added in between our structs.
+//
+// The "stride" of a type is the size plus the padding needed for the next struct.
+// For our example, it would be 12 bytes plus the padding needed to bring that size to the next multiple of 8.
+//
+// In memory, an array which allocates using stride would look like this:
+//
+// 0          12   16         28   32         44   48
+// [    s    ][ p ][    s    ][ p ][    s    ][ p ]
+//
+// As you can see, all of the structs in the array start at addresses which are multiples of 8 (0, 16, 32).
+//
+// So when allocating space for arrays/buffers, allocate n * stride_of(T).
+stride_of :: (ty: type) -> usize {
+    mask := align_of(ty) - 1;
+    {size_of(ty) + mask} &~ mask
+}
+
+// Most types must appear in addresses that are a multiple of a certain "alignment".
+// This is a restriction of the underlying architecture.
+//
+// The alignment of `i16` is 2, so a value of type `i16`
+// can only exist on addresses which are multiples of 2.
+// If we put an `i16` on a bad address, some architectures might complain.
+//
+// For example, take the following struct,
+//
+// struct {
+//     a: i8,  // 1 byte  (align = 1)
+//     b: i16, // 2 bytes (align = 2)
+// }
+//
+// If we naively laid this struct out in memory it'd look like this:
+//
+// 0    1    2    4
+// [ a ][    b    ]
+//
+// But wait! `b` (which is an `i16`) starts at address 1, but that isn't a multiple of 2.
+// Our computer isn't going to like this!
+// 
+// In order to ensure that `b` starts at an address which is a multiple of 2,
+// the compile will have to add padding to the struct,
+//
+// struct {
+//     a: i8,       // 1 byte
+//     padding: i8, // 1 byte  (this is a secret, hidden field)
+//     b: i16,      // 2 bytes
+// }
+//
+// Now the struct looks like this in memory:
+//
+// 0    1    2    4    5
+// [ a ][   ][    b    ]
+//        ^
+//        |
+//        \  padding here
+//
+// As you can see, `b` now starts at address 2, which is a multiple of it's alignment (2).
+//
+// The alignment of a struct is the largest alignment of all it's fields
+//
+// struct {
+//     a: i64, // 8 bytes (align = 8)
+//     b: i16, // 2 bytes (align = 2)   
+// }
+// 
+// This struct's alignment is 8, so this struct can only appear in addresses which are multiples of 8.
+//
+// An alignment of `1` is accepted in all addresses (every number is a multiple of 1)
+align_of :: (ty: type) -> usize extern;
+
+// todo: add the Type_Info functions

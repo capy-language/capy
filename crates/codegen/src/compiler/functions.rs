@@ -18,12 +18,12 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     compiler_defined::CompilerDefinedFunction,
-    convert::{NumberType, StructMemory, ToCompSize, ToCompType, ToCraneliftSignature},
+    convert::{NumberType, StructMemory, ToCompSize, ToCompType, ToCraneliftSignature, ToTyId},
     mangle::Mangle,
     ComptimeToCompile, CraneliftSignature,
 };
 
-use super::{comptime::ComptimeResult, FunctionToCompile};
+use super::{comptime::ComptimeResult, FunctionToCompile, MetaTyData};
 
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) file_name: hir::FileName,
@@ -40,6 +40,7 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) pointer_ty: types::Type,
 
     pub(crate) functions_to_compile: &'a mut VecDeque<FunctionToCompile>,
+    pub(crate) meta_tys: &'a mut MetaTyData,
 
     pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
     pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
@@ -175,6 +176,15 @@ impl FunctionCompiler<'_> {
     }
 
     fn expr_to_const_data(&mut self, module: hir::FileName, expr: Idx<hir::Expr>) -> Box<[u8]> {
+        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
+            let id = meta_ty.to_type_id(self.meta_tys, self.pointer_ty);
+
+            return match self.module.isa().endianness() {
+                Endianness::Big => Box::new(id.to_be_bytes()),
+                Endianness::Little => Box::new(id.to_le_bytes()),
+            };
+        }
+
         match self.bodies_map[&module][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
@@ -227,19 +237,44 @@ impl FunctionCompiler<'_> {
             } => {
                 assert_ne!(items.len(), 0);
 
-                let item_size = self.tys[module][items[0]].get_size_in_bytes(self.pointer_ty);
+                let item_ty = self.tys[module][items[0]];
+                let item_size = item_ty.get_size_in_bytes(self.pointer_ty);
+                let item_stride = item_ty.get_stride_in_bytes(self.pointer_ty);
 
-                let mut array = Vec::with_capacity(item_size as usize * items.len());
+                let mut array = Vec::<u8>::with_capacity(item_stride as usize * items.len());
 
-                for item in items {
+                for (idx, item) in items.into_iter().enumerate() {
                     let item = self.expr_to_const_data(module, item);
 
-                    array.extend(item.iter());
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            item.as_ptr(),
+                            array.as_mut_ptr().add(idx * item_stride as usize),
+                            item_size as usize,
+                        );
+                    }
                 }
+
+                unsafe { array.set_len(array.capacity()) }
 
                 array.into()
             }
-            _ => panic!("tried to compile global with non-compilable definition"),
+            hir::Expr::Comptime(comptime) => {
+                let ctc = ComptimeToCompile {
+                    file_name: self.file_name,
+                    comptime,
+                };
+
+                if let Some(result) = self.comptime_results.get(&ctc) {
+                    result.clone().into_bytes().unwrap()
+                } else {
+                    todo!("Oh shit I forgot to account for this possibility");
+                }
+            }
+            _ => panic!(
+                "tried to compile global with non-compilable definition #{}",
+                expr.into_raw()
+            ),
         }
     }
 
@@ -250,20 +285,7 @@ impl FunctionCompiler<'_> {
 
         let value = self.bodies_map[&fqn.file].global_body(fqn.name);
 
-        let bytes = if let hir::Expr::Comptime(comptime) = self.bodies_map[&self.file_name][value] {
-            let ctc = ComptimeToCompile {
-                file_name: self.file_name,
-                comptime,
-            };
-
-            if let Some(result) = self.comptime_results.get(&ctc) {
-                result.clone().into_bytes().unwrap()
-            } else {
-                todo!("Oh shit I forgot to account for this possibility");
-            }
-        } else {
-            self.expr_to_const_data(fqn.file, value)
-        };
+        let bytes = self.expr_to_const_data(fqn.file, value);
 
         let global =
             self.create_global_data(&fqn.to_mangled_name(self.mod_dir, self.interner), bytes);
@@ -566,7 +588,7 @@ impl FunctionCompiler<'_> {
         assert!(!items.is_empty());
 
         let inner_ty = self.tys[self.file_name][items[0]];
-        let inner_size = inner_ty.get_size_in_bytes(self.pointer_ty);
+        let inner_stride = inner_ty.get_stride_in_bytes(self.pointer_ty);
 
         let mut struct_info = None;
         for (idx, item) in items.into_iter().enumerate() {
@@ -574,10 +596,10 @@ impl FunctionCompiler<'_> {
                 item,
                 inner_ty,
                 &mut struct_info,
-                inner_size,
+                inner_stride,
                 stack_slot,
                 stack_addr,
-                offset + (inner_size * idx as u32),
+                offset + (inner_stride * idx as u32),
             )
         }
     }
@@ -587,6 +609,12 @@ impl FunctionCompiler<'_> {
     }
 
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
+        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
+            let id = meta_ty.to_type_id(self.meta_tys, self.pointer_ty);
+
+            return Some(self.builder.ins().iconst(types::I32, id as i64));
+        }
+
         match self.bodies_map[&self.file_name][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
@@ -696,13 +724,13 @@ impl FunctionCompiler<'_> {
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
                 // So the index has to be multiplied by the element size
                 let element_ty = self.tys[self.file_name][expr];
-                let element_size = element_ty.get_size_in_bytes(self.pointer_ty);
-                let element_size = self
+                let element_stride = element_ty.get_stride_in_bytes(self.pointer_ty);
+                let element_stride = self
                     .builder
                     .ins()
-                    .iconst(self.pointer_ty, element_size as i64);
+                    .iconst(self.pointer_ty, element_stride as i64);
 
-                let proper_index = self.builder.ins().imul(naive_index, element_size);
+                let proper_index = self.builder.ins().imul(naive_index, element_stride);
 
                 let proper_addr = self.builder.ins().iadd(array, proper_index);
 
@@ -1322,10 +1350,7 @@ impl FunctionCompiler<'_> {
                 .get(&(idx as u64))
                 .map(|param| self.builder.use_var(*param)),
             hir::Expr::LocalGlobal(name) => {
-                if matches!(
-                    self.tys[self.file_name][expr].as_ref(),
-                    Ty::Type | Ty::File(_)
-                ) {
+                if self.tys[self.file_name][expr].is_zero_sized() {
                     return None;
                 }
 
@@ -1339,10 +1364,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::Path {
                 previous, field, ..
             } => {
-                if matches!(
-                    self.tys[self.file_name][expr].as_ref(),
-                    Ty::Type | Ty::File(_)
-                ) {
+                if self.tys[self.file_name][expr].is_zero_sized() {
                     return None;
                 }
 

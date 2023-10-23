@@ -4,7 +4,7 @@ use hir_ty::Ty;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
-use crate::CraneliftSignature;
+use crate::{compiler::MetaTyData, CraneliftSignature};
 
 #[derive(Clone, Copy)]
 pub(crate) enum CompType {
@@ -158,7 +158,11 @@ impl ToCompType for Ty {
             hir_ty::Ty::Distinct { ty, .. } => ty.to_comp_type(pointer_ty),
             hir_ty::Ty::Function { .. } => CompType::Pointer(pointer_ty),
             hir_ty::Ty::Struct { .. } => CompType::Pointer(pointer_ty),
-            hir_ty::Ty::Type => CompType::Void,
+            hir_ty::Ty::Type => CompType::Number(NumberType {
+                ty: types::I32,
+                float: false,
+                signed: false,
+            }),
             // you should never be able to get an any value
             hir_ty::Ty::Any => CompType::Void,
             hir_ty::Ty::Void => CompType::Void,
@@ -227,19 +231,12 @@ impl ToCraneliftSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
     }
 }
 
+// todo: only calculate these once
 pub(crate) trait ToCompSize {
     fn get_size_in_bytes(&self, pointer_ty: types::Type) -> u32;
 
-    /// Most types must appear in addresses that are a mutliple of a certain "alignment".
-    /// This is a restriction of the underlying architechture.
-    ///
-    /// For example, the alignment of `i16` is `2`
-    ///
-    /// If the alignment is `2` and the address is not an even number,
-    /// padding will be added to accomidate the `i16`.
-    ///
-    /// An alignment of `1` is accepted in all
-    /// memory locations
+    fn get_stride_in_bytes(&self, pointer_ty: types::Type) -> u32;
+
     fn get_align_in_bytes(&self, pointer_ty: types::Type) -> u32;
 }
 
@@ -254,7 +251,7 @@ impl ToCompSize for Ty {
             Ty::Float(bit_width) => bit_width / 8,
             Ty::Bool | Ty::Char => 1, // bools and chars are u8's
             Ty::String => pointer_ty.bytes(),
-            Ty::Array { size, sub_ty } => sub_ty.get_size_in_bytes(pointer_ty) * *size as u32,
+            Ty::Array { size, sub_ty } => sub_ty.get_stride_in_bytes(pointer_ty) * *size as u32,
             Ty::Pointer { .. } => pointer_ty.bytes(),
             Ty::Distinct { ty, .. } => ty.get_size_in_bytes(pointer_ty),
             Ty::Function { .. } => pointer_ty.bytes(),
@@ -262,7 +259,32 @@ impl ToCompSize for Ty {
                 let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
                 StructMemory::new(fields, pointer_ty).size
             }
-            Ty::Type => 0,
+            Ty::Type => 32 / 8,
+            Ty::Any => 0,
+            Ty::Void => 0,
+            Ty::File(_) => 0,
+        }
+    }
+
+    fn get_stride_in_bytes(&self, pointer_ty: types::Type) -> u32 {
+        match self {
+            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::IInt(u32::MAX) | Ty::UInt(u32::MAX) => pointer_ty.bytes(),
+            Ty::IInt(0) | Ty::UInt(0) => 32 / 8,
+            Ty::IInt(bit_width) | Ty::UInt(bit_width) => bit_width / 8,
+            Ty::Float(0) => 32 / 8,
+            Ty::Float(bit_width) => bit_width / 8,
+            Ty::Bool | Ty::Char => 1, // bools and chars are u8's
+            Ty::String => pointer_ty.bytes(),
+            Ty::Array { size, sub_ty } => sub_ty.get_stride_in_bytes(pointer_ty) * *size as u32,
+            Ty::Pointer { .. } => pointer_ty.bytes(),
+            Ty::Distinct { ty, .. } => ty.get_stride_in_bytes(pointer_ty),
+            Ty::Function { .. } => pointer_ty.bytes(),
+            Ty::Struct { fields, .. } => {
+                let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
+                StructMemory::new(fields, pointer_ty).stride
+            }
+            Ty::Type => 32 / 8,
             Ty::Any => 0,
             Ty::Void => 0,
             Ty::File(_) => 0,
@@ -282,7 +304,7 @@ impl ToCompSize for Ty {
                 .map(|(_, ty)| ty.get_align_in_bytes(pointer_ty))
                 .max()
                 .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
-            Ty::Type => 1,
+            Ty::Type => self.get_size_in_bytes(pointer_ty),
             Ty::Any => 1,
             Ty::Void => 1,
             Ty::File(_) => 1,
@@ -290,8 +312,154 @@ impl ToCompSize for Ty {
     }
 }
 
+pub(crate) trait ToTyId {
+    fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32;
+}
+
+impl ToTyId for Intern<Ty> {
+    fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32 {
+        fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
+            // the last 6 bits are reserved for the discriminant
+            let id = discriminant << 26;
+
+            let byte_width = bit_width / 8;
+
+            let align = byte_width.min(8).max(1) << 5;
+
+            let sign = (signed as u32) << 9;
+
+            id | sign | align | byte_width
+        }
+
+        let id = match self.as_ref() {
+            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::IInt(bit_width) => simple_id(
+                1,
+                match *bit_width {
+                    u32::MAX => pointer_ty.bits(),
+                    other => other,
+                },
+                true,
+            ),
+            Ty::UInt(bit_width) => simple_id(
+                1,
+                match *bit_width {
+                    u32::MAX => pointer_ty.bits(),
+                    other => other,
+                },
+                false,
+            ),
+            Ty::Float(bit_width) => simple_id(2, *bit_width, false),
+            Ty::Bool => simple_id(3, 8, false),
+            Ty::String => simple_id(4, pointer_ty.bits(), false),
+            Ty::Char => simple_id(5, 8, false),
+            Ty::Type => simple_id(6, 32, false),
+            Ty::Any => simple_id(7, 0, false),
+            Ty::File(_) => simple_id(8, 0, false),
+            Ty::Void => simple_id(9, 0, false),
+            // it benefits type reflection functions if a simple cmp can be done to determine if a
+            // type is simple or not.
+            // !!! IMPORTANT !!!
+            // if more simple types are added, make sure to update the cmp tests in the type reflection
+            // functions
+            Ty::Array { .. } => {
+                let id = 10 << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Array { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.array_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Pointer { .. } => {
+                let id = 11 << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Pointer { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.pointer_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Distinct { .. } => {
+                let id = 12 << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Distinct { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.distinct_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Function { .. } => {
+                let id = 13 << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Function { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.function_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Struct { .. } => {
+                let id = 14 << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Struct { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.struct_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+        };
+
+        if !meta_tys.tys_to_compile.iter().any(|ty| *ty == self) {
+            meta_tys.tys_to_compile.push(self);
+        }
+
+        id
+    }
+}
+
 pub(crate) struct StructMemory {
     size: u32,
+    stride: u32,
     offsets: Vec<u32>,
 }
 
@@ -329,7 +497,8 @@ impl StructMemory {
         }
 
         Self {
-            size: current_offset + Self::padding_needed_for(current_offset, max_align),
+            size: current_offset,
+            stride: current_offset + Self::padding_needed_for(current_offset, max_align),
             offsets,
         }
     }

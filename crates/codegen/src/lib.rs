@@ -176,6 +176,7 @@ mod tests {
             "../../core/ptr.capy",
             "../../core/libc.capy",
             "../../core/math.capy",
+            "../../core/meta.capy",
         ];
 
         for file in other_files.iter().chain(CORE_DEPS.iter()) {
@@ -797,6 +798,50 @@ mod tests {
             ptr_ptr^^[5] 42
             ptr_ptr^[5]  42
             ptr_ptr[5]   42
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn reflection() {
+        check_files(
+            "../../examples/reflection.capy",
+            &[],
+            "main",
+            expect![[r#"
+                Reflection!
+                i32              (0x4000284) : size = 4, align = 4, stride = 4
+                i64              (0x4000308) : size = 8, align = 8, stride = 8
+                u64              (0x4000108) : size = 8, align = 8, stride = 8
+                u128             (0x4000110) : size = 16, align = 8, stride = 16
+                f32              (0x8000084) : size = 4, align = 4, stride = 4
+                void             (0x24000020) : size = 0, align = 1, stride = 0
+                type             (0x18000084) : size = 4, align = 4, stride = 4
+                Person           (0x38000001) : size = 12, align = 8, stride = 16
+                Foo              (0x38000000) : size = 1, align = 1, stride = 1
+                [6] Person       (0x28000000) : size = 96, align = 8, stride = 96
+                 ^  Person       (0x2c000000) : size = 8, align = 8, stride = 8
+                distinct Person  (0x30000000) : size = 12, align = 8, stride = 16
+                distinct Person  (0x30000001) : size = 12, align = 8, stride = 16
+                ()       -> void (0x34000000) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32  (0x34000001) : size = 8, align = 8, stride = 8
+
+                i32 == i16 : false
+                i32 == u32 : false
+                i32 == i32 : true
+                Foo == Person : false
+                Person == Person : true
+                [5] Person == [6] Person : false
+                [5] Foo == [5] Person : false
+                [6] Person == [6] Person : true
+                ^Person == ^Foo : false
+                ^Person == ^Person : true
+                distinct Person == distinct Person : false
+                x == x : true
+                () -> void == (x: i32) -> f32 : false
+                () -> void == () -> void : true
 
             "#]],
             0,

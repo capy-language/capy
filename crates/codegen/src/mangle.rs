@@ -66,18 +66,23 @@ impl Mangle for ComptimeToCompile {
 
 impl Mangle for CompilerDefinedFunction {
     fn to_mangled_name(&self, _: &std::path::Path, _: &Interner) -> String {
-        let mut mangled = String::from("_CI");
-
-        let name = match self {
+        mangle_internal(match self {
             CompilerDefinedFunction::PtrBitcast => "ptr_bitcast",
-        };
-        mangled.push_str(&name.len().to_string());
-        mangled.push_str(name);
-
-        mangled.push('E');
-
-        mangled
+            CompilerDefinedFunction::SizeOf => "size_of",
+            CompilerDefinedFunction::AlignOf => "align_of",
+        })
     }
+}
+
+pub(crate) fn mangle_internal(name: &str) -> String {
+    let mut mangled = String::from("_CI");
+
+    mangled.push_str(&name.len().to_string());
+    mangled.push_str(name);
+
+    mangled.push('E');
+
+    mangled
 }
 
 fn push_file_name(

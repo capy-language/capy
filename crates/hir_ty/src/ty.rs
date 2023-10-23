@@ -150,7 +150,7 @@ impl Ty {
     pub fn is_zero_sized(&self) -> bool {
         match self {
             Ty::Void => true,
-            Ty::Type => true,
+            Ty::File(_) => true,
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
             Ty::Struct { fields, .. } => {
                 fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())
@@ -727,7 +727,9 @@ impl TypedOp for hir::BinaryOp {
             hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
                 &[Ty::IInt(0), Ty::Float(0)]
             }
-            hir::BinaryOp::Eq | hir::BinaryOp::Ne => &[Ty::Char, Ty::IInt(0), Ty::Float(0)],
+            hir::BinaryOp::Eq | hir::BinaryOp::Ne => {
+                &[Ty::Char, Ty::IInt(0), Ty::Float(0), Ty::Type]
+            }
             hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[Ty::Bool],
         };
 

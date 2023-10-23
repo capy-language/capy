@@ -10,6 +10,7 @@ use std::{alloc::Layout, collections::VecDeque, mem};
 use uid_gen::UIDGenerator;
 
 use crate::{
+    compiler::MetaTyData,
     convert::{CompType, ToCompSize, ToCompType},
     mangle::Mangle,
 };
@@ -78,6 +79,7 @@ pub fn eval_comptime_blocks<'a>(
         data_description: DataDescription::new(),
         module: &mut module,
         functions_to_compile: VecDeque::new(),
+        meta_tys: MetaTyData::default(),
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -119,7 +121,7 @@ pub fn eval_comptime_blocks<'a>(
         ));
     }
 
-    compiler.compile_queued_functions();
+    compiler.compile_queued();
 
     // Finalize the functions which were defined, which resolves any
     // outstanding relocations (patching in addresses, now that they're
