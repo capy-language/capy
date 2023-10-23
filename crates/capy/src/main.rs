@@ -55,6 +55,11 @@ enum BuildAction {
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
+
+        /// libraries to link against
+        /// this literally works by passing the args to gcc with "-l"
+        #[arg(long)]
+        libs: Option<Vec<String>>,
     },
     /// Takes in one or more .capy files, compiles them, and runs the compiled executable
     Run {
@@ -82,6 +87,11 @@ enum BuildAction {
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
+
+        /// libraries to link against
+        /// this literally works by passing the args to gcc with "-l"
+        #[arg(long)]
+        libs: Option<Vec<String>>,
     },
 }
 
@@ -103,8 +113,8 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (file, entry_point, output, verbose, mod_dir, config) =
-        get_build_config!(config.action => file, entry_point, output, verbose, mod_dir);
+    let (file, entry_point, output, verbose, mod_dir, libs, config) =
+        get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, libs);
 
     let file = env::current_dir()
         .unwrap()
@@ -127,6 +137,7 @@ fn main() -> io::Result<()> {
         mod_dir,
         config,
         verbose,
+        libs.as_deref(),
     )
 }
 
@@ -150,6 +161,7 @@ fn compile_file(
     mod_dir: Option<String>,
     config: CompilationConfig,
     verbose: u8,
+    libs: Option<&[String]>,
 ) -> io::Result<()> {
     let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
     let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
@@ -442,7 +454,7 @@ fn compile_file(
         return Ok(());
     }
 
-    let exec = codegen::link_to_exec(&object_file);
+    let exec = codegen::link_to_exec(&object_file, libs);
     println!(
         "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
         output,
