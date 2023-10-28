@@ -66,6 +66,7 @@ pub(crate) fn compile_program<'a>(
         comptime_results,
     };
 
+    compiler.calculate_type_layouts();
     compiler.compile_queued();
 
     generate_main_function(compiler, entry_point)

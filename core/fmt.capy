@@ -1,0 +1,114 @@
+
+// todo: I want to do smth more like zig's `allocPrint` and `bufPrint`
+// https://github.com/ziglang/zig/blob/905c85be968e6823305887474d2a821dac82f16c/lib/std/fmt.zig#L1436
+
+ptr :: import "ptr.capy";
+math :: import "math.capy";
+strings :: import "strings.capy";
+
+i32_to_string :: (n: i32) -> strings.String {
+    // idk man i'm just copying rust
+    str := strings.make_string_with_capacity(39);
+    
+    new_len := _write_i32_to_buf(n, true, str.buf as ^mut any as ^mut u8, 0, 0);
+
+    str.len = new_len;
+
+    strings.shrink_to_fit(^mut str);
+
+    str
+}
+
+u32_to_string :: (n: u32) -> strings.String {
+    // idk man i'm just copying rust
+    str := strings.make_string_with_capacity(39);
+    
+    new_len := _write_i32_to_buf(n as i32, false, str.buf as ^mut any as ^mut u8, 0, 0);
+
+    str.len = new_len;
+
+    strings.shrink_to_fit(^mut str);
+
+    str
+}
+
+f32_to_string :: (n: f32) -> strings.String {
+    str := strings.make_string_with_capacity(39 * 2 + 1);
+
+    new_len := _write_f32_to_buf(n, str.buf as ^mut any as ^mut u8, 3);
+
+    str.len = new_len;
+
+    strings.shrink_to_fit(^mut str);
+
+    str
+}
+
+printf :: (str: string, n: usize) extern;
+
+_reverse_buf :: (buf: ^mut u8, start: usize, len: usize) {
+    i := start;
+    j := len - 1;
+    temp := 0;
+
+    while i < j {
+        temp = ptr.read(buf, i);
+        ptr.write(buf, ptr.read(buf, j), i);
+        ptr.write(buf, temp, j);
+        i = i + 1;
+        j = j - 1;
+    }
+}
+
+_write_i32_to_buf :: (n: i32, signed: bool, buf: ^mut u8, buf_offset: usize, required_digits: usize) -> usize {
+    idx := buf_offset;
+
+    n := n;
+    if signed && n < 0 {
+        n = -n;
+        ptr.write(buf, '-' as u8, idx);
+        idx = idx + 1;
+    }
+
+    if n == 0 {
+        ptr.write(buf, '0' as u8, idx);
+        idx = idx + 1;
+    }
+
+    while n != 0 {
+        remainder := n % 10;
+        n = n / 10;
+
+        ptr.write(buf, {'0' as u8 + remainder} as u8, idx);
+
+        idx = idx + 1;
+    }
+
+    while idx - buf_offset < required_digits {
+        ptr.write(buf, '0' as u8, idx);
+        idx = idx + 1;
+    }
+
+    _reverse_buf(buf, buf_offset, idx);
+
+    idx
+}
+
+_write_f32_to_buf :: (n: f32, buf: ^mut u8, afterpoint: usize) -> usize {
+    ipart := n as i32;
+
+    fpart := n - ipart as f32;
+
+    idx := _write_i32_to_buf(ipart, true, buf, 0, 0);
+
+    if afterpoint != 0 {
+        ptr.write(buf, '.' as u8, idx);
+
+        fpart = fpart * math.pow(10, afterpoint as i32) as f32;
+
+        // add one for the period
+        idx = _write_i32_to_buf(fpart as i32, false, buf, idx + 1, afterpoint);
+    }
+
+    idx
+}

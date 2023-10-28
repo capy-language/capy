@@ -17,9 +17,10 @@ use rustc_hash::FxHashMap;
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler_defined::CompilerDefinedFunction,
-    convert::{NumberType, StructMemory, ToCompSize, ToCompType, ToCraneliftSignature, ToTyId},
+    builtin::BuiltinFunction,
+    convert::{NumberType, ToCompType, ToCraneliftSignature, ToTyId},
     mangle::Mangle,
+    size::GetMemInfo,
     ComptimeToCompile, CraneliftSignature,
 };
 
@@ -47,7 +48,7 @@ pub(crate) struct FunctionCompiler<'a> {
 
     // globals
     pub(crate) functions: &'a mut FxHashMap<hir::Fqn, FuncId>,
-    pub(crate) compiler_defined_functions: &'a mut FxHashMap<CompilerDefinedFunction, FuncId>,
+    pub(crate) compiler_defined_functions: &'a mut FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) globals: &'a mut FxHashMap<hir::Fqn, DataId>,
     pub(crate) str_id_gen: &'a mut UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
@@ -107,7 +108,7 @@ impl FunctionCompiler<'_> {
 
             let param_ty = param_tys[old_idx as usize];
             if param_ty.is_aggregate() {
-                let size = param_ty.get_size_in_bytes(self.pointer_ty);
+                let size = param_ty.size();
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -137,7 +138,7 @@ impl FunctionCompiler<'_> {
                 if return_ty.is_aggregate() {
                     let dest = self.builder.use_var(dest_param.unwrap());
 
-                    let aggregate_size = return_ty.get_size_in_bytes(self.pointer_ty);
+                    let aggregate_size = return_ty.size();
                     let aggregate_size = self
                         .builder
                         .ins()
@@ -238,8 +239,8 @@ impl FunctionCompiler<'_> {
                 assert_ne!(items.len(), 0);
 
                 let item_ty = self.tys[module][items[0]];
-                let item_size = item_ty.get_size_in_bytes(self.pointer_ty);
-                let item_stride = item_ty.get_stride_in_bytes(self.pointer_ty);
+                let item_size = item_ty.size();
+                let item_stride = item_ty.stride();
 
                 let mut array = Vec::<u8>::with_capacity(item_stride as usize * items.len());
 
@@ -397,7 +398,7 @@ impl FunctionCompiler<'_> {
                     return;
                 }
 
-                let size = ty.get_size_in_bytes(self.pointer_ty);
+                let size = ty.size();
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -409,7 +410,7 @@ impl FunctionCompiler<'_> {
                     .ins()
                     .stack_addr(self.pointer_ty, stack_slot, 0);
 
-                self.store_expr_in_memory(value, *ty, &mut None, size, stack_slot, stack_addr, 0);
+                self.store_expr_in_memory(value, *ty, size, stack_slot, stack_addr, 0);
 
                 self.locals.insert(local_def, stack_addr);
             }
@@ -432,7 +433,7 @@ impl FunctionCompiler<'_> {
                 };
 
                 if value_ty.is_aggregate() {
-                    let size = value_ty.get_size_in_bytes(self.pointer_ty);
+                    let size = value_ty.size();
                     let size = self.builder.ins().iconst(self.pointer_ty, size as i64);
 
                     self.builder
@@ -493,20 +494,11 @@ impl FunctionCompiler<'_> {
         &mut self,
         expr: Idx<hir::Expr>,
         expr_ty: Intern<Ty>,
-        struct_info: &mut Option<(Vec<Intern<Ty>>, StructMemory)>,
         expr_size: u32,
         stack_slot: StackSlot,
         stack_addr: Value,
         offset: u32,
     ) {
-        if struct_info.is_none() {
-            if let Some(fields) = expr_ty.as_struct() {
-                let fields = fields.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
-                let struct_mem = StructMemory::new(fields.clone(), self.pointer_ty);
-                struct_info.replace((fields, struct_mem));
-            }
-        }
-
         match &self.bodies_map[&self.file_name][expr] {
             hir::Expr::Array {
                 items: Some(items), ..
@@ -514,19 +506,13 @@ impl FunctionCompiler<'_> {
             hir::Expr::StructLiteral {
                 fields: field_values,
                 ..
-            } => {
-                let field_tys = struct_info.as_ref().unwrap().0.clone();
-                let struct_mem = &struct_info.as_ref().unwrap().1;
-
-                self.store_struct_fields(
-                    struct_mem,
-                    field_tys,
-                    field_values.iter().map(|(_, val)| *val).collect(),
-                    stack_slot,
-                    stack_addr,
-                    offset,
-                )
-            }
+            } => self.store_struct_fields(
+                expr_ty,
+                field_values.iter().map(|(_, val)| *val).collect(),
+                stack_slot,
+                stack_addr,
+                offset,
+            ),
             _ if expr_ty.is_aggregate() => {
                 let far_off_thing = self.compile_expr(expr).unwrap();
 
@@ -555,21 +541,24 @@ impl FunctionCompiler<'_> {
 
     fn store_struct_fields(
         &mut self,
-        struct_mem: &StructMemory,
-        field_tys: Vec<Intern<Ty>>,
+        struct_ty: Intern<Ty>,
         field_values: Vec<Idx<hir::Expr>>,
         stack_slot: StackSlot,
         stack_addr: Value,
         offset: u32,
     ) {
+        debug_assert!(struct_ty.is_struct());
+
+        let field_tys = struct_ty.as_struct().unwrap();
+        let struct_mem = struct_ty.struct_layout().unwrap();
+
         for (idx, value) in field_values.into_iter().enumerate() {
-            let field_ty = field_tys[idx];
-            let field_size = field_ty.get_size_in_bytes(self.pointer_ty);
+            let field_ty = field_tys[idx].1;
+            let field_size = field_ty.size();
 
             self.store_expr_in_memory(
                 value,
                 field_ty,
-                &mut None,
                 field_size,
                 stack_slot,
                 stack_addr,
@@ -588,14 +577,12 @@ impl FunctionCompiler<'_> {
         assert!(!items.is_empty());
 
         let inner_ty = self.tys[self.file_name][items[0]];
-        let inner_stride = inner_ty.get_stride_in_bytes(self.pointer_ty);
+        let inner_stride = inner_ty.stride();
 
-        let mut struct_info = None;
         for (idx, item) in items.into_iter().enumerate() {
             self.store_expr_in_memory(
                 item,
                 inner_ty,
-                &mut struct_info,
                 inner_stride,
                 stack_slot,
                 stack_addr,
@@ -663,7 +650,7 @@ impl FunctionCompiler<'_> {
                     return None;
                 }
 
-                let array_size = self.tys[self.file_name][expr].get_size_in_bytes(self.pointer_ty);
+                let array_size = self.tys[self.file_name][expr].size();
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -724,13 +711,11 @@ impl FunctionCompiler<'_> {
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
                 // So the index has to be multiplied by the element size
                 let element_ty = self.tys[self.file_name][expr];
-                let element_stride = element_ty.get_stride_in_bytes(self.pointer_ty);
-                let element_stride = self
+
+                let proper_index = self
                     .builder
                     .ins()
-                    .iconst(self.pointer_ty, element_stride as i64);
-
-                let proper_index = self.builder.ins().imul(naive_index, element_stride);
+                    .imul_imm(naive_index, element_ty.stride() as i64);
 
                 let proper_addr = self.builder.ins().iadd(array, proper_index);
 
@@ -781,8 +766,7 @@ impl FunctionCompiler<'_> {
                     // references to locals or globals should return the actual memory address of the local or global
                     self.compile_expr_with_args(expr, true)
                 } else {
-                    let inner_size =
-                        self.tys[self.file_name][expr].get_size_in_bytes(self.pointer_ty);
+                    let inner_size = self.tys[self.file_name][expr].size();
 
                     // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
 
@@ -1060,7 +1044,7 @@ impl FunctionCompiler<'_> {
                     .collect::<Vec<_>>();
 
                 if return_ty.is_aggregate() {
-                    let aggregate_size = return_ty.get_size_in_bytes(self.pointer_ty);
+                    let aggregate_size = return_ty.size();
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
@@ -1390,21 +1374,16 @@ impl FunctionCompiler<'_> {
                             required_derefs += 1;
                         }
 
-                        let struct_ty = struct_ty.as_struct().unwrap();
+                        let struct_fields = struct_ty.as_struct().unwrap();
 
-                        let field_idx = struct_ty
+                        let field_idx = struct_fields
                             .iter()
                             .enumerate()
                             .find(|(_, (name, _))| *name == field.name)
                             .map(|(idx, _)| idx)
                             .unwrap();
 
-                        let field_tys = struct_ty.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
-
-                        let struct_mem: StructMemory =
-                            StructMemory::new(field_tys, self.pointer_ty);
-
-                        let offset = struct_mem.offsets()[field_idx];
+                        let offset = struct_ty.struct_layout().unwrap().offsets()[field_idx];
 
                         let mut struct_addr = self.compile_expr_with_args(previous, false)?;
 
@@ -1418,8 +1397,7 @@ impl FunctionCompiler<'_> {
                         }
 
                         if no_load || field_ty.is_aggregate() {
-                            let offset = self.builder.ins().iconst(self.pointer_ty, offset as i64);
-                            Some(self.builder.ins().iadd(struct_addr, offset))
+                            Some(self.builder.ins().iadd_imm(struct_addr, offset as i64))
                         } else {
                             Some(self.builder.ins().load(
                                 field_comp_ty,
@@ -1440,17 +1418,11 @@ impl FunctionCompiler<'_> {
                 fields: field_values,
                 ..
             } => {
-                let field_tys = self.tys[self.file_name][expr]
-                    .as_struct()
-                    .unwrap()
-                    .iter()
-                    .map(|(_, ty)| *ty)
-                    .collect::<Vec<_>>();
-                let struct_mem = StructMemory::new(field_tys.clone(), self.pointer_ty);
+                let ty = self.tys[self.file_name][expr];
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: struct_mem.size(),
+                    size: ty.size(),
                 });
 
                 let stack_addr = self
@@ -1459,8 +1431,7 @@ impl FunctionCompiler<'_> {
                     .stack_addr(self.pointer_ty, stack_slot, 0);
 
                 self.store_struct_fields(
-                    &struct_mem,
-                    field_tys,
+                    ty,
                     field_values.iter().map(|(_, val)| *val).collect(),
                     stack_slot,
                     stack_addr,

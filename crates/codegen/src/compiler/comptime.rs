@@ -11,8 +11,9 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     compiler::MetaTyData,
-    convert::{CompType, ToCompSize, ToCompType},
+    convert::{CompType, ToCompType},
     mangle::Mangle,
+    size::GetMemInfo,
 };
 
 use super::Compiler;
@@ -94,6 +95,8 @@ pub fn eval_comptime_blocks<'a>(
         },
     };
 
+    compiler.calculate_type_layouts();
+
     let mut comptime_funcs = Vec::new();
 
     while let Some(ctc) = comptime_blocks.pop() {
@@ -117,7 +120,7 @@ pub fn eval_comptime_blocks<'a>(
             ctc,
             func_id,
             return_ty.to_comp_type(compiler.pointer_ty),
-            return_ty.get_size_in_bytes(compiler.pointer_ty),
+            return_ty.size(),
         ));
     }
 

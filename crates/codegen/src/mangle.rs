@@ -1,9 +1,11 @@
+use std::borrow::Cow;
+
 use hir::Fqn;
 use interner::Interner;
 
 use crate::{
+    builtin::BuiltinFunction,
     compiler::{comptime::ComptimeToCompile, FunctionToCompile},
-    compiler_defined::CompilerDefinedFunction,
 };
 
 pub(crate) trait Mangle {
@@ -64,13 +66,17 @@ impl Mangle for ComptimeToCompile {
     }
 }
 
-impl Mangle for CompilerDefinedFunction {
+impl Mangle for BuiltinFunction {
     fn to_mangled_name(&self, _: &std::path::Path, _: &Interner) -> String {
-        mangle_internal(match self {
-            CompilerDefinedFunction::PtrBitcast => "ptr_bitcast",
-            CompilerDefinedFunction::SizeOf => "size_of",
-            CompilerDefinedFunction::AlignOf => "align_of",
-        })
+        let regular_name = match self {
+            BuiltinFunction::PtrBitcast => Cow::Borrowed("ptr_bitcast"),
+            BuiltinFunction::SizeOf => Cow::Borrowed("size_of"),
+            BuiltinFunction::AlignOf => Cow::Borrowed("align_of"),
+            BuiltinFunction::IsMetaOfType(disc) => Cow::Owned(format!("is_meta_of_{}", disc)),
+            BuiltinFunction::GetMetaInfo(disc) => Cow::Owned(format!("meta_info_of_{}", disc)),
+        };
+
+        mangle_internal(regular_name.as_ref())
     }
 }
 

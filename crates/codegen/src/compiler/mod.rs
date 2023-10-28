@@ -5,7 +5,7 @@ pub mod program;
 use cranelift::codegen::ir::Endianness;
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
-    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, Value,
+    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, TrapCode, Value,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use hir_ty::Ty;
@@ -16,8 +16,9 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
-use crate::compiler_defined::{as_compiler_defined, CompilerDefinedFunction};
+use crate::builtin::{as_compiler_defined, BuiltinFunction};
 use crate::mangle::{self, Mangle};
+use crate::size::{self, GetMemInfo};
 use crate::{convert::*, ComptimeToCompile, CraneliftSignature};
 
 use self::comptime::ComptimeResult;
@@ -34,6 +35,7 @@ pub(crate) struct MetaTyData {
     pub(crate) struct_uid_gen: UIDGenerator,
 
     pub(crate) mem_arrays: Option<MetaTyMemArrays>,
+    pub(crate) info_arrays: Option<MetaTyInfoArrays>,
 }
 
 pub(crate) struct MetaTyMemArrays {
@@ -73,6 +75,43 @@ impl MetaTyMemArrays {
     }
 }
 
+pub(crate) struct MetaTyInfoArrays {
+    pub(crate) array_info: DataId,
+    pub(crate) pointer_info: DataId,
+    pub(crate) distinct_info: DataId,
+}
+
+impl MetaTyInfoArrays {
+    pub(crate) fn new(module: &mut dyn Module) -> Self {
+        Self {
+            array_info: module
+                .declare_data(
+                    &mangle::mangle_internal("array_type_info"),
+                    Linkage::Export,
+                    false,
+                    false,
+                )
+                .expect("error declaring data"),
+            pointer_info: module
+                .declare_data(
+                    &mangle::mangle_internal("pointer_type_info"),
+                    Linkage::Export,
+                    false,
+                    false,
+                )
+                .expect("error declaring data"),
+            distinct_info: module
+                .declare_data(
+                    &mangle::mangle_internal("distinct_type_info"),
+                    Linkage::Export,
+                    false,
+                    false,
+                )
+                .expect("error declaring data"),
+        }
+    }
+}
+
 pub(crate) struct FunctionToCompile {
     pub(crate) file_name: hir::FileName,
     pub(crate) function_name: Option<hir::Name>,
@@ -101,7 +140,7 @@ pub(crate) struct Compiler<'a> {
 
     // globals
     pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
-    pub(crate) compiler_defined_functions: FxHashMap<CompilerDefinedFunction, FuncId>,
+    pub(crate) compiler_defined_functions: FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) meta_tys: MetaTyData,
     pub(crate) str_id_gen: UIDGenerator,
@@ -109,6 +148,10 @@ pub(crate) struct Compiler<'a> {
 }
 
 impl Compiler<'_> {
+    fn calculate_type_layouts(&mut self) {
+        size::calculate_layouts(self.tys.all_tys(), self.pointer_ty.bits());
+    }
+
     fn compile_queued(&mut self) {
         while let Some(ftc) = self.functions_to_compile.pop_front() {
             self.compile_ftc(ftc);
@@ -135,66 +178,136 @@ impl Compiler<'_> {
             }
         }
 
-        if let Some(info_arrays) = &self.meta_tys.mem_arrays {
-            let mut array_data = Vec::new();
-            let mut distinct_data = Vec::new();
-            let mut struct_data = Vec::new();
+        let mut array_mem_data = Vec::new();
+        let mut distinct_mem_data = Vec::new();
+        let mut struct_mem_data = Vec::new();
 
-            for ty in &self.meta_tys.tys_to_compile {
-                let data = match ty.as_ref() {
-                    Ty::Array { .. } => &mut array_data,
-                    Ty::Distinct { .. } => &mut distinct_data,
-                    Ty::Struct { .. } => &mut struct_data,
+        let mut array_info_data = Vec::new();
+        let mut pointer_info_data = Vec::new();
+        let mut distinct_info_data = Vec::new();
+
+        for ty in &self.meta_tys.tys_to_compile {
+            'mem: {
+                if self.meta_tys.mem_arrays.is_some() {
+                    let data = match ty.as_ref() {
+                        Ty::Array { .. } => &mut array_mem_data,
+                        Ty::Distinct { .. } => &mut distinct_mem_data,
+                        Ty::Struct { .. } => &mut struct_mem_data,
+                        _ => break 'mem,
+                    };
+
+                    let size = ty.size();
+                    let align = ty.align();
+
+                    extend_with_bytes(
+                        data,
+                        size,
+                        self.pointer_ty.bits() as u8,
+                        self.module.isa().endianness(),
+                    );
+                    extend_with_bytes(
+                        data,
+                        align,
+                        self.pointer_ty.bits() as u8,
+                        self.module.isa().endianness(),
+                    );
+                }
+            }
+
+            if self.meta_tys.info_arrays.is_some() {
+                match ty.as_ref() {
+                    Ty::Array { size, sub_ty } => {
+                        extend_with_bytes(
+                            &mut array_info_data,
+                            (*size) as u32,
+                            self.pointer_ty.bits() as u8,
+                            self.module.isa().endianness(),
+                        );
+
+                        let ptr_size = self.pointer_ty.bytes();
+                        let padding = size::padding_needed_for(ptr_size, (32 / 8).min(8));
+
+                        array_info_data.extend(std::iter::repeat(0).take(padding as usize));
+
+                        extend_with_bytes(
+                            &mut array_info_data,
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            32,
+                            self.module.isa().endianness(),
+                        );
+                    }
+                    Ty::Pointer { sub_ty, .. } => {
+                        extend_with_bytes(
+                            &mut pointer_info_data,
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            32,
+                            self.module.isa().endianness(),
+                        );
+                    }
+                    Ty::Distinct { ty, .. } => {
+                        extend_with_bytes(
+                            &mut distinct_info_data,
+                            ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            32,
+                            self.module.isa().endianness(),
+                        );
+                    }
                     _ => continue,
-                };
-
-                let size = ty.get_size_in_bytes(self.pointer_ty);
-                let align = ty.get_align_in_bytes(self.pointer_ty);
-
-                extend_with_bytes(
-                    data,
-                    size,
-                    self.pointer_ty.bits() as u8,
-                    self.module.isa().endianness(),
-                );
-                extend_with_bytes(
-                    data,
-                    align,
-                    self.pointer_ty.bits() as u8,
-                    self.module.isa().endianness(),
-                );
+                }
             }
+        }
 
-            fn define(
-                module: &mut dyn Module,
-                data_desc: &mut DataDescription,
-                info_array: DataId,
-                bytes: Vec<u8>,
-            ) {
-                data_desc.define(bytes.into_boxed_slice());
-                module
-                    .define_data(info_array, data_desc)
-                    .expect("error defining data");
-                data_desc.clear();
-            }
+        fn define(
+            module: &mut dyn Module,
+            data_desc: &mut DataDescription,
+            info_array: DataId,
+            bytes: Vec<u8>,
+        ) {
+            data_desc.define(bytes.into_boxed_slice());
+            module
+                .define_data(info_array, data_desc)
+                .expect("error defining data");
+            data_desc.clear();
+        }
 
+        if let Some(mem_arrays) = &self.meta_tys.mem_arrays {
             define(
                 self.module,
                 &mut self.data_description,
-                info_arrays.array_mem,
-                array_data,
+                mem_arrays.array_mem,
+                array_mem_data,
             );
             define(
                 self.module,
                 &mut self.data_description,
-                info_arrays.distinct_mem,
-                distinct_data,
+                mem_arrays.distinct_mem,
+                distinct_mem_data,
             );
             define(
                 self.module,
                 &mut self.data_description,
-                info_arrays.struct_mem,
-                struct_data,
+                mem_arrays.struct_mem,
+                struct_mem_data,
+            );
+        }
+        if let Some(info_arrays) = &self.meta_tys.info_arrays {
+            define(
+                self.module,
+                &mut self.data_description,
+                info_arrays.array_info,
+                array_info_data,
+            );
+            define(
+                self.module,
+                &mut self.data_description,
+                info_arrays.pointer_info,
+                pointer_info_data,
+            );
+            define(
+                self.module,
+                &mut self.data_description,
+                info_arrays.distinct_info,
+                distinct_info_data,
             );
         }
     }
@@ -231,14 +344,20 @@ impl Compiler<'_> {
                 );
 
                 match compiler_defined {
-                    CompilerDefinedFunction::PtrBitcast => {
+                    BuiltinFunction::PtrBitcast => {
                         self.compile_ptr_bitcast_fn(&mangled, sig, func_id)
                     }
-                    CompilerDefinedFunction::SizeOf => {
-                        self.compile_meta_memory_fn(&mangled, sig, func_id, true)
+                    BuiltinFunction::SizeOf => {
+                        self.compile_meta_layout_fn(&mangled, sig, func_id, true)
                     }
-                    CompilerDefinedFunction::AlignOf => {
-                        self.compile_meta_memory_fn(&mangled, sig, func_id, false)
+                    BuiltinFunction::AlignOf => {
+                        self.compile_meta_layout_fn(&mangled, sig, func_id, false)
+                    }
+                    BuiltinFunction::IsMetaOfType(discriminant) => {
+                        self.compile_meta_is_of_type(&mangled, sig, func_id, discriminant)
+                    }
+                    BuiltinFunction::GetMetaInfo(discriminant) => {
+                        self.compile_meta_info(&mangled, sig, func_id, discriminant);
                     }
                 }
             }
@@ -322,7 +441,7 @@ impl Compiler<'_> {
         self.module.clear_context(&mut self.ctx);
     }
 
-    fn compile_meta_memory_fn(
+    fn compile_meta_layout_fn(
         &mut self,
         mangled_name: &str,
         sig: CraneliftSignature,
@@ -350,9 +469,11 @@ impl Compiler<'_> {
 
         let discriminant = builder.ins().ushr_imm(ty_arg, 26);
 
-        let is_simple = builder
-            .ins()
-            .icmp_imm(IntCC::UnsignedLessThan, discriminant, 10);
+        let is_simple = builder.ins().icmp_imm(
+            IntCC::UnsignedLessThan,
+            discriminant,
+            FIRST_COMPLEX_DISCRIMINANT as i64,
+        );
 
         builder
             .ins()
@@ -426,7 +547,10 @@ impl Compiler<'_> {
 
         // machine code to find the global array to use
 
-        let is_struct = builder.ins().icmp_imm(IntCC::Equal, discriminant, 14);
+        let is_struct =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, discriminant, STRUCT_DISCRIMINANT as i64);
         builder
             .ins()
             .brif(is_struct, complex_get, &[struct_info], distinct_check, &[]);
@@ -434,7 +558,10 @@ impl Compiler<'_> {
         builder.switch_to_block(distinct_check);
         builder.seal_block(distinct_check);
 
-        let is_distinct = builder.ins().icmp_imm(IntCC::Equal, discriminant, 12);
+        let is_distinct =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, discriminant, DISTINCT_DISCRIMINANT as i64);
         builder
             .ins()
             .brif(is_distinct, complex_get, &[distinct_info], array_check, &[]);
@@ -442,7 +569,10 @@ impl Compiler<'_> {
         builder.switch_to_block(array_check);
         builder.seal_block(array_check);
 
-        let is_array = builder.ins().icmp_imm(IntCC::Equal, discriminant, 10);
+        let is_array =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, discriminant, ARRAY_DISCRIMINANT as i64);
         builder
             .ins()
             .brif(is_array, complex_get, &[array_info], pointer_get, &[]);
@@ -514,6 +644,260 @@ impl Compiler<'_> {
                 print!("align_of");
             }
             println!(" \x1B[90m{}\x1B[0m:\n{}", mangled_name, self.ctx.func);
+        }
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .unwrap_or_else(|err| {
+                println!("Error defining function:");
+                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
+                    println!("{}", v.to_string().replace("):", "):\n "));
+                } else {
+                    println!("{:?}", err);
+                }
+                std::process::exit(1);
+            });
+
+        self.module.clear_context(&mut self.ctx);
+    }
+
+    fn compile_meta_is_of_type(
+        &mut self,
+        mangled_name: &str,
+        sig: CraneliftSignature,
+        func_id: FuncId,
+        expected_disc: u32,
+    ) {
+        self.ctx.func.signature = sig;
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+
+        builder.switch_to_block(entry_block);
+        // tell the builder that the block will have no further predecessors
+        builder.seal_block(entry_block);
+
+        builder.append_block_params_for_function_params(entry_block);
+
+        let ty_arg = builder.block_params(entry_block)[0];
+
+        let discriminant = builder.ins().ushr_imm(ty_arg, 26);
+
+        let is_of_type = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, discriminant, expected_disc as i64);
+
+        builder.ins().return_(&[is_of_type]);
+
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        if self.verbose {
+            println!(
+                "is_meta_{} \x1B[90m{}\x1B[0m:\n{}",
+                expected_disc, mangled_name, self.ctx.func
+            );
+        }
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .unwrap_or_else(|err| {
+                println!("Error defining function:");
+                if let ModuleError::Compilation(CodegenError::Verifier(v)) = err {
+                    println!("{}", v.to_string().replace("):", "):\n "));
+                } else {
+                    println!("{:?}", err);
+                }
+                std::process::exit(1);
+            });
+
+        self.module.clear_context(&mut self.ctx);
+    }
+
+    fn compile_meta_info(
+        &mut self,
+        mangled_name: &str,
+        sig: CraneliftSignature,
+        func_id: FuncId,
+        expected_disc: u32,
+    ) {
+        self.ctx.func.signature = sig;
+
+        // Create the builder to build a function.
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+
+        // Create the entry block, to start emitting code in.
+        let entry_block = builder.create_block();
+
+        builder.switch_to_block(entry_block);
+        // tell the builder that the block will have no further predecessors
+        builder.seal_block(entry_block);
+
+        builder.append_block_params_for_function_params(entry_block);
+
+        let right_type_block = builder.create_block();
+        let wrong_type_block = builder.create_block();
+
+        let ty_arg = builder.block_params(entry_block)[0];
+
+        let discriminant = builder.ins().ushr_imm(ty_arg, 26);
+
+        let is_of_type = builder
+            .ins()
+            .icmp_imm(IntCC::Equal, discriminant, expected_disc as i64);
+
+        builder
+            .ins()
+            .brif(is_of_type, right_type_block, &[], wrong_type_block, &[]);
+
+        builder.switch_to_block(right_type_block);
+        builder.seal_block(right_type_block);
+
+        let return_addr = builder.block_params(entry_block)[1];
+
+        let build_offset = |builder: &mut FunctionBuilder<'_>, stride: u32| {
+            // blacks out the discriminant (6 bits on the left hand side) from the typeid
+            let index = builder.ins().band_imm(ty_arg, !(0b111111 << 26));
+            let offset = builder.ins().imul_imm(index, stride as i64);
+            cast(
+                builder,
+                offset,
+                NumberType {
+                    ty: types::I32,
+                    float: false,
+                    signed: false,
+                },
+                NumberType {
+                    ty: self.pointer_ty,
+                    float: false,
+                    signed: false,
+                },
+            )
+        };
+
+        match expected_disc {
+            INT_DISCRIMINANT => {
+                let byte_width = builder.ins().band_imm(ty_arg, 0b11111);
+                let bit_width = builder.ins().imul_imm(byte_width, 8);
+                let bit_width = builder.ins().ireduce(types::I8, bit_width);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), bit_width, return_addr, 0);
+
+                let signed = builder.ins().band_imm(ty_arg, 1 << 9);
+                let signed = builder.ins().ushr_imm(signed, 9);
+                let signed = builder.ins().ireduce(types::I8, signed);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), signed, return_addr, 1);
+            }
+            FLOAT_DISCRIMINANT => {
+                let byte_width = builder.ins().band_imm(ty_arg, 0b11111);
+                let bit_width = builder.ins().imul_imm(byte_width, 8);
+                let bit_width = builder.ins().ireduce(types::I8, bit_width);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), bit_width, return_addr, 0);
+            }
+            ARRAY_DISCRIMINANT => {
+                let array_info = self
+                    .meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .array_info;
+                let array_info = self.module.declare_data_in_func(array_info, builder.func);
+                let array_info = builder.ins().symbol_value(self.pointer_ty, array_info);
+
+                let ptr_size = self.pointer_ty.bytes();
+                let second_field_offset =
+                    ptr_size + size::padding_needed_for(ptr_size, (32 / 8).min(8));
+
+                let stride = second_field_offset + (32 / 8);
+
+                let offset = build_offset(&mut builder, stride);
+                let addr = builder.ins().iadd(array_info, offset);
+
+                let size = builder
+                    .ins()
+                    .load(self.pointer_ty, MemFlags::trusted(), addr, 0);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), size, return_addr, 0);
+
+                let ty = builder.ins().load(
+                    self.pointer_ty,
+                    MemFlags::trusted(),
+                    addr,
+                    second_field_offset as i32,
+                );
+
+                builder.ins().store(
+                    MemFlags::trusted(),
+                    ty,
+                    return_addr,
+                    second_field_offset as i32,
+                );
+            }
+            POINTER_DISCRIMINANT => {
+                let pointer_info = self
+                    .meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .pointer_info;
+                let pointer_info = self.module.declare_data_in_func(pointer_info, builder.func);
+                let pointer_info = builder.ins().symbol_value(self.pointer_ty, pointer_info);
+
+                let offset = build_offset(&mut builder, 32 / 8);
+                let addr = builder.ins().iadd(pointer_info, offset);
+
+                let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
+
+                builder.ins().store(MemFlags::trusted(), ty, return_addr, 0);
+            }
+            DISTINCT_DISCRIMINANT => {
+                let distinct_info = self
+                    .meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .distinct_info;
+                let distinct_info = self
+                    .module
+                    .declare_data_in_func(distinct_info, builder.func);
+                let distinct_info = builder.ins().symbol_value(self.pointer_ty, distinct_info);
+
+                let offset = build_offset(&mut builder, 32 / 8);
+                let addr = builder.ins().iadd(distinct_info, offset);
+
+                let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
+
+                builder.ins().store(MemFlags::trusted(), ty, return_addr, 0);
+            }
+            _ => unreachable!(),
+        }
+
+        builder.ins().return_(&[return_addr]);
+
+        builder.switch_to_block(wrong_type_block);
+        builder.seal_block(wrong_type_block);
+        builder.set_cold_block(wrong_type_block);
+
+        builder.ins().trap(TrapCode::User(1));
+
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        if self.verbose {
+            println!(
+                "get_{expected_disc}_info \x1B[90m{}\x1B[0m:\n{}",
+                mangled_name, self.ctx.func
+            );
         }
 
         self.module
@@ -612,7 +996,7 @@ fn get_func_id(
     pointer_ty: types::Type,
     mod_dir: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
-    compiler_defined_functions: &mut FxHashMap<CompilerDefinedFunction, FuncId>,
+    compiler_defined_functions: &mut FxHashMap<BuiltinFunction, FuncId>,
     functions_to_compile: &mut VecDeque<FunctionToCompile>,
     tys: &hir_ty::InferenceResult,
     bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,

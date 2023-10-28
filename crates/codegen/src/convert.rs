@@ -231,110 +231,48 @@ impl ToCraneliftSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
     }
 }
 
-// todo: only calculate these once
-pub(crate) trait ToCompSize {
-    fn get_size_in_bytes(&self, pointer_ty: types::Type) -> u32;
+pub(crate) const VOID_DISCRIMINANT: u32 = 1;
+pub(crate) const INT_DISCRIMINANT: u32 = 2;
+pub(crate) const FLOAT_DISCRIMINANT: u32 = 3;
+pub(crate) const BOOL_DISCRIMINANT: u32 = 4;
+pub(crate) const STRING_DISCRIMINANT: u32 = 5;
+pub(crate) const CHAR_DISCRIMINANT: u32 = 6;
+pub(crate) const META_TYPE_DISCRIMINANT: u32 = 7;
+pub(crate) const ANY_DISCRIMINANT: u32 = 8;
+pub(crate) const FILE_DISCRIMINANT: u32 = 9;
 
-    fn get_stride_in_bytes(&self, pointer_ty: types::Type) -> u32;
+pub(crate) const FIRST_COMPLEX_DISCRIMINANT: u32 = 10;
 
-    fn get_align_in_bytes(&self, pointer_ty: types::Type) -> u32;
-}
+pub(crate) const STRUCT_DISCRIMINANT: u32 = 10;
+pub(crate) const DISTINCT_DISCRIMINANT: u32 = 11;
+pub(crate) const ARRAY_DISCRIMINANT: u32 = 12;
+pub(crate) const POINTER_DISCRIMINANT: u32 = 13;
+pub(crate) const FUNCTION_DISCRIMINANT: u32 = 14;
 
-impl ToCompSize for Ty {
-    fn get_size_in_bytes(&self, pointer_ty: types::Type) -> u32 {
-        match self {
-            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
-            Ty::IInt(u32::MAX) | Ty::UInt(u32::MAX) => pointer_ty.bytes(),
-            Ty::IInt(0) | Ty::UInt(0) => 32 / 8,
-            Ty::IInt(bit_width) | Ty::UInt(bit_width) => bit_width / 8,
-            Ty::Float(0) => 32 / 8,
-            Ty::Float(bit_width) => bit_width / 8,
-            Ty::Bool | Ty::Char => 1, // bools and chars are u8's
-            Ty::String => pointer_ty.bytes(),
-            Ty::Array { size, sub_ty } => sub_ty.get_stride_in_bytes(pointer_ty) * *size as u32,
-            Ty::Pointer { .. } => pointer_ty.bytes(),
-            Ty::Distinct { ty, .. } => ty.get_size_in_bytes(pointer_ty),
-            Ty::Function { .. } => pointer_ty.bytes(),
-            Ty::Struct { fields, .. } => {
-                let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
-                StructMemory::new(fields, pointer_ty).size
-            }
-            Ty::Type => 32 / 8,
-            Ty::Any => 0,
-            Ty::Void => 0,
-            Ty::File(_) => 0,
-        }
-    }
+fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
+    // the last 6 bits are reserved for the discriminant
+    let id = discriminant << 26;
 
-    fn get_stride_in_bytes(&self, pointer_ty: types::Type) -> u32 {
-        match self {
-            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
-            Ty::IInt(u32::MAX) | Ty::UInt(u32::MAX) => pointer_ty.bytes(),
-            Ty::IInt(0) | Ty::UInt(0) => 32 / 8,
-            Ty::IInt(bit_width) | Ty::UInt(bit_width) => bit_width / 8,
-            Ty::Float(0) => 32 / 8,
-            Ty::Float(bit_width) => bit_width / 8,
-            Ty::Bool | Ty::Char => 1, // bools and chars are u8's
-            Ty::String => pointer_ty.bytes(),
-            Ty::Array { size, sub_ty } => sub_ty.get_stride_in_bytes(pointer_ty) * *size as u32,
-            Ty::Pointer { .. } => pointer_ty.bytes(),
-            Ty::Distinct { ty, .. } => ty.get_stride_in_bytes(pointer_ty),
-            Ty::Function { .. } => pointer_ty.bytes(),
-            Ty::Struct { fields, .. } => {
-                let fields = fields.iter().map(|(_, ty)| ty).copied().collect();
-                StructMemory::new(fields, pointer_ty).stride
-            }
-            Ty::Type => 32 / 8,
-            Ty::Any => 0,
-            Ty::Void => 0,
-            Ty::File(_) => 0,
-        }
-    }
+    let byte_width = bit_width / 8;
 
-    fn get_align_in_bytes(&self, pointer_ty: types::Type) -> u32 {
-        match self {
-            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
-            Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) => self.get_size_in_bytes(pointer_ty).min(8),
-            Ty::Bool | Ty::Char => 1, // bools and chars are u8's
-            Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => pointer_ty.bytes(),
-            Ty::Array { sub_ty, .. } => sub_ty.get_align_in_bytes(pointer_ty),
-            Ty::Distinct { ty, .. } => ty.get_align_in_bytes(pointer_ty),
-            Ty::Struct { fields, .. } => fields
-                .iter()
-                .map(|(_, ty)| ty.get_align_in_bytes(pointer_ty))
-                .max()
-                .unwrap_or(1), // the struct may be empty, in which case it should have an alignment of 1
-            Ty::Type => self.get_size_in_bytes(pointer_ty),
-            Ty::Any => 1,
-            Ty::Void => 1,
-            Ty::File(_) => 1,
-        }
-    }
+    let align = byte_width.min(8).max(1) << 5;
+
+    let sign = (signed as u32) << 9;
+
+    id | sign | align | byte_width
 }
 
 pub(crate) trait ToTyId {
     fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32;
+    fn to_previous_type_id(self, meta_tys: &MetaTyData, pointer_ty: types::Type) -> u32;
 }
 
 impl ToTyId for Intern<Ty> {
     fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32 {
-        fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
-            // the last 6 bits are reserved for the discriminant
-            let id = discriminant << 26;
-
-            let byte_width = bit_width / 8;
-
-            let align = byte_width.min(8).max(1) << 5;
-
-            let sign = (signed as u32) << 9;
-
-            id | sign | align | byte_width
-        }
-
         let id = match self.as_ref() {
             Ty::NotYetResolved | Ty::Unknown => unreachable!(),
             Ty::IInt(bit_width) => simple_id(
-                1,
+                INT_DISCRIMINANT,
                 match *bit_width {
                     u32::MAX => pointer_ty.bits(),
                     other => other,
@@ -342,28 +280,23 @@ impl ToTyId for Intern<Ty> {
                 true,
             ),
             Ty::UInt(bit_width) => simple_id(
-                1,
+                INT_DISCRIMINANT,
                 match *bit_width {
                     u32::MAX => pointer_ty.bits(),
                     other => other,
                 },
                 false,
             ),
-            Ty::Float(bit_width) => simple_id(2, *bit_width, false),
-            Ty::Bool => simple_id(3, 8, false),
-            Ty::String => simple_id(4, pointer_ty.bits(), false),
-            Ty::Char => simple_id(5, 8, false),
-            Ty::Type => simple_id(6, 32, false),
-            Ty::Any => simple_id(7, 0, false),
-            Ty::File(_) => simple_id(8, 0, false),
-            Ty::Void => simple_id(9, 0, false),
-            // it benefits type reflection functions if a simple cmp can be done to determine if a
-            // type is simple or not.
-            // !!! IMPORTANT !!!
-            // if more simple types are added, make sure to update the cmp tests in the type reflection
-            // functions
-            Ty::Array { .. } => {
-                let id = 10 << 26;
+            Ty::Float(bit_width) => simple_id(FLOAT_DISCRIMINANT, *bit_width, false),
+            Ty::Bool => simple_id(BOOL_DISCRIMINANT, 8, false),
+            Ty::String => simple_id(STRING_DISCRIMINANT, pointer_ty.bits(), false),
+            Ty::Char => simple_id(CHAR_DISCRIMINANT, 8, false),
+            Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
+            Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
+            Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
+            Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
+            Ty::Array { sub_ty, .. } => {
+                let id = ARRAY_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
                     .tys_to_compile
@@ -377,10 +310,13 @@ impl ToTyId for Intern<Ty> {
                         meta_tys.array_uid_gen.generate_unique_id()
                     });
 
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
+
                 return id | list_id;
             }
-            Ty::Pointer { .. } => {
-                let id = 11 << 26;
+            Ty::Pointer { sub_ty, .. } => {
+                let id = POINTER_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
                     .tys_to_compile
@@ -394,10 +330,13 @@ impl ToTyId for Intern<Ty> {
                         meta_tys.pointer_uid_gen.generate_unique_id()
                     });
 
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
+
                 return id | list_id;
             }
-            Ty::Distinct { .. } => {
-                let id = 12 << 26;
+            Ty::Distinct { ty, .. } => {
+                let id = DISTINCT_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
                     .tys_to_compile
@@ -411,10 +350,13 @@ impl ToTyId for Intern<Ty> {
                         meta_tys.distinct_uid_gen.generate_unique_id()
                     });
 
+                // make sure to compile the sub type too
+                ty.to_type_id(meta_tys, pointer_ty);
+
                 return id | list_id;
             }
             Ty::Function { .. } => {
-                let id = 13 << 26;
+                let id = FUNCTION_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
                     .tys_to_compile
@@ -431,7 +373,7 @@ impl ToTyId for Intern<Ty> {
                 return id | list_id;
             }
             Ty::Struct { .. } => {
-                let id = 14 << 26;
+                let id = STRUCT_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
                     .tys_to_compile
@@ -455,59 +397,104 @@ impl ToTyId for Intern<Ty> {
 
         id
     }
-}
 
-pub(crate) struct StructMemory {
-    size: u32,
-    stride: u32,
-    offsets: Vec<u32>,
-}
+    fn to_previous_type_id(self, meta_tys: &MetaTyData, pointer_ty: types::Type) -> u32 {
+        match self.as_ref() {
+            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::IInt(bit_width) => simple_id(
+                INT_DISCRIMINANT,
+                match *bit_width {
+                    u32::MAX => pointer_ty.bits(),
+                    other => other,
+                },
+                true,
+            ),
+            Ty::UInt(bit_width) => simple_id(
+                INT_DISCRIMINANT,
+                match *bit_width {
+                    u32::MAX => pointer_ty.bits(),
+                    other => other,
+                },
+                false,
+            ),
+            Ty::Float(bit_width) => simple_id(FLOAT_DISCRIMINANT, *bit_width, false),
+            Ty::Bool => simple_id(BOOL_DISCRIMINANT, 8, false),
+            Ty::String => simple_id(STRING_DISCRIMINANT, pointer_ty.bits(), false),
+            Ty::Char => simple_id(CHAR_DISCRIMINANT, 8, false),
+            Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
+            Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
+            Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
+            Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
+            Ty::Array { .. } => {
+                let id = ARRAY_DISCRIMINANT << 26;
 
-impl StructMemory {
-    /// checks if the offset is a multiple of the alignment
-    ///
-    /// if not, returns the amount of bytes needed
-    /// to make it a valid offset
-    fn padding_needed_for(offset: u32, align: u32) -> u32 {
-        let misalign = offset % align;
-        if misalign > 0 {
-            // the amount needed to round up to the next proper offset
-            align - misalign
-        } else {
-            0
-        }
-    }
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Array { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
 
-    pub(crate) fn new(fields: Vec<Intern<Ty>>, pointer_ty: types::Type) -> Self {
-        let mut offsets = Vec::with_capacity(fields.len());
-        let mut max_align = 1;
-        let mut current_offset = 0;
-
-        for field in fields {
-            let field_align = field.get_align_in_bytes(pointer_ty);
-            if field_align > max_align {
-                max_align = field_align;
+                id | list_id
             }
+            Ty::Pointer { .. } => {
+                let id = POINTER_DISCRIMINANT << 26;
 
-            current_offset += Self::padding_needed_for(current_offset, field_align);
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Pointer { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
 
-            offsets.push(current_offset);
+                id | list_id
+            }
+            Ty::Distinct { .. } => {
+                let id = DISTINCT_DISCRIMINANT << 26;
 
-            current_offset += field.get_size_in_bytes(pointer_ty);
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Distinct { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
+
+                id | list_id
+            }
+            Ty::Function { .. } => {
+                let id = FUNCTION_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Function { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
+
+                id | list_id
+            }
+            Ty::Struct { .. } => {
+                let id = STRUCT_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Struct { .. }))
+                    .enumerate()
+                    .find(|(_, ty)| **ty == self)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
+
+                id | list_id
+            }
         }
-
-        Self {
-            size: current_offset,
-            stride: current_offset + Self::padding_needed_for(current_offset, max_align),
-            offsets,
-        }
-    }
-
-    pub(crate) fn size(&self) -> u32 {
-        self.size
-    }
-
-    pub(crate) fn offsets(&self) -> &Vec<u32> {
-        &self.offsets
     }
 }

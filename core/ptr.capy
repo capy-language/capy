@@ -28,6 +28,10 @@ null :: () -> ^any {
     const_from_raw(0)
 }
 
+mut_null :: () -> ^mut any {
+    mut_from_raw(0)
+}
+
 is_null :: (ptr: ^any) -> bool {
     to_raw(ptr) == 0
 }

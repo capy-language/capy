@@ -49,3 +49,19 @@ ln :: (x: f64) -> f64 {
 log10 :: (x: f64) -> f64 {
     ln(x) / comptime ln(10)
 }
+
+max_usize :: (x: usize, y: usize) -> usize {
+    if x > y {
+        x
+    } else {
+        y
+    }
+}
+
+min_usize :: (x: usize, y: usize) -> usize {
+    if x < y {
+        x
+    } else {
+        y
+    }
+}

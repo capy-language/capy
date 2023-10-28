@@ -181,7 +181,7 @@ impl InferenceCtx<'_> {
         }
 
         let found_ty = &current_module!(self).expr_tys[expr];
-        if !found_ty.is_weak_type_replaceable_by(&new_ty) {
+        if !found_ty.is_weak_replaceable_by(&new_ty) {
             return false;
         }
 
@@ -521,7 +521,7 @@ impl InferenceCtx<'_> {
                         range: assign_body.range,
                         help,
                     })
-                } else if source_ty.is_weak_type_replaceable_by(&value_ty) {
+                } else if source_ty.is_weak_replaceable_by(&value_ty) {
                     self.replace_weak_tys(assign_body.source, source_ty);
                 } else if self.expect_match(value_ty, source_ty, assign_body.value) {
                     self.replace_weak_tys(assign_body.value, source_ty);

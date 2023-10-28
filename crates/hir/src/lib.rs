@@ -145,12 +145,12 @@ pub enum PrimitiveTy {
         range: TextRange,
     },
     Void {
-        range: Option<TextRange>,
+        range: TextRange,
     },
 }
 
 impl PrimitiveTy {
-    pub fn range(&self) -> Option<TextRange> {
+    pub fn range(&self) -> TextRange {
         match self {
             PrimitiveTy::IInt { range, .. }
             | PrimitiveTy::UInt { range, .. }
@@ -159,8 +159,8 @@ impl PrimitiveTy {
             | PrimitiveTy::String { range }
             | PrimitiveTy::Char { range }
             | PrimitiveTy::Type { range }
-            | PrimitiveTy::Any { range } => Some(*range),
-            PrimitiveTy::Void { range } => *range,
+            | PrimitiveTy::Any { range }
+            | PrimitiveTy::Void { range } => *range,
         }
     }
 
@@ -176,7 +176,7 @@ impl PrimitiveTy {
             let range = ident.range(tree);
 
             if key == Key::void() {
-                Some(PrimitiveTy::Void { range: Some(range) })
+                Some(PrimitiveTy::Void { range })
             } else if key == Key::isize() {
                 Some(PrimitiveTy::IInt {
                     bit_width: u32::MAX,

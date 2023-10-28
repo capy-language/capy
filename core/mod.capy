@@ -1,8 +1,15 @@
 
+// this is all going to change.
+// `pub` is going to be added
+// after that, there will be a way to bypass it
+version :: "alpha 0.1.0";
+
+fmt :: import "fmt.capy";
 libc :: import "libc.capy";
 ptr :: import "ptr.capy";
 math :: import "math.capy";
 meta :: import "meta.capy";
+strings :: import "strings.capy";
 
 print :: (str: string) {
     str := str as ^char;
@@ -21,4 +28,94 @@ print :: (str: string) {
 
 println :: (str: string) {
     libc.puts(str);
+}
+
+Any :: struct {
+    ty: type,
+    data: ^any,
+};
+
+print_any :: (val: Any) {
+    ty := val.ty;
+    data := val.data;
+
+    if meta.is_int(ty) {
+        int_info := meta.get_int_info(ty);
+
+        num := if int_info.bit_width == 8 {
+            {data as ^i8}^ as i32
+        } else if int_info.bit_width == 16 {
+            {data as ^i16}^ as i32
+        } else if int_info.bit_width == 32 {
+            {data as ^i32}^ as i32
+        } else if int_info.bit_width == 64 {
+            {data as ^i64}^ as i32
+        } else if int_info.bit_width == 128 {
+            {data as ^i128}^ as i32
+        } else {
+            0
+        };
+
+        str := if int_info.signed {    
+            fmt.i32_to_string(num)
+        } else {
+            fmt.u32_to_string(num as u32)
+        };
+
+        strings.print_string(^str);
+        libc.free(str.buf);
+
+    } else if meta.is_bool(ty) {
+        if {data as ^bool}^ {
+            print("true");
+        } else {
+            print("false");
+        }
+    } else if meta.is_string(ty) {
+        print({data as ^string}^);
+    } else if meta.is_char(ty) {
+        libc.putchar({data as ^char}^);
+    } else if meta.is_array(ty) {
+        info := meta.get_array_info(ty);
+        elem_stride := meta.stride_of(info.ty);
+
+        print("{ ");
+
+        idx := 0;
+        while idx < info.size {
+            addr := ptr.const_offset(data, elem_stride * idx);
+            
+            print_any(Any { ty: info.ty, data: addr });
+
+            if idx < info.size - 1 {
+                print(", ");
+            }
+            
+            idx = idx + 1;
+        }
+
+        print(" }");
+    } else if meta.is_pointer(ty) {
+        print("^");
+
+        info := meta.get_pointer_info(ty);
+
+        print_any(Any { ty: info.ty, data: {data as ^^any}^});
+    } else if meta.is_distinct(ty) {
+        info := meta.get_distinct_info(ty);
+
+        print_any(Any { ty: info.ty, data: data });
+    } else if meta.is_meta_type(ty) {
+        print("{type}");
+    } else if meta.is_any(ty) {
+        print("{any}");
+    } else if meta.is_file(ty) {
+        print("{import}");
+    } else if meta.is_function(ty) {
+        print("{function}");
+    } else if meta.is_struct(ty) {
+        print("{struct}");
+    } else if meta.is_void(ty) {
+        print("void");
+    }
 }

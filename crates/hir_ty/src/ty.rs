@@ -467,7 +467,8 @@ impl Ty {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && (**expected_ty == Ty::Any || found_ty.can_fit_into(expected_ty))
+                ) && ((**expected_ty == Ty::Any && !found_ty.might_be_weak())
+                    || found_ty.can_fit_into(expected_ty))
             }
             (
                 Ty::Array {
@@ -529,8 +530,8 @@ impl Ty {
             (Ty::Distinct { ty: from, .. }, Ty::Distinct { ty: to, .. }) => {
                 from.primitive_castable(to)
             }
-            (Ty::Distinct { ty: distinct, .. }, other)
-            | (other, Ty::Distinct { ty: distinct, .. }) => distinct.primitive_castable(other),
+            (Ty::Distinct { ty: from, .. }, to) => from.primitive_castable(to),
+            (from, Ty::Distinct { ty: to, .. }) => from.primitive_castable(to),
             (
                 Ty::Pointer {
                     mutable: found_mutable,
@@ -546,7 +547,8 @@ impl Ty {
                     (true, _) | (false, false)
                 ) && (found_sub_ty == expected_sub_ty
                     || **found_sub_ty == Ty::Any
-                    || **expected_sub_ty == Ty::Any)
+                    || **expected_sub_ty == Ty::Any
+                    || found_sub_ty.is_weak_replaceable_by(expected_sub_ty))
             }
             // string to and from ^any and ^u8
             (Ty::String, Ty::Pointer { sub_ty, .. }) | (Ty::Pointer { sub_ty, .. }, Ty::String) => {
@@ -586,7 +588,18 @@ impl Ty {
         self.can_fit_into(expected)
     }
 
-    pub(crate) fn is_weak_type_replaceable_by(&self, expected: &Ty) -> bool {
+    /// THIS IS NOT AN INDICATOR AS TO WHETHER OR NOT A TYPE CAN BE REPLACED BY ANOTHER
+    /// USE `is_weak_replaceable_by` INSTEAD
+    pub(crate) fn might_be_weak(&self) -> bool {
+        match self {
+            Ty::IInt(0) | Ty::UInt(0) | Ty::Float(0) => true,
+            Ty::Array { sub_ty, .. } => sub_ty.might_be_weak(),
+            Ty::Pointer { sub_ty, .. } => sub_ty.might_be_weak(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_weak_replaceable_by(&self, expected: &Ty) -> bool {
         // println!("  is_weak_type_replaceable({:?}, {:?})", found, expected);
         match (self, expected) {
             // weak signed to strong signed, or weak unsigned to strong unsigned
@@ -609,8 +622,7 @@ impl Ty {
                     sub_ty: expected_sub_ty,
                 },
             ) => {
-                found_size == expected_size
-                    && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
+                found_size == expected_size && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
             }
             (
                 Ty::Pointer {
@@ -625,7 +637,7 @@ impl Ty {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && found_sub_ty.is_weak_type_replaceable_by(expected_sub_ty)
+                ) && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
             }
             // Right now there are no weak structs, so having this doesn't make sense
             // Maybe in the future if we have `.{}` syntax we can figure something out
@@ -652,7 +664,7 @@ impl Ty {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, Ty::Distinct { ty, .. }) => found.is_weak_type_replaceable_by(ty),
+            (found, Ty::Distinct { ty, .. }) => found.is_weak_replaceable_by(ty),
             _ => false,
         }
     }

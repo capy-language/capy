@@ -1,0 +1,119 @@
+libc :: import "libc.capy";
+math :: import "math.capy";
+ptr :: import "ptr.capy";
+
+String :: struct {
+    buf: ^mut char,
+    len: usize,
+    cap: usize,
+};
+
+make_string :: () -> String {
+    buf := ptr.mut_null() as ^mut char;
+
+    String {
+        buf: buf,
+        len: 0,
+        cap: 0,
+    }
+};
+
+make_string_with_capacity :: (cap: usize) -> String {
+    if cap == 0 { return make_string(); }
+
+    buf := libc.malloc(cap) as ^mut char;
+
+    String {
+        buf: buf,
+        len: 0,
+        cap: cap,
+    }
+}
+
+shrink_to_fit :: (str: ^mut String) {
+    if str.len != 0 && str.len < str.cap {
+        new_buf := libc.malloc(str.len) as ^mut char;
+
+        // copy the old buffer into the new buffer
+        if !ptr.is_null(str.buf) {
+            libc.memcpy(new_buf, str.buf, str.len);
+            libc.free(str.buf);
+        }
+
+        str.buf = new_buf;
+        str.cap = str.len;
+    }
+}
+
+_prepare_for_n_bytes :: (str: ^mut String, len: usize) {
+    if str.len + len > str.cap {
+        new_cap := math.max_usize(str.cap * 2, 1);
+        while new_cap <= str.len + len {
+            new_cap = new_cap * 2;
+        }
+
+        new_buf := libc.malloc(new_cap) as ^mut char;
+
+        // copy the old buffer into the new buffer
+        if !ptr.is_null(str.buf) {
+            libc.memcpy(new_buf, str.buf, str.cap);
+            libc.free(str.buf);
+        }
+
+        str.buf = new_buf;
+        str.cap = new_cap;
+    }
+}
+
+add_char :: (str: ^mut String, ch: char) {
+    _prepare_for_n_bytes(str, 1);
+
+    ptr.write(str.buf, ch as u8, str.len);
+
+    str.len = str.len + 1;
+}
+
+add_str :: (str: ^mut String, s: string) {
+    len :: (s: string) -> usize {
+        s_ptr := s as ^u8;
+
+        cont := true;
+        idx := 0;
+        while cont {
+            ch := ptr.read(s_ptr, idx);
+            cont = ch != 0;
+            idx = idx + 1;
+        }
+
+        idx - 1
+    };
+
+    len := len(s);
+
+    _prepare_for_n_bytes(str, len);
+
+    offset := ptr.mut_offset(str.buf, str.len);
+
+    libc.memcpy(offset, s as ^any, len);
+    
+    str.len = str.len + len;
+}
+
+print_string :: (str: ^String) {
+    idx := 0;
+    while idx < str.len {
+        ch := ptr.read(str.buf, idx) as char;
+        libc.putchar(ch);
+        idx = idx + 1;
+    }
+}
+
+println_string :: (str: ^String) {
+    idx := 0;
+    while idx < str.len {
+        ch := ptr.read(str.buf, idx) as char;
+        libc.putchar(ch);
+        idx = idx + 1;
+    }
+    libc.putchar('\n');
+}

@@ -4,6 +4,7 @@ mod ty;
 use hir::FileName;
 use interner::{Interner, Key};
 use internment::Intern;
+use itertools::Itertools;
 use la_arena::{ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
@@ -740,6 +741,21 @@ impl<'a> InferenceCtx<'a> {
 }
 
 impl InferenceResult {
+    /// This might be slightly superficial in some scenarios, I'm not sure
+    pub fn all_tys(&self) -> impl Iterator<Item = Intern<Ty>> + '_ {
+        self.signatures
+            .values()
+            .map(|Signature(ty)| *ty)
+            .chain(self.files.values().flat_map(|tys| {
+                tys.meta_tys
+                    .values()
+                    .copied()
+                    .chain(tys.expr_tys.values().copied())
+                    .chain(tys.local_tys.values().copied())
+            }))
+            .unique()
+    }
+
     fn shrink_to_fit(&mut self) {
         let Self {
             signatures,
@@ -748,9 +764,7 @@ impl InferenceResult {
         signatures.shrink_to_fit();
         modules.shrink_to_fit();
     }
-}
 
-impl InferenceResult {
     pub fn debug(&self, mod_dir: &std::path::Path, interner: &Interner, fancy: bool) -> String {
         let mut s = String::new();
 
@@ -7097,6 +7111,64 @@ mod tests {
                 3 : i32
                 4 : i32
                 5 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn implicit_weak_ptr_to_any() {
+        check(
+            r#"
+                foo :: () {
+                    x : ^any = ^42;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                2 : {uint}
+                3 : ^{uint}
+                4 : void
+                5 : () -> void
+                l0 : ^any
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Pointer {
+                            mutable: false,
+                            sub_ty: Ty::Any.into(),
+                        }
+                        .into(),
+                        found: Ty::Pointer {
+                            mutable: false,
+                            sub_ty: Ty::UInt(0).into(),
+                        }
+                        .into(),
+                    },
+                    60..63,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn explicit_weak_ptr_to_i32_to_any() {
+        check(
+            r#"
+                foo :: () {
+                    x : ^any = ^42 as ^i32;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                2 : i32
+                3 : ^i32
+                6 : ^i32
+                7 : void
+                8 : () -> void
+                l0 : ^any
             "#]],
             |_| [],
         )

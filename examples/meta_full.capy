@@ -1,0 +1,104 @@
+
+core :: mod "core";
+meta :: core.meta;
+
+imaginary :: distinct i32;
+
+main :: () {
+    print_info(i32);
+    print_info(u8);
+    print_info(u128);
+    print_info(isize);
+    print_info(f32);
+    print_info(f64);
+    print_info([5] i32);
+    print_info([1000][3]f64);
+    print_info(^i32);
+    print_info(^^^i128);
+    print_info(distinct i32);
+    print_info(distinct [2] distinct i8);
+
+    core.print_any(core.Any { ty: u8, data: ^123 as ^u8 });
+    core.println("");
+    core.print_any(core.Any { ty: [6]i32, data: ^[6]i32 { 4, 8, 15, 16, 23, 42 } });
+    core.println("");
+    core.print_any(core.Any { ty: ^i32, data: ^^52 as ^^i32 });
+    core.println("");
+    core.print_any(core.Any { ty: imaginary, data: ^42 as ^imaginary });
+};
+
+print_info :: (ty: type) {
+    print_info_with_args(ty, 0);
+    core.println("");
+}
+
+print_info_with_args :: (ty: type, indent: i32) {
+    print_indent :: (indent: i32) {
+        idx := 0;
+        while idx < indent {
+            core.libc.putchar(' ');
+            idx = idx + 1;
+        }
+    };
+
+    if meta.is_int(ty) {
+        print_indent(indent);
+        core.println("int");
+
+        info := meta.get_int_info(ty);
+
+        print_indent(indent);
+        printf("bit_width = %i\n", info.bit_width);
+        print_indent(indent);
+        core.print("signed    = ");
+        res := if info.signed {
+            "true"
+        } else {
+            "false"
+        };
+        core.println(res);
+    } else if meta.is_float(ty) {
+        print_indent(indent);
+        core.println("float");
+
+        info := meta.get_float_info(ty);
+
+        print_indent(indent);
+        printf("bit_width = %i\n", info.bit_width);
+    } else if meta.is_array(ty) {
+        print_indent(indent);
+        core.println("array");
+
+        info := meta.get_array_info(ty);
+
+        print_indent(indent);
+        printf("size = %i\n", info.size as i32);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_pointer(ty) {
+        print_indent(indent);
+        core.println("pointer");
+
+        info := meta.get_pointer_info(ty);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_distinct(ty) {
+        print_indent(indent);
+        core.println("distinct");
+
+        info := meta.get_distinct_info(ty);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else {
+        print_indent(indent);
+        core.println("no type info\n");
+    }
+}
+
+printf :: (s: string, n1: i32) extern;

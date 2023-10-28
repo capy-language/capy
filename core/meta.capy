@@ -1,4 +1,4 @@
-// Pretty simple. The amount of space a type takes up in memory.
+// The amount of space a type takes up in memory.
 //
 // i8 takes 1 byte to store, i32 takes four bytes.
 //
@@ -116,4 +116,85 @@ stride_of :: (ty: type) -> usize {
 // An alignment of `1` is accepted in all addresses (every number is a multiple of 1)
 align_of :: (ty: type) -> usize extern;
 
-// todo: add the Type_Info functions
+// integers (u8, i8, u16, i16, u32, i32, u64, i64, u128, i128)
+
+Int_Info :: struct {
+    bit_width: u8,
+    signed: bool,
+};
+
+is_int :: (ty: type) -> bool extern;
+get_int_info :: (ty: type) -> Int_Info extern;
+
+// floats (f32, f64)
+
+Float_Info :: struct {
+    bit_width: u8,
+};
+
+is_float :: (ty: type) -> bool extern;
+get_float_info :: (ty: type) -> Float_Info extern;
+
+// boolean (bool)
+
+is_bool :: (ty: type) -> bool extern;
+
+// string
+
+is_string :: (ty: type) -> bool extern;
+
+// char
+
+is_char :: (ty: type) -> bool extern;
+
+// arrays ([6] i32, [42] string)
+
+Array_Info :: struct {
+    size: usize,
+    ty: type,
+};
+
+is_array :: (ty: type) -> bool extern;
+get_array_info :: (ty: type) -> Array_Info extern;
+
+// pointers (^i32, ^f32)
+
+Pointer_Info :: struct {
+    ty: type,
+};
+
+is_pointer :: (ty: type) -> bool extern;
+get_pointer_info :: (ty: type) -> Pointer_Info extern;
+
+// distincts (distinct i32, distinct f32)
+
+Distinct_Info :: struct {
+    ty: type,
+};
+
+is_distinct :: (ty: type) -> bool extern;
+get_distinct_info :: (ty: type) -> Distinct_Info extern;
+
+// meta type
+
+is_meta_type :: (ty: type) -> bool extern;
+
+// any
+
+is_any :: (ty: type) -> bool extern;
+
+// file (the type of `import "my_file.capy"` or `mod "core"`)
+
+is_file :: (ty: type) -> bool extern;
+
+// functions (() -> void, (x: i32) -> f32)
+
+is_function :: (ty: type) -> bool extern;
+
+// structs (struct { a: i32, b: f32 })
+
+is_struct :: (ty: type) -> bool extern;
+
+// void
+
+is_void :: (ty: type) -> bool extern;

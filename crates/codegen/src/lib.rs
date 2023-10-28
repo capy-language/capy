@@ -1,7 +1,8 @@
+mod builtin;
 mod compiler;
-mod compiler_defined;
 mod convert;
 mod mangle;
+mod size;
 
 use compiler::comptime::ComptimeResult;
 use compiler::program::compile_program;
@@ -165,6 +166,8 @@ mod tests {
             "../../core/libc.capy",
             "../../core/math.capy",
             "../../core/meta.capy",
+            "../../core/strings.capy",
+            "../../core/fmt.capy",
         ];
 
         for file in other_files.iter().chain(CORE_DEPS.iter()) {
@@ -712,19 +715,6 @@ mod tests {
             &[],
             "main",
             expect![[r#"
-            Reallocating!
-            cap: 2, len: 1
-            cap: 2, len: 2
-            Reallocating!
-            cap: 4, len: 3
-            cap: 4, len: 4
-            Reallocating!
-            cap: 8, len: 5
-            cap: 8, len: 6
-            Reallocating!
-            cap: 16, len: 11
-            cap: 16, len: 12
-            cap: 16, len: 13
             Hello World!
 
             "#]],
@@ -793,28 +783,32 @@ mod tests {
     }
 
     #[test]
-    fn reflection() {
+    fn meta_sizes() {
         check_files(
-            "../../examples/reflection.capy",
+            "../../examples/meta_sizes.capy",
             &[],
             "main",
             expect![[r#"
                 Reflection!
-                i32              (0x4000284) : size = 4, align = 4, stride = 4
-                i64              (0x4000308) : size = 8, align = 8, stride = 8
-                u64              (0x4000108) : size = 8, align = 8, stride = 8
-                u128             (0x4000110) : size = 16, align = 8, stride = 16
-                f32              (0x8000084) : size = 4, align = 4, stride = 4
-                void             (0x24000020) : size = 0, align = 1, stride = 0
-                type             (0x18000084) : size = 4, align = 4, stride = 4
-                Person           (0x38000001) : size = 12, align = 8, stride = 16
-                Foo              (0x38000000) : size = 1, align = 1, stride = 1
-                [6] Person       (0x28000000) : size = 96, align = 8, stride = 96
-                 ^  Person       (0x2c000000) : size = 8, align = 8, stride = 8
-                distinct Person  (0x30000000) : size = 12, align = 8, stride = 16
-                distinct Person  (0x30000001) : size = 12, align = 8, stride = 16
-                ()       -> void (0x34000000) : size = 8, align = 8, stride = 8
-                (x: i32) -> f32  (0x34000001) : size = 8, align = 8, stride = 8
+                i32              (0x8000284) : size = 4, align = 4, stride = 4
+                i64              (0x8000308) : size = 8, align = 8, stride = 8
+                u64              (0x8000108) : size = 8, align = 8, stride = 8
+                i8               (0x8000221) : size = 1, align = 1, stride = 1
+                u128             (0x8000110) : size = 16, align = 8, stride = 16
+                f32              (0xc000084) : size = 4, align = 4, stride = 4
+                void             (0x4000020) : size = 0, align = 1, stride = 0
+                any              (0x20000020) : size = 0, align = 1, stride = 0
+                string           (0x14000108) : size = 8, align = 8, stride = 8
+                char             (0x18000021) : size = 1, align = 1, stride = 1
+                type             (0x1c000084) : size = 4, align = 4, stride = 4
+                Person           (0x28000001) : size = 12, align = 8, stride = 16
+                Foo              (0x28000000) : size = 1, align = 1, stride = 1
+                [6] Person       (0x30000000) : size = 96, align = 8, stride = 96
+                 ^  Person       (0x34000000) : size = 8, align = 8, stride = 8
+                distinct Person  (0x2c000000) : size = 12, align = 8, stride = 16
+                distinct Person  (0x2c000001) : size = 12, align = 8, stride = 16
+                ()       -> void (0x38000000) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32  (0x38000001) : size = 8, align = 8, stride = 8
 
                 i32 == i16 : false
                 i32 == u32 : false
@@ -831,6 +825,93 @@ mod tests {
                 () -> void == (x: i32) -> f32 : false
                 () -> void == () -> void : true
 
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn meta_full() {
+        check_files(
+            "../../examples/meta_full.capy",
+            &[],
+            "main",
+            expect![[r#"
+                int
+                bit_width = 32
+                signed    = true
+
+                int
+                bit_width = 8
+                signed    = false
+
+                int
+                bit_width = 128
+                signed    = false
+
+                int
+                bit_width = 64
+                signed    = true
+
+                float
+                bit_width = 32
+
+                float
+                bit_width = 64
+
+                array
+                size = 5
+                ty =
+                 int
+                 bit_width = 32
+                 signed    = true
+
+                array
+                size = 1000
+                ty =
+                 array
+                 size = 3
+                 ty =
+                  float
+                  bit_width = 64
+
+                pointer
+                ty =
+                 int
+                 bit_width = 32
+                 signed    = true
+
+                pointer
+                ty =
+                 pointer
+                 ty =
+                  pointer
+                  ty =
+                   int
+                   bit_width = 128
+                   signed    = true
+
+                distinct
+                ty =
+                 int
+                 bit_width = 32
+                 signed    = true
+
+                distinct
+                ty =
+                 array
+                 size = 2
+                 ty =
+                  distinct
+                  ty =
+                   int
+                   bit_width = 8
+                   signed    = true
+
+                123
+                { 4, 8, 15, 16, 23, 42 }
+                ^52
+                42
             "#]],
             0,
         )
