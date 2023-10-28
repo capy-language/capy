@@ -118,18 +118,30 @@ pub fn compile_obj(
     product.emit()
 }
 
-pub fn link_to_exec(object_file: &PathBuf) -> PathBuf {
+pub fn link_to_exec(object_file: &PathBuf, libs: Option<&[String]>) -> PathBuf {
     let exe_path = object_file
         .parent()
         .unwrap()
         .join(object_file.file_stem().unwrap());
-    let success = Command::new("gcc")
-        .arg(object_file)
-        .arg("-o")
-        .arg(&exe_path)
-        .status()
-        .unwrap()
-        .success();
+    let success = if let Some(libs) = libs {
+        Command::new("gcc")
+            .arg(object_file)
+            .arg("-o")
+            .arg(&exe_path)
+            .args(libs.iter().map(|lib| "-l".to_string() + lib))
+            .status()
+            .unwrap()
+            .success()
+    } else {
+        Command::new("gcc")
+            .arg(object_file)
+            .arg("-o")
+            .arg(&exe_path)
+            .status()
+            .unwrap()
+            .success()
+    };
+
     assert!(success);
     exe_path
 }
@@ -349,7 +361,7 @@ mod tests {
             panic!("{}: {why}", file.display());
         });
 
-        let exec = link_to_exec(&file);
+        let exec = link_to_exec(&file, None);
 
         let output = std::process::Command::new(exec.clone())
             .output()
