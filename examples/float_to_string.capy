@@ -1,42 +1,42 @@
 core :: mod "core";
-convert :: core.convert;
+fmt :: core.fmt;
 strings :: core.strings;
 
 main :: () {
-    str := convert.f32_to_string(3.14159);
+    str := fmt.f32_to_string(3.14159);
     strings.println_string(^str);
     core.println("");
 
     core.print("ln 10 = ");
-    str := convert.f32_to_string(comptime core.math.ln(10) as f32);
+    str := fmt.f32_to_string(comptime core.math.ln(10) as f32);
     strings.println_string(^str);
 
     core.print("ln 50 = ");
-    str := convert.f32_to_string(comptime core.math.ln(50) as f32);
+    str := fmt.f32_to_string(comptime core.math.ln(50) as f32);
     strings.println_string(^str);
 
     core.print("ln 100 = ");
-    str := convert.f32_to_string(comptime core.math.ln(100) as f32);
+    str := fmt.f32_to_string(comptime core.math.ln(100) as f32);
     strings.println_string(^str);
 
     core.print("ln 500 = ");
-    str := convert.f32_to_string(comptime core.math.ln(500) as f32);
+    str := fmt.f32_to_string(comptime core.math.ln(500) as f32);
     strings.println_string(^str);
 
     core.print("log 10 = ");
-    str := convert.f32_to_string(comptime core.math.log10(10) as f32);
+    str := fmt.f32_to_string(comptime core.math.log10(10) as f32);
     strings.println_string(^str);
 
     core.print("log 50 = ");
-    str := convert.f32_to_string(comptime core.math.log10(50) as f32);
+    str := fmt.f32_to_string(comptime core.math.log10(50) as f32);
     strings.println_string(^str);
 
     core.print("log 100 = ");
-    str := convert.f32_to_string(comptime core.math.log10(100) as f32);
+    str := fmt.f32_to_string(comptime core.math.log10(100) as f32);
     strings.println_string(^str);
 
     core.print("log 500 = ");
-    str := convert.f32_to_string(comptime core.math.log10(500) as f32);
+    str := fmt.f32_to_string(comptime core.math.log10(500) as f32);
     strings.println_string(^str);
 }
 
