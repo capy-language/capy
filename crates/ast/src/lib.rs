@@ -874,8 +874,9 @@ fn token<Node: AstNode, Token: AstToken>(node: Node, tree: &SyntaxTree) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use syntax::SyntaxTreeBuf;
 
-    fn parse(input: &str) -> (SyntaxTree, Root) {
+    fn parse(input: &str) -> (SyntaxTreeBuf, Root) {
         let parse = parser::parse_repl_line(&lexer::lex(input), input);
         for error in parse.errors() {
             println!("Syntax Error: {:?}", error);
