@@ -6,5 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eventree = "0.6.0"
+eventree = "0.7.0"
 capy_macros = {path = "../capy_macros"}

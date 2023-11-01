@@ -5,14 +5,31 @@ pub type SyntaxElement = eventree::SyntaxElement<TreeConfig>;
 pub type SyntaxNode = eventree::SyntaxNode<TreeConfig>;
 pub type SyntaxToken = eventree::SyntaxToken<TreeConfig>;
 pub type SyntaxTree = eventree::SyntaxTree<TreeConfig>;
+pub type SyntaxTreeBuf = eventree::SyntaxTreeBuf<TreeConfig>;
 pub type Event = eventree::Event<TreeConfig>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TreeConfig {}
 
-impl eventree::TreeConfig for TreeConfig {
+unsafe impl eventree::TreeConfig for TreeConfig {
     type NodeKind = NodeKind;
     type TokenKind = TokenKind;
+
+    fn node_kind_to_raw(node_kind: Self::NodeKind) -> u16 {
+        node_kind as u16
+    }
+
+    fn token_kind_to_raw(token_kind: Self::TokenKind) -> u16 {
+        token_kind as u16
+    }
+
+    unsafe fn token_kind_from_raw(raw: u16) -> Self::TokenKind {
+        mem::transmute(raw as u8)
+    }
+
+    unsafe fn node_kind_from_raw(raw: u16) -> Self::NodeKind {
+        mem::transmute(raw as u8)
+    }
 }
 
 capy_macros::define_token_enum! {
@@ -71,24 +88,4 @@ pub enum NodeKind {
     Path,
     Comment,
     Error,
-}
-
-unsafe impl eventree::SyntaxKind for TokenKind {
-    fn to_raw(self) -> u16 {
-        self as u16
-    }
-
-    unsafe fn from_raw(raw: u16) -> Self {
-        mem::transmute(raw as u8)
-    }
-}
-
-unsafe impl eventree::SyntaxKind for NodeKind {
-    fn to_raw(self) -> u16 {
-        self as u16
-    }
-
-    unsafe fn from_raw(raw: u16) -> Self {
-        mem::transmute(raw as u8)
-    }
 }

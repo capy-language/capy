@@ -14,7 +14,7 @@ pub use error::*;
 
 use crate::parser::Parser;
 use sink::Sink;
-use syntax::SyntaxTree;
+use syntax::{SyntaxTree, SyntaxTreeBuf};
 use token::Tokens;
 
 pub fn parse_source_file(tokens: &Tokens, input: &str) -> Parse {
@@ -28,7 +28,7 @@ pub fn parse_repl_line(tokens: &Tokens, input: &str) -> Parse {
 }
 
 pub struct Parse {
-    syntax_tree: SyntaxTree,
+    syntax_tree: SyntaxTreeBuf,
     errors: Vec<SyntaxError>,
 }
 
@@ -37,7 +37,7 @@ impl Parse {
         &self.syntax_tree
     }
 
-    pub fn into_syntax_tree(self) -> SyntaxTree {
+    pub fn into_syntax_tree(self) -> SyntaxTreeBuf {
         self.syntax_tree
     }
 
