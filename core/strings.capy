@@ -65,16 +65,16 @@ _prepare_for_n_bytes :: (str: ^mut String, len: usize) {
     }
 }
 
-add_char :: (str: ^mut String, ch: char) {
-    _prepare_for_n_bytes(str, 1);
+add_char :: (self: ^mut String, ch: char) {
+    _prepare_for_n_bytes(self, 1);
 
-    ptr.write(str.buf, ch as u8, str.len);
+    ptr.write(self.buf, ch as u8, self.len);
 
-    str.len = str.len + 1;
+    self.len = self.len + 1;
 }
 
-add_str :: (str: ^mut String, s: string) {
-    len :: (s: string) -> usize {
+add_str :: (self: ^mut String, s: str) {
+    len :: (s: str) -> usize {
         s_ptr := s as ^u8;
 
         cont := true;
@@ -90,13 +90,13 @@ add_str :: (str: ^mut String, s: string) {
 
     len := len(s);
 
-    _prepare_for_n_bytes(str, len);
+    _prepare_for_n_bytes(self, len);
 
-    offset := ptr.mut_offset(str.buf, str.len);
+    offset := ptr.mut_offset(self.buf, self.len);
 
     libc.memcpy(offset, s as ^any, len);
     
-    str.len = str.len + len;
+    self.len = self.len + len;
 }
 
 print_string :: (str: ^String) {

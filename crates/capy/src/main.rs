@@ -6,6 +6,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
+use codegen::Verbosity;
 use hir::WorldIndex;
 use itertools::Itertools;
 use line_index::LineIndex;
@@ -153,6 +154,7 @@ const ANSI_GREEN: &str = "\x1B[1;92m";
 const ANSI_WHITE: &str = "\x1B[1;97m";
 const ANSI_RESET: &str = "\x1B[0m";
 
+#[allow(clippy::too_many_arguments)]
 fn compile_file(
     file_name: PathBuf,
     file_contents: String,
@@ -299,8 +301,12 @@ fn compile_file(
         name: entry_point_name,
     });
 
-    let (inference, ty_diagnostics) =
-        hir_ty::InferenceCtx::new(&bodies_map.borrow(), &world_index.borrow()).finish(entry_point);
+    let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
+        &bodies_map.borrow(),
+        &world_index.borrow(),
+        &interner.borrow(),
+    )
+    .finish(entry_point);
     if verbose >= 2 {
         let debug = inference.debug(&mod_dir, &interner.borrow(), true);
         println!("=== types ===\n");
@@ -373,7 +379,11 @@ fn compile_file(
     }
 
     let comptime_results = codegen::eval_comptime_blocks(
-        verbose >= 4,
+        if verbose >= 4 {
+            Verbosity::AllFunctions
+        } else {
+            Verbosity::None
+        },
         comptimes,
         &mod_dir,
         &interner,
@@ -386,9 +396,17 @@ fn compile_file(
         println!("\nactual program:\n");
     }
 
+    let comp_verbosity = if verbose >= 4 {
+        Verbosity::AllFunctions
+    } else if verbose >= 1 {
+        Verbosity::LocalFunctions
+    } else {
+        Verbosity::None
+    };
+
     if config == CompilationConfig::Jit {
         let jit_fn = codegen::compile_jit(
-            verbose >= 1,
+            comp_verbosity,
             entry_point.unwrap(),
             &mod_dir,
             &interner,
@@ -413,7 +431,7 @@ fn compile_file(
     }
 
     let bytes = match codegen::compile_obj(
-        verbose >= 1,
+        comp_verbosity,
         entry_point.unwrap(),
         &mod_dir,
         &interner,

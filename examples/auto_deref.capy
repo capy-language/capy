@@ -29,7 +29,7 @@ main :: () {
 
     libc.puts("\narray auto deref:");
 
-    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
 
     ptr := ^my_array;
 
@@ -70,4 +70,4 @@ give_array :: (ptr_ptr: ^^[6] i32) {
     }
 }
 
-printf :: (s: string, n1: i32, n2: i32) extern;
+printf :: (s: str, n1: i32, n2: i32) extern;

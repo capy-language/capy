@@ -17,6 +17,3 @@ main :: () {
 
     strings.print_string(^my_str);
 }
-
-// We just use this to print debug information about the string
-printf :: (s: string, n: usize, n2: usize) extern;

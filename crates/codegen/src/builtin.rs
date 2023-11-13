@@ -5,7 +5,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use hir_ty::Ty;
 use interner::Interner;
 
-use crate::{compiler::FunctionToCompile, convert, mangle::Mangle, CraneliftSignature};
+use crate::{compiler::FunctionToCompile, convert, mangle::Mangle, FinalSignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinFunction {
@@ -23,24 +23,24 @@ impl BuiltinFunction {
         pointer_ty: types::Type,
         mod_dir: &std::path::Path,
         interner: &Interner,
-    ) -> (String, CraneliftSignature, FuncId) {
+    ) -> (String, FinalSignature, FuncId) {
         let ftc = match self {
-            BuiltinFunction::PtrBitcast => CraneliftSignature {
+            BuiltinFunction::PtrBitcast => FinalSignature {
                 params: vec![AbiParam::new(pointer_ty)],
                 returns: vec![AbiParam::new(pointer_ty)],
                 call_conv: module.target_config().default_call_conv,
             },
-            BuiltinFunction::SizeOf | BuiltinFunction::AlignOf => CraneliftSignature {
+            BuiltinFunction::SizeOf | BuiltinFunction::AlignOf => FinalSignature {
                 params: vec![AbiParam::new(types::I32)],
                 returns: vec![AbiParam::new(pointer_ty)],
                 call_conv: module.target_config().default_call_conv,
             },
-            BuiltinFunction::IsMetaOfType(_) => CraneliftSignature {
+            BuiltinFunction::IsMetaOfType(_) => FinalSignature {
                 params: vec![AbiParam::new(types::I32)],
                 returns: vec![AbiParam::new(types::I8)],
                 call_conv: module.target_config().default_call_conv,
             },
-            BuiltinFunction::GetMetaInfo(..) => CraneliftSignature {
+            BuiltinFunction::GetMetaInfo(..) => FinalSignature {
                 params: vec![AbiParam::new(types::I32), AbiParam::new(pointer_ty)],
                 returns: vec![AbiParam::new(pointer_ty)],
                 call_conv: module.target_config().default_call_conv,
@@ -102,6 +102,7 @@ pub(crate) fn as_compiler_defined(
         ("meta.capy", "is_string") => meta_to_bool(ftc, convert::STRING_DISCRIMINANT),
         ("meta.capy", "is_char") => meta_to_bool(ftc, convert::CHAR_DISCRIMINANT),
         ("meta.capy", "is_array") => meta_to_bool(ftc, convert::ARRAY_DISCRIMINANT),
+        ("meta.capy", "is_slice") => meta_to_bool(ftc, convert::SLICE_DISCRIMINANT),
         ("meta.capy", "is_pointer") => meta_to_bool(ftc, convert::POINTER_DISCRIMINANT),
         ("meta.capy", "is_distinct") => meta_to_bool(ftc, convert::DISTINCT_DISCRIMINANT),
         ("meta.capy", "is_meta_type") => meta_to_bool(ftc, convert::META_TYPE_DISCRIMINANT),
@@ -113,6 +114,7 @@ pub(crate) fn as_compiler_defined(
         ("meta.capy", "get_int_info") => meta_to_info(ftc, convert::INT_DISCRIMINANT),
         ("meta.capy", "get_float_info") => meta_to_info(ftc, convert::FLOAT_DISCRIMINANT),
         ("meta.capy", "get_array_info") => meta_to_info(ftc, convert::ARRAY_DISCRIMINANT),
+        ("meta.capy", "get_slice_info") => meta_to_info(ftc, convert::SLICE_DISCRIMINANT),
         ("meta.capy", "get_pointer_info") => meta_to_info(ftc, convert::POINTER_DISCRIMINANT),
         ("meta.capy", "get_distinct_info") => meta_to_info(ftc, convert::DISTINCT_DISCRIMINANT),
         _ => return None,
@@ -129,7 +131,7 @@ fn ptr_to_usize(ftc: &FunctionToCompile) -> BuiltinFunction {
         .unwrap_or(false));
     debug_assert!(params.next().is_none());
 
-    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u32::MAX));
+    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u8::MAX));
 
     BuiltinFunction::PtrBitcast
 }
@@ -138,7 +140,7 @@ fn usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> BuiltinFunction {
     let mut params = ftc.param_tys.iter();
 
     let first = params.next().unwrap();
-    debug_assert_eq!(**first, Ty::UInt(u32::MAX));
+    debug_assert_eq!(**first, Ty::UInt(u8::MAX));
     debug_assert!(params.next().is_none());
 
     debug_assert!(ftc
@@ -158,7 +160,7 @@ fn meta_to_uint(ftc: &FunctionToCompile, size: bool) -> BuiltinFunction {
     debug_assert_eq!(**first, Ty::Type);
     debug_assert!(params.next().is_none());
 
-    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u32::MAX));
+    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u8::MAX));
 
     if size {
         BuiltinFunction::SizeOf

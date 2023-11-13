@@ -1,5 +1,7 @@
 // run with `capy run examples/entry_point.capy --entry-point _start`
 
+core :: mod "core";
+
 _start :: () {
     printf("_start\n", 0);
 
@@ -10,11 +12,11 @@ _start :: () {
 }
 
 main :: () -> i64 {
-    printf("Hello from Main!\n", 0);
+    core.println("Hello from Main!");
 
     0
 }
 
-printf :: (str: string, i: i64) extern;
+printf :: (text: str, i: i64) extern;
 
 exit :: (code: u8) extern;

@@ -44,8 +44,6 @@ f32_to_string :: (n: f32) -> strings.String {
     str
 }
 
-printf :: (str: string, n: usize) extern;
-
 _reverse_buf :: (buf: ^mut u8, start: usize, len: usize) {
     i := start;
     j := len - 1;

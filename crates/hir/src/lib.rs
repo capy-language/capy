@@ -67,6 +67,12 @@ impl FileName {
         res
     }
 
+    pub fn is_mod(&self, mod_dir: &Path, interner: &Interner) -> bool {
+        let file_name = Path::new(interner.lookup(self.0));
+
+        file_name.is_sub_dir_of(mod_dir)
+    }
+
     pub fn get_mod_name(&self, mod_dir: &Path, interner: &Interner) -> Option<String> {
         let file_name = Path::new(interner.lookup(self.0));
 
@@ -115,18 +121,18 @@ pub enum LocalFqn {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrimitiveTy {
-    /// a bit-width of u32::MAX represents an isize
+    /// a bit-width of u8::MAX represents an isize
     IInt {
-        bit_width: u32,
+        bit_width: u8,
         range: TextRange,
     },
-    /// a bit-width of u32::MAX represents a usize
+    /// a bit-width of u8::MAX represents a usize
     UInt {
-        bit_width: u32,
+        bit_width: u8,
         range: TextRange,
     },
     Float {
-        bit_width: u32,
+        bit_width: u8,
         range: TextRange,
     },
     Bool {
@@ -179,7 +185,7 @@ impl PrimitiveTy {
                 Some(PrimitiveTy::Void { range })
             } else if key == Key::isize() {
                 Some(PrimitiveTy::IInt {
-                    bit_width: u32::MAX,
+                    bit_width: u8::MAX,
                     range,
                 })
             } else if key == Key::i128() {
@@ -209,7 +215,7 @@ impl PrimitiveTy {
                 })
             } else if key == Key::usize() {
                 Some(PrimitiveTy::UInt {
-                    bit_width: u32::MAX,
+                    bit_width: u8::MAX,
                     range,
                 })
             } else if key == Key::u128() {
@@ -249,7 +255,7 @@ impl PrimitiveTy {
                 })
             } else if key == Key::bool() {
                 Some(PrimitiveTy::Bool { range })
-            } else if key == Key::string() {
+            } else if key == Key::str() {
                 Some(PrimitiveTy::String { range })
             } else if key == Key::char() {
                 Some(PrimitiveTy::Char { range })
@@ -268,14 +274,14 @@ impl PrimitiveTy {
     pub fn display(&self) -> String {
         match self {
             Self::IInt { bit_width, .. } => {
-                if *bit_width != u32::MAX {
+                if *bit_width != u8::MAX {
                     format!("i{}", bit_width)
                 } else {
                     "isize".to_string()
                 }
             }
             Self::UInt { bit_width, .. } => {
-                if *bit_width != u32::MAX {
+                if *bit_width != u8::MAX {
                     format!("i{}", bit_width)
                 } else {
                     "isize".to_string()
@@ -283,7 +289,7 @@ impl PrimitiveTy {
             }
             Self::Float { bit_width, .. } => format!("f{}", bit_width),
             Self::Bool { .. } => "bool".to_string(),
-            Self::String { .. } => "string".to_string(),
+            Self::String { .. } => "str".to_string(),
             Self::Char { .. } => "char".to_string(),
             Self::Type { .. } => "type".to_string(),
             Self::Any { .. } => "any".to_string(),

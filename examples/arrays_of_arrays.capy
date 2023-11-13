@@ -1,16 +1,16 @@
 libc :: mod "core".libc;
 
-global :: [][3][3] i8 {
-        [][3] i8 { [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 } },
-        [][3] i8 { [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 } },
-        [][3] i8 { [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 }, [] i8 { 105, 115, 125 } }
+global :: [3][3][3] i8 {
+        [3][3] i8 { [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 } },
+        [3][3] i8 { [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 } },
+        [3][3] i8 { [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 }, [3] i8 { 105, 115, 125 } }
     };
 
 make_array :: (x: i8, y: i8, z: i8) -> [3][3][3] i8 {
-    [][3][3] i8 {
-        [][3] i8 { [] i8 { x, y, z }, [] i8 { x, y, z }, [] i8 { x, y, z } },
-        [][3] i8 { [] i8 { x, y, z }, [] i8 { x, y, z }, [] i8 { x, y, z } },
-        [][3] i8 { [] i8 { x, y, z }, [] i8 { x, y, z }, [] i8 { x, y, z } }
+    [3][3][3] i8 {
+        [3][3] i8 { [3] i8 { x, y, z }, [3] i8 { x, y, z }, [3] i8 { x, y, z } },
+        [3][3] i8 { [3] i8 { x, y, z }, [3] i8 { x, y, z }, [3] i8 { x, y, z } },
+        [3][3] i8 { [3] i8 { x, y, z }, [3] i8 { x, y, z }, [3] i8 { x, y, z } }
     }
 }
 
@@ -41,7 +41,7 @@ edit :: (arr: ^mut [3][3][3]i8) {
 // following two functions is that print_array_by_value memcopies the array into
 // it's stack before using it
 
-print_array_by_value :: (arr: [3][3][3]i8, name: string) {
+print_array_by_value :: (arr: [3][3][3]i8, name: str) {
     x : usize = 0;
     while x < 3 {
         y : usize = 0;
@@ -57,7 +57,7 @@ print_array_by_value :: (arr: [3][3][3]i8, name: string) {
     }
 }
 
-print_array_by_ref :: (arr: ^[3][3][3]i8, name: string) {
+print_array_by_ref :: (arr: ^[3][3][3]i8, name: str) {
     x : usize = 0;
     while x < 3 {
         y : usize = 0;
@@ -73,4 +73,4 @@ print_array_by_ref :: (arr: ^[3][3][3]i8, name: string) {
     }
 }
 
-printf :: (s: string, name: string, n1: i32, n2: i32, n3: i32, n4: i32) extern;
+printf :: (s: str, name: str, n1: i32, n2: i32, n3: i32, n4: i32) extern;

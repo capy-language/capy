@@ -139,7 +139,7 @@ get_float_info :: (ty: type) -> Float_Info extern;
 
 is_bool :: (ty: type) -> bool extern;
 
-// string
+// string (str)
 
 is_string :: (ty: type) -> bool extern;
 
@@ -156,6 +156,15 @@ Array_Info :: struct {
 
 is_array :: (ty: type) -> bool extern;
 get_array_info :: (ty: type) -> Array_Info extern;
+
+// slices ([] i32, [] string)
+
+Slice_Info :: struct {
+    ty: type,
+};
+
+is_slice :: (ty: type) -> bool extern;
+get_slice_info :: (ty: type) -> Slice_Info extern;
 
 // pointers (^i32, ^f32)
 

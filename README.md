@@ -7,7 +7,7 @@ It even has arbitrary compile-time execution!
 
 Now on all your favorite Operating Systems! Thanks [cranelift](https://cranelift.dev/)!
 
-```capy
+```c
 core :: mod "core";
 
 to_print :: "Hello, World!";
@@ -28,7 +28,7 @@ main :: () -> i32 {
 
 Static arrays,
 
-```capy
+```c
 my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
 
 my_array[2] = 10;
@@ -36,7 +36,7 @@ my_array[2] = 10;
 
 Pointers,
 
-```capy
+```c
 foo := 5;
 bar :: ^mut foo;
 
@@ -45,9 +45,9 @@ bar^ = 10;
 
 Structs,
 
-```capy
+```c
 Person :: struct {
-    name: string,
+    name: str,
     age: i32
 };
 
@@ -62,7 +62,7 @@ gandalf.age = gandalf.age + 1;
 
 Arbitrary Compile-Time Execution,
 
-```capy
+```c
 math :: import "std/math.capy";
 
 powers_of_two := comptime {
@@ -78,7 +78,7 @@ powers_of_two := comptime {
 
 First Class Functions,
 
-```capy
+```c
 add :: (x: i32, y: i32) -> i32 {
     x + y
 };

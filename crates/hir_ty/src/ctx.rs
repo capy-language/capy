@@ -324,10 +324,14 @@ impl InferenceCtx<'_> {
             | Expr::IntLiteral(_)
             | Expr::FloatLiteral(_)
             | Expr::BoolLiteral(_) => true,
-            Expr::Array { items, .. } => match items {
-                Some(items) => items.iter().all(|item| self.is_const(*item)),
-                None => true,
-            },
+            Expr::Array { items, .. }
+                if self.modules[&self.current_file.unwrap()][expr].is_array() =>
+            {
+                match items {
+                    Some(items) => items.iter().all(|item| self.is_const(*item)),
+                    None => true,
+                }
+            }
             _ => matches!(
                 *(self.modules[&self.current_file.unwrap()][expr]),
                 Ty::Type | Ty::File(_)
@@ -350,7 +354,7 @@ impl InferenceCtx<'_> {
                 _ => ExprMutability::ImmutableRef(current_bodies!(self).range_for_expr(expr)),
             },
             Expr::Deref { pointer } => self.get_mutability(*pointer, assignment, true),
-            Expr::Index { array, .. } => self.get_mutability(
+            Expr::Index { source: array, .. } => self.get_mutability(
                 *array,
                 assignment,
                 deref || self.modules[&self.current_file.unwrap()][*array].is_pointer(),
@@ -405,7 +409,7 @@ impl InferenceCtx<'_> {
 
                 ExprMutability::ImmutableGlobal(self.world_index.range_info(fqn).whole)
             }
-            Expr::Path { previous, field } => {
+            Expr::Member { previous, field } => {
                 let previous_ty = self.modules[&self.current_file.unwrap()][*previous];
                 match previous_ty.as_ref() {
                     Ty::File(file) => {
@@ -633,7 +637,10 @@ impl InferenceCtx<'_> {
                     }
                 }
             }
-            Expr::Index { array, index } => {
+            Expr::Index {
+                source: array,
+                index,
+            } => {
                 self.get_referenced_locals(*array, local_defs);
                 self.get_referenced_locals(*index, local_defs);
             }
@@ -670,7 +677,7 @@ impl InferenceCtx<'_> {
                     self.get_referenced_locals(*arg, local_defs);
                 }
             }
-            Expr::Path { previous, .. } => {
+            Expr::Member { previous, .. } => {
                 self.get_referenced_locals(*previous, local_defs);
             }
             Expr::Lambda(_) => {}
@@ -776,16 +783,17 @@ impl InferenceCtx<'_> {
 
                 return current_module!(self)[expr];
             }
-            Expr::Index { array, index } => {
+            Expr::Index { source, index } => {
                 self.reinfer_expr(*index);
 
-                let old_array = current_module!(self)[*array];
-                let new_array = self.reinfer_expr(*array);
+                let old_source = current_module!(self)[*source];
+                let new_source = self.reinfer_expr(*source);
 
-                if old_array != new_array {
-                    new_array
+                if old_source != new_source {
+                    new_source
                         .as_array()
                         .map(|(_, sub_ty)| sub_ty)
+                        .or_else(|| new_source.as_slice())
                         .unwrap_or_else(|| Ty::Unknown.into())
                 } else {
                     return current_module!(self)[expr];
@@ -905,17 +913,24 @@ impl InferenceCtx<'_> {
                         self.expect_match(item_ty, sub_ty, *item);
                     }
 
-                    Ty::Array {
-                        size: size.unwrap_or(items.len() as u64),
-                        sub_ty,
+                    if let Some(size) = size {
+                        Ty::Array {
+                            size: *size,
+                            sub_ty,
+                        }
+                        .into()
+                    } else {
+                        Ty::Slice { sub_ty }.into()
                     }
-                    .into()
                 } else {
                     self.parse_expr_to_ty(expr, &mut FxHashSet::default());
                     Ty::Type.into()
                 }
             }
-            hir::Expr::Index { array, index } => {
+            hir::Expr::Index {
+                source: array,
+                index,
+            } => {
                 let source_ty = self.infer_expr(*array);
                 // because it's annoying to do `foo^[0]`, this code lets you do `foo[0]`
                 let mut deref_source_ty = source_ty;
@@ -943,11 +958,13 @@ impl InferenceCtx<'_> {
                         }
                     }
 
-                    if self.expect_match(index_ty, Ty::UInt(u32::MAX).into(), *index) {
-                        self.replace_weak_tys(*index, Ty::UInt(u32::MAX).into());
+                    if self.expect_match(index_ty, Ty::UInt(u8::MAX).into(), *index) {
+                        self.replace_weak_tys(*index, Ty::UInt(u8::MAX).into());
                     }
 
                     array_sub_ty
+                } else if let Some(slice_sub_ty) = deref_source_ty.as_slice() {
+                    slice_sub_ty
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
@@ -1247,7 +1264,7 @@ impl InferenceCtx<'_> {
                     sig.0
                 }
             }
-            hir::Expr::Path { previous, field } => {
+            hir::Expr::Member { previous, field } => {
                 let previous_ty = self.infer_expr(*previous);
                 match previous_ty.as_ref() {
                     Ty::File(file) => {
@@ -1297,31 +1314,35 @@ impl InferenceCtx<'_> {
                             deref_ty = sub_ty;
                         }
 
-                        if let Some(fields) = deref_ty.as_struct() {
-                            if let Some((_, ty)) =
-                                fields.into_iter().find(|(name, _)| *name == field.name)
-                            {
-                                ty
+                        if let Some((_, ty)) = deref_ty.as_struct().and_then(|fields| {
+                            fields.into_iter().find(|(name, _)| *name == field.name)
+                        }) {
+                            ty
+                        } else if let Some((sub_ty, field_name)) =
+                            deref_ty.as_slice().and_then(|sub_ty| {
+                                ["len", "ptr"]
+                                    .into_iter()
+                                    .find(|f| f == &self.interner.lookup(field.name.0))
+                                    .map(|f| (sub_ty, f))
+                            })
+                        {
+                            if field_name == "len" {
+                                Ty::UInt(u8::MAX).into()
                             } else {
-                                if !previous_ty.is_unknown() {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::NonExistentField {
-                                            field: field.name.0,
-                                            found_ty: previous_ty,
-                                        },
-                                        module: self.current_file.unwrap(),
-                                        range: current_bodies!(self).range_for_expr(expr),
-                                        help: None,
-                                    });
+                                Ty::Pointer {
+                                    mutable: false,
+                                    sub_ty,
                                 }
-
-                                Ty::Unknown.into()
+                                .into()
                             }
+                        } else if deref_ty.is_array() && self.interner.lookup(field.name.0) == "len"
+                        {
+                            Ty::UInt(u8::MAX).into()
                         } else {
                             if !previous_ty.is_unknown() {
                                 self.diagnostics.push(TyDiagnostic {
-                                    kind: TyDiagnosticKind::NonExistentField {
-                                        field: field.name.0,
+                                    kind: TyDiagnosticKind::NonExistentMember {
+                                        member: field.name.0,
                                         found_ty: previous_ty,
                                     },
                                     module: self.current_file.unwrap(),
@@ -1449,8 +1470,8 @@ impl InferenceCtx<'_> {
                         }
                     } else {
                         self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::NonExistentField {
-                                field: found_field_name.0,
+                            kind: TyDiagnosticKind::NonExistentMember {
+                                member: found_field_name.0,
                                 found_ty: expected_ty,
                             },
                             module: self.current_file.unwrap(),
@@ -1467,8 +1488,8 @@ impl InferenceCtx<'_> {
                 {
                     if found_field_tys.get(expected_field_name).is_none() {
                         self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::StructLiteralMissingField {
-                                field: expected_field_name.0,
+                            kind: TyDiagnosticKind::StructLiteralMissingMember {
+                                member: expected_field_name.0,
                                 expected_ty,
                             },
                             module: self.current_file.unwrap(),
@@ -1556,7 +1577,7 @@ impl InferenceCtx<'_> {
         if let (hir::Expr::IntLiteral(num), Ty::IInt(bit_width) | Ty::UInt(bit_width)) =
             (&current_bodies!(self)[expr], expected.as_ref())
         {
-            if *bit_width != u32::MAX {
+            if *bit_width != u8::MAX {
                 current_module!(self).expr_tys[expr] = expected;
             }
 

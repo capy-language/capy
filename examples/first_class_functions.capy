@@ -46,4 +46,4 @@ main :: () -> i32 {
     }(25)
 }
 
-printf :: (str: string, n: i32) extern;
+printf :: (text: str, n: i32) extern;

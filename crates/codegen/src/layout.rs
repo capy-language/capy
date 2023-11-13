@@ -14,14 +14,14 @@ pub(crate) struct TyLayouts {
 
 static mut LAYOUTS: Mutex<OnceCell<TyLayouts>> = Mutex::new(OnceCell::new());
 
-pub(crate) trait GetMemInfo {
+pub(crate) trait GetLayoutInfo {
     fn size(&self) -> u32;
     fn align(&self) -> u32;
     fn stride(&self) -> u32;
     fn struct_layout(&self) -> Option<StructLayout>;
 }
 
-impl GetMemInfo for Intern<Ty> {
+impl GetLayoutInfo for Intern<Ty> {
     fn size(&self) -> u32 {
         // we could do `get_or_init` here, but the index would panic anyways
         unsafe { LAYOUTS.lock() }.unwrap().get().unwrap().sizes[self]
@@ -51,7 +51,7 @@ impl GetMemInfo for Intern<Ty> {
 ///
 /// Old results will only be dropped if you try to calculate the layout using a different pointer
 /// width.
-pub(crate) fn calculate_layouts(tys: impl Iterator<Item = Intern<Ty>>, pointer_bit_width: u32) {
+pub(crate) fn calc_layouts(tys: impl Iterator<Item = Intern<Ty>>, pointer_bit_width: u32) {
     let init = || TyLayouts {
         pointer_bit_width,
         sizes: FxHashMap::default(),
@@ -91,19 +91,23 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
 
     let size = match ty.as_ref() {
         Ty::NotYetResolved | Ty::Unknown => unreachable!(),
-        Ty::IInt(u32::MAX) | Ty::UInt(u32::MAX) => pointer_bit_width / 8,
+        Ty::IInt(u8::MAX) | Ty::UInt(u8::MAX) => pointer_bit_width / 8,
         Ty::IInt(0) | Ty::UInt(0) => 32 / 8,
-        Ty::IInt(bit_width) | Ty::UInt(bit_width) => bit_width / 8,
+        Ty::IInt(bit_width) | Ty::UInt(bit_width) => *bit_width as u32 / 8,
         Ty::Float(0) => 32 / 8,
-        Ty::Float(bit_width) => bit_width / 8,
+        Ty::Float(bit_width) => *bit_width as u32 / 8,
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String => pointer_bit_width / 8,
         Ty::Array { size, sub_ty } => {
             calc_single(*sub_ty, pointer_bit_width);
             sub_ty.stride() * *size as u32
         }
+        Ty::Slice { .. } => {
+            // a slice is len (usize) + ptr (usize)
+            pointer_bit_width / 8 * 2
+        }
         Ty::Pointer { .. } => pointer_bit_width / 8,
-        Ty::Distinct { ty, .. } => {
+        Ty::Distinct { sub_ty: ty, .. } => {
             calc_single(*ty, pointer_bit_width);
             ty.size()
         }
@@ -140,7 +144,8 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size,
         // the sub_ty was already `calc()`ed just before
         Ty::Array { sub_ty, .. } => sub_ty.align(),
-        Ty::Distinct { ty, .. } => ty.align(),
+        Ty::Slice { .. } => size / 2,
+        Ty::Distinct { sub_ty: ty, .. } => ty.align(),
         Ty::Struct { .. } => ty.struct_layout().unwrap().align,
         Ty::Type => size,
         Ty::Any => 1,

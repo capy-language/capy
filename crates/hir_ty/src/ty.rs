@@ -7,18 +7,21 @@ pub enum Ty {
     Unknown,
     /// a bit-width of u32::MAX represents an isize
     /// a bit-width of 0 represents ANY signed integer type
-    IInt(u32),
+    IInt(u8),
     /// a bit-width of u32::MAX represents a usize
     /// a bit-width of 0 represents ANY unsigned integer type
-    UInt(u32),
+    UInt(u8),
     /// the bit-width can either be 32 or 64
     /// a bit-width of 0 represents ANY float type
-    Float(u32),
+    Float(u8),
     Bool,
     String,
     Char,
     Array {
         size: u64,
+        sub_ty: Intern<Ty>,
+    },
+    Slice {
         sub_ty: Intern<Ty>,
     },
     Pointer {
@@ -28,7 +31,7 @@ pub enum Ty {
     Distinct {
         fqn: Option<hir::Fqn>,
         uid: u32,
-        ty: Intern<Ty>,
+        sub_ty: Intern<Ty>,
     },
     Type,
     Any,
@@ -70,7 +73,7 @@ impl Ty {
     pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<Ty>)>> {
         match self {
             Ty::Struct { fields, .. } => Some(fields.clone()),
-            Ty::Distinct { ty, .. } => ty.as_struct(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.as_struct(),
             _ => None,
         }
     }
@@ -82,7 +85,7 @@ impl Ty {
                 param_tys: params,
                 return_ty,
             } => Some((params.clone(), *return_ty)),
-            Ty::Distinct { ty, .. } => ty.as_function(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.as_function(),
             _ => None,
         }
     }
@@ -91,7 +94,7 @@ impl Ty {
     pub fn as_pointer(&self) -> Option<(bool, Intern<Ty>)> {
         match self {
             Ty::Pointer { mutable, sub_ty } => Some((*mutable, *sub_ty)),
-            Ty::Distinct { ty, .. } => ty.as_pointer(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.as_pointer(),
             _ => None,
         }
     }
@@ -100,7 +103,16 @@ impl Ty {
     pub fn as_array(&self) -> Option<(u64, Intern<Ty>)> {
         match self {
             Ty::Array { size, sub_ty } => Some((*size, *sub_ty)),
-            Ty::Distinct { ty, .. } => ty.as_array(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.as_array(),
+            _ => None,
+        }
+    }
+
+    /// If self is a slice, this returns the sub type
+    pub fn as_slice(&self) -> Option<Intern<Ty>> {
+        match self {
+            Ty::Slice { sub_ty } => Some(*sub_ty),
+            Ty::Distinct { sub_ty, .. } => sub_ty.as_slice(),
             _ => None,
         }
     }
@@ -109,7 +121,8 @@ impl Ty {
         match self {
             Ty::Struct { .. } => true,
             Ty::Array { .. } => true,
-            Ty::Distinct { ty, .. } => ty.is_aggregate(),
+            Ty::Slice { .. } => true,
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_aggregate(),
             _ => false,
         }
     }
@@ -117,7 +130,15 @@ impl Ty {
     pub fn is_array(&self) -> bool {
         match self {
             Ty::Array { .. } => true,
-            Ty::Distinct { ty, .. } => ty.is_array(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_array(),
+            _ => false,
+        }
+    }
+
+    pub fn is_slice(&self) -> bool {
+        match self {
+            Ty::Slice { .. } => true,
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_slice(),
             _ => false,
         }
     }
@@ -125,7 +146,7 @@ impl Ty {
     pub fn is_pointer(&self) -> bool {
         match self {
             Ty::Pointer { .. } => true,
-            Ty::Distinct { ty, .. } => ty.is_pointer(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_pointer(),
             _ => false,
         }
     }
@@ -133,7 +154,7 @@ impl Ty {
     pub fn is_function(&self) -> bool {
         match self {
             Ty::Function { .. } => true,
-            Ty::Distinct { ty, .. } => ty.is_function(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_function(),
             _ => false,
         }
     }
@@ -141,7 +162,7 @@ impl Ty {
     pub fn is_struct(&self) -> bool {
         match self {
             Ty::Struct { .. } => true,
-            Ty::Distinct { ty, .. } => ty.is_struct(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_struct(),
             _ => false,
         }
     }
@@ -155,7 +176,7 @@ impl Ty {
             Ty::Struct { fields, .. } => {
                 fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())
             }
-            Ty::Distinct { ty, .. } => ty.is_zero_sized(),
+            Ty::Distinct { sub_ty: ty, .. } => ty.is_zero_sized(),
             _ => false,
         }
     }
@@ -163,7 +184,7 @@ impl Ty {
     pub fn is_void(&self) -> bool {
         match self {
             Ty::Void => true,
-            Ty::Distinct { ty, .. } => ty.is_void(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_void(),
             _ => false,
         }
     }
@@ -171,7 +192,7 @@ impl Ty {
     pub fn is_int(&self) -> bool {
         match self {
             Ty::IInt(_) | Ty::UInt(_) => true,
-            Ty::Distinct { ty, .. } => ty.is_int(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_int(),
             _ => false,
         }
     }
@@ -184,7 +205,7 @@ impl Ty {
             Ty::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
             Ty::Struct { fields, .. } => fields.iter().any(|(_, ty)| ty.is_unknown()),
-            Ty::Distinct { ty, .. } => ty.is_unknown(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_unknown(),
             _ => false,
         }
     }
@@ -241,7 +262,9 @@ impl Ty {
 
     /// an equality check that ignores distinct types.
     /// All other types must be exactly equal (i32 == i32, i32 != i64)
-    pub fn is_functionally_equivalent_to(&self, other: &Self) -> bool {
+    ///
+    /// `two_way` controls whether or not a distinct can be made non-distinct
+    pub fn is_functionally_equivalent_to(&self, other: &Self, two_way: bool) -> bool {
         match (self, other) {
             (
                 Ty::Array {
@@ -255,7 +278,7 @@ impl Ty {
                 },
             ) => {
                 first_size == second_size
-                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
+                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty, two_way)
             }
             (
                 Ty::Pointer {
@@ -268,25 +291,27 @@ impl Ty {
                 },
             ) => {
                 first_mutable == second_mutable
-                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty)
+                    && first_sub_ty.is_functionally_equivalent_to(second_sub_ty, two_way)
             }
-            (Ty::Distinct { ty: first, .. }, Ty::Distinct { ty: second, .. }) => {
-                first.is_functionally_equivalent_to(second)
+            (Ty::Distinct { sub_ty: first, .. }, Ty::Distinct { sub_ty: second, .. }) => {
+                first.is_functionally_equivalent_to(second, two_way)
             }
             (
                 Ty::Distinct {
-                    ty: distinct_inner, ..
+                    sub_ty: distinct_inner,
+                    ..
                 },
                 other,
-            )
-            | (
+            ) => two_way && distinct_inner.is_functionally_equivalent_to(other, two_way),
+            (
                 other,
                 Ty::Distinct {
-                    ty: distinct_inner, ..
+                    sub_ty: distinct_inner,
+                    ..
                 },
             ) => {
                 // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
-                distinct_inner.is_functionally_equivalent_to(other)
+                distinct_inner.is_functionally_equivalent_to(other, two_way)
             }
             (first, second) => first.is_equal_to(second),
         }
@@ -308,7 +333,7 @@ impl Ty {
                 64 | 128 => Some(u64::MAX),
                 _ => None,
             },
-            Ty::Distinct { ty, .. } => ty.get_max_int_size(),
+            Ty::Distinct { sub_ty: ty, .. } => ty.get_max_int_size(),
             _ => None,
         }
     }
@@ -378,7 +403,7 @@ impl Ty {
                 Ty::Distinct {
                     fqn,
                     uid,
-                    ty: distinct_ty,
+                    sub_ty: distinct_ty,
                 },
                 other,
             )
@@ -387,13 +412,13 @@ impl Ty {
                 Ty::Distinct {
                     fqn,
                     uid,
-                    ty: distinct_ty,
+                    sub_ty: distinct_ty,
                 },
             ) => {
                 let distinct = Ty::Distinct {
                     fqn: *fqn,
                     uid: *uid,
-                    ty: *distinct_ty,
+                    sub_ty: *distinct_ty,
                 };
                 if distinct.has_semantics_of(other) {
                     Some(distinct)
@@ -472,14 +497,12 @@ impl Ty {
             }
             (
                 Ty::Array {
-                    sub_ty: found_ty,
-                    size: found_size,
+                    sub_ty: found_ty, ..
                 },
-                Ty::Array {
+                Ty::Slice {
                     sub_ty: expected_ty,
-                    size: expected_size,
                 },
-            ) => found_size == expected_size && found_ty.can_fit_into(expected_ty),
+            ) => found_ty.is_functionally_equivalent_to(expected_ty, false),
             (
                 Ty::Struct { uid: found_uid, .. },
                 Ty::Struct {
@@ -492,8 +515,8 @@ impl Ty {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, Ty::Distinct { ty, .. }) => found.can_fit_into(ty),
-            (found, expected) => found.is_equal_to(expected),
+            (found, Ty::Distinct { sub_ty: ty, .. }) => found.can_fit_into(ty),
+            (found, expected) => found.is_functionally_equivalent_to(expected, false),
         }
     }
 
@@ -523,15 +546,15 @@ impl Ty {
                     && found_fields.iter().zip(expected_fields.iter()).all(
                         |((found_name, found_ty), (expected_name, expected_ty))| {
                             found_name == expected_name
-                                && found_ty.is_functionally_equivalent_to(expected_ty)
+                                && found_ty.is_functionally_equivalent_to(expected_ty, true)
                         },
                     )
             }
-            (Ty::Distinct { ty: from, .. }, Ty::Distinct { ty: to, .. }) => {
+            (Ty::Distinct { sub_ty: from, .. }, Ty::Distinct { sub_ty: to, .. }) => {
                 from.primitive_castable(to)
             }
-            (Ty::Distinct { ty: from, .. }, to) => from.primitive_castable(to),
-            (from, Ty::Distinct { ty: to, .. }) => from.primitive_castable(to),
+            (Ty::Distinct { sub_ty: from, .. }, to) => from.primitive_castable(to),
+            (from, Ty::Distinct { sub_ty: to, .. }) => from.primitive_castable(to),
             (
                 Ty::Pointer {
                     mutable: found_mutable,
@@ -554,14 +577,18 @@ impl Ty {
             (Ty::String, Ty::Pointer { sub_ty, .. }) | (Ty::Pointer { sub_ty, .. }, Ty::String) => {
                 matches!(sub_ty.as_ref(), Ty::Any | Ty::UInt(8) | Ty::Char)
             }
-            _ => self.is_functionally_equivalent_to(primitive_ty),
+            (Ty::Array { sub_ty: from, .. }, Ty::Slice { sub_ty: to })
+            | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => {
+                from.is_functionally_equivalent_to(to, true)
+            }
+            _ => self.is_functionally_equivalent_to(primitive_ty, true),
         }
     }
 
     /// allows `distinct` types to have the same semantics as other types as long as the inner type matches
     pub(crate) fn has_semantics_of(&self, expected: &Ty) -> bool {
         match (self, expected) {
-            (Ty::Distinct { ty, .. }, Ty::IInt(0) | Ty::UInt(0)) => {
+            (Ty::Distinct { sub_ty: ty, .. }, Ty::IInt(0) | Ty::UInt(0)) => {
                 if ty.has_semantics_of(expected) {
                     return true;
                 }
@@ -577,7 +604,12 @@ impl Ty {
                     return true;
                 }
             }
-            (Ty::Distinct { ty: inner_ty, .. }, expected) => {
+            (
+                Ty::Distinct {
+                    sub_ty: inner_ty, ..
+                },
+                expected,
+            ) => {
                 if inner_ty.has_semantics_of(expected) {
                     return true;
                 }
@@ -664,7 +696,7 @@ impl Ty {
                     uid: expected_uid, ..
                 },
             ) => found_uid == expected_uid,
-            (found, Ty::Distinct { ty, .. }) => found.is_weak_replaceable_by(ty),
+            (found, Ty::Distinct { sub_ty: ty, .. }) => found.is_weak_replaceable_by(ty),
             _ => false,
         }
     }

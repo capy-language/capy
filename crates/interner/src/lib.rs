@@ -46,7 +46,7 @@ impl_interner! {
     f64 => "f64",
     f32 => "f32",
     bool => "bool",
-    string => "string",
+    str => "str",
     char => "char",
     r#type => "type",
     any => "any",

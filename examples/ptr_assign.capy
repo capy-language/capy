@@ -9,7 +9,7 @@ main :: () {
 
     printf("x = %i\n\n", x);
 
-    x := [] i32 { 1, 2, 3 };
+    x := [3] i32 { 1, 2, 3 };
     y :: ^mut x;
 
     printf("x = { %i, ", x[0]);
@@ -23,4 +23,4 @@ main :: () {
     printf("%i }\n", x[2]);
 }
 
-printf :: (str: string, n: i32) extern;
+printf :: (str: str, n: i32) extern;

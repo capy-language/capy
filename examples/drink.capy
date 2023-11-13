@@ -1,3 +1,4 @@
+core :: mod "core";
 
 main :: () -> i32 {
     age := 45;
@@ -10,9 +11,7 @@ main :: () -> i32 {
         "you can't drink"
     };
 
-    printf(message);
+    core.println(message);
 
     0
 }
-
-printf :: (n: string) extern;

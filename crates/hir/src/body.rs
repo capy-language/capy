@@ -60,7 +60,7 @@ pub enum Expr {
         ty: Idx<Expr>,
     },
     Index {
-        array: Idx<Expr>,
+        source: Idx<Expr>,
         index: Idx<Expr>,
     },
     Block {
@@ -82,7 +82,7 @@ pub enum Expr {
         idx: u32,
         range: TextRange,
     },
-    Path {
+    Member {
         previous: Idx<Expr>,
         field: NameWithRange,
     },
@@ -1074,7 +1074,10 @@ impl<'a> Ctx<'a> {
             None => unreachable!(),
         };
 
-        Expr::Index { array, index }
+        Expr::Index {
+            source: array,
+            index,
+        }
     }
 
     fn lower_path(&mut self, path: ast::Path) -> Expr {
@@ -1086,7 +1089,7 @@ impl<'a> Ctx<'a> {
 
         let previous = path.previous_part(self.tree);
 
-        Expr::Path {
+        Expr::Member {
             previous: self.lower_expr(previous),
             field: NameWithRange {
                 name: Name(field_name),
@@ -1562,7 +1565,10 @@ impl Bodies {
                     }
                 }
 
-                Expr::Index { array, index } => {
+                Expr::Index {
+                    source: array,
+                    index,
+                } => {
                     write_expr(s, *array, show_idx, bodies, mod_dir, interner, indentation);
                     s.push('[');
                     write_expr(s, *index, show_idx, bodies, mod_dir, interner, indentation);
@@ -1804,7 +1810,7 @@ impl Bodies {
 
                 Expr::LocalGlobal(name) => s.push_str(interner.lookup(name.name.0)),
 
-                Expr::Path {
+                Expr::Member {
                     previous, field, ..
                 } => {
                     write_expr(
@@ -2722,15 +2728,15 @@ mod tests {
         check(
             r#"
                 main :: () -> i32 {
-                    puts := (s: string) extern;
+                    puts := (s: str) extern;
                 }
             "#,
             expect![[r#"
                 main::main :: () -> i32 {
-                    l0 := (p0: string) extern;
+                    l0 := (p0: str) extern;
                 };
             "#]],
-            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 77..83)],
+            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 74..80)],
         )
     }
 
@@ -2738,10 +2744,10 @@ mod tests {
     fn extern_function() {
         check(
             r#"
-                puts :: (s: string) -> i32 extern;
+                puts :: (s: str) -> i32 extern;
             "#,
             expect![[r#"
-                main::puts :: (p0: string) -> i32 extern;
+                main::puts :: (p0: str) -> i32 extern;
             "#]],
             |_| [],
         )

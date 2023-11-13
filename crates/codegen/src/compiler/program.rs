@@ -9,13 +9,15 @@ use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
-use crate::{convert::*, ComptimeToCompile};
+use crate::{ComptimeToCompile, Verbosity};
 
-use super::{cast, comptime::ComptimeResult, Compiler, FunctionToCompile, MetaTyData};
+use super::{
+    cast_ty_to_cranelift, comptime::ComptimeResult, Compiler, FunctionToCompile, MetaTyData,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
-    verbose: bool,
+    verbosity: Verbosity,
     entry_point: hir::Fqn,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
@@ -47,7 +49,7 @@ pub(crate) fn compile_program<'a>(
     };
 
     let mut compiler = Compiler {
-        verbose,
+        verbosity,
         mod_dir,
         interner,
         bodies_map,
@@ -66,7 +68,7 @@ pub(crate) fn compile_program<'a>(
         comptime_results,
     };
 
-    compiler.calculate_type_layouts();
+    compiler.finalize_tys();
     compiler.compile_queued();
 
     generate_main_function(compiler, entry_point)
@@ -119,26 +121,18 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
 
     let (_, entry_return_ty) = compiler.tys[entry_point].0.as_function().unwrap();
 
-    let exit_code = match entry_return_ty
-        .to_comp_type(compiler.pointer_ty)
-        .into_number_type()
-    {
-        Some(found_return_ty) => {
-            let exit_code = builder.inst_results(call)[0];
+    let exit_code = if entry_return_ty.is_void() {
+        builder.ins().iconst(compiler.pointer_ty, 0)
+    } else {
+        let exit_code = builder.inst_results(call)[0];
 
-            // cast the exit code from the entry point into a usize
-            cast(
-                &mut builder,
-                exit_code,
-                found_return_ty,
-                NumberType {
-                    ty: compiler.pointer_ty,
-                    float: false,
-                    signed: false,
-                },
-            )
-        }
-        _ => builder.ins().iconst(compiler.pointer_ty, 0),
+        // cast the exit code from the entry point into a usize
+        cast_ty_to_cranelift(
+            &mut builder,
+            exit_code,
+            entry_return_ty,
+            compiler.pointer_ty,
+        )
     };
 
     builder.ins().return_(&[exit_code]);
@@ -146,7 +140,7 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
     builder.seal_all_blocks();
     builder.finalize();
 
-    if compiler.verbose {
+    if compiler.verbosity == Verbosity::AllFunctions {
         println!("main \x1B[90mmain\x1B[0m:\n{}", compiler.ctx.func);
     }
 

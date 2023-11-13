@@ -1,7 +1,7 @@
 libc :: mod "core".libc;
 
 Person :: struct {
-    name: string,
+    name: str,
     age: i32
 };
 
@@ -16,7 +16,7 @@ main :: () {
     };
 
     my_company := Company {
-        employees: [] Person {
+        employees: [3] Person {
             Person {
                 name: "Bob",
                 age: 32,
@@ -57,4 +57,4 @@ print_person_by_ref :: (p: ^Person) {
     printf("%s is %i years old\n", p.name, p.age);
 }
 
-printf :: (s: string, name: string, age: i32) extern;
+printf :: (s: str, name: str, age: i32) extern;

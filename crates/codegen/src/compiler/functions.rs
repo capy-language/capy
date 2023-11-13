@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 
 use cranelift::{
-    codegen::ir::{Endianness, FuncRef, StackSlot},
+    codegen::ir::{Endianness, FuncRef},
     prelude::{
         types, Block, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
-        StackSlotData, StackSlotKind, Value, Variable,
+        StackSlotData, StackSlotKind, TrapCode, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -18,17 +18,17 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     builtin::BuiltinFunction,
-    convert::{NumberType, ToCompType, ToCraneliftSignature, ToTyId},
+    convert::{GetFinalTy, ToFinalSignature, ToTyId},
+    layout::GetLayoutInfo,
     mangle::Mangle,
-    size::GetMemInfo,
-    ComptimeToCompile, CraneliftSignature,
+    ComptimeToCompile, FinalSignature,
 };
 
 use super::{comptime::ComptimeResult, FunctionToCompile, MetaTyData};
 
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) file_name: hir::FileName,
-    pub(crate) signature: CraneliftSignature,
+    pub(crate) signature: FinalSignature,
 
     pub(crate) mod_dir: &'a std::path::Path,
     pub(crate) interner: &'a Interner,
@@ -38,7 +38,7 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) builder: FunctionBuilder<'a>,
     pub(crate) module: &'a mut dyn Module,
     pub(crate) data_description: &'a mut DataDescription,
-    pub(crate) pointer_ty: types::Type,
+    pub(crate) ptr_ty: types::Type,
 
     pub(crate) functions_to_compile: &'a mut VecDeque<FunctionToCompile>,
     pub(crate) meta_tys: &'a mut MetaTyData,
@@ -115,12 +115,9 @@ impl FunctionCompiler<'_> {
                     size,
                 });
 
-                let stack_slot_addr = self
-                    .builder
-                    .ins()
-                    .stack_addr(self.pointer_ty, stack_slot, 0);
+                let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                let size = self.builder.ins().iconst(self.pointer_ty, size as i64);
+                let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
 
                 self.builder
                     .call_memcpy(self.module.target_config(), stack_slot_addr, value, size);
@@ -135,6 +132,13 @@ impl FunctionCompiler<'_> {
 
         match self.compile_expr(function_body) {
             Some(body) => {
+                let body = super::cast(
+                    &mut self.builder,
+                    body,
+                    self.tys[self.file_name][function_body],
+                    return_ty,
+                );
+
                 if return_ty.is_aggregate() {
                     let dest = self.builder.use_var(dest_param.unwrap());
 
@@ -142,7 +146,7 @@ impl FunctionCompiler<'_> {
                     let aggregate_size = self
                         .builder
                         .ins()
-                        .iconst(self.pointer_ty, aggregate_size as i64);
+                        .iconst(self.ptr_ty, aggregate_size as i64);
 
                     self.builder.call_memcpy(
                         self.module.target_config(),
@@ -152,19 +156,6 @@ impl FunctionCompiler<'_> {
                     );
 
                     self.builder.ins().return_(&[dest])
-                } else if let Some(return_ty) =
-                    return_ty.to_comp_type(self.pointer_ty).into_number_type()
-                {
-                    // the actual type that was returned might not be what the function was
-                    // actually supposed to return, so we have to cast it to make sure
-                    let body_ty = self.tys[self.file_name][function_body]
-                        .to_comp_type(self.pointer_ty)
-                        .into_number_type()
-                        .unwrap();
-
-                    let cast = super::cast(&mut self.builder, body, body_ty, return_ty);
-
-                    self.builder.ins().return_(&[cast])
                 } else {
                     self.builder.ins().return_(&[body])
                 }
@@ -178,7 +169,7 @@ impl FunctionCompiler<'_> {
 
     fn expr_to_const_data(&mut self, module: hir::FileName, expr: Idx<hir::Expr>) -> Box<[u8]> {
         if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
-            let id = meta_ty.to_type_id(self.meta_tys, self.pointer_ty);
+            let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return match self.module.isa().endianness() {
                 Endianness::Big => Box::new(id.to_be_bytes()),
@@ -191,7 +182,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::IntLiteral(n) => {
                 match (
                     self.tys[module][expr]
-                        .to_comp_type(self.pointer_ty)
+                        .get_final_ty()
                         .into_number_type()
                         .unwrap()
                         .bit_width(),
@@ -214,7 +205,7 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::FloatLiteral(f) => match (
                 self.tys[module][expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap()
                     .bit_width(),
@@ -320,7 +311,7 @@ impl FunctionCompiler<'_> {
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         super::get_func_id(
             self.module,
-            self.pointer_ty,
+            self.ptr_ty,
             self.mod_dir,
             self.functions,
             self.compiler_defined_functions,
@@ -354,7 +345,7 @@ impl FunctionCompiler<'_> {
         } else if ty.is_function() {
             let local_func = self.get_local_func(fqn);
 
-            return Some(self.builder.ins().func_addr(self.pointer_ty, local_func));
+            return Some(self.builder.ins().func_addr(self.ptr_ty, local_func));
         }
 
         let global_data = self.compile_global_binding_data(fqn);
@@ -363,15 +354,15 @@ impl FunctionCompiler<'_> {
             .module
             .declare_data_in_func(global_data, self.builder.func);
 
-        let global_ptr = self.builder.ins().symbol_value(self.pointer_ty, local_id);
+        let global_ptr = self.builder.ins().symbol_value(self.ptr_ty, local_id);
 
-        let comp_ty = ty.to_comp_type(self.pointer_ty);
+        let final_ty = ty.get_final_ty();
 
-        if no_load || comp_ty.is_pointer_type() {
+        if no_load || final_ty.is_pointer_type() {
             Some(global_ptr)
         } else {
             Some(self.builder.ins().load(
-                comp_ty.into_real_type().unwrap(),
+                final_ty.into_real_type().unwrap(),
                 MemFlags::trusted(),
                 global_ptr,
                 0,
@@ -405,12 +396,9 @@ impl FunctionCompiler<'_> {
                     size,
                 });
 
-                let stack_addr = self
-                    .builder
-                    .ins()
-                    .stack_addr(self.pointer_ty, stack_slot, 0);
+                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                self.store_expr_in_memory(value, *ty, size, stack_slot, stack_addr, 0);
+                self.store_expr_in_memory(value, *ty, size, stack_addr, 0);
 
                 self.locals.insert(local_def, stack_addr);
             }
@@ -434,14 +422,18 @@ impl FunctionCompiler<'_> {
 
                 if value_ty.is_aggregate() {
                     let size = value_ty.size();
-                    let size = self.builder.ins().iconst(self.pointer_ty, size as i64);
+                    let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
 
                     self.builder
                         .call_memcpy(self.module.target_config(), source, value, size)
                 } else {
+                    let source_ty = &self.tys[self.file_name][assign_body.source];
+
+                    let cast = super::cast(&mut self.builder, value, *value_ty, *source_ty);
+
                     self.builder
                         .ins()
-                        .store(MemFlags::trusted(), value, source, 0);
+                        .store(MemFlags::trusted(), cast, source, 0);
                 }
             }
             hir::Stmt::Break {
@@ -458,19 +450,11 @@ impl FunctionCompiler<'_> {
                         return;
                     };
 
-                    let value = if let Some(value_ty) =
-                        value_ty.to_comp_type(self.pointer_ty).into_number_type()
-                    {
-                        let referenced_block_ty = self.tys[self.file_name]
-                            [self.bodies_map[&self.file_name][label]]
-                            .to_comp_type(self.pointer_ty)
-                            .into_number_type()
-                            .unwrap();
+                    let referenced_block_ty =
+                        self.tys[self.file_name][self.bodies_map[&self.file_name][label]];
 
-                        super::cast(&mut self.builder, value, value_ty, referenced_block_ty)
-                    } else {
-                        value
-                    };
+                    let value =
+                        super::cast(&mut self.builder, value, value_ty, referenced_block_ty);
 
                     self.builder.ins().jump(exit_block, &[value]);
                 } else {
@@ -493,34 +477,71 @@ impl FunctionCompiler<'_> {
     fn store_expr_in_memory(
         &mut self,
         expr: Idx<hir::Expr>,
-        expr_ty: Intern<Ty>,
+        expected_ty: Intern<Ty>,
         expr_size: u32,
-        stack_slot: StackSlot,
-        stack_addr: Value,
+        addr: Value,
         offset: u32,
     ) {
         match &self.bodies_map[&self.file_name][expr] {
             hir::Expr::Array {
                 items: Some(items), ..
-            } => self.store_array_items(items.clone(), stack_slot, stack_addr, offset),
+            } if expected_ty.is_array() => {
+                self.store_array_items(items.iter().copied(), addr, offset)
+            }
+            hir::Expr::Array {
+                items: Some(items), ..
+            } => {
+                let ty = self.tys[self.file_name][expr];
+
+                if ty.is_zero_sized() {
+                    return;
+                }
+
+                let Some(sub_ty) = ty.as_slice() else {
+                    return;
+                };
+                let array_size = sub_ty.stride() * items.len() as u32;
+
+                let array_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size: array_size,
+                });
+
+                let array_addr = self.builder.ins().stack_addr(self.ptr_ty, array_slot, 0);
+
+                let len = items.len();
+
+                self.store_array_items(items.iter().copied(), array_addr, 0);
+
+                let size = self.builder.ins().iconst(self.ptr_ty, len as i64);
+                self.builder
+                    .ins()
+                    .store(MemFlags::trusted(), size, addr, offset as i32);
+
+                self.builder.ins().store(
+                    MemFlags::trusted(),
+                    array_addr,
+                    addr,
+                    (offset + self.ptr_ty.bytes()) as i32,
+                );
+            }
             hir::Expr::StructLiteral {
                 fields: field_values,
                 ..
             } => self.store_struct_fields(
-                expr_ty,
+                expected_ty,
                 field_values.iter().map(|(_, val)| *val).collect(),
-                stack_slot,
-                stack_addr,
+                addr,
                 offset,
             ),
-            _ if expr_ty.is_aggregate() => {
+            _ if expected_ty.is_aggregate() => {
                 let far_off_thing = self.compile_expr(expr).unwrap();
 
-                let offset = self.builder.ins().iconst(self.pointer_ty, offset as i64);
+                let offset = self.builder.ins().iconst(self.ptr_ty, offset as i64);
 
-                let actual_addr = self.builder.ins().iadd(stack_addr, offset);
+                let actual_addr = self.builder.ins().iadd(addr, offset);
 
-                let size = self.builder.ins().iconst(self.pointer_ty, expr_size as i64);
+                let size = self.builder.ins().iconst(self.ptr_ty, expr_size as i64);
 
                 self.builder.call_memcpy(
                     self.module.target_config(),
@@ -530,10 +551,13 @@ impl FunctionCompiler<'_> {
                 )
             }
             _ => {
-                if let Some(item) = self.compile_expr(expr) {
+                if let Some(value) = self.compile_expr(expr) {
+                    let expr_ty = self.tys[self.file_name][expr];
+                    let value = super::cast(&mut self.builder, value, expr_ty, expected_ty);
+
                     self.builder
                         .ins()
-                        .stack_store(item, stack_slot, offset as i32);
+                        .store(MemFlags::trusted(), value, addr, offset as i32);
                 }
             }
         }
@@ -543,8 +567,7 @@ impl FunctionCompiler<'_> {
         &mut self,
         struct_ty: Intern<Ty>,
         field_values: Vec<Idx<hir::Expr>>,
-        stack_slot: StackSlot,
-        stack_addr: Value,
+        addr: Value,
         offset: u32,
     ) {
         debug_assert!(struct_ty.is_struct());
@@ -560,8 +583,7 @@ impl FunctionCompiler<'_> {
                 value,
                 field_ty,
                 field_size,
-                stack_slot,
-                stack_addr,
+                addr,
                 offset + struct_mem.offsets()[idx],
             );
         }
@@ -569,25 +591,18 @@ impl FunctionCompiler<'_> {
 
     fn store_array_items(
         &mut self,
-        items: Vec<Idx<hir::Expr>>,
-        stack_slot: StackSlot,
-        stack_addr: Value,
+        mut items: impl Iterator<Item = Idx<hir::Expr>>,
+        addr: Value,
         offset: u32,
     ) {
-        assert!(!items.is_empty());
-
-        let inner_ty = self.tys[self.file_name][items[0]];
+        let first = items.next().expect("expected a non-empty array");
+        let inner_ty = self.tys[self.file_name][first];
         let inner_stride = inner_ty.stride();
+        self.store_expr_in_memory(first, inner_ty, inner_stride, addr, offset);
 
-        for (idx, item) in items.into_iter().enumerate() {
-            self.store_expr_in_memory(
-                item,
-                inner_ty,
-                inner_stride,
-                stack_slot,
-                stack_addr,
-                offset + (inner_stride * idx as u32),
-            )
+        for (idx, item) in items.enumerate() {
+            let byte_offset = (idx as u32 + 1) * inner_stride;
+            self.store_expr_in_memory(item, inner_ty, inner_stride, addr, offset + byte_offset)
         }
     }
 
@@ -597,7 +612,7 @@ impl FunctionCompiler<'_> {
 
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
         if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
-            let id = meta_ty.to_type_id(self.meta_tys, self.pointer_ty);
+            let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return Some(self.builder.ins().iconst(types::I32, id as i64));
         }
@@ -606,7 +621,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
                 let number_ty = self.tys[self.file_name][expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap();
                 if number_ty.float {
@@ -624,7 +639,7 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::FloatLiteral(f) => {
                 match self.tys[self.file_name][expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap()
                     .bit_width()
@@ -640,129 +655,167 @@ impl FunctionCompiler<'_> {
 
                 let local_id = self.module.declare_data_in_func(data, self.builder.func);
 
-                Some(self.builder.ins().symbol_value(self.pointer_ty, local_id))
+                Some(self.builder.ins().symbol_value(self.ptr_ty, local_id))
             }
             hir::Expr::CharLiteral(char) => Some(self.builder.ins().iconst(types::I8, char as i64)),
             hir::Expr::Array {
                 items: Some(items), ..
             } => {
-                if self.tys[self.file_name][expr].is_zero_sized() {
+                let ty = self.tys[self.file_name][expr];
+
+                if ty.is_zero_sized() {
                     return None;
                 }
 
-                let array_size = self.tys[self.file_name][expr].size();
+                let array_size = if let Some(sub_ty) = ty.as_slice() {
+                    sub_ty.stride() * items.len() as u32
+                } else {
+                    ty.size()
+                };
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: array_size,
                 });
 
-                let stack_addr = self
-                    .builder
-                    .ins()
-                    .stack_addr(self.pointer_ty, stack_slot, 0);
+                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                self.store_array_items(items, stack_slot, stack_addr, 0);
+                let len = items.len();
 
-                Some(stack_addr)
+                self.store_array_items(items.iter().copied(), stack_addr, 0);
+
+                if ty.is_slice() {
+                    let slice_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: self.ptr_ty.bytes() * 2,
+                    });
+
+                    let size = self.builder.ins().iconst(self.ptr_ty, len as i64);
+                    self.builder.ins().stack_store(size, slice_slot, 0);
+
+                    self.builder.ins().stack_store(
+                        stack_addr,
+                        slice_slot,
+                        self.ptr_ty.bytes() as i32,
+                    );
+
+                    let slice_addr = self.builder.ins().stack_addr(self.ptr_ty, slice_slot, 0);
+
+                    Some(slice_addr)
+                } else {
+                    Some(stack_addr)
+                }
             }
             hir::Expr::Array { items: None, .. } => None,
-            hir::Expr::Index { array, index } => {
+            hir::Expr::Index { source, index } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
                     return None;
                 }
 
-                let mut array_ty = self.tys[self.file_name][array];
-                let mut array = self.compile_expr(array).unwrap(); // this will be usize
+                let mut source_ty = self.tys[self.file_name][source];
+                let mut source = self.compile_expr(source).unwrap(); // this will be usize
 
                 let mut required_derefs = 0;
-                while let Some((_, sub_ty)) = array_ty.as_pointer() {
-                    array_ty = sub_ty;
+                while let Some((_, sub_ty)) = source_ty.as_pointer() {
+                    source_ty = sub_ty;
                     required_derefs += 1;
                 }
+                debug_assert!(source_ty.is_array() || source_ty.is_slice());
 
                 for _ in 1..required_derefs {
-                    array = self
+                    source = self
                         .builder
                         .ins()
-                        .load(self.pointer_ty, MemFlags::trusted(), array, 0);
+                        .load(self.ptr_ty, MemFlags::trusted(), source, 0);
                 }
 
-                let index_ty = self.tys[self.file_name][index]
-                    .to_comp_type(self.pointer_ty)
-                    .into_number_type()
-                    .unwrap();
+                let index_ty = self.tys[self.file_name][index];
 
                 let index = self.compile_expr(index).unwrap();
 
                 // make sure that the index is a usize before proceeding
-                let naive_index = super::cast(
-                    &mut self.builder,
-                    index,
-                    index_ty,
-                    NumberType {
-                        ty: self.pointer_ty,
-                        float: false,
-                        signed: false,
-                    },
-                );
+                let naive_index =
+                    super::cast_ty_to_cranelift(&mut self.builder, index, index_ty, self.ptr_ty);
+
+                let (len, source) = if let Some((len, _)) = source_ty.as_array() {
+                    (self.builder.ins().iconst(self.ptr_ty, len as i64), source)
+                } else {
+                    let len = self
+                        .builder
+                        .ins()
+                        .load(self.ptr_ty, MemFlags::trusted(), source, 0);
+                    let source = self.builder.ins().load(
+                        self.ptr_ty,
+                        MemFlags::trusted(),
+                        source,
+                        self.ptr_ty.bytes() as i32,
+                    );
+
+                    (len, source)
+                };
+
+                let good_index_block = self.builder.create_block();
+                let bad_index_block = self.builder.create_block();
+
+                let is_good_index =
+                    self.builder
+                        .ins()
+                        .icmp(IntCC::UnsignedLessThan, naive_index, len);
+                self.builder
+                    .ins()
+                    .brif(is_good_index, good_index_block, &[], bad_index_block, &[]);
+
+                self.builder.switch_to_block(bad_index_block);
+                self.builder.set_cold_block(bad_index_block);
+                self.builder.seal_block(bad_index_block);
+
+                self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+
+                self.builder.switch_to_block(good_index_block);
+                self.builder.seal_block(good_index_block);
 
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
-                // So the index has to be multiplied by the element size
+                // So the index has to be multiplied by the element stride
                 let element_ty = self.tys[self.file_name][expr];
 
-                let proper_index = self
+                let byte_offset = self
                     .builder
                     .ins()
                     .imul_imm(naive_index, element_ty.stride() as i64);
 
-                let proper_addr = self.builder.ins().iadd(array, proper_index);
+                let final_addr = self.builder.ins().iadd(source, byte_offset);
 
                 if no_load || element_ty.is_aggregate() {
-                    Some(proper_addr)
+                    Some(final_addr)
                 } else {
-                    Some(
-                        self.builder.ins().load(
-                            element_ty
-                                .to_comp_type(self.pointer_ty)
-                                .into_real_type()
-                                .unwrap(),
-                            MemFlags::new().with_aligned(),
-                            proper_addr,
-                            0,
-                        ),
-                    )
+                    Some(self.builder.ins().load(
+                        element_ty.get_final_ty().into_real_type().unwrap(),
+                        MemFlags::new().with_aligned(),
+                        final_addr,
+                        0,
+                    ))
                 }
             }
             hir::Expr::Cast {
                 expr: inner_expr, ..
             } => {
                 let inner = self.compile_expr(inner_expr)?;
-                let cast_from = match self.tys[self.file_name][inner_expr]
-                    .to_comp_type(self.pointer_ty)
-                    .into_number_type()
-                {
-                    Some(int_ty) => int_ty,
-                    None => return Some(inner),
-                };
-                let cast_to = self.tys[self.file_name][expr]
-                    .to_comp_type(self.pointer_ty)
-                    .into_number_type()
-                    .unwrap();
+                let cast_from = self.tys[self.file_name][inner_expr];
+                let cast_to = self.tys[self.file_name][expr];
 
                 Some(super::cast(&mut self.builder, inner, cast_from, cast_to))
             }
             hir::Expr::Ref { expr, .. } => {
-                if self.tys[self.file_name][expr].is_aggregate() {
-                    // references to aggregate data should return the actual address of the aggregate data
-                    let expr = self.compile_expr_with_args(expr, false).unwrap();
-
-                    Some(expr)
-                } else if matches!(
-                    self.bodies_map[&self.file_name][expr],
-                    hir::Expr::Local(_) | hir::Expr::LocalGlobal(_)
-                ) {
+                if self.tys[self.file_name][expr].is_aggregate()
+                    || matches!(
+                        self.bodies_map[&self.file_name][expr],
+                        hir::Expr::Local(_)
+                            | hir::Expr::LocalGlobal(_)
+                            | hir::Expr::Index { .. }
+                            | hir::Expr::Member { .. }
+                    )
+                {
                     // references to locals or globals should return the actual memory address of the local or global
                     self.compile_expr_with_args(expr, true)
                 } else {
@@ -779,11 +832,7 @@ impl FunctionCompiler<'_> {
 
                     self.builder.ins().stack_store(expr, stack_slot, 0);
 
-                    Some(
-                        self.builder
-                            .ins()
-                            .stack_addr(self.pointer_ty, stack_slot, 0),
-                    )
+                    Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
                 }
             }
             hir::Expr::Deref { pointer } => {
@@ -795,10 +844,10 @@ impl FunctionCompiler<'_> {
 
                 let addr = self.compile_expr_with_args(pointer, no_load)?;
 
-                let self_ty = self_ty.to_comp_type(self.pointer_ty);
+                let self_ty = self_ty.get_final_ty();
 
                 let self_ty = if no_load {
-                    self.pointer_ty
+                    self.ptr_ty
                 } else {
                     self_ty.into_real_type().unwrap()
                 };
@@ -868,19 +917,19 @@ impl FunctionCompiler<'_> {
                 let rhs = self.compile_expr(rhs_expr).unwrap();
 
                 let lhs_ty = self.tys[self.file_name][lhs_expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap();
                 let rhs_ty = self.tys[self.file_name][rhs_expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap();
 
                 let max_ty = lhs_ty.max(rhs_ty);
 
                 // we need to make sure that both types are the same before we can do any operations on them
-                let lhs = super::cast(&mut self.builder, lhs, lhs_ty, max_ty);
-                let rhs = super::cast(&mut self.builder, rhs, rhs_ty, max_ty);
+                let lhs = super::cast_num(&mut self.builder, lhs, lhs_ty, max_ty);
+                let rhs = super::cast_num(&mut self.builder, rhs, rhs_ty, max_ty);
 
                 if max_ty.float {
                     Some(match op {
@@ -985,7 +1034,7 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::Unary { expr, op } => {
                 let expr_ty = self.tys[self.file_name][expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_number_type()
                     .unwrap();
 
@@ -1021,25 +1070,10 @@ impl FunctionCompiler<'_> {
                     .zip(param_tys.iter())
                     .filter_map(|(arg_expr, expected_ty)| {
                         let arg_ty = self.tys[self.file_name][*arg_expr];
-                        let comp_ty = arg_ty.to_comp_type(self.pointer_ty);
 
                         let arg = self.compile_expr(*arg_expr);
 
-                        if let Some(actual_ty) = comp_ty.into_number_type() {
-                            let expected_ty = expected_ty
-                                .to_comp_type(self.pointer_ty)
-                                .into_number_type()
-                                .unwrap();
-
-                            Some(super::cast(
-                                &mut self.builder,
-                                arg.unwrap(),
-                                actual_ty,
-                                expected_ty,
-                            ))
-                        } else {
-                            arg
-                        }
+                        Some(super::cast(&mut self.builder, arg?, arg_ty, *expected_ty))
                     })
                     .collect::<Vec<_>>();
 
@@ -1050,10 +1084,7 @@ impl FunctionCompiler<'_> {
                         kind: StackSlotKind::ExplicitSlot,
                         size: aggregate_size,
                     });
-                    let stack_slot_addr =
-                        self.builder
-                            .ins()
-                            .stack_addr(self.pointer_ty, stack_slot, 0);
+                    let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
                     arg_values.push(stack_slot_addr);
                 }
@@ -1080,7 +1111,7 @@ impl FunctionCompiler<'_> {
                             let callee = self.compile_expr(callee).unwrap();
 
                             let (comp_sig, _) = (&param_tys, return_ty)
-                                .to_cranelift_signature(self.module, self.pointer_ty);
+                                .to_final_signature(self.module, self.ptr_ty);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1089,7 +1120,7 @@ impl FunctionCompiler<'_> {
                                 .call_indirect(sig_ref, callee, &arg_values)
                         }
                     }
-                    hir::Expr::Path {
+                    hir::Expr::Member {
                         previous, field, ..
                     } => match &self.tys[self.file_name][previous].as_ref() {
                         Ty::File(file) => {
@@ -1106,7 +1137,7 @@ impl FunctionCompiler<'_> {
                             let callee = self.compile_expr(callee).unwrap();
 
                             let (comp_sig, _) = (&param_tys, return_ty)
-                                .to_cranelift_signature(self.module, self.pointer_ty);
+                                .to_final_signature(self.module, self.ptr_ty);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1123,8 +1154,8 @@ impl FunctionCompiler<'_> {
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let (comp_sig, _) = (&param_tys, return_ty)
-                            .to_cranelift_signature(self.module, self.pointer_ty);
+                        let (comp_sig, _) =
+                            (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
 
                         let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1141,7 +1172,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Block { stmts, tail_expr } => {
-                let ty = self.tys[self.file_name][expr].to_comp_type(self.pointer_ty);
+                let ty = self.tys[self.file_name][expr].get_final_ty();
 
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
@@ -1210,7 +1241,7 @@ impl FunctionCompiler<'_> {
                 let merge_block = self.builder.create_block();
 
                 let return_ty = self.tys[self.file_name][expr]
-                    .to_comp_type(self.pointer_ty)
+                    .get_final_ty()
                     .into_real_type();
 
                 if let Some(return_ty) = return_ty {
@@ -1267,7 +1298,7 @@ impl FunctionCompiler<'_> {
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
 
-                let ty = self.tys[self.file_name][expr].to_comp_type(self.pointer_ty);
+                let ty = self.tys[self.file_name][expr].get_final_ty();
 
                 if let Some(ty) = ty.into_real_type() {
                     self.builder.append_block_param(exit_block, ty);
@@ -1319,7 +1350,7 @@ impl FunctionCompiler<'_> {
                 if no_load || ty.is_aggregate() {
                     Some(ptr)
                 } else {
-                    let ty = ty.to_comp_type(self.pointer_ty);
+                    let ty = ty.get_final_ty();
 
                     Some(self.builder.ins().load(
                         ty.into_real_type().unwrap(),
@@ -1345,7 +1376,7 @@ impl FunctionCompiler<'_> {
 
                 self.compile_global(fqn, no_load)
             }
-            hir::Expr::Path {
+            hir::Expr::Member {
                 previous, field, ..
             } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
@@ -1364,17 +1395,57 @@ impl FunctionCompiler<'_> {
                     }
                     _ => {
                         let field_ty = &self.tys[self.file_name][expr];
-                        let field_comp_ty =
-                            field_ty.to_comp_type(self.pointer_ty).into_real_type()?;
+                        let field_comp_ty = field_ty.get_final_ty().into_real_type()?;
 
                         let mut required_derefs = 0;
-                        let mut struct_ty = previous_ty;
-                        while let Some((_, sub_ty)) = struct_ty.as_pointer() {
-                            struct_ty = sub_ty;
+                        let mut source_ty = previous_ty;
+                        while let Some((_, sub_ty)) = source_ty.as_pointer() {
+                            source_ty = sub_ty;
                             required_derefs += 1;
                         }
 
-                        let struct_fields = struct_ty.as_struct().unwrap();
+                        if source_ty.is_slice() {
+                            let slice = self.compile_expr(previous).unwrap();
+                            let addr = match self.interner.lookup(field.name.0) {
+                                "len" => slice,
+                                "ptr" => self
+                                    .builder
+                                    .ins()
+                                    .iadd_imm(slice, self.ptr_ty.bytes() as i64),
+                                _ => unreachable!(),
+                            };
+                            if no_load {
+                                return Some(addr);
+                            } else {
+                                return Some(self.builder.ins().load(
+                                    self.ptr_ty,
+                                    MemFlags::trusted(),
+                                    addr,
+                                    0,
+                                ));
+                            }
+                        } else if let Some((len, _)) = source_ty.as_array() {
+                            // the len isn't actually located anywhere in memory. In memory the
+                            // array is just the raw data only. However, when you usually get the
+                            // address of a field it returns the actual address of that field in
+                            // the struct or slice, so here we have to fake it by allocating
+                            // enough extra space on the stack for the len if we need to.
+                            if no_load {
+                                let ss = self.builder.create_sized_stack_slot(StackSlotData {
+                                    kind: StackSlotKind::ExplicitSlot,
+                                    size: self.ptr_ty.bytes(),
+                                });
+
+                                let len = self.builder.ins().iconst(self.ptr_ty, len as i64);
+                                self.builder.ins().stack_store(len, ss, 0);
+
+                                return Some(self.builder.ins().stack_addr(self.ptr_ty, ss, 0));
+                            } else {
+                                return Some(self.builder.ins().iconst(self.ptr_ty, len as i64));
+                            }
+                        }
+
+                        let struct_fields = source_ty.as_struct().unwrap();
 
                         let field_idx = struct_fields
                             .iter()
@@ -1383,13 +1454,13 @@ impl FunctionCompiler<'_> {
                             .map(|(idx, _)| idx)
                             .unwrap();
 
-                        let offset = struct_ty.struct_layout().unwrap().offsets()[field_idx];
+                        let offset = source_ty.struct_layout().unwrap().offsets()[field_idx];
 
                         let mut struct_addr = self.compile_expr_with_args(previous, false)?;
 
                         for _ in 1..required_derefs {
                             struct_addr = self.builder.ins().load(
-                                self.pointer_ty,
+                                self.ptr_ty,
                                 MemFlags::trusted(),
                                 struct_addr,
                                 0,
@@ -1412,7 +1483,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::Lambda(lambda) => {
                 let local_func = self.unnamed_func_to_local(expr, lambda);
 
-                Some(self.builder.ins().func_addr(self.pointer_ty, local_func))
+                Some(self.builder.ins().func_addr(self.ptr_ty, local_func))
             }
             hir::Expr::StructLiteral {
                 fields: field_values,
@@ -1425,15 +1496,11 @@ impl FunctionCompiler<'_> {
                     size: ty.size(),
                 });
 
-                let stack_addr = self
-                    .builder
-                    .ins()
-                    .stack_addr(self.pointer_ty, stack_slot, 0);
+                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
                 self.store_struct_fields(
                     ty,
                     field_values.iter().map(|(_, val)| *val).collect(),
-                    stack_slot,
                     stack_addr,
                     0,
                 );
@@ -1453,7 +1520,7 @@ impl FunctionCompiler<'_> {
                 // if the comptime block was evaluated in a previous compilation step, then get that value
                 // otherwise, we are *in* the comptime eval step of compilation, and so just calculate it's value
                 if let Some(result) = self.comptime_results.get(&ctc) {
-                    let ty = self.tys[self.file_name][expr].to_comp_type(self.pointer_ty);
+                    let ty = self.tys[self.file_name][expr].get_final_ty();
 
                     match result {
                         ComptimeResult::Integer { num, .. } => Some(
@@ -1477,8 +1544,7 @@ impl FunctionCompiler<'_> {
                             let local_id =
                                 self.module.declare_data_in_func(data, self.builder.func);
 
-                            let global_ptr =
-                                self.builder.ins().symbol_value(self.pointer_ty, local_id);
+                            let global_ptr = self.builder.ins().symbol_value(self.ptr_ty, local_id);
 
                             if no_load || ty.is_pointer_type() {
                                 Some(global_ptr)
@@ -1507,7 +1573,7 @@ impl FunctionCompiler<'_> {
 
         let (param_tys, return_ty) = self.tys[self.file_name][expr].as_function().unwrap();
 
-        let (sig, _) = (&param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
+        let (sig, _) = (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
 
         let ftc = FunctionToCompile {
             file_name: self.file_name,

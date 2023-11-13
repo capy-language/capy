@@ -143,12 +143,12 @@ pub enum TyDiagnosticKind {
     UnknownFqn {
         fqn: hir::Fqn,
     },
-    NonExistentField {
-        field: Key,
+    NonExistentMember {
+        member: Key,
         found_ty: Intern<Ty>,
     },
-    StructLiteralMissingField {
-        field: Key,
+    StructLiteralMissingMember {
+        member: Key,
         expected_ty: Intern<Ty>,
     },
     ComptimePointer,
@@ -180,11 +180,11 @@ pub enum TyDiagnosticHelpKind {
     BreakHere { break_ty: Intern<Ty> },
 }
 
-#[derive(Debug)]
 pub struct InferenceCtx<'a> {
     current_file: Option<hir::FileName>,
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     world_index: &'a hir::WorldIndex,
+    interner: &'a Interner,
     local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
     param_tys: Option<Vec<Intern<Ty>>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
@@ -203,11 +203,13 @@ impl<'a> InferenceCtx<'a> {
     pub fn new(
         bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
         world_index: &'a hir::WorldIndex,
+        interner: &'a Interner,
     ) -> InferenceCtx<'a> {
         Self {
             current_file: None,
             bodies_map,
             world_index,
+            interner,
             local_usages: FxHashMap::default(),
             param_tys: None,
             diagnostics: Vec::new(),
@@ -467,10 +469,14 @@ impl<'a> InferenceCtx<'a> {
                 // it'd be better to mutate the fqn, but that would invalidate the hash
                 // within the internment crate
                 match actual_ty.as_ref() {
-                    Ty::Distinct { fqn: None, ty, uid } => Ty::Distinct {
+                    Ty::Distinct {
+                        fqn: None,
+                        sub_ty: ty,
+                        uid,
+                    } => Ty::Distinct {
                         fqn: Some(fqn),
                         uid: *uid,
-                        ty: *ty,
+                        sub_ty: *ty,
                     }
                     .into(),
                     Ty::Struct {
@@ -589,7 +595,7 @@ impl<'a> InferenceCtx<'a> {
 
                 Ty::Unknown.into()
             }
-            hir::Expr::Path { previous, field } => {
+            hir::Expr::Member { previous, field } => {
                 let previous_ty = self.infer_expr(*previous);
                 match previous_ty.as_ref() {
                     Ty::File(file) => self.fqn_to_ty(
@@ -637,20 +643,13 @@ impl<'a> InferenceCtx<'a> {
                     }
                     .into()
                 } else {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::ArraySizeRequired,
-                        module: self.current_file.unwrap(),
-                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
-                        help: None,
-                    });
-
-                    Ty::Unknown.into()
+                    Ty::Slice { sub_ty }.into()
                 }
             }
             hir::Expr::Distinct { uid, ty } => Ty::Distinct {
                 fqn: None,
                 uid: *uid,
-                ty: self.parse_expr_to_ty(*ty, resolve_chain),
+                sub_ty: self.parse_expr_to_ty(*ty, resolve_chain),
             }
             .into(),
             hir::Expr::StructDecl { uid, fields } => Ty::Struct {
@@ -823,12 +822,12 @@ impl Ty {
             Self::NotYetResolved => "!".to_string(),
             Self::Unknown => "<unknown>".to_string(),
             Self::IInt(bit_width) => match *bit_width {
-                u32::MAX => "isize".to_string(),
+                u8::MAX => "isize".to_string(),
                 0 => "{int}".to_string(),
                 _ => format!("i{}", bit_width),
             },
             Self::UInt(bit_width) => match *bit_width {
-                u32::MAX => "usize".to_string(),
+                u8::MAX => "usize".to_string(),
                 0 => "{uint}".to_string(),
                 _ => format!("u{}", bit_width),
             },
@@ -837,11 +836,12 @@ impl Ty {
                 _ => format!("f{}", bit_width),
             },
             Self::Bool => "bool".to_string(),
-            Self::String => "string".to_string(),
+            Self::String => "str".to_string(),
             Self::Char => "char".to_string(),
             Self::Array { size, sub_ty } => {
                 format!("[{size}]{}", sub_ty.display(mod_dir, interner))
             }
+            Self::Slice { sub_ty } => format!("[]{}", sub_ty.display(mod_dir, interner)),
             Self::Pointer { mutable, sub_ty } => {
                 format!(
                     "^{}{}",
@@ -850,7 +850,11 @@ impl Ty {
                 )
             }
             Self::Distinct { fqn: Some(fqn), .. } => fqn.to_string(mod_dir, interner),
-            Self::Distinct { fqn: None, uid, ty } => {
+            Self::Distinct {
+                fqn: None,
+                uid,
+                sub_ty: ty,
+            } => {
                 format!("distinct'{} {}", uid, ty.display(mod_dir, interner))
             }
             Self::Function {
@@ -994,11 +998,13 @@ mod tests {
         world_index.add_file(module, index);
         bodies_map.insert(module, bodies);
 
-        let (inference_result, actual_diagnostics) = InferenceCtx::new(&bodies_map, &world_index)
-            .finish(entry_point.map(|entry_point| hir::Fqn {
-                file: module,
-                name: hir::Name(interner.intern(entry_point)),
-            }));
+        let entry_point = entry_point.map(|entry_point| hir::Fqn {
+            file: module,
+            name: hir::Name(interner.intern(entry_point)),
+        });
+
+        let (inference_result, actual_diagnostics) =
+            InferenceCtx::new(&bodies_map, &world_index, &interner).finish(entry_point);
 
         expect.assert_eq(&inference_result.debug(Path::new(""), &interner, false));
 
@@ -1305,20 +1311,20 @@ mod tests {
             "#,
             expect![[r#"
                 main::how_old : () -> usize
-                1 : string
-                2 : string
+                1 : str
+                2 : str
                 4 : usize
                 5 : usize
                 6 : usize
                 7 : () -> usize
-                l0 : string
+                l0 : str
                 l1 : usize
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::Uncastable {
                         from: Ty::String.into(),
-                        to: Ty::UInt(u32::MAX).into(),
+                        to: Ty::UInt(u8::MAX).into(),
                     },
                     108..121,
                     None,
@@ -1497,7 +1503,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
                 };
             "#,
             expect![[r#"
@@ -1572,7 +1578,7 @@ mod tests {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
 
                     my_array[2]
                 };
@@ -1602,7 +1608,7 @@ mod tests {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
 
                     my_array[1000]
                 };
@@ -1634,7 +1640,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    123..137,
+                    124..138,
                     None,
                 )]
             },
@@ -1835,12 +1841,12 @@ mod tests {
             expect![[r#"
                 main::foo : () -> void
                 0 : {uint}
-                1 : string
-                2 : string
+                1 : str
+                2 : str
                 3 : void
                 4 : () -> void
                 l0 : {uint}
-                l1 : string
+                l1 : str
             "#]],
             |_| [],
         );
@@ -1858,13 +1864,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : string
-                1 : string
-                2 : string
-                3 : string
+                0 : str
+                1 : str
+                2 : str
+                3 : str
                 4 : void
                 5 : () -> void
-                l0 : string
+                l0 : str
             "#]],
             |_| [],
         );
@@ -2059,7 +2065,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::sum : () -> i32
-                1 : string
+                1 : str
                 2 : i32
                 3 : i32
                 4 : i32
@@ -2101,15 +2107,15 @@ mod tests {
     fn invalid_binary_expr_with_missing_operand() {
         check(
             r#"
-                f :: () -> string { "hello" + };
+                f :: () -> str { "hello" + };
             "#,
             expect![[r#"
-                main::f : () -> string
-                1 : string
+                main::f : () -> str
+                1 : str
                 2 : <unknown>
-                3 : string
-                4 : string
-                5 : () -> string
+                3 : str
+                4 : str
+                5 : () -> str
             "#]],
             |_| [],
         );
@@ -2151,8 +2157,8 @@ mod tests {
             "#,
             expect![[r#"
                 main::f : () -> bool
-                1 : string
-                2 : string
+                1 : str
+                2 : str
                 3 : bool
                 4 : bool
                 5 : () -> bool
@@ -2327,13 +2333,13 @@ mod tests {
     fn mismatched_function_body() {
         check(
             r#"
-                s :: () -> string { 92 };
+                s :: () -> str { 92 };
             "#,
             expect![[r#"
-                main::s : () -> string
+                main::s : () -> str
                 1 : {uint}
                 2 : {uint}
-                3 : () -> string
+                3 : () -> str
             "#]],
             |_| {
                 [(
@@ -2341,8 +2347,8 @@ mod tests {
                         expected: Ty::String.into(),
                         found: Ty::UInt(0).into(),
                     },
-                    35..41,
-                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 37..39)),
+                    32..38,
+                    Some((TyDiagnosticHelpKind::TailExprReturnsHere, 34..36)),
                 )]
             },
         );
@@ -2426,7 +2432,7 @@ mod tests {
                 main::multiply : (i32, i32) -> i32
                 1 : (i32, i32) -> i32
                 2 : void
-                3 : string
+                3 : str
                 4 : i32
                 5 : i32
                 6 : () -> i32
@@ -2464,29 +2470,29 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                a :: () -> string {
+                a :: () -> str {
                     greetings := import "greetings.capy"
 
                     greetings.informal(10)
                 };
                 #- greetings.capy
-                informal :: (n: i32) -> string { "Hello!" };
+                informal :: (n: i32) -> str { "Hello!" };
             "#,
             expect![[r#"
-                greetings::informal : (i32) -> string
-                main::a : () -> string
+                greetings::informal : (i32) -> str
+                main::a : () -> str
                 greetings:
-                  2 : string
-                  3 : string
-                  4 : (i32) -> string
+                  2 : str
+                  3 : str
+                  4 : (i32) -> str
                 main:
                   1 : file greetings
                   2 : file greetings
-                  3 : (i32) -> string
+                  3 : (i32) -> str
                   4 : i32
-                  5 : string
-                  6 : string
-                  7 : () -> string
+                  5 : str
+                  6 : str
+                  7 : () -> str
                   l0 : file greetings
             "#]],
             |_| [],
@@ -2513,8 +2519,8 @@ mod tests {
                 1 : {uint}
                 2 : {uint}
                 3 : {uint}
-                4 : string
-                5 : string
+                4 : str
+                5 : str
                 6 : void
                 7 : void
                 8 : () -> void
@@ -2567,7 +2573,7 @@ mod tests {
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Ty::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
                     },
@@ -2671,7 +2677,7 @@ mod tests {
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Ty::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
                         second: Ty::IInt(32).into(),
@@ -2723,7 +2729,7 @@ mod tests {
                                 name: hir::Name(i.intern("imaginary")),
                             }),
                             uid: 0,
-                            ty: Ty::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
                         second: Ty::Distinct {
@@ -2732,7 +2738,7 @@ mod tests {
                                 name: hir::Name(i.intern("extra_imaginary")),
                             }),
                             uid: 1,
-                            ty: Ty::IInt(32).into(),
+                            sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
                     },
@@ -2817,7 +2823,7 @@ mod tests {
                 Vector3 :: distinct [3] i32;
 
                 main :: () {
-                    my_point : Vector3 = [] i32 { 4, 8, 15 };
+                    my_point : Vector3 = [3] i32 { 4, 8, 15 };
 
                     x := my_point[0];
                     y := my_point[1];
@@ -3356,7 +3362,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3373,7 +3379,7 @@ mod tests {
                 main::Person : type
                 main::foo : () -> void
                 2 : type
-                4 : string
+                4 : str
                 5 : i32
                 6 : main::Person
                 7 : main::Person
@@ -3395,7 +3401,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3412,7 +3418,7 @@ mod tests {
                 main::Person : type
                 main::foo : () -> void
                 2 : type
-                4 : string
+                4 : str
                 5 : i32
                 6 : main::Person
                 7 : main::Person
@@ -3428,8 +3434,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    297..319,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 167..275)),
+                    294..316,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 164..272)),
                 )]
             },
         );
@@ -3440,7 +3446,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3450,7 +3456,7 @@ mod tests {
 
                 foo :: () {
                     my_company := Company {
-                        employees: [] Person {
+                        employees: [3] Person {
                             Person {
                                 name: "Bob",
                                 age: 26,
@@ -3475,13 +3481,13 @@ mod tests {
                 main::foo : () -> void
                 2 : type
                 5 : type
-                9 : string
+                9 : str
                 10 : i32
                 11 : main::Person
-                13 : string
+                13 : str
                 14 : i32
                 15 : main::Person
-                17 : string
+                17 : str
                 18 : i32
                 19 : main::Person
                 20 : [3]main::Person
@@ -3511,7 +3517,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3521,7 +3527,7 @@ mod tests {
 
                 foo :: () {
                     my_company :: Company {
-                        employees: [] Person {
+                        employees: [3] Person {
                             Person {
                                 name: "Bob",
                                 age: 26,
@@ -3546,13 +3552,13 @@ mod tests {
                 main::foo : () -> void
                 2 : type
                 5 : type
-                9 : string
+                9 : str
                 10 : i32
                 11 : main::Person
-                13 : string
+                13 : str
                 14 : i32
                 15 : main::Person
-                17 : string
+                17 : str
                 18 : i32
                 19 : main::Person
                 20 : [3]main::Person
@@ -3576,8 +3582,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    870..932,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 265..848)),
+                    868..930,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 262..846)),
                 )]
             },
         );
@@ -3588,7 +3594,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3613,7 +3619,7 @@ mod tests {
                 main::foo : () -> void
                 2 : type
                 5 : type
-                8 : string
+                8 : str
                 9 : i32
                 10 : main::Person
                 11 : ^main::Person
@@ -3635,8 +3641,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    480..518,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 484..490)),
+                    477..515,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 481..487)),
                 )]
             },
         );
@@ -3647,7 +3653,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -3672,7 +3678,7 @@ mod tests {
                 main::foo : () -> void
                 2 : type
                 5 : type
-                8 : string
+                8 : str
                 9 : i32
                 10 : main::Person
                 11 : ^mut main::Person
@@ -3700,7 +3706,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    array := []i32 { 1, 2, 3 };
+                    array := [3] i32 { 1, 2, 3 };
 
                     array[0] = 100;
                 }
@@ -3728,7 +3734,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    array :: []i32 { 1, 2, 3 };
+                    array :: [3] i32 { 1, 2, 3 };
 
                     array[0] = 100;
                 }
@@ -3750,8 +3756,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    98..113,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..76)),
+                    100..115,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..78)),
                 )]
             },
         );
@@ -4395,15 +4401,15 @@ mod tests {
     fn fn_with_diff_fn_annotation() {
         check(
             r#"
-                foo : (arg: f32, arg2: i8) -> string : (x: i32) {
+                foo : (arg: f32, arg2: i8) -> str : (x: i32) {
                     foo(x);
                 };
             "#,
             expect![[r#"
-                main::foo : (f32, i8) -> string
-                6 : (f32, i8) -> string
+                main::foo : (f32, i8) -> str
+                6 : (f32, i8) -> str
                 7 : i32
-                8 : string
+                8 : str
                 9 : void
                 10 : (i32) -> void
             "#]],
@@ -4416,7 +4422,7 @@ mod tests {
                             found: 1,
                             expected: 2,
                         },
-                        87..93,
+                        84..90,
                         None,
                     ),
                     (
@@ -4424,7 +4430,7 @@ mod tests {
                             expected: float,
                             found: int,
                         },
-                        91..92,
+                        88..89,
                         None,
                     ),
                     (
@@ -4440,7 +4446,7 @@ mod tests {
                             }
                             .into(),
                         },
-                        56..112,
+                        53..109,
                         None,
                     ),
                 ]
@@ -4493,32 +4499,32 @@ mod tests {
     fn missing_else() {
         check(
             r#"
-                foo :: (arg: bool) -> string {
+                foo :: (arg: bool) -> str {
                     if arg {
                         "hello"
                     }
                 };
             "#,
             expect![[r#"
-                main::foo : (bool) -> string
+                main::foo : (bool) -> str
                 2 : bool
-                3 : string
-                4 : string
-                5 : string
-                6 : string
-                7 : (bool) -> string
+                3 : str
+                4 : str
+                5 : str
+                6 : str
+                7 : (bool) -> str
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::MissingElse {
                         expected: Ty::String.into(),
                     },
-                    68..130,
+                    65..127,
                     Some((
                         TyDiagnosticHelpKind::IfReturnsTypeHere {
                             found: Ty::String.into(),
                         },
-                        101..108,
+                        98..105,
                     )),
                 )]
             },
@@ -4677,7 +4683,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -4692,7 +4698,7 @@ mod tests {
                 main::Person : type
                 main::foo : () -> void
                 2 : type
-                4 : string
+                4 : str
                 5 : i32
                 6 : main::Person
                 7 : void
@@ -4708,7 +4714,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -4724,7 +4730,7 @@ mod tests {
                 main::foo : () -> void
                 2 : type
                 4 : bool
-                5 : string
+                5 : str
                 6 : main::Person
                 7 : void
                 8 : () -> void
@@ -4750,23 +4756,23 @@ mod tests {
                             expected: Ty::String.into(),
                             found: Ty::Bool.into(),
                         },
-                        218..223,
+                        215..220,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::NonExistentField {
-                            field: i.intern("height"),
+                        TyDiagnosticKind::NonExistentMember {
+                            member: i.intern("height"),
                             found_ty: person_ty,
                         },
-                        249..255,
+                        246..252,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::StructLiteralMissingField {
-                            field: i.intern("age"),
+                        TyDiagnosticKind::StructLiteralMissingMember {
+                            member: i.intern("age"),
                             expected_ty: person_ty,
                         },
-                        179..286,
+                        176..283,
                         None,
                     ),
                 ]
@@ -4779,7 +4785,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -4796,7 +4802,7 @@ mod tests {
                 main::Person : type
                 main::foo : () -> i32
                 2 : type
-                5 : string
+                5 : str
                 6 : i32
                 7 : main::Person
                 8 : main::Person
@@ -4814,7 +4820,7 @@ mod tests {
         check(
             r#"
                 Person :: struct {
-                    name: string,
+                    name: str,
                     age: i32
                 };
 
@@ -4831,7 +4837,7 @@ mod tests {
                 main::Person : type
                 main::foo : () -> i32
                 2 : type
-                5 : string
+                5 : str
                 6 : i32
                 7 : main::Person
                 8 : main::Person
@@ -4842,8 +4848,8 @@ mod tests {
             "#]],
             |i| {
                 [(
-                    TyDiagnosticKind::NonExistentField {
-                        field: i.intern("height"),
+                    TyDiagnosticKind::NonExistentMember {
+                        member: i.intern("height"),
                         found_ty: Ty::Struct {
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
@@ -4857,7 +4863,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    316..331,
+                    313..328,
                     None,
                 )]
             },
@@ -4880,8 +4886,8 @@ mod tests {
             expect![[r#"
                 main::foo : (bool) -> bool
                 2 : bool
-                3 : string
-                4 : string
+                3 : str
+                4 : str
                 5 : {uint}
                 6 : {uint}
                 7 : <unknown>
@@ -4913,13 +4919,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : string
-                1 : string
+                0 : str
+                1 : str
                 2 : {uint}
                 3 : <unknown>
                 4 : void
                 5 : () -> void
-                l0 : string
+                l0 : str
             "#]],
             |_| {
                 [(
@@ -4981,13 +4987,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : string
-                1 : string
+                0 : str
+                1 : str
                 2 : {uint}
                 3 : <unknown>
                 4 : void
                 5 : () -> void
-                l0 : string
+                l0 : str
             "#]],
             |_| {
                 [(
@@ -5013,12 +5019,12 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : string
-                1 : string
+                0 : str
+                1 : str
                 2 : <unknown>
                 3 : void
                 4 : () -> void
-                l0 : string
+                l0 : str
             "#]],
             |_| {
                 [(
@@ -5042,7 +5048,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : (type) -> void
-                2 : string
+                2 : str
                 3 : void
                 4 : (type) -> void
                 l0 : <unknown>
@@ -5428,7 +5434,7 @@ mod tests {
                 Bar :: struct {
                     a: i32,
                     b: i8,
-                    c: string,
+                    c: str,
                 };
 
                 main :: () {
@@ -5485,7 +5491,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    435..448,
+                    432..445,
                     None,
                 )]
             },
@@ -5493,41 +5499,15 @@ mod tests {
     }
 
     #[test]
-    fn array_with_local_ty() {
-        check(
-            r#"
-                foo :: () {
-                    imaginary :: distinct i32;
-
-                    array := [] imaginary { 1, 2, 3 };
-                }
-            "#,
-            expect![[r#"
-                main::foo : () -> void
-                1 : type
-                3 : {uint}
-                4 : {uint}
-                5 : {uint}
-                6 : [3]distinct'0 i32
-                7 : void
-                8 : () -> void
-                l0 : type
-                l1 : [3]distinct'0 i32
-            "#]],
-            |_| [],
-        );
-    }
-
-    #[test]
     fn lambda_ty_annotation() {
         check(
             r#"
-                bar :: (s: string) {
+                bar :: (s: str) {
                     // do stuff
                 } 
 
                 foo :: () {
-                    a : (s: string) -> void = (s: string) {};
+                    a : (s: str) -> void = (s: str) {};
 
                     a = bar;
 
@@ -5535,20 +5515,20 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::bar : (string) -> void
+                main::bar : (str) -> void
                 main::foo : () -> void
                 1 : void
-                2 : (string) -> void
+                2 : (str) -> void
                 8 : void
-                9 : (string) -> void
-                10 : (string) -> void
-                11 : (string) -> void
-                12 : (string) -> void
-                13 : string
+                9 : (str) -> void
+                10 : (str) -> void
+                11 : (str) -> void
+                12 : (str) -> void
+                13 : str
                 14 : void
                 15 : void
                 16 : () -> void
-                l0 : (string) -> void
+                l0 : (str) -> void
             "#]],
             |_| [],
         );
@@ -5559,7 +5539,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    a : (s: string) -> void {} = (s: string) {};
+                    a : (s: str) -> void {} = (s: str) {};
 
                     a("Hello!");
                 }
@@ -5567,9 +5547,9 @@ mod tests {
             expect![[r#"
                 main::foo : () -> void
                 5 : void
-                6 : (string) -> void
+                6 : (str) -> void
                 7 : <unknown>
-                8 : string
+                8 : str
                 9 : <unknown>
                 10 : void
                 11 : () -> void
@@ -5585,7 +5565,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    53..75,
+                    53..72,
                     None,
                 )]
             },
@@ -5597,7 +5577,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    foo : string = comptime {
+                    foo : str = comptime {
                         2 * 5
                     };
                 }
@@ -5611,7 +5591,7 @@ mod tests {
                 5 : {uint}
                 6 : void
                 7 : () -> void
-                l0 : string
+                l0 : str
             "#]],
             |_| {
                 [(
@@ -5619,7 +5599,7 @@ mod tests {
                         expected: Intern::new(Ty::String),
                         found: Intern::new(Ty::UInt(0)),
                     },
-                    64..126,
+                    61..123,
                     None,
                 )]
             },
@@ -5864,13 +5844,13 @@ mod tests {
     }
 
     #[test]
-    fn any_ptr_to_string() {
+    fn any_ptr_to_str() {
         check(
             r#"
                 get_any :: () {
                     bytes := [3] u8 { 72, 73, 0 };
                     ptr := ^bytes as ^any;
-                    str := ptr as string;
+                    str := ptr as str;
                 }
             "#,
             expect![[r#"
@@ -5883,25 +5863,25 @@ mod tests {
                 6 : ^[3]u8
                 9 : ^any
                 10 : ^any
-                12 : string
+                12 : str
                 13 : void
                 14 : () -> void
                 l0 : [3]u8
                 l1 : ^any
-                l2 : string
+                l2 : str
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn u8_ptr_to_string() {
+    fn u8_ptr_to_str() {
         check(
             r#"
                 get_any :: () {
                     bytes := [3] u8 { 72, 73, 0 };
                     ptr := ^bytes as ^any as ^u8;
-                    str := ptr as string;
+                    str := ptr as str;
                 }
             "#,
             expect![[r#"
@@ -5915,25 +5895,25 @@ mod tests {
                 9 : ^any
                 12 : ^u8
                 13 : ^u8
-                15 : string
+                15 : str
                 16 : void
                 17 : () -> void
                 l0 : [3]u8
                 l1 : ^u8
-                l2 : string
+                l2 : str
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn char_ptr_to_string() {
+    fn char_ptr_to_str() {
         check(
             r"
                 get_any :: () {
                     chars := [3] char { 'H', 'i', '\0' };
                     ptr := ^chars as ^any as ^char;
-                    str := ptr as string;
+                    str := ptr as str;
                 }
             ",
             expect![[r#"
@@ -5947,12 +5927,12 @@ mod tests {
                 9 : ^any
                 12 : ^char
                 13 : ^char
-                15 : string
+                15 : str
                 16 : void
                 17 : () -> void
                 l0 : [3]char
                 l1 : ^char
-                l2 : string
+                l2 : str
             "#]],
             |_| [],
         );
@@ -6133,8 +6113,8 @@ mod tests {
             "#]],
             |i| {
                 [(
-                    TyDiagnosticKind::NonExistentField {
-                        field: i.intern("a"),
+                    TyDiagnosticKind::NonExistentMember {
+                        member: i.intern("a"),
                         found_ty: Ty::Pointer {
                             mutable: false,
                             sub_ty: Ty::Pointer {
@@ -6188,8 +6168,8 @@ mod tests {
             "#]],
             |i| {
                 [(
-                    TyDiagnosticKind::NonExistentField {
-                        field: i.intern("b"),
+                    TyDiagnosticKind::NonExistentMember {
+                        member: i.intern("b"),
                         found_ty: Ty::Pointer {
                             mutable: false,
                             sub_ty: Ty::Pointer {
@@ -6259,7 +6239,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [] i32 { 1, 2, 3 };
+                    arr := [3] i32 { 1, 2, 3 };
 
                     ptr := ^arr;
 
@@ -6291,7 +6271,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [] i32 { 1, 2, 3 };
+                    arr := [3] i32 { 1, 2, 3 };
 
                     ptr := ^^arr;
 
@@ -6370,7 +6350,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [] i32 { 1, 2, 3 };
+                    arr := [3] i32 { 1, 2, 3 };
 
                     ptr := ^^arr;
 
@@ -6413,7 +6393,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    133..140,
+                    134..141,
                     None,
                 )]
             },
@@ -6425,7 +6405,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [] i32 { 1, 2, 3 };
+                    arr := [3] i32 { 1, 2, 3 };
 
                     ptr :: ^mut ^mut arr;
 
@@ -6459,7 +6439,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr :: [] i32 { 1, 2, 3 };
+                    arr :: [3] i32 { 1, 2, 3 };
 
                     ptr := ^^arr;
 
@@ -6487,8 +6467,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    133..145,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 105..110)),
+                    134..146,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 106..111)),
                 )]
             },
         );
@@ -6563,20 +6543,20 @@ mod tests {
     fn entry_point_bad_params_and_return() {
         check_with_entry(
             r#"
-                foo :: (x: i32, y: bool) -> string {
+                foo :: (x: i32, y: bool) -> str {
                     "Hello!"
                 }
             "#,
             expect![[r#"
-                main::foo : (i32, bool) -> string
-                3 : string
-                4 : string
-                5 : (i32, bool) -> string
+                main::foo : (i32, bool) -> str
+                3 : str
+                4 : str
+                5 : (i32, bool) -> str
             "#]],
             |_| {
                 [
                     (TyDiagnosticKind::EntryHasParams, 24..41, None),
-                    (TyDiagnosticKind::EntryBadReturn, 45..51, None),
+                    (TyDiagnosticKind::EntryBadReturn, 45..48, None),
                 ]
             },
             Some("foo"),
@@ -6592,7 +6572,7 @@ mod tests {
                     imaginary :: distinct int;
                     imaginary_vec3 :: distinct [3] imaginary;
 
-                    arr : imaginary_vec3 = [] imaginary { 1, 2, 3 };
+                    arr : imaginary_vec3 = [3] imaginary { 1, 2, 3 };
 
                     arr[0] as i32
                 }
@@ -6938,7 +6918,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> i32
-                1 : string
+                1 : str
                 2 : {uint}
                 3 : <unknown>
                 4 : () -> i32
@@ -7169,6 +7149,158 @@ mod tests {
                 7 : void
                 8 : () -> void
                 l0 : ^any
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn slice() {
+        check(
+            r#"
+                foo :: () {
+                    x := [] i32 { 1, 2, 3 };
+
+                    y : [] i32 = [] i32 { 4, 6, 7, 8 };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : []i32
+                8 : i32
+                9 : i32
+                10 : i32
+                11 : i32
+                12 : []i32
+                13 : void
+                14 : () -> void
+                l0 : []i32
+                l1 : []i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn explicit_slice_to_array() {
+        check(
+            r#"
+                foo :: () {
+                    x := [] i32 { 1, 2, 3 };
+                    
+                    y := x as [3] i32;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : []i32
+                5 : []i32
+                8 : [3]i32
+                9 : void
+                10 : () -> void
+                l0 : []i32
+                l1 : [3]i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn implicit_slice_to_array() {
+        check(
+            r#"
+                foo :: () {
+                    x := [] i32 { 1, 2, 3 };
+                    
+                    y : [3] i32 = x;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : []i32
+                7 : []i32
+                8 : void
+                9 : () -> void
+                l0 : []i32
+                l1 : [3]i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Array {
+                            size: 3,
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                        found: Ty::Slice {
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                    },
+                    129..130,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn explicit_array_to_slice() {
+        check(
+            r#"
+                foo :: () {
+                    x := [3] i32 { 1, 2, 3 };
+                    
+                    y := x as [] i32;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : [3]i32
+                5 : [3]i32
+                8 : []i32
+                9 : void
+                10 : () -> void
+                l0 : [3]i32
+                l1 : []i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn implicit_array_to_slice() {
+        check(
+            r#"
+                foo :: () {
+                    x := [3] i32 { 1, 2, 3 };
+                    
+                    y : [] i32 = x;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : [3]i32
+                7 : [3]i32
+                8 : void
+                9 : () -> void
+                l0 : [3]i32
+                l1 : []i32
             "#]],
             |_| [],
         )

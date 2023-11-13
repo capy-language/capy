@@ -1,8 +1,8 @@
 mod builtin;
 mod compiler;
 mod convert;
+mod layout;
 mod mangle;
-mod size;
 
 use compiler::comptime::ComptimeResult;
 use compiler::program::compile_program;
@@ -19,12 +19,19 @@ use std::path::PathBuf;
 use std::process::{exit, Command};
 use target_lexicon::Triple;
 
-pub(crate) type CraneliftSignature = cranelift::prelude::Signature;
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verbosity {
+    None,
+    LocalFunctions,
+    AllFunctions,
+}
+
+pub(crate) type FinalSignature = cranelift::prelude::Signature;
 
 pub use compiler::comptime::{eval_comptime_blocks, ComptimeToCompile};
 
 pub fn compile_jit(
-    verbose: bool,
+    verbosity: Verbosity,
     entry_point: hir::Fqn,
     mod_dir: &std::path::Path,
     interner: &Interner,
@@ -46,7 +53,7 @@ pub fn compile_jit(
     let mut module = JITModule::new(builder);
 
     let cmain = compile_program(
-        verbose,
+        verbosity,
         entry_point,
         mod_dir,
         interner,
@@ -69,7 +76,7 @@ pub fn compile_jit(
 
 #[allow(clippy::too_many_arguments)]
 pub fn compile_obj(
-    verbose: bool,
+    verbosity: Verbosity,
     entry_point: hir::Fqn,
     mod_dir: &std::path::Path,
     interner: &Interner,
@@ -99,7 +106,7 @@ pub fn compile_obj(
     let mut module = ObjectModule::new(builder);
 
     compile_program(
-        verbose,
+        verbosity,
         entry_point,
         mod_dir,
         interner,
@@ -316,13 +323,13 @@ mod tests {
         };
 
         let (inference_result, diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index).finish(Some(entry_point));
+            InferenceCtx::new(&bodies_map, &world_index, &interner).finish(Some(entry_point));
         assert_eq!(diagnostics, vec![]);
 
         println!("comptime:");
 
         let comptime_results = eval_comptime_blocks(
-            true,
+            Verbosity::LocalFunctions,
             comptimes,
             Path::new(""),
             &interner,
@@ -334,7 +341,7 @@ mod tests {
         println!("actual program:");
 
         let bytes = compile_obj(
-            true,
+            Verbosity::LocalFunctions,
             entry_point,
             if fake_file_system {
                 Path::new("")
@@ -492,6 +499,7 @@ mod tests {
             "main",
             expect![[r#"
             you can drink
+
             "#]],
             0,
         )
@@ -579,6 +587,24 @@ mod tests {
                 global[2][2][1] = 115
                 global[2][2][2] = 125
 
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn slices() {
+        check_files(
+            "../../examples/slices.capy",
+            &[],
+            "main",
+            expect![[r#"
+            { 4, 8, 15, 16, 23, 42 }
+            { 1, 2, 3 }
+            { 4, 5, 6, 7, 8 }
+            { 4, 8, 15, 16, 23, 42 }
+            { 4, 8, 15, 16, 23, 42 }
+            
             "#]],
             0,
         )
@@ -810,17 +836,18 @@ mod tests {
                 f32              (0xc000084) : size = 4, align = 4, stride = 4
                 void             (0x4000020) : size = 0, align = 1, stride = 0
                 any              (0x20000020) : size = 0, align = 1, stride = 0
-                string           (0x14000108) : size = 8, align = 8, stride = 8
+                str              (0x14000108) : size = 8, align = 8, stride = 8
                 char             (0x18000021) : size = 1, align = 1, stride = 1
                 type             (0x1c000084) : size = 4, align = 4, stride = 4
-                Person           (0x28000001) : size = 12, align = 8, stride = 16
-                Foo              (0x28000000) : size = 1, align = 1, stride = 1
-                [6] Person       (0x30000000) : size = 96, align = 8, stride = 96
-                 ^  Person       (0x34000000) : size = 8, align = 8, stride = 8
-                distinct Person  (0x2c000000) : size = 12, align = 8, stride = 16
-                distinct Person  (0x2c000001) : size = 12, align = 8, stride = 16
-                ()       -> void (0x38000000) : size = 8, align = 8, stride = 8
-                (x: i32) -> f32  (0x38000001) : size = 8, align = 8, stride = 8
+                Person           (0x40000001) : size = 12, align = 8, stride = 16
+                Foo              (0x40000000) : size = 1, align = 1, stride = 1
+                [6] Person       (0x48000000) : size = 96, align = 8, stride = 96
+                [ ] Person       (0x4c000000) : size = 16, align = 8, stride = 16
+                 ^  Person       (0x50000000) : size = 8, align = 8, stride = 8
+                distinct Person  (0x44000000) : size = 12, align = 8, stride = 16
+                distinct Person  (0x44000001) : size = 12, align = 8, stride = 16
+                ()       -> void (0x54000000) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32  (0x54000001) : size = 8, align = 8, stride = 8
 
                 i32 == i16 : false
                 i32 == u32 : false
@@ -887,6 +914,12 @@ mod tests {
                   float
                   bit_width = 64
 
+                slice
+                ty =
+                 int
+                 bit_width = 32
+                 signed    = true
+
                 pointer
                 ty =
                  int
@@ -922,6 +955,7 @@ mod tests {
 
                 123
                 { 4, 8, 15, 16, 23, 42 }
+                { 1, 2, 3 }
                 ^52
                 42
             "#]],
@@ -1030,7 +1064,7 @@ mod tests {
                     }
                 }
 
-                puts :: (s: string) extern;
+                puts :: (s: str) extern;
             "#,
             "main",
             expect![[r#"
@@ -1110,8 +1144,8 @@ mod tests {
                     0
                 }
                 
-                puts :: (s: string) extern;
-                printf :: (s: string, n1: i32, n2: i32) -> i32 extern;
+                puts :: (s: str) extern;
+                printf :: (s: str, n1: i32, n2: i32) -> i32 extern;
             "#,
             "main",
             expect![[r#"
@@ -1163,7 +1197,7 @@ mod tests {
                     printf("-5032 >>  2 =  %i\n", -5032 >> 2);
                 }
                 
-                printf :: (s: string, n: i64) extern;
+                printf :: (s: str, n: i64) extern;
             "#,
             "main",
             expect![[r#"

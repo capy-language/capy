@@ -1,7 +1,7 @@
 core :: mod "core";
 
 Person :: struct {
-    name: string,
+    name: str,
     age: i32,
 };
 
@@ -20,12 +20,13 @@ main :: () {
     print_type_layout("f32             ", f32);
     print_type_layout("void            ", void);
     print_type_layout("any             ", any);
-    print_type_layout("string          ", string);
+    print_type_layout("str             ", str);
     print_type_layout("char            ", char);
     print_type_layout("type            ", type);
     print_type_layout("Person          ", Person);
     print_type_layout("Foo             ", Foo);
     print_type_layout("[6] Person      ", [6] Person);
+    print_type_layout("[ ] Person      ", [] Person);
     print_type_layout(" ^  Person      ", ^ Person);
     print_type_layout("distinct Person ", distinct Person);
     print_type_layout("distinct Person ", distinct Person);
@@ -77,7 +78,7 @@ main :: () {
 
 }
 
-print_type_layout :: (name: string, ty: type) {
+print_type_layout :: (name: str, ty: type) {
     printf("%s (0x%x) : size = %i, align = %i, stride = %i\n", name, ty, core.meta.size_of(ty), core.meta.align_of(ty), core.meta.stride_of(ty));
 }
 
@@ -89,4 +90,4 @@ println_bool :: (b: bool) {
     }
 }
 
-printf :: (s: string, s2: string, ty: type, n1: usize, n2: usize, n3: usize) extern;
+printf :: (s: str, s2: str, ty: type, n1: usize, n2: usize, n3: usize) extern;

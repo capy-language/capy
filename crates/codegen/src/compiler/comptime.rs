@@ -11,9 +11,10 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     compiler::MetaTyData,
-    convert::{CompType, ToCompType},
+    convert::{FinalTy, GetFinalTy},
+    layout::GetLayoutInfo,
     mangle::Mangle,
-    size::GetMemInfo,
+    Verbosity,
 };
 
 use super::Compiler;
@@ -44,7 +45,7 @@ impl ComptimeResult {
 }
 
 pub fn eval_comptime_blocks<'a>(
-    verbose: bool,
+    verbosity: Verbosity,
     mut comptime_blocks: Vec<ComptimeToCompile>,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
@@ -70,7 +71,7 @@ pub fn eval_comptime_blocks<'a>(
     let mut module = JITModule::new(builder);
 
     let mut compiler = Compiler {
-        verbose,
+        verbosity,
         mod_dir,
         interner,
         bodies_map,
@@ -95,7 +96,7 @@ pub fn eval_comptime_blocks<'a>(
         },
     };
 
-    compiler.calculate_type_layouts();
+    compiler.finalize_tys();
 
     let mut comptime_funcs = Vec::new();
 
@@ -116,12 +117,7 @@ pub fn eval_comptime_blocks<'a>(
             return_ty,
         );
 
-        comptime_funcs.push((
-            ctc,
-            func_id,
-            return_ty.to_comp_type(compiler.pointer_ty),
-            return_ty.size(),
-        ));
+        comptime_funcs.push((ctc, func_id, return_ty.get_final_ty(), return_ty.size()));
     }
 
     compiler.compile_queued();
@@ -158,7 +154,7 @@ pub fn eval_comptime_blocks<'a>(
         let code_ptr = module.get_finalized_function(func_id);
 
         match return_ty {
-            CompType::Number(number_ty) => {
+            FinalTy::Number(number_ty) => {
                 let result = match number_ty.ty {
                     types::F32 => run_comptime_float::<f32>(code_ptr),
                     types::F64 => run_comptime_float::<f64>(code_ptr),
@@ -177,7 +173,7 @@ pub fn eval_comptime_blocks<'a>(
 
                 results.insert(ctc, result);
             }
-            CompType::Pointer(_) => {
+            FinalTy::Pointer(_) => {
                 let layout = Layout::from_size_align(size as usize, std::mem::align_of::<u8>())
                     .expect("Invalid layout");
                 let raw = unsafe { std::alloc::alloc(layout) };
@@ -194,7 +190,7 @@ pub fn eval_comptime_blocks<'a>(
 
                 results.insert(ctc, ComptimeResult::Data(bytes));
             }
-            CompType::Void => {
+            FinalTy::Void => {
                 let comptime = unsafe { mem::transmute::<_, fn()>(code_ptr) };
                 comptime();
                 results.insert(ctc, ComptimeResult::Void);

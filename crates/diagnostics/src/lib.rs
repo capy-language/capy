@@ -597,13 +597,13 @@ fn ty_diagnostic_message(
             interner.lookup(fqn.name.0),
             fqn.file.to_string(mod_dir, interner)
         ),
-        hir_ty::TyDiagnosticKind::NonExistentField { field, found_ty } => format!(
-            "there is no field `{}` within `{}`",
+        hir_ty::TyDiagnosticKind::NonExistentMember { member: field, found_ty } => format!(
+            "there is no member named `{}` within `{}`",
             interner.lookup(*field),
             found_ty.display(mod_dir, interner)
         ),
-        hir_ty::TyDiagnosticKind::StructLiteralMissingField { field, expected_ty } => format!(
-            "`{}` struct literal is missing the field `{}`",
+        hir_ty::TyDiagnosticKind::StructLiteralMissingMember { member: field, expected_ty } => format!(
+            "`{}` struct literal is missing the member `{}`",
             expected_ty.display(mod_dir, interner),
             interner.lookup(*field)
         ),

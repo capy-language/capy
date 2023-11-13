@@ -41,4 +41,4 @@ main :: () {
 }
 
 // since printf isn't techincally supposed to be here, it cannot be called from comptime blocks
-printf :: (s: string, n: i32) extern;
+printf :: (s: str, n: i32) extern;

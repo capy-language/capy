@@ -11,11 +11,11 @@ math :: import "math.capy";
 meta :: import "meta.capy";
 strings :: import "strings.capy";
 
-print :: (str: string) {
-    str := str as ^char;
+print :: (text: str) {
+    text := text as ^char;
     i := 0;
     loop {
-        ch := ptr.read(str, i) as char;
+        ch := ptr.read(text, i) as char;
         if ch == '\0' {
             break;
         }
@@ -26,9 +26,11 @@ print :: (str: string) {
     }
 }
 
-println :: (str: string) {
-    libc.puts(str);
+println :: (text: str) {
+    libc.puts(text);
 }
+
+len :: (slice: [] any) -> usize extern;
 
 Any :: struct {
     ty: type,
@@ -72,7 +74,7 @@ print_any :: (val: Any) {
             print("false");
         }
     } else if meta.is_string(ty) {
-        print({data as ^string}^);
+        print({data as ^str}^);
     } else if meta.is_char(ty) {
         libc.putchar({data as ^char}^);
     } else if meta.is_array(ty) {
@@ -91,6 +93,29 @@ print_any :: (val: Any) {
                 print(", ");
             }
             
+            idx = idx + 1;
+        }
+
+        print(" }");
+    } else if meta.is_slice(ty) {
+        info := meta.get_slice_info(ty);
+        elem_stride := meta.stride_of(info.ty);
+
+        slice := data as ^[] any;
+        len := slice.len;
+
+        print("{ ");
+
+        idx := 0;
+        while idx < len {
+            addr := ptr.const_offset(slice.ptr, elem_stride * idx);
+
+            print_any(Any { ty: info.ty, data: addr });
+
+            if idx < len - 1 {
+                print(", ");
+            }
+
             idx = idx + 1;
         }
 

@@ -1,7 +1,7 @@
 
 libc :: mod "core".libc;
 
-write_to_file :: (filename: string) {
+write_to_file :: (filename: str) {
     my_file := libc.fopen("hello.txt", "w");
 
     libc.fputs("Hello, World!", my_file);
@@ -9,13 +9,13 @@ write_to_file :: (filename: string) {
     libc.fclose(my_file);
 }
 
-read_from_file :: (filename: string) {
+read_from_file :: (filename: str) {
     my_file := libc.fopen("hello.txt", "r");
 
     buf := libc.malloc(20) as ^char;
     
-    str := libc.fgets(buf, 20, my_file);
-    libc.puts(str);
+    text := libc.fgets(buf, 20, my_file);
+    libc.puts(text);
 
     libc.free(buf);
 
@@ -30,4 +30,4 @@ main :: () {
     read_from_file("hello.txt");
 }
 
-printf :: (s: string, buf: string) extern;
+printf :: (s: str, buf: str) extern;

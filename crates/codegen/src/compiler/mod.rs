@@ -5,7 +5,8 @@ pub mod program;
 use cranelift::codegen::ir::Endianness;
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
-    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, TrapCode, Value,
+    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, StackSlotData,
+    StackSlotKind, TrapCode, Value,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use hir_ty::Ty;
@@ -17,9 +18,12 @@ use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
 use crate::builtin::{as_compiler_defined, BuiltinFunction};
+use crate::layout::{self, GetLayoutInfo};
 use crate::mangle::{self, Mangle};
-use crate::size::{self, GetMemInfo};
-use crate::{convert::*, ComptimeToCompile, CraneliftSignature};
+use crate::{
+    convert::{self, *},
+    ComptimeToCompile, FinalSignature, Verbosity,
+};
 
 use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
@@ -29,6 +33,7 @@ pub(crate) struct MetaTyData {
     pub(crate) tys_to_compile: Vec<Intern<Ty>>,
 
     pub(crate) array_uid_gen: UIDGenerator,
+    pub(crate) slice_uid_gen: UIDGenerator,
     pub(crate) pointer_uid_gen: UIDGenerator,
     pub(crate) distinct_uid_gen: UIDGenerator,
     pub(crate) function_uid_gen: UIDGenerator,
@@ -77,6 +82,7 @@ impl MetaTyMemArrays {
 
 pub(crate) struct MetaTyInfoArrays {
     pub(crate) array_info: DataId,
+    pub(crate) slice_info: DataId,
     pub(crate) pointer_info: DataId,
     pub(crate) distinct_info: DataId,
 }
@@ -87,6 +93,14 @@ impl MetaTyInfoArrays {
             array_info: module
                 .declare_data(
                     &mangle::mangle_internal("array_type_info"),
+                    Linkage::Export,
+                    false,
+                    false,
+                )
+                .expect("error declaring data"),
+            slice_info: module
+                .declare_data(
+                    &mangle::mangle_internal("slice_type_info"),
                     Linkage::Export,
                     false,
                     false,
@@ -121,7 +135,7 @@ pub(crate) struct FunctionToCompile {
 }
 
 pub(crate) struct Compiler<'a> {
-    pub(crate) verbose: bool,
+    pub(crate) verbosity: Verbosity,
 
     pub(crate) mod_dir: &'a std::path::Path,
 
@@ -148,8 +162,9 @@ pub(crate) struct Compiler<'a> {
 }
 
 impl Compiler<'_> {
-    fn calculate_type_layouts(&mut self) {
-        size::calculate_layouts(self.tys.all_tys(), self.pointer_ty.bits());
+    fn finalize_tys(&mut self) {
+        layout::calc_layouts(self.tys.all_tys(), self.pointer_ty.bits());
+        convert::calc_finals(self.tys.all_tys(), self.pointer_ty);
     }
 
     fn compile_queued(&mut self) {
@@ -183,6 +198,7 @@ impl Compiler<'_> {
         let mut struct_mem_data = Vec::new();
 
         let mut array_info_data = Vec::new();
+        let mut slice_info_data = Vec::new();
         let mut pointer_info_data = Vec::new();
         let mut distinct_info_data = Vec::new();
 
@@ -225,12 +241,20 @@ impl Compiler<'_> {
                         );
 
                         let ptr_size = self.pointer_ty.bytes();
-                        let padding = size::padding_needed_for(ptr_size, (32 / 8).min(8));
+                        let padding = layout::padding_needed_for(ptr_size, (32 / 8).min(8));
 
                         array_info_data.extend(std::iter::repeat(0).take(padding as usize));
 
                         extend_with_bytes(
                             &mut array_info_data,
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            32,
+                            self.module.isa().endianness(),
+                        );
+                    }
+                    Ty::Slice { sub_ty } => {
+                        extend_with_bytes(
+                            &mut slice_info_data,
                             sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
                             32,
                             self.module.isa().endianness(),
@@ -244,7 +268,7 @@ impl Compiler<'_> {
                             self.module.isa().endianness(),
                         );
                     }
-                    Ty::Distinct { ty, .. } => {
+                    Ty::Distinct { sub_ty: ty, .. } => {
                         extend_with_bytes(
                             &mut distinct_info_data,
                             ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
@@ -300,6 +324,12 @@ impl Compiler<'_> {
             define(
                 self.module,
                 &mut self.data_description,
+                info_arrays.slice_info,
+                slice_info_data,
+            );
+            define(
+                self.module,
+                &mut self.data_description,
                 info_arrays.pointer_info,
                 pointer_info_data,
             );
@@ -348,10 +378,10 @@ impl Compiler<'_> {
                         self.compile_ptr_bitcast_fn(&mangled, sig, func_id)
                     }
                     BuiltinFunction::SizeOf => {
-                        self.compile_meta_layout_fn(&mangled, sig, func_id, true)
+                        self.compile_meta_layout(&mangled, sig, func_id, true)
                     }
                     BuiltinFunction::AlignOf => {
-                        self.compile_meta_layout_fn(&mangled, sig, func_id, false)
+                        self.compile_meta_layout(&mangled, sig, func_id, false)
                     }
                     BuiltinFunction::IsMetaOfType(discriminant) => {
                         self.compile_meta_is_of_type(&mangled, sig, func_id, discriminant)
@@ -389,12 +419,7 @@ impl Compiler<'_> {
         );
     }
 
-    fn compile_ptr_bitcast_fn(
-        &mut self,
-        mangled_name: &str,
-        sig: CraneliftSignature,
-        func_id: FuncId,
-    ) {
+    fn compile_ptr_bitcast_fn(&mut self, mangled_name: &str, sig: FinalSignature, func_id: FuncId) {
         self.ctx.func.signature = sig;
 
         // Create the builder to build a function.
@@ -419,7 +444,7 @@ impl Compiler<'_> {
         builder.seal_all_blocks();
         builder.finalize();
 
-        if self.verbose {
+        if self.verbosity == Verbosity::AllFunctions {
             println!(
                 "ptr_bitcast \x1B[90m{}\x1B[0m:\n{}",
                 mangled_name, self.ctx.func
@@ -441,10 +466,10 @@ impl Compiler<'_> {
         self.module.clear_context(&mut self.ctx);
     }
 
-    fn compile_meta_layout_fn(
+    fn compile_meta_layout(
         &mut self,
         mangled_name: &str,
-        sig: CraneliftSignature,
+        sig: FinalSignature,
         func_id: FuncId,
         size: bool,
     ) {
@@ -491,7 +516,7 @@ impl Compiler<'_> {
             builder.ins().band_imm(shifted, 0b1111)
         };
 
-        let result = cast(
+        let result = cast_num(
             &mut builder,
             result,
             NumberType {
@@ -518,6 +543,8 @@ impl Compiler<'_> {
 
         let distinct_check = builder.create_block();
         let array_check = builder.create_block();
+        let slice_check = builder.create_block();
+        let slice_get = builder.create_block();
         let pointer_get = builder.create_block();
 
         let complex_get = builder.create_block();
@@ -575,7 +602,34 @@ impl Compiler<'_> {
                 .icmp_imm(IntCC::Equal, discriminant, ARRAY_DISCRIMINANT as i64);
         builder
             .ins()
-            .brif(is_array, complex_get, &[array_info], pointer_get, &[]);
+            .brif(is_array, complex_get, &[array_info], slice_check, &[]);
+
+        builder.switch_to_block(slice_check);
+        builder.seal_block(slice_check);
+
+        let is_slice =
+            builder
+                .ins()
+                .icmp_imm(IntCC::Equal, discriminant, SLICE_DISCRIMINANT as i64);
+
+        builder
+            .ins()
+            .brif(is_slice, slice_get, &[], pointer_get, &[]);
+
+        builder.switch_to_block(slice_get);
+        builder.seal_block(slice_get);
+
+        let result = if size {
+            builder
+                .ins()
+                .iconst(self.pointer_ty, self.pointer_ty.bytes() as i64 * 2)
+        } else {
+            builder
+                .ins()
+                .iconst(self.pointer_ty, self.pointer_ty.bytes().min(8) as i64)
+        };
+
+        builder.ins().return_(&[result]);
 
         builder.switch_to_block(pointer_get);
         builder.seal_block(pointer_get);
@@ -610,7 +664,7 @@ impl Compiler<'_> {
                 .iadd_imm(byte_offset, self.pointer_ty.bytes() as i64)
         };
 
-        let byte_offset = cast(
+        let byte_offset = cast_num(
             &mut builder,
             byte_offset,
             NumberType {
@@ -637,7 +691,7 @@ impl Compiler<'_> {
         builder.seal_all_blocks();
         builder.finalize();
 
-        if self.verbose {
+        if self.verbosity == Verbosity::AllFunctions {
             if size {
                 print!("size_of");
             } else {
@@ -664,7 +718,7 @@ impl Compiler<'_> {
     fn compile_meta_is_of_type(
         &mut self,
         mangled_name: &str,
-        sig: CraneliftSignature,
+        sig: FinalSignature,
         func_id: FuncId,
         expected_disc: u32,
     ) {
@@ -695,7 +749,7 @@ impl Compiler<'_> {
         builder.seal_all_blocks();
         builder.finalize();
 
-        if self.verbose {
+        if self.verbosity == Verbosity::AllFunctions {
             println!(
                 "is_meta_{} \x1B[90m{}\x1B[0m:\n{}",
                 expected_disc, mangled_name, self.ctx.func
@@ -720,7 +774,7 @@ impl Compiler<'_> {
     fn compile_meta_info(
         &mut self,
         mangled_name: &str,
-        sig: CraneliftSignature,
+        sig: FinalSignature,
         func_id: FuncId,
         expected_disc: u32,
     ) {
@@ -762,7 +816,7 @@ impl Compiler<'_> {
             // blacks out the discriminant (6 bits on the left hand side) from the typeid
             let index = builder.ins().band_imm(ty_arg, !(0b111111 << 26));
             let offset = builder.ins().imul_imm(index, stride as i64);
-            cast(
+            cast_num(
                 builder,
                 offset,
                 NumberType {
@@ -816,7 +870,7 @@ impl Compiler<'_> {
 
                 let ptr_size = self.pointer_ty.bytes();
                 let second_field_offset =
-                    ptr_size + size::padding_needed_for(ptr_size, (32 / 8).min(8));
+                    ptr_size + layout::padding_needed_for(ptr_size, (32 / 8).min(8));
 
                 let stride = second_field_offset + (32 / 8);
 
@@ -844,6 +898,22 @@ impl Compiler<'_> {
                     return_addr,
                     second_field_offset as i32,
                 );
+            }
+            SLICE_DISCRIMINANT => {
+                let slice_info = self
+                    .meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .slice_info;
+                let slice_info = self.module.declare_data_in_func(slice_info, builder.func);
+                let slice_info = builder.ins().symbol_value(self.pointer_ty, slice_info);
+
+                let offset = build_offset(&mut builder, 32 / 8);
+                let addr = builder.ins().iadd(slice_info, offset);
+
+                let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
+
+                builder.ins().store(MemFlags::trusted(), ty, return_addr, 0);
             }
             POINTER_DISCRIMINANT => {
                 let pointer_info = self
@@ -893,7 +963,7 @@ impl Compiler<'_> {
         builder.seal_all_blocks();
         builder.finalize();
 
-        if self.verbose {
+        if self.verbosity == Verbosity::AllFunctions {
             println!(
                 "get_{expected_disc}_info \x1B[90m{}\x1B[0m:\n{}",
                 mangled_name, self.ctx.func
@@ -925,7 +995,7 @@ impl Compiler<'_> {
         return_ty: Intern<Ty>,
     ) -> FuncId {
         let (comp_sig, new_idx_to_old_idx) =
-            (&param_tys, return_ty).to_cranelift_signature(self.module, self.pointer_ty);
+            (&param_tys, return_ty).to_final_signature(self.module, self.pointer_ty);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -945,7 +1015,7 @@ impl Compiler<'_> {
             bodies_map: self.bodies_map,
             tys: self.tys,
             module: self.module,
-            pointer_ty: self.pointer_ty,
+            ptr_ty: self.pointer_ty,
             data_description: &mut self.data_description,
             functions_to_compile: &mut self.functions_to_compile,
             meta_tys: &mut self.meta_tys,
@@ -965,7 +1035,10 @@ impl Compiler<'_> {
 
         function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);
 
-        if self.verbose {
+        if self.verbosity == Verbosity::AllFunctions
+            || (self.verbosity == Verbosity::LocalFunctions
+                && !module_name.is_mod(self.mod_dir, self.interner))
+        {
             println!(
                 "{} \x1B[90m{}\x1B[0m:\n{}",
                 unmangled_name, mangled_name, self.ctx.func
@@ -1049,7 +1122,7 @@ fn get_func_id(
 
     functions_to_compile.push_back(ftc);
 
-    let (comp_sig, _) = (&param_tys, return_ty).to_cranelift_signature(module, pointer_ty);
+    let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
 
     let func_id = if is_extern {
         module
@@ -1071,6 +1144,96 @@ fn get_func_id(
 }
 
 fn cast(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    cast_from: Intern<Ty>,
+    cast_to: Intern<Ty>,
+) -> Value {
+    if cast_from.is_functionally_equivalent_to(&cast_to, true) {
+        return val;
+    }
+
+    if let (Ty::Array { size, .. }, Ty::Slice { .. }) = (cast_from.as_ref(), cast_to.as_ref()) {
+        let slice_size = cast_to.size();
+
+        // i don't really want to change this function's signature, so we can just get the
+        // pointer type by dividing the slice by two since a slice is always gauranteed to be
+        // two pointers
+        let ptr_size = slice_size / 2;
+        let ptr_ty = match ptr_size {
+            1 => types::I8,
+            2 => types::I16,
+            4 => types::I32,
+            8 => types::I64,
+            16 => types::I128,
+            _ => unreachable!(),
+        };
+
+        let slice_stack_slot = builder.create_sized_stack_slot(StackSlotData {
+            kind: StackSlotKind::ExplicitSlot,
+            size: slice_size,
+        });
+
+        let len = builder.ins().iconst(ptr_ty, *size as i64);
+        builder.ins().stack_store(len, slice_stack_slot, 0);
+
+        builder
+            .ins()
+            .stack_store(val, slice_stack_slot, ptr_size as i32);
+
+        return builder.ins().stack_addr(ptr_ty, slice_stack_slot, 0);
+    }
+    if let (Ty::Slice { .. }, Ty::Array { .. }) = (cast_from.as_ref(), cast_to.as_ref()) {
+        let slice_size = cast_from.size();
+
+        let ptr_size = slice_size / 2;
+        let ptr_ty = match ptr_size {
+            1 => types::I8,
+            2 => types::I16,
+            4 => types::I32,
+            8 => types::I64,
+            16 => types::I128,
+            _ => unreachable!(),
+        };
+
+        // todo: do a runtime check that the lengths match
+
+        return builder
+            .ins()
+            .load(ptr_ty, MemFlags::trusted(), val, ptr_size as i32);
+    }
+
+    match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
+        (FinalTy::Number(cast_from), FinalTy::Number(cast_to)) => {
+            cast_num(builder, val, cast_from, cast_to)
+        }
+        _ => val,
+    }
+}
+
+fn cast_ty_to_cranelift(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    cast_from: Intern<Ty>,
+    cast_to: types::Type,
+) -> Value {
+    if let FinalTy::Number(cast_from) = cast_from.get_final_ty() {
+        cast_num(
+            builder,
+            val,
+            cast_from,
+            NumberType {
+                ty: cast_to,
+                float: false,
+                signed: false,
+            },
+        )
+    } else {
+        val
+    }
+}
+
+fn cast_num(
     builder: &mut FunctionBuilder,
     val: Value,
     cast_from: NumberType,
