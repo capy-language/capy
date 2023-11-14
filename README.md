@@ -1,3 +1,5 @@
+<p align=center><img src="./resources/capybara.png" alt="capy icon" height="150"/></p>
+
 # The Capy Programming Language
 
 A statically typed, compiled programming language, largely inspired by Jai, Odin, and Zig.
@@ -98,12 +100,9 @@ bar :: ^mut foo;
 bar^ = 10;
 ```
 
-This greatly improves readability of code, and allows one to see at a glance the side-effects of a function.
+Unlike Rust however, there are currently no borrow checking rules like "either one mutable reference or many const references".
 
-Unlike Rust however, there are currently no borrow checking rules like "either one `mut` or multiple `const`".
-
-As you can see, Capy follows the philosophy of creation on the left, usage on the right.
-This creates a very nice symmetry, although it might be strange to someone more accustomed to C's way of doing things.
+Mutable pointers greatly improve the readability of code, and allow one to see at a glance the side-effects of a function.
 
 ### Types
 
@@ -146,8 +145,8 @@ y : i32 = 12;
 x = y; // yay! My_Int == i32 :)
 ```
 
-It is important to note that in order to use `My_Int` within a type annotation, it must be const / "known at compile time."
-Otherwise, the compiler will throw an error as it's impossible to compile a variable (`x` in this case) whose size might change at runtime.
+It is important to note that in order to use `My_Int` within a type annotation, it must be *const*, or, "known at compile-time."
+Otherwise, the compiler will throw an error as it's impossible to compile a variable (`x` in this case) whose type might change at runtime.
 
 ```cpp
 My_Int := i32;
@@ -177,15 +176,14 @@ powers_of_two := comptime {
 };
 ```
 
-One of the most sacred promises this language tries it's absolute best to upkeep is *any code that can be run at runtime, can also be run at compile-time*.
+One of the most sacred promises this language tries it's best to keep is *any code that can be run at runtime, can also be run at compile-time*.
 There are no `const` functions like in Rust. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
+Or at least, that's the end goal. A few things haven't been fully fleshed out yet, like returning types, pointers, and functions from `comptime` blocks.
 
 ### Reflection
 
-Reflection is another powerful feature of the language. Reflection is one of my favorite features in any language.
-The goal is to beat Java's runtime reflection system, which if you've ever used it is incredibly powerful.
-
-Currently, you can get all the information you could want concerning types, including things such as the size of an array type, and the sub type of a distinct.
+Reflection is another powerful feature of the language. Currently, you can get all the information you could want concerning types,
+including things such as the size of an array type, and the sub-type of a distinct.
 
 ```cpp
 core :: mod "core";
@@ -198,28 +196,33 @@ core.assert(info.len == 3);
 core.assert(info.ty == i32);
 ```
 
-This powers the `Any` type, a struct containing a `^any` and a `type`, and which can represent any possible value.
+This functionality powers the `Any` type, a struct containing an `^any` and a `type`, and which can represent any possible value.
 
 ```cpp
-x : i32 = 5;
+count : i32 = 5;
+should_start : bool = true;
+greeting : str = "Hi";
 
 core.print_any(core.Any {
     ty: i32,
-    data: ^x,
+    data: ^count,
 });
-
-// anything can implicitly cast to an Any!
-core.print_any(x);
-core.print_any(true);
-core.print_any("Hi!");
+core.print_any(core.Any {
+    ty: bool,
+    data: ^should_start,
+});
+core.print_any(core.Any {
+    ty: str,
+    data: ^greeting,
+});
 ```
 
 In the future reflection will be made to embrace functions. When user-defined annotations are added, this will result in automation far more powerful than Rust macros.
 
-#### Functions
+### Functions
 
-Every Capy program must contains a `main` function. It is the entry point of the program.
-This function's signature can be written in multiple ways, returning either `void`, or an integer type.
+Every Capy program must contain a `main` function. It is the entry point of the program.
+This function's signature can be written in multiple ways; it can returning either `void`, or an integer type.
 
 ```cpp
 // this is valid
@@ -228,7 +231,7 @@ main :: () { ... };
 // this is also valid
 main :: () -> u32 { ... };
 
-/// but this isn't :(
+/// this isn't :(
 main :: () -> bool { ... };
 ```
 
@@ -252,11 +255,15 @@ apply_2_and_3(add);
 apply_2_and_3(mul);
 ```
 
-#### Imports
+Lambdas, or anonymous functions, are a necessity in any good programming language.
+This one singular lambda syntax allows for far more consistency and easier code evolution
+than the two separate syntaxes for lambdas and functions many languages are forced to go with.
+
+### Imports
 
 Capy contains an `import` and `mod` expression. These are first class values that refer to other files in your program.
 
-An `import` refers to a local file, relative to the current file, whereas a `mod` refers to a specific `mod.capy` file in the global modules directory.
+An `import` refers to a source file, relative to the current file, whereas a `mod` refers to a specific `mod.capy` file in the global modules directory.
 
 ```cpp
 my_file :: import "some_file.capy";
@@ -265,7 +272,7 @@ core :: mod "core";
 
 The modules directory can be changed via the `--mod-dir` flag, and if it lacks a "core" subfolder one will automatically be downloaded from this repository.
 
-The [`examples`](./examples/) folder contains a lot more, and I highly recommend you read to get a better idea of what the language looks like in practice.
+The [`examples`](./examples/) folder contains a lot more, and you can read some of them to get a better idea of what the language looks like in practice.
 
 ## Limitations
 
@@ -279,7 +286,7 @@ Cranelift is [currently working on adding variadic support](https://github.com/b
 
 While the end goal is to make any code than can run outside of a `comptime` block be allowed to run within a `comptime` block,
 this is easier said than done. `printf` in particular cannot be run at compile-time.
-And especially as linked libaries become better supported, a subtle rift might form between runtime and comptime :(
+And especially as support for linked libaries increases, it'll be harder to keep the promise.
 
 If you find any bugs in the compiler, please please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and it'll be responded to as soon as possible.
 
