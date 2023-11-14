@@ -2,7 +2,7 @@
 // this is all going to change.
 // `pub` is going to be added
 // after that, there will be a way to bypass it
-version :: "alpha 0.1.0";
+version :: "alpha 0.1.1";
 
 fmt :: import "fmt.capy";
 libc :: import "libc.capy";
@@ -10,6 +10,13 @@ ptr :: import "ptr.capy";
 math :: import "math.capy";
 meta :: import "meta.capy";
 strings :: import "strings.capy";
+
+assert :: (condition: bool) {
+    if !condition {
+        println("assert failed!");
+        libc.exit(1);
+    }
+}
 
 print :: (text: str) {
     text := text as ^char;
@@ -36,6 +43,11 @@ Any :: struct {
     ty: type,
     data: ^any,
 };
+
+println_any :: (val: Any) {
+    print_any(val);
+    libc.putchar('\n');
+}
 
 print_any :: (val: Any) {
     ty := val.ty;
@@ -84,12 +96,12 @@ print_any :: (val: Any) {
         print("{ ");
 
         idx := 0;
-        while idx < info.size {
+        while idx < info.len {
             addr := ptr.const_offset(data, elem_stride * idx);
             
             print_any(Any { ty: info.ty, data: addr });
 
-            if idx < info.size - 1 {
+            if idx < info.len - 1 {
                 print(", ");
             }
             

@@ -131,7 +131,7 @@ Imaginary :: distinct i32;
 x : Imaginary = 42;
 y : i32 = 12;
 
-x = y; // ERROR! Imaginary != i32 :(
+y = x; // ERROR! Imaginary != i32 :(
 ```
 
 You can alias a type by making a binding to that type.
@@ -142,7 +142,7 @@ My_Int :: i32;
 x : My_Int = 42;
 y : i32 = 12;
 
-x = y; // yay! My_Int == i32 :)
+y = x; // yay! My_Int == i32 :)
 ```
 
 It is important to note that in order to use `My_Int` within a type annotation, it must be *const*, or, "known at compile-time."
@@ -203,15 +203,15 @@ count : i32 = 5;
 should_start : bool = true;
 greeting : str = "Hi";
 
-core.print_any(core.Any {
+core.println_any(core.Any {
     ty: i32,
     data: ^count,
 });
-core.print_any(core.Any {
+core.println_any(core.Any {
     ty: bool,
     data: ^should_start,
 });
-core.print_any(core.Any {
+core.println_any(core.Any {
     ty: str,
     data: ^greeting,
 });

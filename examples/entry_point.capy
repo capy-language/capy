@@ -18,5 +18,3 @@ main :: () -> i64 {
 }
 
 printf :: (text: str, i: i64) extern;
-
-exit :: (code: u8) extern;

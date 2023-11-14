@@ -32,3 +32,6 @@ fputs :: (text: str, fp: usize) -> i32 extern;
 fgetc :: (fp: usize) -> u8 extern;
 // read len char's from a file and store them in buf
 fgets :: (buf: ^char, len: i32, fp: usize) -> str extern;
+
+// exits the current program
+exit :: (status: i32) extern;

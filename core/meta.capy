@@ -116,7 +116,11 @@ stride_of :: (ty: type) -> usize {
 // An alignment of `1` is accepted in all addresses (every number is a multiple of 1)
 align_of :: (ty: type) -> usize extern;
 
-// integers (u8, i8, u16, i16, u32, i32, u64, i64, u128, i128)
+// `u8`, `u16`, `u32`, `u64`, `u128`, `usize`
+// `i8`, `i16`, `i32`, `i64`, `i128`, `isize`
+//
+// these are the available integer types for use.
+// `usize` and `isize` have the same size as a pointer on the target architecture.
 
 Int_Info :: struct {
     bit_width: u8,
@@ -126,7 +130,9 @@ Int_Info :: struct {
 is_int :: (ty: type) -> bool extern;
 get_int_info :: (ty: type) -> Int_Info extern;
 
-// floats (f32, f64)
+// `f32`, `f64`
+//
+// these are the available floating point types for use
 
 Float_Info :: struct {
     bit_width: u8,
@@ -135,29 +141,35 @@ Float_Info :: struct {
 is_float :: (ty: type) -> bool extern;
 get_float_info :: (ty: type) -> Float_Info extern;
 
-// boolean (bool)
+// `bool`
 
 is_bool :: (ty: type) -> bool extern;
 
-// string (str)
+// `str`
 
 is_string :: (ty: type) -> bool extern;
 
-// char
+// `char`
 
 is_char :: (ty: type) -> bool extern;
 
-// arrays ([6] i32, [42] string)
+// `[6] i32`
+// `[10] u8`
+// ...
 
 Array_Info :: struct {
-    size: usize,
+    len: usize,
     ty: type,
 };
 
 is_array :: (ty: type) -> bool extern;
 get_array_info :: (ty: type) -> Array_Info extern;
 
-// slices ([] i32, [] string)
+// `[] i8`
+// `[] char`
+// ...
+//
+// A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
 
 Slice_Info :: struct {
     ty: type,
@@ -166,7 +178,9 @@ Slice_Info :: struct {
 is_slice :: (ty: type) -> bool extern;
 get_slice_info :: (ty: type) -> Slice_Info extern;
 
-// pointers (^i32, ^f32)
+// `^i32`
+// `^any`
+// ...
 
 Pointer_Info :: struct {
     ty: type,
@@ -175,7 +189,11 @@ Pointer_Info :: struct {
 is_pointer :: (ty: type) -> bool extern;
 get_pointer_info :: (ty: type) -> Pointer_Info extern;
 
-// distincts (distinct i32, distinct f32)
+// `distinct i32`
+// `distinct bool`
+// ...
+//
+// A unique type with the same underlying semantics of it's sub-type
 
 Distinct_Info :: struct {
     ty: type,
@@ -184,26 +202,44 @@ Distinct_Info :: struct {
 is_distinct :: (ty: type) -> bool extern;
 get_distinct_info :: (ty: type) -> Distinct_Info extern;
 
-// meta type
+// `type`
+//
+// a "meta type". types are first-class values and `i32` when used as a value has the type of `type`
 
 is_meta_type :: (ty: type) -> bool extern;
 
-// any
+// `any`
+// 
+// can represent any arbitrary but unknown value.
+// cannot be directly obtained, but only held through `^any`, `[] any`, etc.
 
 is_any :: (ty: type) -> bool extern;
 
-// file (the type of `import "my_file.capy"` or `mod "core"`)
+// the file type
+//
+// this is perhaps the most useless type, but it is here for only covering all the possibilities
+// when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`
+// however, no two `file` types are interchangeable, `import "a.capy"` and `import "b.capy"`
+// are really two unique types.
+//
+// If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
 
 is_file :: (ty: type) -> bool extern;
 
-// functions (() -> void, (x: i32) -> f32)
+// `() -> void`
+// `(x: i32) -> bool`
+// ...
 
 is_function :: (ty: type) -> bool extern;
 
-// structs (struct { a: i32, b: f32 })
+// `struct { a: i32, b: i32 }`
+// `struct { foo: str }`
+// ...
 
 is_struct :: (ty: type) -> bool extern;
 
-// void
+// `void`
+//
+// an empty type, a `u0`
 
 is_void :: (ty: type) -> bool extern;
