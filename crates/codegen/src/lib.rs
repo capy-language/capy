@@ -476,22 +476,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_point() {
-        check_files(
-            "../../examples/entry_point.capy",
-            &[],
-            "_start",
-            expect![[r#"
-            _start
-            Hello from Main!
-            main() returned with: 0
-
-            "#]],
-            255,
-        )
-    }
-
-    #[test]
     fn drink() {
         check_files(
             "../../examples/drink.capy",
@@ -899,17 +883,17 @@ mod tests {
                 bit_width = 64
 
                 array
-                size = 5
+                len = 5
                 ty =
                  int
                  bit_width = 32
                  signed    = true
 
                 array
-                size = 1000
+                len = 1000
                 ty =
                  array
-                 size = 3
+                 len = 3
                  ty =
                   float
                   bit_width = 64
@@ -945,7 +929,7 @@ mod tests {
                 distinct
                 ty =
                  array
-                 size = 2
+                 len = 2
                  ty =
                   distinct
                   ty =

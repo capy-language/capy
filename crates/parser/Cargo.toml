@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 capy_macros = {path = "../capy_macros"}
-backtrace = "0.3.68"
 chrono = "0.4.23"
 drop_bomb = "0.1.5"
 static_assertions = "1.1"

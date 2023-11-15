@@ -2,18 +2,15 @@
 
 # The Capy Programming Language
 
-A statically typed, compiled programming language, largely inspired by Jai, Odin, and Zig.
-It even has [arbitrary compile-time execution](#Comptime)!
-
-Now on all your favorite Operating Systems! Thanks [cranelift](https://cranelift.dev/)!
+> A programming language made to explore [Compile-Time Execution](#Comptime) and [Runtime Reflection](#Reflection), largely inspired by Jai, Odin, and Zig.
 
 ```cpp
 core :: mod "core";
 
-to_print :: "Hello, World!";
+greeting :: "Hello, World!";
 
 main :: () -> i32 {
-    core.println(to_print);
+    core.println(greeting);
 
     // exit with code 0
     0
@@ -59,7 +56,7 @@ age = 43;
 
 The type can of course be elided.
 
-The binding does not *necessarily* need to be const, it is a runtime store like any other.
+A binding does not *necessarily* need to be const, it is a runtime store like any other.
 But there might be certain circumstances in which it must be, which will be expanded on later.
 
 These bindings and variables can also shadow each other,
@@ -176,13 +173,13 @@ powers_of_two := comptime {
 };
 ```
 
-One of the most sacred promises this language tries it's best to keep is *any code that can be run at runtime, can also be run at compile-time*.
-There are no `const` functions like in Rust. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
+One of the most sacred promises Capy tries it's best to keep is *any code that can be run at runtime, can also be run at compile-time*.
+There are no `const` functions to be found here. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
 Or at least, that's the end goal. A few things haven't been fully fleshed out yet, like returning types, pointers, and functions from `comptime` blocks.
 
 ### Reflection
 
-Reflection is another powerful feature of the language. Currently, you can get all the information you could want concerning types,
+Reflection is another powerful feature of Capy. Currently, you can get all the information you could want concerning types,
 including things such as the size of an array type, and the sub-type of a distinct.
 
 ```cpp
@@ -222,7 +219,7 @@ In the future reflection will be made to embrace functions. When user-defined an
 ### Functions
 
 Every Capy program must contain a `main` function. It is the entry point of the program.
-This function's signature can be written in multiple ways; it can returning either `void`, or an integer type.
+This function's signature can be written in multiple ways; it can return either `void` or an integer type.
 
 ```cpp
 // this is valid
@@ -270,9 +267,9 @@ my_file :: import "some_file.capy";
 core :: mod "core";
 ```
 
-The modules directory can be changed via the `--mod-dir` flag, and if it lacks a "core" subfolder one will automatically be downloaded from this repository.
+The modules directory can be changed via the `--mod-dir` flag, and if it lacks a "core" subfolder one will automatically be downloaded [from this repository](./core/).
 
-The [`examples`](./examples/) folder contains a lot more, and you can read some of them to get a better idea of what the language looks like in practice.
+The [`examples`](./examples/) folder contains a lot more, and it gives a much better idea of what the language looks like in practice.
 
 ## Limitations
 
@@ -286,7 +283,7 @@ Cranelift is [currently working on adding variadic support](https://github.com/b
 
 While the end goal is to make any code than can run outside of a `comptime` block be allowed to run within a `comptime` block,
 this is easier said than done. `printf` in particular cannot be run at compile-time.
-And especially as support for linked libaries increases, it'll be harder to keep the promise.
+Especially as support for linked libaries increases, it'll be harder to keep this promise.
 
 If you find any bugs in the compiler, please please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and it'll be responded to as soon as possible.
 

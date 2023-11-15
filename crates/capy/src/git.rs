@@ -19,7 +19,7 @@ pub(crate) fn download_github_dir(lib_dir: &Path, path: &str) {
     let client = Client::new();
 
     let mut response = client
-        .get(&format!("{GITHUB_URL}/{path}"))
+        .get(format!("{GITHUB_URL}/{path}"))
         .header("User-Agent", " ")
         .send()
         .expect("Failed to get response from capy-language/capy:core");

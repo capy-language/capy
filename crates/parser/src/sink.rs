@@ -24,7 +24,7 @@ impl<'tokens> Sink<'tokens> {
     pub(crate) fn finish(mut self, errors: Vec<SyntaxError>) -> Parse {
         // the first event always starts the root node,
         // and the last event always finishes that node
-        assert!(matches!(self.events.get(0), Some(Event::StartNode { .. })));
+        assert!(matches!(self.events.first(), Some(Event::StartNode { .. })));
         assert!(matches!(self.events.last(), Some(Event::FinishNode)));
 
         // We want to avoid nodes having trailing trivia:

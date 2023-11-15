@@ -79,7 +79,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         info := meta.get_array_info(ty);
 
         print_indent(indent);
-        printf("size = %i\n", info.size as i32);
+        printf("len = %i\n", info.len as i32);
 
         print_indent(indent);
         core.println("ty =");

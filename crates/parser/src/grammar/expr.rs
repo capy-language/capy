@@ -8,9 +8,6 @@ pub(super) fn parse_expr(
     p: &mut Parser,
     expected_syntax_name: &'static str,
 ) -> Option<CompletedMarker> {
-    // let bt = backtrace::Backtrace::force_capture();
-    // println!("parse_expr {}", bt);
-    // println!("parse_expr {:?} {:?}", p.peek(), p.peek_range());
     parse_expr_bp(p, 0, TokenSet::NONE, expected_syntax_name)
 }
 

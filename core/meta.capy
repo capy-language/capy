@@ -156,6 +156,8 @@ is_char :: (ty: type) -> bool extern;
 // `[6] i32`
 // `[10] u8`
 // ...
+//
+// A standard array of data, layed out linearly in memory.
 
 Array_Info :: struct {
     len: usize,
@@ -169,7 +171,7 @@ get_array_info :: (ty: type) -> Array_Info extern;
 // `[] char`
 // ...
 //
-// A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
+// The slice. A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
 
 Slice_Info :: struct {
     ty: type,
@@ -193,7 +195,7 @@ get_pointer_info :: (ty: type) -> Pointer_Info extern;
 // `distinct bool`
 // ...
 //
-// A unique type with the same underlying semantics of it's sub-type
+// The distinct, A unique type with the same underlying semantics of it's sub-type
 
 Distinct_Info :: struct {
     ty: type,
@@ -217,10 +219,9 @@ is_any :: (ty: type) -> bool extern;
 
 // the file type
 //
-// this is perhaps the most useless type, but it is here for only covering all the possibilities
-// when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`
-// however, no two `file` types are interchangeable, `import "a.capy"` and `import "b.capy"`
-// are really two unique types.
+// this is perhaps the most useless type, but it is here for only covering all the possibilities.
+// when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`.
+// no two `file` types are the same, `import "a.capy"` and `import "b.capy"` are really two unique types.
 //
 // If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
 
@@ -229,6 +230,8 @@ is_file :: (ty: type) -> bool extern;
 // `() -> void`
 // `(x: i32) -> bool`
 // ...
+//
+// the function type is identical to an actual function except that it lacks a body
 
 is_function :: (ty: type) -> bool extern;
 

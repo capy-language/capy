@@ -116,5 +116,5 @@ fn lex_comment(offset: TextSize, len: usize, mut f: impl FnMut(TokenKind, TextSi
 }
 
 capy_macros::define_token_enum! {
-    LexerTokenKind, full, "../../tokens.lex"
+    LexerTokenKind, full, "../../tokenizer.txt"
 }

@@ -1,3 +1,3 @@
 fn main() {
-    println!("cargo:rerun-if-changed=../../tokens.lex");
+    println!("cargo:rerun-if-changed=../../tokenizer.txt");
 }

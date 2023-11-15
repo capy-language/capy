@@ -1,9 +1,9 @@
 core :: mod "core";
 
-to_print :: "Hello, World!";
+greeting :: "Hello, World!";
 
 main :: () -> i32 {
-    core.println(to_print);
+    core.println(greeting);
 
     // exit with code 0
     0

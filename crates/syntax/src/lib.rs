@@ -33,7 +33,7 @@ unsafe impl eventree::TreeConfig for TreeConfig {
 }
 
 capy_macros::define_token_enum! {
-    TokenKind, stripped, "../../tokens.lex"
+    TokenKind, stripped, "../../tokenizer.txt"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

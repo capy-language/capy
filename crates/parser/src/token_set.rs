@@ -14,7 +14,7 @@ use syntax::TokenKind;
 // This implementation is mostly stolen from rust-analyzer:
 // https://github.com/rust-analyzer/rust-analyzer/blob/b73b321478d3b2a98d380eb79de717e01620c4e9/crates/parser/src/token_set.rs
 // (This implementation is also stolen lol)
-capy_macros::define_token_set!("../../tokens.lex");
+capy_macros::define_token_set!("../../tokenizer.txt");
 
 impl TokenSet {
     pub(crate) const fn new<const LEN: usize>(kinds: [TokenKind; LEN]) -> Self {
