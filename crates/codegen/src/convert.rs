@@ -452,7 +452,7 @@ impl ToTyId for Intern<Ty> {
 
                 return id | list_id;
             }
-            Ty::Struct { .. } => {
+            Ty::Struct { members, .. } => {
                 let id = STRUCT_DISCRIMINANT << 26;
 
                 let list_id = meta_tys
@@ -466,6 +466,11 @@ impl ToTyId for Intern<Ty> {
                         meta_tys.tys_to_compile.push(self);
                         meta_tys.struct_uid_gen.generate_unique_id()
                     });
+
+                for (_, member) in members {
+                    // make sure to compile the sub type too
+                    member.to_type_id(meta_tys, pointer_ty);
+                }
 
                 return id | list_id;
             }
@@ -506,6 +511,8 @@ impl ToTyId for Intern<Ty> {
             Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
             Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::Array { .. } => {
+                println!("{:?}", self);
+
                 let id = ARRAY_DISCRIMINANT << 26;
 
                 let list_id = meta_tys

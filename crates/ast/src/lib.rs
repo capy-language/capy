@@ -531,14 +531,14 @@ impl Condition {
 def_ast_node!(StructDecl);
 
 impl StructDecl {
-    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldDecl> + '_ {
+    pub fn members(self, tree: &SyntaxTree) -> impl Iterator<Item = MemberDecl> + '_ {
         nodes(self, tree)
     }
 }
 
-def_ast_node!(FieldDecl);
+def_ast_node!(MemberDecl);
 
-impl FieldDecl {
+impl MemberDecl {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
@@ -555,14 +555,14 @@ impl StructLiteral {
         node(self, tree)
     }
 
-    pub fn fields(self, tree: &SyntaxTree) -> impl Iterator<Item = FieldLiteral> + '_ {
+    pub fn members(self, tree: &SyntaxTree) -> impl Iterator<Item = MemberLiteral> + '_ {
         nodes(self, tree)
     }
 }
 
-def_ast_node!(FieldLiteral);
+def_ast_node!(MemberLiteral);
 
-impl FieldLiteral {
+impl MemberLiteral {
     pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
@@ -1973,7 +1973,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let mut fields = struct_decl.fields(&tree);
+        let mut fields = struct_decl.members(&tree);
 
         let field = fields.next();
         assert!(field.is_some());
@@ -2002,7 +2002,7 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let mut fields = struct_lit.fields(&tree);
+        let mut fields = struct_lit.members(&tree);
 
         let field = fields.next();
         assert!(field.is_some());

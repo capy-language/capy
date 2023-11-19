@@ -498,7 +498,7 @@ fn parse_struct_def(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
             recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RBrace])),
         );
 
-        field_m.complete(p, NodeKind::FieldDecl);
+        field_m.complete(p, NodeKind::MemberDecl);
 
         if p.at_eof() || p.at_default_recovery_set() {
             break;
@@ -549,7 +549,7 @@ fn parse_struct_literal(
             recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RBrace])),
         );
 
-        field_m.complete(p, NodeKind::FieldLiteral);
+        field_m.complete(p, NodeKind::MemberLiteral);
 
         if p.at_eof() || p.at_default_recovery_set() {
             break;

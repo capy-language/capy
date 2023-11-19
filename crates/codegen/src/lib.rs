@@ -860,87 +860,142 @@ mod tests {
             &[],
             "main",
             expect![[r#"
-                int
+                INT
                 bit_width = 32
                 signed    = true
 
-                int
+                INT
                 bit_width = 8
                 signed    = false
 
-                int
+                INT
                 bit_width = 128
                 signed    = false
 
-                int
+                INT
                 bit_width = 64
                 signed    = true
 
-                float
+                FLOAT
                 bit_width = 32
 
-                float
+                FLOAT
                 bit_width = 64
 
-                array
+                ARRAY
                 len = 5
                 ty =
-                 int
+                 INT
                  bit_width = 32
                  signed    = true
 
-                array
+                ARRAY
                 len = 1000
                 ty =
-                 array
+                 ARRAY
                  len = 3
                  ty =
-                  float
+                  FLOAT
                   bit_width = 64
 
-                slice
+                SLICE
                 ty =
-                 int
+                 INT
                  bit_width = 32
                  signed    = true
 
-                pointer
+                POINTER
                 ty =
-                 int
+                 INT
                  bit_width = 32
                  signed    = true
 
-                pointer
+                POINTER
                 ty =
-                 pointer
+                 POINTER
                  ty =
-                  pointer
+                  POINTER
                   ty =
-                   int
+                   INT
                    bit_width = 128
                    signed    = true
 
-                distinct
+                DISTINCT
                 ty =
-                 int
+                 INT
                  bit_width = 32
                  signed    = true
 
-                distinct
+                DISTINCT
                 ty =
-                 array
+                 ARRAY
                  len = 2
                  ty =
-                  distinct
+                  DISTINCT
                   ty =
-                   int
+                   INT
                    bit_width = 8
                    signed    = true
+
+                STRUCT
+                members =
+                 name = a
+                 ty =
+                  INT
+                  bit_width = 32
+                  signed    = true
+                 offset = 0
+
+                STRUCT
+                members =
+                 name = text
+                 ty =
+                  STRING
+                 offset = 0
+                 name = flag
+                 ty =
+                  BOOL
+                 offset = 8
+                 name = array
+                 ty =
+                  ARRAY
+                  len = 3
+                  ty =
+                   INT
+                   bit_width = 16
+                   signed    = true
+                 offset = 10
+
+                STRUCT
+                members =
+                 name = ty
+                 ty =
+                  META TYPE
+                 offset = 0
+                 name = data
+                 ty =
+                  POINTER
+                  ty =
+                   ANY
+                 offset = 8
+
+                DISTINCT
+                ty =
+                 STRUCT
+                 members =
+                  name = a
+                  ty =
+                   INT
+                   bit_width = 32
+                   signed    = true
+                  offset = 0
 
                 123
                 { 4, 8, 15, 16, 23, 42 }
                 { 1, 2, 3 }
                 ^52
+                42
+                { text = Hello, flag = false, array = { 1, 2, 3 } }
                 42
             "#]],
             0,

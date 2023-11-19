@@ -10,7 +10,7 @@ Root@0..43
       Whitespace@6..7 " "
       LBrace@7..8 "{"
       Whitespace@8..13 "\n    "
-      FieldDecl@13..25
+      MemberDecl@13..25
         Ident@13..17 "name"
         Colon@17..18 ":"
         Whitespace@18..19 " "
@@ -19,7 +19,7 @@ Root@0..43
             Ident@19..25 "string"
       Comma@25..26 ","
       Whitespace@26..31 "\n    "
-      FieldDecl@31..39
+      MemberDecl@31..39
         Ident@31..34 "age"
         Colon@34..35 ":"
         Whitespace@35..36 " "

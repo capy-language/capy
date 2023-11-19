@@ -8,7 +8,7 @@ Root@0..5
           Ident@0..3 "Foo"
       Whitespace@3..4 " "
       LBrace@4..5 "{"
-      FieldLiteral@5..5
+      MemberLiteral@5..5
 error at 5: missing field name
 error at 5: missing Colon
 error at 5: missing field value

@@ -44,7 +44,7 @@ pub enum Ty {
     Struct {
         fqn: Option<hir::Fqn>,
         uid: u32,
-        fields: Vec<(hir::Name, Intern<Ty>)>,
+        members: Vec<(hir::Name, Intern<Ty>)>,
     },
     Void,
 }
@@ -72,7 +72,7 @@ impl Ty {
     /// If self is a struct, this returns the fields
     pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<Ty>)>> {
         match self {
-            Ty::Struct { fields, .. } => Some(fields.clone()),
+            Ty::Struct { members, .. } => Some(members.clone()),
             Ty::Distinct { sub_ty, .. } => sub_ty.as_struct(),
             _ => None,
         }
@@ -173,8 +173,8 @@ impl Ty {
             Ty::Void => true,
             Ty::File(_) => true,
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
-            Ty::Struct { fields, .. } => {
-                fields.is_empty() || fields.iter().all(|(_, ty)| ty.is_zero_sized())
+            Ty::Struct { members, .. } => {
+                members.is_empty() || members.iter().all(|(_, ty)| ty.is_zero_sized())
             }
             Ty::Distinct { sub_ty: ty, .. } => ty.is_zero_sized(),
             _ => false,
@@ -204,7 +204,7 @@ impl Ty {
             Ty::Unknown => true,
             Ty::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
-            Ty::Struct { fields, .. } => fields.iter().any(|(_, ty)| ty.is_unknown()),
+            Ty::Struct { members, .. } => members.iter().any(|(_, ty)| ty.is_unknown()),
             Ty::Distinct { sub_ty, .. } => sub_ty.is_unknown(),
             _ => false,
         }
@@ -534,11 +534,11 @@ impl Ty {
             // but I'm lazy and that would require some changes in the codegen crate
             (
                 Ty::Struct {
-                    fields: found_fields,
+                    members: found_fields,
                     ..
                 },
                 Ty::Struct {
-                    fields: expected_fields,
+                    members: expected_fields,
                     ..
                 },
             ) => {

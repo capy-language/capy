@@ -112,8 +112,12 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
             ty.size()
         }
         Ty::Function { .. } => pointer_bit_width / 8,
-        Ty::Struct { fields, .. } => {
-            let fields = fields.iter().map(|(_, ty)| ty).copied().collect::<Vec<_>>();
+        Ty::Struct { members, .. } => {
+            let fields = members
+                .iter()
+                .map(|(_, ty)| ty)
+                .copied()
+                .collect::<Vec<_>>();
             for field in &fields {
                 calc_single(*field, pointer_bit_width);
             }
@@ -208,7 +212,7 @@ impl StructLayout {
         }
     }
 
-    pub(crate) fn offsets(&self) -> &Vec<u32> {
+    pub(crate) fn offsets(&self) -> &[u32] {
         &self.offsets
     }
 }

@@ -296,13 +296,13 @@ impl InferenceCtx<'_> {
 
                 // self.reinfer_expr(current_bodies!(self)[local_def].value);
             }
-            Expr::StructLiteral { fields, .. } => {
-                let field_tys = new_ty.as_struct().unwrap();
+            Expr::StructLiteral { members, .. } => {
+                let member_tys = new_ty.as_struct().unwrap();
 
-                for (idx, (_, value)) in fields.into_iter().enumerate() {
-                    let new_field_ty = field_tys[idx].1;
+                for (idx, (_, value)) in members.into_iter().enumerate() {
+                    let new_member_ty = member_tys[idx].1;
 
-                    self.replace_weak_tys(value, new_field_ty);
+                    self.replace_weak_tys(value, new_member_ty);
                 }
             }
             _ => {}
@@ -1433,13 +1433,13 @@ impl InferenceCtx<'_> {
             }
             hir::Expr::StructLiteral {
                 ty: ty_expr,
-                fields: field_values,
+                members: member_values,
             } => {
                 let expected_ty = self.parse_expr_to_ty(*ty_expr, &mut FxHashSet::default());
 
                 // IndexMap is used to make sure errors are emitted in a logical order
 
-                let found_field_tys = field_values
+                let found_member_tys = member_values
                     .iter()
                     .copied()
                     .filter_map(|(name, value)| {
@@ -1460,36 +1460,39 @@ impl InferenceCtx<'_> {
                 .into_iter()
                 .collect::<IndexMap<_, _>>();
 
-                for (found_field_name, (found_field_range, found_field_expr, found_field_ty)) in
-                    found_field_tys.iter()
+                for (found_member_name, (found_member_range, found_member_expr, found_member_ty)) in
+                    found_member_tys.iter()
                 {
-                    if let Some(expected_field_ty) = expected_tys.get(found_field_name) {
-                        if self.expect_match(*found_field_ty, *expected_field_ty, *found_field_expr)
-                        {
-                            self.replace_weak_tys(*found_field_expr, *expected_field_ty);
+                    if let Some(expected_member_ty) = expected_tys.get(found_member_name) {
+                        if self.expect_match(
+                            *found_member_ty,
+                            *expected_member_ty,
+                            *found_member_expr,
+                        ) {
+                            self.replace_weak_tys(*found_member_expr, *expected_member_ty);
                         }
                     } else {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::NonExistentMember {
-                                member: found_field_name.0,
+                                member: found_member_name.0,
                                 found_ty: expected_ty,
                             },
                             module: self.current_file.unwrap(),
-                            range: *found_field_range,
+                            range: *found_member_range,
                             help: None,
                         })
                     }
                 }
 
-                for expected_field_name in expected_tys
+                for expected_member_name in expected_tys
                     .iter()
                     .filter(|(_, ty)| !ty.is_unknown())
                     .map(|(name, _)| name)
                 {
-                    if found_field_tys.get(expected_field_name).is_none() {
+                    if found_member_tys.get(expected_member_name).is_none() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::StructLiteralMissingMember {
-                                member: expected_field_name.0,
+                                member: expected_member_name.0,
                                 expected_ty,
                             },
                             module: self.current_file.unwrap(),

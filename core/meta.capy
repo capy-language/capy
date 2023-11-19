@@ -239,7 +239,18 @@ is_function :: (ty: type) -> bool extern;
 // `struct { foo: str }`
 // ...
 
+Struct_Info :: struct {
+    members: [] Member_Info,
+};
+
+Member_Info :: struct {
+    name: str,
+    ty: type,
+    offset: usize,
+};
+
 is_struct :: (ty: type) -> bool extern;
+get_struct_info :: (ty: type) -> Struct_Info extern;
 
 // `void`
 //

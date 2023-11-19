@@ -5,7 +5,7 @@ Root@0..8
     StructDecl@0..8
       Struct@0..6 "struct"
       LBrace@6..7 "{"
-      FieldDecl@7..8
+      MemberDecl@7..8
         Error@7..8
           RParen@7..8 ")"
 error at 7..8: expected field name but found RParen

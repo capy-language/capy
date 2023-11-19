@@ -167,8 +167,8 @@ impl FunctionCompiler<'_> {
         self.builder.finalize();
     }
 
-    fn expr_to_const_data(&mut self, module: hir::FileName, expr: Idx<hir::Expr>) -> Box<[u8]> {
-        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
+    fn expr_to_const_data(&mut self, file_name: hir::FileName, expr: Idx<hir::Expr>) -> Box<[u8]> {
+        if let Some(meta_ty) = self.tys[file_name].get_meta_ty(expr) {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return match self.module.isa().endianness() {
@@ -177,11 +177,11 @@ impl FunctionCompiler<'_> {
             };
         }
 
-        match self.bodies_map[&module][expr].clone() {
+        match self.bodies_map[&file_name][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
                 match (
-                    self.tys[module][expr]
+                    self.tys[file_name][expr]
                         .get_final_ty()
                         .into_number_type()
                         .unwrap()
@@ -204,7 +204,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::FloatLiteral(f) => match (
-                self.tys[module][expr]
+                self.tys[file_name][expr]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap()
@@ -229,14 +229,14 @@ impl FunctionCompiler<'_> {
             } => {
                 assert_ne!(items.len(), 0);
 
-                let item_ty = self.tys[module][items[0]];
+                let item_ty = self.tys[file_name][items[0]];
                 let item_size = item_ty.size();
                 let item_stride = item_ty.stride();
 
                 let mut array = Vec::<u8>::with_capacity(item_stride as usize * items.len());
 
                 for (idx, item) in items.into_iter().enumerate() {
-                    let item = self.expr_to_const_data(module, item);
+                    let item = self.expr_to_const_data(file_name, item);
 
                     unsafe {
                         std::ptr::copy_nonoverlapping(
@@ -264,7 +264,8 @@ impl FunctionCompiler<'_> {
                 }
             }
             _ => panic!(
-                "tried to compile global with non-compilable definition #{}",
+                "tried to compile const with non-compilable definition {}#{}",
+                file_name.to_string(self.mod_dir, self.interner),
                 expr.into_raw()
             ),
         }
@@ -279,19 +280,31 @@ impl FunctionCompiler<'_> {
 
         let bytes = self.expr_to_const_data(fqn.file, value);
 
-        let global =
-            self.create_global_data(&fqn.to_mangled_name(self.mod_dir, self.interner), bytes);
+        let global = self.create_global_data(
+            &fqn.to_mangled_name(self.mod_dir, self.interner),
+            true,
+            bytes,
+        );
 
         self.globals.insert(fqn, global);
 
         global
     }
 
-    fn create_global_data(&mut self, name: &str, data: Box<[u8]>) -> DataId {
+    fn create_global_data(&mut self, name: &str, export: bool, data: Box<[u8]>) -> DataId {
         self.data_description.define(data);
         let id = self
             .module
-            .declare_data(name, Linkage::Export, true, false)
+            .declare_data(
+                name,
+                if export {
+                    Linkage::Export
+                } else {
+                    Linkage::Local
+                },
+                true,
+                false,
+            )
             .expect("error declaring data");
 
         self.module
@@ -305,7 +318,7 @@ impl FunctionCompiler<'_> {
     fn create_global_str(&mut self, mut text: String) -> DataId {
         text.push('\0');
         let name = format!(".str{}", self.str_id_gen.generate_unique_id());
-        self.create_global_data(&name, text.into_bytes().into_boxed_slice())
+        self.create_global_data(&name, false, text.into_bytes().into_boxed_slice())
     }
 
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
@@ -526,11 +539,11 @@ impl FunctionCompiler<'_> {
                 );
             }
             hir::Expr::StructLiteral {
-                fields: field_values,
+                members: member_values,
                 ..
             } => self.store_struct_fields(
                 expected_ty,
-                field_values.iter().map(|(_, val)| *val).collect(),
+                member_values.iter().map(|(_, val)| *val).collect(),
                 addr,
                 offset,
             ),
@@ -1486,7 +1499,7 @@ impl FunctionCompiler<'_> {
                 Some(self.builder.ins().func_addr(self.ptr_ty, local_func))
             }
             hir::Expr::StructLiteral {
-                fields: field_values,
+                members: field_values,
                 ..
             } => {
                 let ty = self.tys[self.file_name][expr];
@@ -1538,6 +1551,7 @@ impl FunctionCompiler<'_> {
                         ComptimeResult::Data(bytes) => {
                             let data = self.create_global_data(
                                 &ctc.to_mangled_name(self.mod_dir, self.interner),
+                                false,
                                 bytes.clone(),
                             );
 

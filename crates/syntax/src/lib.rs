@@ -80,9 +80,9 @@ pub enum NodeKind {
     ParamList,
     Param,
     StructDecl,    // `struct { foo: i32 }`
-    FieldDecl,     // `foo: i32`
+    MemberDecl,    // `foo: i32`
     StructLiteral, // `My_Struct { foo: 123 }`
-    FieldLiteral,  // `foo: 123`
+    MemberLiteral, // `foo: 123`
     ImportExpr,
     Ty,
     Path,

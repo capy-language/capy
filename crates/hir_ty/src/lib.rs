@@ -481,11 +481,11 @@ impl<'a> InferenceCtx<'a> {
                     .into(),
                     Ty::Struct {
                         fqn: None,
-                        fields,
+                        members,
                         uid,
                     } => Ty::Struct {
                         fqn: Some(fqn),
-                        fields: fields.clone(),
+                        members: members.clone(),
                         uid: *uid,
                     }
                     .into(),
@@ -652,10 +652,10 @@ impl<'a> InferenceCtx<'a> {
                 sub_ty: self.parse_expr_to_ty(*ty, resolve_chain),
             }
             .into(),
-            hir::Expr::StructDecl { uid, fields } => Ty::Struct {
+            hir::Expr::StructDecl { uid, members } => Ty::Struct {
                 fqn: None,
                 uid: *uid,
-                fields: fields
+                members: members
                     .iter()
                     .cloned()
                     .filter_map(|(name, ty)| name.map(|name| (name, ty)))
@@ -879,17 +879,17 @@ impl Ty {
             Self::Struct {
                 fqn: None,
                 uid,
-                fields,
+                members,
             } => {
                 let mut res = format!("struct'{} {{", uid);
 
-                for (idx, (name, ty)) in fields.iter().enumerate() {
+                for (idx, (name, ty)) in members.iter().enumerate() {
                     res.push_str(interner.lookup(name.0));
                     res.push_str(": ");
 
                     res.push_str(&ty.display(mod_dir, interner));
 
-                    if idx != fields.len() - 1 {
+                    if idx != members.len() - 1 {
                         res.push_str(", ");
                     }
                 }
@@ -4743,7 +4743,7 @@ mod tests {
                         name: hir::Name(i.intern("Person")),
                     }),
                     uid: 0,
-                    fields: vec![
+                    members: vec![
                         (hir::Name(i.intern("name")), Ty::String.into()),
                         (hir::Name(i.intern("age")), Ty::IInt(32).into()),
                     ],
@@ -4856,7 +4856,7 @@ mod tests {
                                 name: hir::Name(i.intern("Person")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("name")), Ty::String.into()),
                                 (hir::Name(i.intern("age")), Ty::IInt(32).into()),
                             ],
@@ -5131,7 +5131,7 @@ mod tests {
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5143,7 +5143,7 @@ mod tests {
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5248,7 +5248,7 @@ mod tests {
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5260,7 +5260,7 @@ mod tests {
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                             ],
@@ -5322,7 +5322,7 @@ mod tests {
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5334,7 +5334,7 @@ mod tests {
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(16).into()),
                             ],
@@ -5396,7 +5396,7 @@ mod tests {
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5408,7 +5408,7 @@ mod tests {
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("x")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("y")), Ty::IInt(8).into()),
                             ],
@@ -5471,7 +5471,7 @@ mod tests {
                                 name: hir::Name(i.intern("Foo")),
                             }),
                             uid: 0,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                             ],
@@ -5483,7 +5483,7 @@ mod tests {
                                 name: hir::Name(i.intern("Bar")),
                             }),
                             uid: 1,
-                            fields: vec![
+                            members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
                                 (hir::Name(i.intern("b")), Ty::IInt(8).into()),
                                 (hir::Name(i.intern("c")), Ty::String.into()),
@@ -6180,7 +6180,7 @@ mod tests {
                                         name: hir::Name(i.intern("Foo")),
                                     }),
                                     uid: 0,
-                                    fields: vec![(hir::Name(i.intern("a")), Ty::IInt(32).into())],
+                                    members: vec![(hir::Name(i.intern("a")), Ty::IInt(32).into())],
                                 }
                                 .into(),
                             }

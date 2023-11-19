@@ -8,7 +8,7 @@ Root@0..6
           Ident@0..3 "Foo"
       Whitespace@3..4 " "
       LBrace@4..5 "{"
-      FieldLiteral@5..6
+      MemberLiteral@5..6
         Error@5..6
           RParen@5..6 ")"
 error at 5..6: expected field name but found RParen

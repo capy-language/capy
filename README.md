@@ -180,17 +180,29 @@ Or at least, that's the end goal. A few things haven't been fully fleshed out ye
 ### Reflection
 
 Reflection is another powerful feature of Capy. Currently, you can get all the information you could want concerning types,
-including things such as the size of an array type, and the sub-type of a distinct.
+including things such as the members of a struct (their names, types, and offsets), the size of an array type, and the sub-type of a distinct.
 
 ```cpp
 core :: mod "core";
 meta :: core.meta;
+
+// reflect on an array type
 
 ty := [3] i32;
 info := meta.get_array_info(ty);
 
 core.assert(info.len == 3);
 core.assert(info.ty == i32);
+
+// reflect on the members of a struct
+
+ty := struct { foo: str };
+info := meta.get_struct_info(ty);
+
+first := info.members[0];
+core.assert(core.str_eq(first.name, "foo"));
+core.assert(first.ty == str);
+core.assert(first.offset == 0);
 ```
 
 This functionality powers the `Any` type, a struct containing an `^any` and a `type`, and which can represent any possible value.
@@ -285,7 +297,7 @@ While the end goal is to make any code than can run outside of a `comptime` bloc
 this is easier said than done. `printf` in particular cannot be run at compile-time.
 Especially as support for linked libaries increases, it'll be harder to keep this promise.
 
-If you find any bugs in the compiler, please please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and it'll be responded to as soon as possible.
+If you find any bugs in the compiler, please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and it'll be addressed as soon as possible.
 
 ## Shout Outs
 

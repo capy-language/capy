@@ -12,7 +12,7 @@ Root@0..46
       Whitespace@6..7 " "
       LBrace@7..8 "{"
       Whitespace@8..13 "\n    "
-      FieldLiteral@13..30
+      MemberLiteral@13..30
         Ident@13..17 "name"
         Colon@17..18 ":"
         Whitespace@18..19 " "
@@ -22,7 +22,7 @@ Root@0..46
           DoubleQuote@29..30 "\""
       Comma@30..31 ","
       Whitespace@31..36 "\n    "
-      FieldLiteral@36..43
+      MemberLiteral@36..43
         Ident@36..39 "age"
         Colon@39..40 ":"
         Whitespace@40..41 " "

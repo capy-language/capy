@@ -10,7 +10,7 @@ Root@0..34
       Whitespace@3..4 " "
       LBrace@4..5 "{"
       Whitespace@5..10 "\n    "
-      FieldLiteral@10..33
+      MemberLiteral@10..33
         Ident@10..13 "bar"
         Colon@13..14 ":"
         Whitespace@14..15 " "
@@ -19,7 +19,7 @@ Root@0..34
           StringContents@16..32 "pls don't crash!"
           DoubleQuote@32..33 "\""
       Comma@33..34 ","
-      FieldLiteral@34..34
+      MemberLiteral@34..34
 error at 34: missing field name
 error at 34: missing Colon
 error at 34: missing field value

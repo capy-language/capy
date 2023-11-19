@@ -117,6 +117,7 @@ pub(crate) fn as_compiler_defined(
         ("meta.capy", "get_slice_info") => meta_to_info(ftc, convert::SLICE_DISCRIMINANT),
         ("meta.capy", "get_pointer_info") => meta_to_info(ftc, convert::POINTER_DISCRIMINANT),
         ("meta.capy", "get_distinct_info") => meta_to_info(ftc, convert::DISTINCT_DISCRIMINANT),
+        ("meta.capy", "get_struct_info") => meta_to_info(ftc, convert::STRUCT_DISCRIMINANT),
         _ => return None,
     })
 }

@@ -28,6 +28,20 @@ use crate::{
 use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
 
+#[cfg(not(debug_assertions))]
+use std::hint::unreachable_unchecked;
+
+macro_rules! unreachable_opt_on_release {
+    () => {{
+        #[cfg(debug_assertions)]
+        panic!();
+        #[cfg(not(debug_assertions))]
+        unsafe {
+            unreachable_unchecked()
+        }
+    }};
+}
+
 #[derive(Default)]
 pub(crate) struct MetaTyData {
     pub(crate) tys_to_compile: Vec<Intern<Ty>>,
@@ -39,22 +53,22 @@ pub(crate) struct MetaTyData {
     pub(crate) function_uid_gen: UIDGenerator,
     pub(crate) struct_uid_gen: UIDGenerator,
 
-    pub(crate) mem_arrays: Option<MetaTyMemArrays>,
+    pub(crate) layout_arrays: Option<MetaTyLayoutArrays>,
     pub(crate) info_arrays: Option<MetaTyInfoArrays>,
 }
 
-pub(crate) struct MetaTyMemArrays {
+pub(crate) struct MetaTyLayoutArrays {
     pub(crate) array_mem: DataId,
     pub(crate) distinct_mem: DataId,
     pub(crate) struct_mem: DataId,
 }
 
-impl MetaTyMemArrays {
+impl MetaTyLayoutArrays {
     pub(crate) fn new(module: &mut dyn Module) -> Self {
         Self {
             array_mem: module
                 .declare_data(
-                    &mangle::mangle_internal("array_type_mem"),
+                    &mangle::mangle_internal("array_type_layout"),
                     Linkage::Export,
                     false,
                     false,
@@ -62,7 +76,7 @@ impl MetaTyMemArrays {
                 .expect("error declaring data"),
             distinct_mem: module
                 .declare_data(
-                    &mangle::mangle_internal("distinct_type_mem"),
+                    &mangle::mangle_internal("distinct_type_layout"),
                     Linkage::Export,
                     false,
                     false,
@@ -70,7 +84,7 @@ impl MetaTyMemArrays {
                 .expect("error declaring data"),
             struct_mem: module
                 .declare_data(
-                    &mangle::mangle_internal("struct_type_mem"),
+                    &mangle::mangle_internal("struct_type_layout"),
                     Linkage::Export,
                     false,
                     false,
@@ -85,6 +99,7 @@ pub(crate) struct MetaTyInfoArrays {
     pub(crate) slice_info: DataId,
     pub(crate) pointer_info: DataId,
     pub(crate) distinct_info: DataId,
+    pub(crate) struct_info: DataId,
 }
 
 impl MetaTyInfoArrays {
@@ -117,6 +132,14 @@ impl MetaTyInfoArrays {
             distinct_info: module
                 .declare_data(
                     &mangle::mangle_internal("distinct_type_info"),
+                    Linkage::Export,
+                    false,
+                    false,
+                )
+                .expect("error declaring data"),
+            struct_info: module
+                .declare_data(
+                    &mangle::mangle_internal("struct_type_info"),
                     Linkage::Export,
                     false,
                     false,
@@ -202,9 +225,11 @@ impl Compiler<'_> {
         let mut pointer_info_data = Vec::new();
         let mut distinct_info_data = Vec::new();
 
+        let mut struct_infos_to_compile = Vec::new();
+
         for ty in &self.meta_tys.tys_to_compile {
             'mem: {
-                if self.meta_tys.mem_arrays.is_some() {
+                if self.meta_tys.layout_arrays.is_some() {
                     let data = match ty.as_ref() {
                         Ty::Array { .. } => &mut array_mem_data,
                         Ty::Distinct { .. } => &mut distinct_mem_data,
@@ -276,6 +301,9 @@ impl Compiler<'_> {
                             self.module.isa().endianness(),
                         );
                     }
+                    Ty::Struct { .. } => {
+                        struct_infos_to_compile.push(ty);
+                    }
                     _ => continue,
                 }
             }
@@ -294,7 +322,7 @@ impl Compiler<'_> {
             data_desc.clear();
         }
 
-        if let Some(mem_arrays) = &self.meta_tys.mem_arrays {
+        if let Some(mem_arrays) = &self.meta_tys.layout_arrays {
             define(
                 self.module,
                 &mut self.data_description,
@@ -338,6 +366,171 @@ impl Compiler<'_> {
                 &mut self.data_description,
                 info_arrays.distinct_info,
                 distinct_info_data,
+            );
+
+            // now building the arrays of every struct member in the program
+
+            fn declare(module: &mut dyn Module, name: &str) -> DataId {
+                module
+                    .declare_data(name, Linkage::Local, true, false)
+                    .expect("error declaring data")
+            }
+
+            let mut member_array_starting_offsets = Vec::new();
+
+            let mut member_name_str_uid_gen = UIDGenerator::default();
+            let mut member_array_data = Vec::new();
+            let mut member_array_relocs = Vec::new();
+
+            for s in &struct_infos_to_compile {
+                let Ty::Struct { members, .. } = s.as_ref() else {
+                    unreachable_opt_on_release!();
+                };
+
+                let member_offsets = s.struct_layout().unwrap();
+                let member_offsets = member_offsets.offsets();
+
+                member_array_starting_offsets.push(member_array_data.len());
+
+                for (idx, (name, ty)) in members.iter().enumerate() {
+                    // padding for next usize (str)
+                    let padding = layout::padding_needed_for(
+                        member_array_data.len() as u32,
+                        self.pointer_ty.bytes().min(8),
+                    );
+                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
+
+                    // name field
+
+                    let name_offset = member_array_data.len();
+
+                    extend_with_bytes(
+                        &mut member_array_data,
+                        0,
+                        self.pointer_ty.bits() as u8,
+                        self.module.isa().endianness(),
+                    );
+
+                    let mut name_str_bytes = self.interner.lookup(name.0).as_bytes().to_vec();
+                    name_str_bytes.push(0);
+                    let name_str_id = declare(
+                        self.module,
+                        &format!(
+                            ".member_str{}",
+                            member_name_str_uid_gen.generate_unique_id()
+                        ),
+                    );
+                    define(
+                        self.module,
+                        &mut self.data_description,
+                        name_str_id,
+                        name_str_bytes,
+                    );
+
+                    member_array_relocs.push((name_offset, name_str_id));
+
+                    // padding for next u32 (type)
+
+                    let padding =
+                        layout::padding_needed_for(member_array_data.len() as u32, (32 / 8).min(8));
+                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
+
+                    // ty field
+
+                    extend_with_bytes(
+                        &mut member_array_data,
+                        ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                        32,
+                        self.module.isa().endianness(),
+                    );
+
+                    // padding for next usize
+
+                    let padding = layout::padding_needed_for(
+                        member_array_data.len() as u32,
+                        self.pointer_ty.bytes().min(8),
+                    );
+                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
+
+                    // offset field
+
+                    extend_with_bytes(
+                        &mut member_array_data,
+                        member_offsets[idx],
+                        self.pointer_ty.bits() as u8,
+                        self.module.isa().endianness(),
+                    );
+                }
+            }
+
+            // now that all the strings have been created, declare the member info array, and insert
+            // the relocations.
+
+            let member_array_id =
+                declare(self.module, &mangle::mangle_internal("struct_member_info"));
+
+            self.data_description
+                .define(member_array_data.into_boxed_slice());
+
+            for (offset, id) in member_array_relocs {
+                let local = self
+                    .module
+                    .declare_data_in_data(id, &mut self.data_description);
+
+                self.data_description
+                    .write_data_addr(offset as u32, local, 0);
+            }
+
+            self.module
+                .define_data(member_array_id, &self.data_description)
+                .expect("error defining data");
+
+            self.data_description.clear();
+
+            // now that all the members have been defined, we can assemble the actual struct info array
+
+            let member_array_local = self
+                .module
+                .declare_data_in_data(member_array_id, &mut self.data_description);
+
+            let mut struct_array_data = Vec::new();
+
+            for (idx, s) in struct_infos_to_compile.iter().enumerate() {
+                let Ty::Struct { members, .. } = s.as_ref() else {
+                    unreachable_opt_on_release!();
+                };
+                let members_len = members.len();
+
+                extend_with_bytes(
+                    &mut struct_array_data,
+                    members_len as u32,
+                    self.pointer_ty.bits() as u8,
+                    self.module.isa().endianness(),
+                );
+
+                let ptr_member_offset = struct_array_data.len();
+
+                extend_with_bytes(
+                    &mut struct_array_data,
+                    0,
+                    self.pointer_ty.bits() as u8,
+                    self.module.isa().endianness(),
+                );
+
+                let member_array_starting_offset = member_array_starting_offsets[idx];
+
+                self.data_description.write_data_addr(
+                    ptr_member_offset as u32,
+                    member_array_local,
+                    member_array_starting_offset as i64,
+                );
+            }
+
+            define(
+                self.module,
+                &mut self.data_description,
+                info_arrays.struct_info,
+                struct_array_data,
             );
         }
     }
@@ -554,8 +747,8 @@ impl Compiler<'_> {
 
         let info_arrays = self
             .meta_tys
-            .mem_arrays
-            .get_or_insert_with(|| MetaTyMemArrays::new(self.module));
+            .layout_arrays
+            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module));
 
         let array_info = self
             .module
@@ -812,7 +1005,7 @@ impl Compiler<'_> {
 
         let return_addr = builder.block_params(entry_block)[1];
 
-        let build_offset = |builder: &mut FunctionBuilder<'_>, stride: u32| {
+        let build_byte_offset = |builder: &mut FunctionBuilder<'_>, stride: u32| {
             // blacks out the discriminant (6 bits on the left hand side) from the typeid
             let index = builder.ins().band_imm(ty_arg, !(0b111111 << 26));
             let offset = builder.ins().imul_imm(index, stride as i64);
@@ -874,7 +1067,7 @@ impl Compiler<'_> {
 
                 let stride = second_field_offset + (32 / 8);
 
-                let offset = build_offset(&mut builder, stride);
+                let offset = build_byte_offset(&mut builder, stride);
                 let addr = builder.ins().iadd(array_info, offset);
 
                 let size = builder
@@ -908,7 +1101,7 @@ impl Compiler<'_> {
                 let slice_info = self.module.declare_data_in_func(slice_info, builder.func);
                 let slice_info = builder.ins().symbol_value(self.pointer_ty, slice_info);
 
-                let offset = build_offset(&mut builder, 32 / 8);
+                let offset = build_byte_offset(&mut builder, 32 / 8);
                 let addr = builder.ins().iadd(slice_info, offset);
 
                 let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
@@ -924,7 +1117,7 @@ impl Compiler<'_> {
                 let pointer_info = self.module.declare_data_in_func(pointer_info, builder.func);
                 let pointer_info = builder.ins().symbol_value(self.pointer_ty, pointer_info);
 
-                let offset = build_offset(&mut builder, 32 / 8);
+                let offset = build_byte_offset(&mut builder, 32 / 8);
                 let addr = builder.ins().iadd(pointer_info, offset);
 
                 let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
@@ -942,14 +1135,46 @@ impl Compiler<'_> {
                     .declare_data_in_func(distinct_info, builder.func);
                 let distinct_info = builder.ins().symbol_value(self.pointer_ty, distinct_info);
 
-                let offset = build_offset(&mut builder, 32 / 8);
+                let offset = build_byte_offset(&mut builder, 32 / 8);
                 let addr = builder.ins().iadd(distinct_info, offset);
 
                 let ty = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
 
                 builder.ins().store(MemFlags::trusted(), ty, return_addr, 0);
             }
-            _ => unreachable!(),
+            STRUCT_DISCRIMINANT => {
+                let struct_info = self
+                    .meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .struct_info;
+                let struct_info = self.module.declare_data_in_func(struct_info, builder.func);
+                let struct_info = builder.ins().symbol_value(self.pointer_ty, struct_info);
+
+                let ptr_size = self.pointer_ty.bytes();
+                let stride = ptr_size * 2;
+
+                let offset = build_byte_offset(&mut builder, stride);
+                let addr = builder.ins().iadd(struct_info, offset);
+
+                let len = builder
+                    .ins()
+                    .load(self.pointer_ty, MemFlags::trusted(), addr, 0);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), len, return_addr, 0);
+
+                let data =
+                    builder
+                        .ins()
+                        .load(self.pointer_ty, MemFlags::trusted(), addr, ptr_size as i32);
+
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), data, return_addr, ptr_size as i32);
+            }
+            _ => unreachable_opt_on_release!(),
         }
 
         builder.ins().return_(&[return_addr]);

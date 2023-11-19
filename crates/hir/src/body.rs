@@ -101,11 +101,11 @@ pub enum Expr {
     },
     StructDecl {
         uid: u32,
-        fields: Vec<(Option<NameWithRange>, Idx<Expr>)>,
+        members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
     StructLiteral {
         ty: Idx<Expr>,
-        fields: Vec<(Option<NameWithRange>, Idx<Expr>)>,
+        members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
     Import(FileName),
 }
@@ -705,15 +705,15 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_struct_declaration(&mut self, struct_decl: ast::StructDecl) -> Expr {
-        let fields = struct_decl
-            .fields(self.tree)
-            .map(|field| {
-                let name = field.name(self.tree).map(|ident| NameWithRange {
+        let members = struct_decl
+            .members(self.tree)
+            .map(|member| {
+                let name = member.name(self.tree).map(|ident| NameWithRange {
                     name: Name(self.interner.intern(ident.text(self.tree))),
                     range: ident.range(self.tree),
                 });
 
-                let ty = self.lower_expr(field.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+                let ty = self.lower_expr(member.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
                 (name, ty)
             })
@@ -721,27 +721,27 @@ impl<'a> Ctx<'a> {
 
         Expr::StructDecl {
             uid: self.uid_gen.generate_unique_id(),
-            fields,
+            members,
         }
     }
 
     fn lower_struct_literal(&mut self, struct_lit: ast::StructLiteral) -> Expr {
         let ty = self.lower_expr(struct_lit.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-        let mut fields = Vec::new();
+        let mut members = Vec::new();
 
-        for field in struct_lit.fields(self.tree) {
-            let name = field.name(self.tree).map(|ident| NameWithRange {
+        for member in struct_lit.members(self.tree) {
+            let name = member.name(self.tree).map(|ident| NameWithRange {
                 name: Name(self.interner.intern(ident.text(self.tree))),
                 range: ident.range(self.tree),
             });
 
-            let value = self.lower_expr(field.value(self.tree));
+            let value = self.lower_expr(member.value(self.tree));
 
-            fields.push((name, value));
+            members.push((name, value));
         }
 
-        Expr::StructLiteral { ty, fields }
+        Expr::StructLiteral { ty, members }
     }
 
     fn lower_import(&mut self, import: ast::ImportExpr) -> Expr {
@@ -1890,12 +1890,12 @@ impl Bodies {
                     write_expr(s, body, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
-                Expr::StructLiteral { ty, fields } => {
+                Expr::StructLiteral { ty, members } => {
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
 
                     s.push_str(" {");
 
-                    for (idx, (name, value)) in fields.iter().enumerate() {
+                    for (idx, (name, value)) in members.iter().enumerate() {
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
                             s.push_str(": ");
@@ -1903,7 +1903,7 @@ impl Bodies {
 
                         write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
 
-                        if idx != fields.len() - 1 {
+                        if idx != members.len() - 1 {
                             s.push_str(", ");
                         }
                     }
@@ -1920,11 +1920,11 @@ impl Bodies {
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
-                Expr::StructDecl { uid, fields } => {
+                Expr::StructDecl { uid, members } => {
                     s.push_str("struct'");
                     s.push_str(&uid.to_string());
                     s.push_str(" {");
-                    for (idx, (name, ty)) in fields.iter().enumerate() {
+                    for (idx, (name, ty)) in members.iter().enumerate() {
                         s.push(' ');
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
@@ -1933,7 +1933,7 @@ impl Bodies {
                         }
                         s.push(':');
                         write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
-                        if idx != fields.len() - 1 {
+                        if idx != members.len() - 1 {
                             s.push(',');
                         }
                     }

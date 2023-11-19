@@ -74,21 +74,7 @@ add_char :: (self: ^mut String, ch: char) {
 }
 
 add_str :: (self: ^mut String, s: str) {
-    len :: (s: str) -> usize {
-        s_ptr := s as ^u8;
-
-        cont := true;
-        idx := 0;
-        while cont {
-            ch := ptr.read(s_ptr, idx);
-            cont = ch != 0;
-            idx = idx + 1;
-        }
-
-        idx - 1
-    };
-
-    len := len(s);
+    len := import "mod.capy".str_len(s);
 
     _prepare_for_n_bytes(self, len);
 
