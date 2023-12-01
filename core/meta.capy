@@ -1,3 +1,18 @@
+
+// returns the underlying bit representation of the type id
+meta_to_raw :: (ty: type) -> u32 extern;
+
+Layout :: struct {
+    size: usize,
+    align: usize,
+};
+
+array_layouts : [] Layout : extern;
+distinct_layouts : [] Layout : extern;
+struct_layouts : [] Layout : extern;
+
+pointer_layout : Layout : extern;
+
 // The amount of space a type takes up in memory.
 //
 // i8 takes 1 byte to store, i32 takes four bytes.
@@ -26,7 +41,44 @@
 // 
 // If you need to store multiple structs in a row (as in an array or buffer),
 // `stride_of` is the function to use
-size_of :: (ty: type) -> usize extern;
+size_of :: (ty: type) -> usize {
+    ty := meta_to_raw(ty);
+
+    // the discriminant is the leftmost 6 bits
+    discriminant := ty >> 26;
+
+    // all the discriminants < 16 are simple
+    // (they contain all relevant information as bit flags)
+    if discriminant < 16 {
+        // 31 (0b11111)
+        // the first 5 bits in a simple type id are the size
+        {ty & 31} as usize
+    } else {
+        // about 5 types have complex id's
+        // (they contain only a discriminant and an index)
+
+        layouts := if discriminant == 16 {
+            struct_layouts
+        } else if discriminant == 17 {
+            distinct_layouts
+        } else if discriminant == 18 {
+            array_layouts
+        } else if discriminant == 19 {
+            // slice
+            return pointer_layout.size * 2;
+        } else {
+            // it must be either a pointer, or a function
+            // either way, the size is the same
+            return pointer_layout.size;
+        };
+
+        // 63 (0b111111)
+        // removes the discriminant
+        index := ty &~ {63 << 26};
+
+        layouts[index].size
+    }
+}
 
 // The stride of a type is the space allocated for a single element in an array.
 //
@@ -114,7 +166,41 @@ stride_of :: (ty: type) -> usize {
 // This struct's alignment is 8, so this struct can only appear in addresses which are multiples of 8.
 //
 // An alignment of `1` is accepted in all addresses (every number is a multiple of 1)
-align_of :: (ty: type) -> usize extern;
+align_of :: (ty: type) -> usize {
+    ty := meta_to_raw(ty);
+
+    // the discriminant is the leftmost 6 bits
+    discriminant := ty >> 26;
+
+    // all the discriminants < 16 are simple
+    // (they contain all relevant information as bit flags)
+    if discriminant < 16 {
+        // 15 (0b1111)
+        // the second 4 bits in a simple type id are the alignment
+        {{ty >> 5} & 15} as usize
+    } else {
+        // about 5 types have complex id's
+        // (they contain only a discriminant and an index)
+
+        layouts := if discriminant == 16 {
+            struct_layouts
+        } else if discriminant == 17 {
+            distinct_layouts
+        } else if discriminant == 18 {
+            array_layouts
+        } else {
+            // it must be either a slice, pointer, or function
+            // either way, the align is the same
+            return pointer_layout.align;
+        };
+
+        // 63 (0b111111)
+        // removes the discriminant
+        index := ty &~ {63 << 26};
+
+        layouts[index].align
+    }
+}
 
 // `u8`, `u16`, `u32`, `u64`, `u128`, `usize`
 // `i8`, `i16`, `i32`, `i64`, `i128`, `isize`
@@ -122,36 +208,82 @@ align_of :: (ty: type) -> usize extern;
 // these are the available integer types for use.
 // `usize` and `isize` have the same size as a pointer on the target architecture.
 
+int_discriminant : u32 : 2;
+
 Int_Info :: struct {
     bit_width: u8,
     signed: bool,
 };
 
-is_int :: (ty: type) -> bool extern;
-get_int_info :: (ty: type) -> Int_Info extern;
+is_int :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == int_discriminant
+}
+
+get_int_info :: (ty: type) -> Int_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == int_discriminant);
+
+    Int_Info {
+        // 31 (0b11111)
+        // the first five bits is the size in bytes
+        bit_width: {{raw & 31} * 8} as u8,
+        // the ninth bit is the sign flag
+        signed: {{raw >> 9} & 1} as bool,
+    }
+}
 
 // `f32`, `f64`
 //
 // these are the available floating point types for use
 
+float_discriminant : u32 : 3;
+
 Float_Info :: struct {
     bit_width: u8,
 };
 
-is_float :: (ty: type) -> bool extern;
-get_float_info :: (ty: type) -> Float_Info extern;
+is_float :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == float_discriminant
+}
+
+get_float_info :: (ty: type) -> Float_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == float_discriminant);
+
+    Float_Info {
+        // 31 (0b11111)
+        // the first five bits is the size in bytes
+        bit_width: {{raw & 31} * 8} as u8,
+    }
+}
 
 // `bool`
 
-is_bool :: (ty: type) -> bool extern;
+bool_discriminant : u32 : 4;
+
+is_bool :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == bool_discriminant
+}
 
 // `str`
 
-is_string :: (ty: type) -> bool extern;
+string_discriminant : u32 : 5;
+
+is_string :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == string_discriminant
+}
 
 // `char`
 
-is_char :: (ty: type) -> bool extern;
+char_discriminant : u32 : 6;
+
+is_char :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == char_discriminant
+}
 
 // `[6] i32`
 // `[10] u8`
@@ -159,13 +291,31 @@ is_char :: (ty: type) -> bool extern;
 //
 // A standard array of data, layed out linearly in memory.
 
+array_discriminant : u32 : 18;
+
+array_infos : [] Array_Info : extern;
+
 Array_Info :: struct {
     len: usize,
     ty: type,
 };
 
-is_array :: (ty: type) -> bool extern;
-get_array_info :: (ty: type) -> Array_Info extern;
+is_array :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == array_discriminant
+}
+
+get_array_info :: (ty: type) -> Array_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == array_discriminant);
+
+    // 63 (0b111111)
+    // removes the discriminant
+    idx := raw &~ {63 << 26};
+
+    array_infos[idx]
+}
 
 // `[] i8`
 // `[] char`
@@ -173,23 +323,59 @@ get_array_info :: (ty: type) -> Array_Info extern;
 //
 // The slice. A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
 
+slice_discriminant : u32 : 19;
+
+slice_infos : [] Slice_Info : extern;
+
 Slice_Info :: struct {
     ty: type,
 };
 
-is_slice :: (ty: type) -> bool extern;
-get_slice_info :: (ty: type) -> Slice_Info extern;
+is_slice :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == slice_discriminant
+}
+
+get_slice_info :: (ty: type) -> Slice_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == slice_discriminant);
+
+    // 63 (0b111111)
+    // removes the discriminant
+    idx := raw &~ {63 << 26};
+
+    slice_infos[idx]
+}
 
 // `^i32`
 // `^any`
 // ...
 
+pointer_discriminant : u32 : 20;
+
+pointer_infos : [] Pointer_Info : extern;
+
 Pointer_Info :: struct {
     ty: type,
 };
 
-is_pointer :: (ty: type) -> bool extern;
-get_pointer_info :: (ty: type) -> Pointer_Info extern;
+is_pointer :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == pointer_discriminant
+}
+
+get_pointer_info :: (ty: type) -> Pointer_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == pointer_discriminant);
+
+    // 63 (0b111111)
+    // removes the discriminant
+    idx := raw &~ {63 << 26};
+
+    pointer_infos[idx]
+}
 
 // `distinct i32`
 // `distinct bool`
@@ -197,25 +383,51 @@ get_pointer_info :: (ty: type) -> Pointer_Info extern;
 //
 // The distinct, A unique type with the same underlying semantics of it's sub-type
 
+distinct_discriminant : u32 : 17;
+
+distinct_infos : [] Distinct_Info : extern;
+
 Distinct_Info :: struct {
     ty: type,
 };
 
-is_distinct :: (ty: type) -> bool extern;
-get_distinct_info :: (ty: type) -> Distinct_Info extern;
+is_distinct :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == distinct_discriminant
+}
+
+get_distinct_info :: (ty: type) -> Distinct_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == distinct_discriminant);
+
+    // 63 (0b111111)
+    // removes the discriminant
+    idx := raw &~ {63 << 26};
+
+    distinct_infos[idx]
+}
 
 // `type`
 //
 // a "meta type". types are first-class values and `i32` when used as a value has the type of `type`
 
-is_meta_type :: (ty: type) -> bool extern;
+meta_type_discriminant : u32 : 7;
+
+is_meta_type :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == meta_type_discriminant
+}
 
 // `any`
 // 
 // can represent any arbitrary but unknown value.
 // cannot be directly obtained, but only held through `^any`, `[] any`, etc.
 
-is_any :: (ty: type) -> bool extern;
+any_discriminant : u32 : 8;
+
+is_any :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == any_discriminant
+}
 
 // the file type
 //
@@ -225,7 +437,11 @@ is_any :: (ty: type) -> bool extern;
 //
 // If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
 
-is_file :: (ty: type) -> bool extern;
+file_discriminant : u32 : 9;
+
+is_file :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == file_discriminant
+}
 
 // `() -> void`
 // `(x: i32) -> bool`
@@ -233,11 +449,19 @@ is_file :: (ty: type) -> bool extern;
 //
 // the function type is identical to an actual function except that it lacks a body
 
-is_function :: (ty: type) -> bool extern;
+function_discriminant : u32 : 21;
+
+is_function :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == function_discriminant
+}
 
 // `struct { a: i32, b: i32 }`
 // `struct { foo: str }`
 // ...
+
+struct_discriminant : u32 : 16;
+
+struct_infos : [] Struct_Info : extern;
 
 Struct_Info :: struct {
     members: [] Member_Info,
@@ -249,11 +473,29 @@ Member_Info :: struct {
     offset: usize,
 };
 
-is_struct :: (ty: type) -> bool extern;
-get_struct_info :: (ty: type) -> Struct_Info extern;
+is_struct :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == struct_discriminant
+}
+
+get_struct_info :: (ty: type) -> Struct_Info {
+    raw := meta_to_raw(ty);
+
+    core :: import "mod.capy";
+    core.assert(raw >> 26 == struct_discriminant);
+
+    // 63 (0b111111)
+    // removes the discriminant
+    idx := raw &~ {63 << 26};
+
+    struct_infos[idx]
+}
 
 // `void`
 //
 // an empty type, a `u0`
 
-is_void :: (ty: type) -> bool extern;
+void_discriminant : u32 : 1;
+
+is_void :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == void_discriminant
+}

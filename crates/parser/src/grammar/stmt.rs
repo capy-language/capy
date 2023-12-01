@@ -135,14 +135,19 @@ pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> CompletedMarker {
         NodeKind::VarDef
     };
 
+    if top_level && p.at(TokenKind::Extern) {
+        p.bump();
+        p.expect_with_no_skip(TokenKind::Semicolon);
+        return m.complete(p, def_kind);
+    }
+
     let value = expr::parse_expr(p, "value");
 
-    if !(top_level
-        && value
-            .map(|value| value.kind() == NodeKind::Lambda)
-            .unwrap_or_default()
-        && p.previous_token_kind() != TokenKind::Extern)
-    {
+    let top_level_extern_lambda = top_level
+        && value.map_or(false, |value| value.kind() == NodeKind::Lambda)
+        && p.previous_token_kind() != TokenKind::Extern;
+
+    if !top_level_extern_lambda {
         p.expect_with_no_skip(TokenKind::Semicolon);
     }
 

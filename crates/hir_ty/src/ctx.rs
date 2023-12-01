@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use hir::{Expr, LocalDef};
+use hir::{Expr, LocalDef, ScopeId};
 use indexmap::IndexMap;
 use internment::Intern;
 use la_arena::Idx;
@@ -206,10 +206,7 @@ impl InferenceCtx<'_> {
                     }
                 }
             }
-            Expr::Block {
-                tail_expr: Some(tail_expr),
-                ..
-            } => {
+            Expr::Block { tail_expr, .. } => {
                 if let Some(scope_id) = current_bodies!(self).block_to_scope_id(expr) {
                     for usage in current_bodies!(self).scope_id_usages(scope_id) {
                         if let hir::Stmt::Break {
@@ -220,7 +217,10 @@ impl InferenceCtx<'_> {
                         }
                     }
                 }
-                self.replace_weak_tys(tail_expr, new_ty);
+
+                if let Some(tail_expr) = tail_expr {
+                    self.replace_weak_tys(tail_expr, new_ty);
+                }
             }
             Expr::If {
                 body, else_branch, ..
@@ -540,14 +540,12 @@ impl InferenceCtx<'_> {
                 let Some(label) = label else { return };
                 let referenced_expr = current_bodies!(self)[*label];
 
-                let value_ty = value.map_or(Ty::Void.into(), |value| self.infer_expr(value));
+                let value_ty =
+                    value.map_or_else(|| Ty::Void.into(), |value| self.infer_expr(value));
 
                 let must_be_void = matches!(
                     current_bodies!(self)[referenced_expr],
-                    Expr::Block {
-                        tail_expr: None,
-                        ..
-                    } | Expr::While {
+                    Expr::While {
                         condition: Some(_),
                         ..
                     }
@@ -576,6 +574,10 @@ impl InferenceCtx<'_> {
                                 range: current_bodies!(self).range_for_expr(value.unwrap()),
                                 help: None,
                             });
+
+                            current_module!(self)
+                                .expr_tys
+                                .insert(referenced_expr, Ty::Unknown.into());
                         } else {
                             current_module!(self)
                                 .expr_tys
@@ -706,6 +708,25 @@ impl InferenceCtx<'_> {
             return previous_ty;
         }
 
+        fn all_usages_ty(ctx: &mut InferenceCtx, label_id: ScopeId) -> Intern<Ty> {
+            let usages = current_bodies!(ctx).scope_id_usages(label_id);
+
+            let mut max_ty: Option<Intern<Ty>> = None;
+            for usage in usages.iter() {
+                let Some(ty) = ctx.reinfer_stmt(*usage) else {
+                    continue;
+                };
+
+                if let Some(max) = max_ty {
+                    max_ty = max.max(&ty).map(|ty| ty.into());
+                } else {
+                    max_ty = Some(ty);
+                }
+            }
+
+            max_ty.unwrap()
+        }
+
         let new_ty = match &current_bodies!(self)[expr] {
             Expr::Cast { expr: inner, .. } => {
                 self.reinfer_expr(*inner);
@@ -805,14 +826,7 @@ impl InferenceCtx<'_> {
             } => {
                 let new_tail = self.reinfer_expr(*tail_expr);
                 let new_ty = if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
-                    let usages = current_bodies!(self).scope_id_usages(label_id);
-
-                    let first_usage_ty = usages.first().and_then(|first| self.reinfer_stmt(*first));
-                    for usage in usages.iter().skip(1) {
-                        self.reinfer_stmt(*usage);
-                    }
-
-                    first_usage_ty.unwrap_or(new_tail)
+                    all_usages_ty(self, label_id).max(&new_tail).unwrap().into()
                 } else {
                     new_tail
                 };
@@ -842,6 +856,8 @@ impl InferenceCtx<'_> {
                     let new_else = self.reinfer_expr(*else_branch);
 
                     new_body.max(&new_else).unwrap_or(Ty::Unknown).into()
+                } else if *new_body == Ty::NoEval {
+                    Ty::Void.into()
                 } else {
                     new_body
                 };
@@ -858,25 +874,19 @@ impl InferenceCtx<'_> {
                     self.reinfer_expr(*condition);
                 }
 
-                let new_body = self.reinfer_expr(*body);
+                self.reinfer_expr(*body);
+
                 let new_ty = if condition.is_some() {
                     Ty::Void.into()
                 } else if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
-                    let usages = current_bodies!(self).scope_id_usages(label_id);
-
-                    let first_usage_ty = usages.first().and_then(|first| self.reinfer_stmt(*first));
-                    for usage in usages.iter().skip(1) {
-                        self.reinfer_stmt(*usage);
-                    }
-
-                    first_usage_ty.unwrap_or(new_body)
+                    all_usages_ty(self, label_id)
                 } else {
-                    new_body
+                    Ty::Void.into()
                 };
 
                 let old_ty = current_module!(self)[expr];
                 if old_ty != new_ty {
-                    new_body
+                    new_ty
                 } else {
                     return old_ty;
                 }
@@ -1127,8 +1137,23 @@ impl InferenceCtx<'_> {
                 }
             }
             hir::Expr::Block { stmts, tail_expr } => {
+                let label = current_bodies!(self).block_to_scope_id(expr);
+
+                let mut no_eval = false;
+
                 for stmt in stmts {
                     self.infer_stmt(*stmt);
+
+                    // do this after `infer_stmt` so we can check the infered types
+                    match current_bodies!(self)[*stmt] {
+                        hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } => no_eval = true,
+                        hir::Stmt::Expr(expr)
+                            if label.is_none() && *current_module!(self)[expr] == Ty::NoEval =>
+                        {
+                            no_eval = true
+                        }
+                        _ => {}
+                    }
                 }
 
                 match tail_expr {
@@ -1136,11 +1161,11 @@ impl InferenceCtx<'_> {
                         let tail_ty = self.infer_expr(*tail);
 
                         // there might've been a break within this block
-                        // that break would've set the type of this block
-                        let previous_ty = self.modules[&self.current_file.unwrap()]
-                            .expr_tys
-                            .get(expr)
-                            .copied();
+                        // that break would've set the type of this block.
+                        // there also could've been breaks within the tail expression,
+                        // so we have to get this here, after we processed the statements and the
+                        // tail
+                        let previous_ty = current_module!(self).expr_tys.get(expr).copied();
 
                         match previous_ty {
                             Some(previous_ty) => {
@@ -1167,7 +1192,31 @@ impl InferenceCtx<'_> {
                             None => tail_ty,
                         }
                     }
-                    None => Ty::Void.into(),
+                    None if no_eval => {
+                        let previous_ty = current_module!(self).expr_tys.get(expr).copied();
+
+                        // if there is no previous type but this block always breaks
+                        // it is 100% certain that the break was for an upper block.
+                        // it is then safe to say this block is "noreturn"
+                        // (that it never reaches it's own end)
+                        previous_ty.unwrap_or_else(|| Ty::NoEval.into())
+                    }
+                    None => {
+                        // if there were no breaks, Void,
+                        // if there was a break, make sure it's Void
+                        if let Some(previous_ty) = current_module!(self).expr_tys.get(expr).copied()
+                        {
+                            if let Some(max) =
+                                self.expect_block_match(expr, Ty::Void.into(), expr, previous_ty)
+                            {
+                                max
+                            } else {
+                                Ty::Unknown.into()
+                            }
+                        } else {
+                            Ty::Void.into()
+                        }
+                    }
                 }
             }
             hir::Expr::If {
@@ -1202,7 +1251,7 @@ impl InferenceCtx<'_> {
                         Ty::Unknown.into()
                     }
                 } else {
-                    if *body_ty != Ty::Void && !body_ty.is_unknown() {
+                    if *body_ty != Ty::NoEval && !body_ty.is_void() && !body_ty.is_unknown() {
                         // only get the range if the body isn't unknown
                         // otherwise we might be getting the range of something that doesn't exist
                         let help_range = match &current_bodies!(self)[*body] {
@@ -1224,7 +1273,16 @@ impl InferenceCtx<'_> {
                         });
                     }
 
-                    body_ty
+                    if *body_ty == Ty::NoEval {
+                        // if the body is noeval, but there isn't an else block,
+                        // it's uncertain whether or not the noeval will actually be
+                        // reached.
+                        //
+                        // tldr; the condition could allow this block to be evaluated
+                        Ty::Void.into()
+                    } else {
+                        body_ty
+                    }
                 }
             }
             hir::Expr::While { condition, body } => {
@@ -1273,10 +1331,8 @@ impl InferenceCtx<'_> {
                             name: field.name,
                         };
 
-                        let definition = self.world_index.get_definition(fqn);
-
-                        match definition {
-                            Ok(_) => {
+                        match self.world_index.definition(fqn) {
+                            hir::DefinitionStatus::Defined => {
                                 let sig = self.get_signature(fqn);
 
                                 if *sig.0 == Ty::NotYetResolved {
@@ -1292,10 +1348,10 @@ impl InferenceCtx<'_> {
                                     sig.0
                                 }
                             }
-                            Err(hir::GetDefinitionError::UnknownFile) => {
+                            hir::DefinitionStatus::UnknownFile => {
                                 unreachable!("a module wasn't added: {:?}", file)
                             }
-                            Err(hir::GetDefinitionError::UnknownDefinition) => {
+                            hir::DefinitionStatus::UnknownDefinition => {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::UnknownFqn { fqn },
                                     module: self.current_file.unwrap(),
@@ -1562,6 +1618,8 @@ impl InferenceCtx<'_> {
                     range: current_bodies!(self).range_for_stmt(*first_usage),
                 }),
             });
+
+            current_module!(self).expr_tys[block_expr] = Ty::Unknown.into();
 
             None
         }

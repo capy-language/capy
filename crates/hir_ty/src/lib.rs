@@ -158,6 +158,7 @@ pub enum TyDiagnosticKind {
     EntryHasParams,
     EntryBadReturn,
     ArraySizeRequired,
+    ExternGlobalMissingTy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +234,7 @@ impl<'a> InferenceCtx<'a> {
         }
 
         for (file, index) in self.world_index.get_all_files() {
-            for name in index.definition_names() {
+            for name in index.definitions() {
                 let fqn = hir::Fqn { file, name };
 
                 if !self.signatures.contains_key(&fqn) {
@@ -308,6 +309,26 @@ impl<'a> InferenceCtx<'a> {
         }
 
         let old_module = self.current_file.replace(fqn.file);
+
+        if self.bodies_map[&fqn.file].global_is_extern(fqn.name) {
+            let ty_annotation = match self.bodies_map[&fqn.file].global_ty(fqn.name) {
+                Some(ty) => self.parse_expr_to_ty(ty, &mut FxHashSet::default()),
+                None => {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::ExternGlobalMissingTy,
+                        module: fqn.file,
+                        range: self.world_index.range_info(fqn).whole,
+                        help: None,
+                    });
+
+                    Ty::Unknown.into()
+                }
+            };
+
+            self.signatures.insert(fqn, Signature(ty_annotation));
+
+            return Signature(ty_annotation);
+        }
 
         // we do this before parsing the possible type annotation
         // to avoid a stack overflow like this:
@@ -424,8 +445,8 @@ impl<'a> InferenceCtx<'a> {
             return Ty::Unknown.into();
         }
 
-        match self.world_index.get_definition(fqn) {
-            Ok(_) => {
+        match self.world_index.definition(fqn) {
+            hir::DefinitionStatus::Defined => {
                 let ty = self.get_signature(fqn).0;
 
                 if *ty == Ty::Unknown {
@@ -492,7 +513,7 @@ impl<'a> InferenceCtx<'a> {
                     _ => actual_ty,
                 }
             }
-            Err(hir::GetDefinitionError::UnknownFile) => {
+            hir::DefinitionStatus::UnknownFile => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::UnknownFile { file: fqn.file },
                     module: self.current_file.unwrap(),
@@ -501,7 +522,7 @@ impl<'a> InferenceCtx<'a> {
                 });
                 Ty::Unknown.into()
             }
-            Err(hir::GetDefinitionError::UnknownDefinition) => {
+            hir::DefinitionStatus::UnknownDefinition => {
                 self.diagnostics.push(TyDiagnostic {
                     kind: TyDiagnosticKind::UnknownFqn { fqn },
                     module: self.current_file.unwrap(),
@@ -904,6 +925,7 @@ impl Ty {
             Self::File(file_name) => {
                 format!("file {}", file_name.to_string(mod_dir, interner))
             }
+            Self::NoEval => "noeval".to_string(),
         }
     }
 }
@@ -6723,6 +6745,7 @@ mod tests {
                     {
                         break;
                         break {};
+                        break {};
                     }               
                 }
             "#,
@@ -6731,7 +6754,8 @@ mod tests {
                 0 : void
                 1 : void
                 2 : void
-                3 : () -> void
+                3 : void
+                4 : () -> void
             "#]],
             |_| [],
         )
@@ -6745,6 +6769,7 @@ mod tests {
                     {
                         break 123;
                         break {};
+                        break true;
                     }               
                 }
             "#,
@@ -6752,18 +6777,24 @@ mod tests {
                 main::foo : () -> void
                 0 : {uint}
                 1 : void
-                2 : void
-                3 : void
-                4 : () -> void
+                2 : bool
+                3 : <unknown>
+                4 : <unknown>
+                5 : () -> void
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Void.into(),
-                        found: Ty::UInt(0).into(),
+                        expected: Ty::UInt(0).into(),
+                        found: Ty::Void.into(),
                     },
-                    81..84,
-                    None,
+                    116..118,
+                    Some((
+                        TyDiagnosticHelpKind::BreakHere {
+                            break_ty: Ty::UInt(0).into(),
+                        },
+                        75..85,
+                    )),
                 )]
             },
         )
@@ -6800,7 +6831,7 @@ mod tests {
                     {
                         break {};
                         42
-                    }               
+                    }
                 }
             "#,
             expect![[r#"
@@ -6846,7 +6877,7 @@ mod tests {
             expect![[r#"
                 main::foo : () -> void
                 0 : void
-                1 : void
+                1 : noeval
                 2 : {uint}
                 3 : <unknown>
                 4 : <unknown>
@@ -6871,6 +6902,48 @@ mod tests {
     }
 
     #[test]
+    fn break_i32_block_from_inner_tail() {
+        check(
+            r#"
+            foo :: () -> i32 {
+                `blk {
+                    {
+                        break blk` true;
+                        break 5;
+                        42
+                    }
+                }
+            }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : bool
+                2 : {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : <unknown>
+                6 : <unknown>
+                7 : () -> i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Bool.into(),
+                        found: Ty::UInt(0).into(),
+                    },
+                    75..199,
+                    Some((
+                        TyDiagnosticHelpKind::BreakHere {
+                            break_ty: Ty::Bool.into(),
+                        },
+                        101..117,
+                    )),
+                )]
+            },
+        )
+    }
+
+    #[test]
     fn break_unknown_label() {
         check(
             r#"
@@ -6880,7 +6953,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : void
+                1 : noeval
                 2 : () -> void
             "#]],
             |_| [],
@@ -6953,7 +7026,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : void
+                0 : noeval
                 1 : void
                 2 : void
                 3 : () -> void
@@ -6975,10 +7048,44 @@ mod tests {
             expect![[r#"
                 main::foo : () -> i32
                 1 : i32
-                2 : void
+                2 : noeval
                 3 : i32
                 4 : i32
                 5 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_from_loop_with_multiple_values() {
+        check(
+            r#"
+                foo :: () {
+                    loop {
+                        x : i16 = 42;
+                        break x;
+
+                        break 15;
+
+                        x : i32 = 23;
+                        break x;
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i16
+                2 : i16
+                3 : i16
+                5 : i32
+                6 : i32
+                7 : noeval
+                8 : i32
+                9 : void
+                10 : () -> void
+                l0 : i16
+                l1 : i32
             "#]],
             |_| [],
         )
@@ -7001,7 +7108,7 @@ mod tests {
                 2 : {uint}
                 3 : {uint}
                 4 : bool
-                5 : void
+                5 : noeval
                 6 : void
                 7 : void
                 8 : () -> void
@@ -7028,7 +7135,7 @@ mod tests {
                 3 : {uint}
                 4 : bool
                 5 : void
-                6 : void
+                6 : noeval
                 7 : void
                 8 : void
                 9 : () -> void
@@ -7055,9 +7162,9 @@ mod tests {
                 3 : {uint}
                 4 : bool
                 5 : {uint}
-                6 : void
-                7 : void
-                8 : void
+                6 : noeval
+                7 : <unknown>
+                8 : <unknown>
                 9 : () -> void
             "#]],
             |_| {
@@ -7086,11 +7193,105 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> i32
-                1 : void
+                1 : noeval
                 2 : void
                 3 : i32
                 4 : i32
                 5 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_inner_if_no_else() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        if true {
+                            return 123;
+                        }
+                    }
+
+                    0
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : bool
+                2 : i32
+                3 : noeval
+                4 : void
+                5 : void
+                6 : i32
+                7 : i32
+                8 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_inner_if_with_else_no_break() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        if true {
+                            return 123;
+                        } else {
+
+                        }
+                    }
+
+                    0
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : bool
+                2 : i32
+                3 : noeval
+                4 : void
+                5 : void
+                6 : void
+                7 : i32
+                8 : i32
+                9 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_inner_if_with_else_break() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        if true {
+                            return 123;
+                        } else {
+                            return 456;
+                        }
+                    }
+
+                    0
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : bool
+                2 : i32
+                3 : noeval
+                4 : i32
+                5 : noeval
+                6 : noeval
+                7 : noeval
+                8 : i32
+                9 : i32
+                10 : () -> i32
             "#]],
             |_| [],
         )
@@ -7303,6 +7504,32 @@ mod tests {
                 l1 : []i32
             "#]],
             |_| [],
+        )
+    }
+
+    #[test]
+    fn extern_global_with_type() {
+        check(
+            r#"
+                foo : i32 : extern;
+            "#,
+            expect![[r#"
+                main::foo : i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn extern_global_without_type() {
+        check(
+            r#"
+                foo :: extern;
+            "#,
+            expect![[r#"
+                main::foo : <unknown>
+            "#]],
+            |_| [(TyDiagnosticKind::ExternGlobalMissingTy, 17..31, None)],
         )
     }
 }

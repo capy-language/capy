@@ -1,0 +1,26 @@
+foo : i32 : extern;
+bar :: extern;
+===
+Root@0..34
+  Binding@0..19
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Whitespace@5..6 " "
+    Ty@6..9
+      VarRef@6..9
+        Ident@6..9 "i32"
+    Whitespace@9..10 " "
+    Colon@10..11 ":"
+    Whitespace@11..12 " "
+    Extern@12..18 "extern"
+    Semicolon@18..19 ";"
+  Whitespace@19..20 "\n"
+  Binding@20..34
+    Ident@20..23 "bar"
+    Whitespace@23..24 " "
+    Colon@24..25 ":"
+    Colon@25..26 ":"
+    Whitespace@26..27 " "
+    Extern@27..33 "extern"
+    Semicolon@33..34 ";"

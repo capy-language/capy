@@ -408,7 +408,7 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::UndefinedLabel { name } => {
             format!("there is no label named `{}`", interner.lookup(*name))
         }
-        LoweringDiagnosticKind::NonGlobalExtern => {
+        LoweringDiagnosticKind::NonGlobalExternFunc => {
             "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
@@ -627,6 +627,9 @@ fn ty_diagnostic_message(
         }
         hir_ty::TyDiagnosticKind::ArraySizeRequired => {
             "array types must have a size".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
+            "external globals must have a type annotation".to_string()
         }
     }
 }

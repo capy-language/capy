@@ -1,6 +1,7 @@
 mod builtin;
 mod compiler;
 mod convert;
+mod extend;
 mod layout;
 mod mangle;
 
@@ -806,6 +807,9 @@ mod tests {
 
     #[test]
     fn meta_sizes() {
+        // WARNING: this test is platform specific
+        // it prints the size and align of pointer related types
+        // this might fail on platforms with non 64 bit pointers
         check_files(
             "../../examples/meta_sizes.capy",
             &[],
@@ -817,6 +821,7 @@ mod tests {
                 u64              (0x8000108) : size = 8, align = 8, stride = 8
                 i8               (0x8000221) : size = 1, align = 1, stride = 1
                 u128             (0x8000110) : size = 16, align = 8, stride = 16
+                usize            (0x8000108) : size = 8, align = 8, stride = 8
                 f32              (0xc000084) : size = 4, align = 4, stride = 4
                 void             (0x4000020) : size = 0, align = 1, stride = 0
                 any              (0x20000020) : size = 0, align = 1, stride = 0
@@ -1253,5 +1258,75 @@ mod tests {
             0,
         )
     }
+
+    #[test]
+    fn early_return() {
+        check_raw(
+            r#"
+                main :: () -> i16 {
+                    x := loop {
+                        if true {
+                            break 123;
+                        }
+                    };
+
+                    // sometimes early return, sometimes not
+                    if true {
+                        if true {
+                            return x;
+                        }
+                    } else {
+                
+                    }
+                
+                    // always early return
+                    {
+                        {
+                            if true {
+                                return 5;
+                            } else {
+                                return 42;
+                            }
+                        }
+                    }
+                
+                    0
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            123,
+        )
+    }
+
+    #[test]
+    fn void_ptr() {
+        check_raw(
+            r#"
+                main :: () -> i32 {
+                    // void variables are given a 0 sized stack allocation
+                    x := {};
+
+                    x := x;
+
+                    y := ^x;
+                    z := ^x;
+                
+                    y_raw := {^y as ^any as ^usize}^;
+                    z_raw := {^z as ^any as ^usize}^;
+
+                    {y_raw == z_raw} as i32
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            1,
+        )
+    }
+
     // the "ptrs_to_ptrs.capy" test is not reproducible
 }

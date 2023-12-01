@@ -47,6 +47,11 @@ pub enum Ty {
         members: Vec<(hir::Name, Intern<Ty>)>,
     },
     Void,
+    // only used for blocks that always break.
+    // kind of like a "noreturn" type.
+    // the block will never reach it's own end,
+    // but the blocks above it might reach theirs.
+    NoEval,
 }
 
 pub(crate) struct BinaryOutputTy {
@@ -172,6 +177,7 @@ impl Ty {
         match self {
             Ty::Void => true,
             Ty::File(_) => true,
+            Ty::NoEval => true,
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
             Ty::Struct { members, .. } => {
                 members.is_empty() || members.iter().all(|(_, ty)| ty.is_zero_sized())
@@ -426,7 +432,9 @@ impl Ty {
                     None
                 }
             }
-            (Ty::Unknown, other) | (other, Ty::Unknown) => Some(other.clone()),
+            (Ty::Unknown | Ty::NoEval, other) | (other, Ty::Unknown | Ty::NoEval) => {
+                Some(other.clone())
+            }
             _ => None,
         }
     }
@@ -461,6 +469,7 @@ impl Ty {
             // the callers of can_fit_into should probably
             // execute their own logic if one of the types is unknown
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+            (Ty::NoEval, _) => true,
             (Ty::IInt(found_bit_width), Ty::IInt(expected_bit_width))
             | (Ty::UInt(found_bit_width), Ty::UInt(expected_bit_width)) => {
                 *expected_bit_width == 0 || found_bit_width <= expected_bit_width

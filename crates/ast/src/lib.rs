@@ -251,6 +251,7 @@ def_multi_node! {
     fn name() -> Option<Ident>
     fn ty() -> Option<Ty>
     fn value() -> Option<Expr>
+    fn r#extern() -> Option<Extern>
 }
 
 def_ast_node!(Binding);
@@ -267,6 +268,10 @@ impl Binding {
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
+
+    pub fn r#extern(self, tree: &SyntaxTree) -> Option<Extern> {
+        token(self, tree)
+    }
 }
 
 def_ast_node!(VarDef);
@@ -282,6 +287,10 @@ impl VarDef {
 
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
+    }
+
+    pub fn r#extern(self, tree: &SyntaxTree) -> Option<Extern> {
+        token(self, tree)
     }
 }
 
@@ -887,6 +896,17 @@ mod tests {
         (tree, root)
     }
 
+    fn parse_file(input: &str) -> (SyntaxTreeBuf, Root) {
+        let parse = parser::parse_source_file(&lexer::lex(input), input);
+        for error in parse.errors() {
+            println!("Syntax Error: {:?}", error);
+        }
+        let tree = parse.into_syntax_tree();
+        let root = Root::cast(tree.root(), &tree).unwrap();
+
+        (tree, root)
+    }
+
     #[test]
     fn cast_root() {
         parse("");
@@ -1037,6 +1057,24 @@ mod tests {
         };
 
         assert!(matches!(binding.value(&tree), Some(Expr::IntLiteral(_))));
+    }
+
+    #[test]
+    fn get_extern_of_binding() {
+        let (tree, root) = parse_file("global :: extern;");
+        let statement = root.stmts(&tree).next().unwrap();
+
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
+            _ => unreachable!(),
+        };
+
+        let binding = match def {
+            Define::Binding(var) => var,
+            _ => unreachable!(),
+        };
+
+        assert!(binding.r#extern(&tree).is_some());
     }
 
     #[test]

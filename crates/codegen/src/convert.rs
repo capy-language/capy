@@ -181,6 +181,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
     };
 
     let final_ty = match ty.as_ref() {
+        _ if ty.is_zero_sized() => FinalTy::Void,
         hir_ty::Ty::NotYetResolved | hir_ty::Ty::Unknown => unreachable!(),
         hir_ty::Ty::IInt(bit_width) => finalize_int(*bit_width, true),
         hir_ty::Ty::UInt(bit_width) => finalize_int(*bit_width, false),
@@ -225,6 +226,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         // you should never be able to get an any value
         hir_ty::Ty::Any => FinalTy::Void,
         hir_ty::Ty::Void => FinalTy::Void,
+        hir_ty::Ty::NoEval => FinalTy::Void,
         hir_ty::Ty::File(_) => FinalTy::Void,
     };
 
@@ -300,8 +302,6 @@ pub(crate) const META_TYPE_DISCRIMINANT: u32 = 7;
 pub(crate) const ANY_DISCRIMINANT: u32 = 8;
 pub(crate) const FILE_DISCRIMINANT: u32 = 9;
 
-pub(crate) const FIRST_COMPLEX_DISCRIMINANT: u32 = 16;
-
 pub(crate) const STRUCT_DISCRIMINANT: u32 = 16;
 pub(crate) const DISTINCT_DISCRIMINANT: u32 = 17;
 pub(crate) const ARRAY_DISCRIMINANT: u32 = 18;
@@ -354,7 +354,7 @@ impl ToTyId for Intern<Ty> {
             Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
             Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
             Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
-            Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
+            Ty::Void | Ty::NoEval => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::Array { sub_ty, .. } => {
                 let id = ARRAY_DISCRIMINANT << 26;
 
@@ -509,10 +509,8 @@ impl ToTyId for Intern<Ty> {
             Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
             Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
             Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
-            Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
+            Ty::Void | Ty::NoEval => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::Array { .. } => {
-                println!("{:?}", self);
-
                 let id = ARRAY_DISCRIMINANT << 26;
 
                 let list_id = meta_tys

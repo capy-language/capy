@@ -19,6 +19,7 @@ pub struct Bodies {
     expr_ranges: ArenaMap<Idx<Expr>, TextRange>,
     global_tys: FxHashMap<Name, Idx<Expr>>,
     global_bodies: FxHashMap<Name, Idx<Expr>>,
+    global_externs: FxHashSet<Name>,
     label_decls: bimap::BiMap<ScopeId, Idx<Expr>>,
     label_usages: FxHashMap<ScopeId, Vec<Idx<Stmt>>>,
     lambdas: Arena<Lambda>,
@@ -226,7 +227,7 @@ pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
     UndefinedRef { name: Key },
     UndefinedLabel { name: Key },
-    NonGlobalExtern,
+    NonGlobalExternFunc,
     ArraySizeNotConst,
     ArraySizeMismatch { found: u32, expected: u32 },
     InvalidEscape,
@@ -264,7 +265,12 @@ pub fn lower(
     );
 
     for def in root.defs(tree) {
-        ctx.lower_global(def.name(tree), def.ty(tree), def.value(tree))
+        ctx.lower_global(
+            def.name(tree),
+            def.ty(tree),
+            def.r#extern(tree).is_some(),
+            def.value(tree),
+        )
     }
 
     ctx.bodies.shrink_to_fit();
@@ -322,6 +328,7 @@ impl<'a> Ctx<'a> {
                 expr_ranges: ArenaMap::default(),
                 global_tys: FxHashMap::default(),
                 global_bodies: FxHashMap::default(),
+                global_externs: FxHashSet::default(),
                 label_decls: bimap::BiMap::default(),
                 label_usages: FxHashMap::default(),
                 lambdas: Arena::new(),
@@ -347,6 +354,7 @@ impl<'a> Ctx<'a> {
         &mut self,
         name_token: Option<ast::Ident>,
         ty_annotation: Option<ast::Ty>,
+        is_extern: bool,
         expr: Option<ast::Expr>,
     ) {
         let name = match name_token {
@@ -367,6 +375,11 @@ impl<'a> Ctx<'a> {
             let ty = self.lower_expr(ty.expr(self.tree));
 
             self.bodies.global_tys.insert(name, ty);
+        }
+
+        if is_extern {
+            self.bodies.global_externs.insert(name);
+            return;
         }
 
         let body = match expr {
@@ -422,7 +435,7 @@ impl<'a> Ctx<'a> {
         if !allow_extern {
             if let Some(r#extern) = lambda.r#extern(self.tree) {
                 self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::NonGlobalExtern,
+                    kind: LoweringDiagnosticKind::NonGlobalExternFunc,
                     range: r#extern.range(self.tree),
                 });
             }
@@ -987,6 +1000,10 @@ impl<'a> Ctx<'a> {
 
         self.destroy_current_scope();
 
+        if label_id.is_some() {
+            self.label_kinds.pop();
+        }
+
         (Expr::Block { stmts, tail_expr }, label_id)
     }
 
@@ -1045,6 +1062,8 @@ impl<'a> Ctx<'a> {
         } else {
             self.bodies.exprs.alloc(Expr::Missing)
         };
+
+        self.label_kinds.pop();
 
         (Expr::While { condition, body }, label_id)
     }
@@ -1118,7 +1137,7 @@ impl<'a> Ctx<'a> {
         }
 
         let name = Name(ident_name);
-        if self.index.get_definition(name).is_some() {
+        if self.index.has_definition(name) {
             return Expr::LocalGlobal(NameWithRange {
                 name,
                 range: ident.range(self.tree),
@@ -1369,6 +1388,10 @@ impl Bodies {
         self.global_tys.get(&name).copied()
     }
 
+    pub fn global_is_extern(&self, name: Name) -> bool {
+        self.global_externs.contains(&name)
+    }
+
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
         self.expr_ranges[expr]
     }
@@ -1414,6 +1437,7 @@ impl Bodies {
             expr_ranges: _,
             global_tys,
             global_bodies,
+            global_externs,
             label_decls,
             label_usages,
             lambdas,
@@ -1427,6 +1451,7 @@ impl Bodies {
         assigns.shrink_to_fit();
         global_tys.shrink_to_fit();
         global_bodies.shrink_to_fit();
+        global_externs.shrink_to_fit();
         lambdas.shrink_to_fit();
         comptimes.shrink_to_fit();
         imports.shrink_to_fit();
@@ -2736,7 +2761,7 @@ mod tests {
                     l0 := (p0: str) extern;
                 };
             "#]],
-            |_| [(LoweringDiagnosticKind::NonGlobalExtern, 74..80)],
+            |_| [(LoweringDiagnosticKind::NonGlobalExternFunc, 74..80)],
         )
     }
 
@@ -3383,6 +3408,25 @@ mod tests {
             expect![[r#"
                 main::foo :: `0 {
                     break 0` 5;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn extern_global() {
+        check(
+            r#"
+                foo :: extern;
+
+                bar :: () {
+                    foo;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    foo;
                 };
             "#]],
             |_| [],

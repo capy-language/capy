@@ -17,14 +17,16 @@ use rustc_hash::FxHashMap;
 use uid_gen::UIDGenerator;
 
 use crate::{
-    builtin::BuiltinFunction,
+    builtin::{self, BuiltinFunction},
     convert::{GetFinalTy, ToFinalSignature, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
     ComptimeToCompile, FinalSignature,
 };
 
-use super::{comptime::ComptimeResult, FunctionToCompile, MetaTyData};
+use super::{
+    comptime::ComptimeResult, FunctionToCompile, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
+};
 
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) file_name: hir::FileName,
@@ -276,6 +278,83 @@ impl FunctionCompiler<'_> {
             return *global;
         }
 
+        if self.bodies_map[&fqn.file].global_is_extern(fqn.name) {
+            if let Some(builtin) =
+                builtin::as_compiler_defined_global(fqn, self.mod_dir, self.interner)
+            {
+                return match builtin {
+                    builtin::BuiltinGlobal::ArrayLayout => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .array_layout_slice
+                    }
+                    builtin::BuiltinGlobal::DistinctLayout => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .distinct_layout_slice
+                    }
+                    builtin::BuiltinGlobal::StructLayout => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .struct_layout_slice
+                    }
+                    builtin::BuiltinGlobal::PointerLayout => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .pointer_layout
+                    }
+                    builtin::BuiltinGlobal::ArrayInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .array_info_slice
+                    }
+                    builtin::BuiltinGlobal::SliceInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .slice_info_slice
+                    }
+                    builtin::BuiltinGlobal::PointerInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .pointer_info_slice
+                    }
+                    builtin::BuiltinGlobal::DistinctInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .distinct_info_slice
+                    }
+                    builtin::BuiltinGlobal::StructInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .struct_info_slice
+                    }
+                };
+            }
+
+            let global = self
+                .module
+                .declare_data(
+                    self.interner.lookup(fqn.name.0),
+                    Linkage::Import,
+                    true,
+                    false,
+                )
+                .expect("error declaring data");
+
+            self.globals.insert(fqn, global);
+
+            return global;
+        }
+
         let value = self.bodies_map[&fqn.file].global_body(fqn.name);
 
         let bytes = self.expr_to_const_data(fqn.file, value);
@@ -302,7 +381,7 @@ impl FunctionCompiler<'_> {
                 } else {
                     Linkage::Local
                 },
-                true,
+                export,
                 false,
             )
             .expect("error declaring data");
@@ -397,10 +476,6 @@ impl FunctionCompiler<'_> {
                 let value = self.bodies_map[&self.file_name][local_def].value;
 
                 let ty = &self.tys[self.file_name][local_def];
-
-                if ty.is_zero_sized() {
-                    return;
-                }
 
                 let size = ty.size();
 
@@ -830,7 +905,21 @@ impl FunctionCompiler<'_> {
                     )
                 {
                     // references to locals or globals should return the actual memory address of the local or global
-                    self.compile_expr_with_args(expr, true)
+                    let res = self.compile_expr_with_args(expr, true);
+
+                    if res.is_some() {
+                        res
+                    } else {
+                        // even though the expression is void, we still need to get some
+                        // result
+
+                        let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: 0,
+                        });
+
+                        Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
+                    }
                 } else {
                     let inner_size = self.tys[self.file_name][expr].size();
 
@@ -1185,14 +1274,16 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Block { stmts, tail_expr } => {
-                let ty = self.tys[self.file_name][expr].get_final_ty();
+                let expr_ty = self.tys[self.file_name][expr];
+                let final_ty = expr_ty.get_final_ty();
 
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
-                if let Some(ty) = ty.into_real_type() {
+                if let Some(ty) = final_ty.into_real_type() {
                     self.builder.append_block_param(exit_block, ty);
                 }
-                if let Some(scope_id) = self.bodies_map[&self.file_name].block_to_scope_id(expr) {
+                let scope_id = self.bodies_map[&self.file_name].block_to_scope_id(expr);
+                if let Some(scope_id) = scope_id {
                     self.exits.insert(scope_id, exit_block);
                 }
 
@@ -1201,43 +1292,74 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(body_block);
                 self.builder.seal_block(body_block);
 
-                let mut did_break = false;
+                let mut no_eval = false;
                 for stmt in stmts {
                     self.compile_stmt(&stmt);
-                    if matches!(
-                        self.bodies_map[&self.file_name][stmt],
-                        hir::Stmt::Break { .. } | hir::Stmt::Continue { .. }
-                    ) {
-                        did_break = true;
-                        break;
+                    match self.bodies_map[&self.file_name][stmt] {
+                        // if the current scope id is `None`
+                        // (no one breaks to the end of this block)
+                        // AND a sub expression has the type `NoEval`
+                        // (it always breaks, but not to the end of itself)
+                        // then the sub expression must be breaking to a higher block
+                        hir::Stmt::Expr(expr)
+                            if scope_id.is_none()
+                                && *self.tys[self.file_name][expr] == Ty::NoEval =>
+                        {
+                            no_eval = true;
+                            break;
+                        }
+                        hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } => {
+                            no_eval = true;
+                            break;
+                        }
+                        _ => {}
                     }
                 }
 
-                if let Some(value) = tail_expr {
-                    if !did_break {
-                        if let Some(value) = self.compile_expr_with_args(value, no_load) {
-                            self.builder.ins().jump(exit_block, &[value]);
-                        } else {
-                            self.builder.ins().jump(exit_block, &[]);
-                        };
-                    }
+                let value = (!no_eval)
+                    .then(|| {
+                        tail_expr.and_then(|tail_expr| {
+                            let value = self.compile_expr_with_args(tail_expr, no_load);
+                            if scope_id.is_none()
+                                && *self.tys[self.file_name][tail_expr] == Ty::NoEval
+                            {
+                                no_eval = true;
+                            }
+                            value
+                        })
+                    })
+                    .flatten();
 
-                    self.builder.switch_to_block(exit_block);
-                    self.builder.seal_block(exit_block);
-
-                    if ty.into_real_type().is_some() {
-                        Some(self.builder.block_params(exit_block)[0])
+                if !no_eval {
+                    if let Some(value) = value {
+                        self.builder.ins().jump(exit_block, &[value]);
+                    } else if !expr_ty.is_zero_sized() && scope_id.is_some() {
+                        // we know this block reaches it's end
+                        // (it's not noeval)
+                        //
+                        // we also know it doesn't have a tail expression
+                        //
+                        // we also know it doesn't return void
+                        //
+                        // since it doesn't have a tail expression, the type checker has already
+                        // confirmed that it *must* contain a break to it's own end
+                        //
+                        // therefore it's safe to trap *here*, at the end of the `body_block`
+                        //
+                        // but we can't trap in the `exit_block`, since the `exit_block` *is*
+                        // reachable
+                        self.builder.ins().trap(TrapCode::UnreachableCodeReached);
                     } else {
-                        None
-                    }
-                } else {
-                    if !did_break {
                         self.builder.ins().jump(exit_block, &[]);
                     }
+                }
 
-                    self.builder.switch_to_block(exit_block);
-                    self.builder.seal_block(exit_block);
+                self.builder.switch_to_block(exit_block);
+                self.builder.seal_block(exit_block);
 
+                if final_ty.into_real_type().is_some() {
+                    Some(self.builder.block_params(exit_block)[0])
+                } else {
                     None
                 }
             }
@@ -1248,7 +1370,6 @@ impl FunctionCompiler<'_> {
             } => {
                 let condition = self.compile_expr(condition).unwrap();
 
-                // build branch
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
@@ -1270,12 +1391,18 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(then_block);
                 self.builder.seal_block(then_block);
 
-                match self.compile_expr(body) {
-                    Some(then_value) => {
-                        self.builder.ins().jump(merge_block, &[then_value]);
-                    }
-                    None => {
-                        self.builder.ins().jump(merge_block, &[]);
+                let body_value = self.compile_expr_with_args(body, no_load);
+
+                if *self.tys[self.file_name][body] == Ty::NoEval {
+                    self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                } else {
+                    match body_value {
+                        Some(then_value) => {
+                            self.builder.ins().jump(merge_block, &[then_value]);
+                        }
+                        None => {
+                            self.builder.ins().jump(merge_block, &[]);
+                        }
                     }
                 }
 
@@ -1284,13 +1411,23 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(else_block);
                 self.builder.seal_block(else_block);
 
-                match else_branch.and_then(|else_branch| self.compile_expr(else_branch)) {
-                    Some(then_value) => {
-                        self.builder.ins().jump(merge_block, &[then_value]);
+                if let Some(else_branch) = else_branch {
+                    let else_value = self.compile_expr_with_args(else_branch, no_load);
+
+                    if *self.tys[self.file_name][else_branch] == Ty::NoEval {
+                        self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                    } else {
+                        match else_value {
+                            Some(then_value) => {
+                                self.builder.ins().jump(merge_block, &[then_value]);
+                            }
+                            None => {
+                                self.builder.ins().jump(merge_block, &[]);
+                            }
+                        }
                     }
-                    None => {
-                        self.builder.ins().jump(merge_block, &[]);
-                    }
+                } else {
+                    self.builder.ins().jump(merge_block, &[]);
                 }
 
                 // build merge block
@@ -1365,12 +1502,9 @@ impl FunctionCompiler<'_> {
                 } else {
                     let ty = ty.get_final_ty();
 
-                    Some(self.builder.ins().load(
-                        ty.into_real_type().unwrap(),
-                        MemFlags::trusted(),
-                        ptr,
-                        0,
-                    ))
+                    // if it isn't a real type, this will just return None
+                    ty.into_real_type()
+                        .map(|ty| self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
                 }
             }
             hir::Expr::Param { idx, .. } => self

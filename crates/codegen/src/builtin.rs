@@ -2,18 +2,27 @@ use std::path::Path;
 
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::{FuncId, Linkage, Module};
-use hir_ty::Ty;
 use interner::Interner;
 
-use crate::{compiler::FunctionToCompile, convert, mangle::Mangle, FinalSignature};
+use crate::{compiler::FunctionToCompile, mangle::Mangle, FinalSignature};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BuiltinGlobal {
+    ArrayLayout,
+    DistinctLayout,
+    StructLayout,
+    ArrayInfo,
+    SliceInfo,
+    PointerInfo,
+    DistinctInfo,
+    StructInfo,
+    PointerLayout,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinFunction {
     PtrBitcast,
-    SizeOf,
-    AlignOf,
-    IsMetaOfType(u32),
-    GetMetaInfo(u32),
+    I32Bitcast,
 }
 
 impl BuiltinFunction {
@@ -30,19 +39,9 @@ impl BuiltinFunction {
                 returns: vec![AbiParam::new(pointer_ty)],
                 call_conv: module.target_config().default_call_conv,
             },
-            BuiltinFunction::SizeOf | BuiltinFunction::AlignOf => FinalSignature {
+            BuiltinFunction::I32Bitcast => FinalSignature {
                 params: vec![AbiParam::new(types::I32)],
-                returns: vec![AbiParam::new(pointer_ty)],
-                call_conv: module.target_config().default_call_conv,
-            },
-            BuiltinFunction::IsMetaOfType(_) => FinalSignature {
-                params: vec![AbiParam::new(types::I32)],
-                returns: vec![AbiParam::new(types::I8)],
-                call_conv: module.target_config().default_call_conv,
-            },
-            BuiltinFunction::GetMetaInfo(..) => FinalSignature {
-                params: vec![AbiParam::new(types::I32), AbiParam::new(pointer_ty)],
-                returns: vec![AbiParam::new(pointer_ty)],
+                returns: vec![AbiParam::new(types::I32)],
                 call_conv: module.target_config().default_call_conv,
             },
         };
@@ -55,7 +54,42 @@ impl BuiltinFunction {
     }
 }
 
-pub(crate) fn as_compiler_defined(
+pub(crate) fn as_compiler_defined_global(
+    fqn: hir::Fqn,
+    mod_dir: &Path,
+    interner: &Interner,
+) -> Option<BuiltinGlobal> {
+    let is_core = fqn
+        .file
+        .get_mod_name(mod_dir, interner)
+        .map_or(false, |n| n == "core");
+
+    if !is_core {
+        return None;
+    }
+
+    let file_name = Path::new(interner.lookup(fqn.file.0))
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+
+    let function_name = interner.lookup(fqn.name.0);
+
+    Some(match (file_name.as_ref(), function_name) {
+        ("meta.capy", "array_layouts") => BuiltinGlobal::ArrayLayout,
+        ("meta.capy", "distinct_layouts") => BuiltinGlobal::DistinctLayout,
+        ("meta.capy", "struct_layouts") => BuiltinGlobal::StructLayout,
+        ("meta.capy", "array_infos") => BuiltinGlobal::ArrayInfo,
+        ("meta.capy", "slice_infos") => BuiltinGlobal::SliceInfo,
+        ("meta.capy", "pointer_infos") => BuiltinGlobal::PointerInfo,
+        ("meta.capy", "distinct_infos") => BuiltinGlobal::DistinctInfo,
+        ("meta.capy", "struct_infos") => BuiltinGlobal::StructInfo,
+        ("meta.capy", "pointer_layout") => BuiltinGlobal::PointerLayout,
+        _ => return None,
+    })
+}
+
+pub(crate) fn as_compiler_defined_func(
     is_extern: bool,
     ftc: &FunctionToCompile,
     mod_dir: &Path,
@@ -91,105 +125,10 @@ pub(crate) fn as_compiler_defined(
     let function_name = interner.lookup(fqn.name.0);
 
     Some(match (file_name.as_ref(), function_name) {
-        ("ptr.capy", "to_raw") => ptr_to_usize(ftc),
-        ("ptr.capy", "const_from_raw") => usize_to_ptr(ftc, false),
-        ("ptr.capy", "mut_from_raw") => usize_to_ptr(ftc, true),
-        ("meta.capy", "size_of") => meta_to_uint(ftc, true),
-        ("meta.capy", "align_of") => meta_to_uint(ftc, false),
-        ("meta.capy", "is_int") => meta_to_bool(ftc, convert::INT_DISCRIMINANT),
-        ("meta.capy", "is_float") => meta_to_bool(ftc, convert::FLOAT_DISCRIMINANT),
-        ("meta.capy", "is_bool") => meta_to_bool(ftc, convert::BOOL_DISCRIMINANT),
-        ("meta.capy", "is_string") => meta_to_bool(ftc, convert::STRING_DISCRIMINANT),
-        ("meta.capy", "is_char") => meta_to_bool(ftc, convert::CHAR_DISCRIMINANT),
-        ("meta.capy", "is_array") => meta_to_bool(ftc, convert::ARRAY_DISCRIMINANT),
-        ("meta.capy", "is_slice") => meta_to_bool(ftc, convert::SLICE_DISCRIMINANT),
-        ("meta.capy", "is_pointer") => meta_to_bool(ftc, convert::POINTER_DISCRIMINANT),
-        ("meta.capy", "is_distinct") => meta_to_bool(ftc, convert::DISTINCT_DISCRIMINANT),
-        ("meta.capy", "is_meta_type") => meta_to_bool(ftc, convert::META_TYPE_DISCRIMINANT),
-        ("meta.capy", "is_any") => meta_to_bool(ftc, convert::ANY_DISCRIMINANT),
-        ("meta.capy", "is_file") => meta_to_bool(ftc, convert::FILE_DISCRIMINANT),
-        ("meta.capy", "is_function") => meta_to_bool(ftc, convert::FUNCTION_DISCRIMINANT),
-        ("meta.capy", "is_struct") => meta_to_bool(ftc, convert::STRUCT_DISCRIMINANT),
-        ("meta.capy", "is_void") => meta_to_bool(ftc, convert::VOID_DISCRIMINANT),
-        ("meta.capy", "get_int_info") => meta_to_info(ftc, convert::INT_DISCRIMINANT),
-        ("meta.capy", "get_float_info") => meta_to_info(ftc, convert::FLOAT_DISCRIMINANT),
-        ("meta.capy", "get_array_info") => meta_to_info(ftc, convert::ARRAY_DISCRIMINANT),
-        ("meta.capy", "get_slice_info") => meta_to_info(ftc, convert::SLICE_DISCRIMINANT),
-        ("meta.capy", "get_pointer_info") => meta_to_info(ftc, convert::POINTER_DISCRIMINANT),
-        ("meta.capy", "get_distinct_info") => meta_to_info(ftc, convert::DISTINCT_DISCRIMINANT),
-        ("meta.capy", "get_struct_info") => meta_to_info(ftc, convert::STRUCT_DISCRIMINANT),
+        ("ptr.capy", "to_raw") => BuiltinFunction::PtrBitcast,
+        ("ptr.capy", "const_from_raw") => BuiltinFunction::PtrBitcast,
+        ("ptr.capy", "mut_from_raw") => BuiltinFunction::PtrBitcast,
+        ("meta.capy", "meta_to_raw") => BuiltinFunction::I32Bitcast,
         _ => return None,
     })
-}
-
-fn ptr_to_usize(ftc: &FunctionToCompile) -> BuiltinFunction {
-    let mut params = ftc.param_tys.iter();
-
-    let first = params.next().unwrap();
-    debug_assert!(first
-        .as_pointer()
-        .map(|(mutable, sub_ty)| !mutable && *sub_ty == hir_ty::Ty::Any)
-        .unwrap_or(false));
-    debug_assert!(params.next().is_none());
-
-    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u8::MAX));
-
-    BuiltinFunction::PtrBitcast
-}
-
-fn usize_to_ptr(ftc: &FunctionToCompile, mutable: bool) -> BuiltinFunction {
-    let mut params = ftc.param_tys.iter();
-
-    let first = params.next().unwrap();
-    debug_assert_eq!(**first, Ty::UInt(u8::MAX));
-    debug_assert!(params.next().is_none());
-
-    debug_assert!(ftc
-        .return_ty
-        .as_pointer()
-        .map(|(ptr_mut, sub_ty)| ptr_mut == mutable && *sub_ty == hir_ty::Ty::Any)
-        .unwrap_or(false));
-
-    BuiltinFunction::PtrBitcast
-}
-
-/// size = false, will output a CompilerDefinedFunction::AlignOf
-fn meta_to_uint(ftc: &FunctionToCompile, size: bool) -> BuiltinFunction {
-    let mut params = ftc.param_tys.iter();
-
-    let first = params.next().unwrap();
-    debug_assert_eq!(**first, Ty::Type);
-    debug_assert!(params.next().is_none());
-
-    debug_assert_eq!(*ftc.return_ty, Ty::UInt(u8::MAX));
-
-    if size {
-        BuiltinFunction::SizeOf
-    } else {
-        BuiltinFunction::AlignOf
-    }
-}
-
-fn meta_to_bool(ftc: &FunctionToCompile, discriminant: u32) -> BuiltinFunction {
-    let mut params = ftc.param_tys.iter();
-
-    let first = params.next().unwrap();
-    debug_assert_eq!(**first, Ty::Type);
-    debug_assert!(params.next().is_none());
-
-    debug_assert_eq!(*ftc.return_ty, Ty::Bool);
-
-    BuiltinFunction::IsMetaOfType(discriminant)
-}
-
-fn meta_to_info(ftc: &FunctionToCompile, discriminant: u32) -> BuiltinFunction {
-    let mut params = ftc.param_tys.iter();
-
-    let first = params.next().unwrap();
-    debug_assert_eq!(**first, Ty::Type);
-    debug_assert!(params.next().is_none());
-
-    debug_assert!(ftc.return_ty.is_struct());
-
-    BuiltinFunction::GetMetaInfo(discriminant)
 }

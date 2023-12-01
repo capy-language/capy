@@ -17,6 +17,7 @@ main :: () {
     print_type_layout("u64             ", u64);
     print_type_layout("i8              ", i8);
     print_type_layout("u128            ", u128);
+    print_type_layout("usize           ", usize);
     print_type_layout("f32             ", f32);
     print_type_layout("void            ", void);
     print_type_layout("any             ", any);

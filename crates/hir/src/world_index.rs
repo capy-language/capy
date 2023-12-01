@@ -1,18 +1,21 @@
 use rustc_hash::FxHashMap;
 
-use crate::{Definition, FileName, Fqn, Index, RangeInfo};
+use crate::{FileName, Fqn, Index, RangeInfo};
 
 #[derive(Default, Debug)]
 pub struct WorldIndex(FxHashMap<FileName, Index>);
 
 impl WorldIndex {
-    pub fn get_definition(&self, fqn: Fqn) -> Result<Definition, GetDefinitionError> {
+    pub fn definition(&self, fqn: Fqn) -> DefinitionStatus {
         match self.0.get(&fqn.file) {
-            Some(index) => match index.get_definition(fqn.name) {
-                Some(def) => Ok(def),
-                None => Err(GetDefinitionError::UnknownDefinition),
-            },
-            None => Err(GetDefinitionError::UnknownFile),
+            Some(index) => {
+                if index.has_definition(fqn.name) {
+                    DefinitionStatus::Defined
+                } else {
+                    DefinitionStatus::UnknownDefinition
+                }
+            }
+            None => DefinitionStatus::UnknownFile,
         }
     }
 
@@ -46,7 +49,8 @@ impl WorldIndex {
 }
 
 #[derive(Debug)]
-pub enum GetDefinitionError {
+pub enum DefinitionStatus {
+    Defined,
     UnknownFile,
     UnknownDefinition,
 }

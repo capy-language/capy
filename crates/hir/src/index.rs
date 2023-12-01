@@ -1,8 +1,6 @@
-use std::collections::hash_map::Entry;
-
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::TextRange;
 
@@ -10,7 +8,7 @@ use crate::Name;
 
 #[derive(Clone, Debug)]
 pub struct Index {
-    pub(crate) definitions: FxHashMap<Name, Definition>,
+    pub(crate) definitions: FxHashSet<Name>,
     pub(crate) range_info: FxHashMap<Name, RangeInfo>,
 }
 
@@ -19,19 +17,15 @@ impl Index {
         self.definitions.is_empty()
     }
 
-    pub fn get_definition(&self, name: Name) -> Option<Definition> {
-        self.definitions.get(&name).copied()
+    pub fn has_definition(&self, name: Name) -> bool {
+        self.definitions.contains(&name)
     }
 
-    pub fn definitions(&self) -> impl Iterator<Item = (Name, Definition)> + '_ {
-        self.definitions.iter().map(|(name, def)| (*name, *def))
+    pub fn definitions(&self) -> impl Iterator<Item = Name> + '_ {
+        self.definitions.iter().copied()
     }
     pub fn range_info(&self, name: Name) -> &RangeInfo {
         &self.range_info[&name]
-    }
-
-    pub fn definition_names(&self) -> impl Iterator<Item = Name> + '_ {
-        self.definitions.keys().copied()
     }
 
     pub fn ranges(&self) -> impl Iterator<Item = (Name, &RangeInfo)> + '_ {
@@ -48,11 +42,6 @@ impl Index {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Definition {
-    pub ty_annotation: Option<ast::Ty>,
-}
-
 #[derive(Debug, Clone)]
 pub struct RangeInfo {
     pub whole: TextRange,
@@ -67,7 +56,7 @@ pub fn index(
 ) -> (Index, Vec<IndexingDiagnostic>) {
     let mut ctx = IndexingCtx {
         index: Index {
-            definitions: FxHashMap::default(),
+            definitions: FxHashSet::default(),
             range_info: FxHashMap::default(),
         },
         diagnostics: Vec::new(),
@@ -100,24 +89,26 @@ impl IndexingCtx<'_> {
         let name = Name(self.interner.intern(name_token.text(self.tree)));
         let name_range = name_token.range(self.tree);
 
-        match self.index.definitions.entry(name) {
-            Entry::Occupied(_) => self.diagnostics.push(IndexingDiagnostic {
+        if self.index.definitions.contains(&name) {
+            self.diagnostics.push(IndexingDiagnostic {
                 kind: IndexingDiagnosticKind::AlreadyDefined { name: name.0 },
                 range: name_range,
-            }),
-            Entry::Vacant(vacant_entry) => {
-                vacant_entry.insert(Definition {
-                    ty_annotation: def.ty(self.tree),
-                });
-                self.index.range_info.insert(
-                    name,
-                    RangeInfo {
-                        whole: def.range(self.tree),
-                        name: name_range,
-                        value: def.value(self.tree).unwrap().range(self.tree),
-                    },
-                );
-            }
+            });
+        } else {
+            self.index.definitions.insert(name);
+            self.index.range_info.insert(
+                name,
+                RangeInfo {
+                    whole: def.range(self.tree),
+                    name: name_range,
+                    // use the range of the value, or the range of the `extern` token
+                    value: def
+                        .value(self.tree)
+                        .map(|value| value.range(self.tree))
+                        .or(def.r#extern(self.tree).map(|ext| ext.range(self.tree)))
+                        .unwrap(),
+                },
+            );
         }
     }
 }
@@ -138,13 +129,10 @@ impl Index {
         let mut s = String::new();
 
         let mut defs = self.definitions.iter().collect::<Vec<_>>();
-        defs.sort_unstable_by_key(|(name, _)| *name);
+        defs.sort_unstable();
 
-        for (name, def) in defs {
+        for name in defs {
             s.push_str(interner.lookup(name.0));
-            if def.ty_annotation.is_some() {
-                s.push_str(" : annotation");
-            }
             s.push('\n');
         }
 
@@ -224,20 +212,22 @@ mod tests {
                 foo : i32 : 25;
             "#,
             expect![[r"
-                foo : annotation
+                foo
             "]],
             |_| [],
         )
     }
 
     #[test]
-    fn function_with_ty_annotation() {
+    fn multiple_definition() {
         check(
             r#"
-                foo : i32 : () {}
+                foo :: 25;
+                bar :: "Hello";
             "#,
             expect![[r"
-                foo : annotation
+                foo
+                bar
             "]],
             |_| [],
         )

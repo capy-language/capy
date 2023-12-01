@@ -138,6 +138,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Type => 32 / 8,
         Ty::Any => 0,
         Ty::Void => 0,
+        Ty::NoEval => 0,
         Ty::File(_) => 0,
     };
 
@@ -154,6 +155,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Type => size,
         Ty::Any => 1,
         Ty::Void => 1,
+        Ty::NoEval => 1,
         Ty::File(_) => 1,
     };
 

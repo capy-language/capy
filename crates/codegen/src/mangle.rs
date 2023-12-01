@@ -70,10 +70,7 @@ impl Mangle for BuiltinFunction {
     fn to_mangled_name(&self, _: &std::path::Path, _: &Interner) -> String {
         let regular_name = match self {
             BuiltinFunction::PtrBitcast => Cow::Borrowed("ptr_bitcast"),
-            BuiltinFunction::SizeOf => Cow::Borrowed("size_of"),
-            BuiltinFunction::AlignOf => Cow::Borrowed("align_of"),
-            BuiltinFunction::IsMetaOfType(disc) => Cow::Owned(format!("is_meta_of_{}", disc)),
-            BuiltinFunction::GetMetaInfo(disc) => Cow::Owned(format!("meta_info_of_{}", disc)),
+            BuiltinFunction::I32Bitcast => Cow::Borrowed("i32_bitcast"),
         };
 
         mangle_internal(regular_name.as_ref())

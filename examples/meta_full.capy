@@ -180,7 +180,11 @@ print_info_with_args :: (ty: type, indent: i32) {
         } else if meta.is_void(ty) {
             "VOID"
         } else {
+            disc := meta.meta_to_raw(ty);
+
             core.println("\nokay you fricked up bud");
+            printf("discriminant = %i\n", disc as i32); 
+
             core.libc.exit(1);
 
             "unreachable"
