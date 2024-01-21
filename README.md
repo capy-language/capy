@@ -228,6 +228,35 @@ core.println_any(core.Any {
 
 In the future reflection will be made to embrace functions. When user-defined annotations are added, this will result in automation far more powerful than Rust macros.
 
+### Defer
+
+The defer statement allows you to code in the future by moving the given expression to the end of the current scope.
+
+The expression in a defer is guarenteed to run, regardless of any breaks or returns.
+
+```cpp
+{
+    my_file := open_file("foo.txt");
+    defer close_file(my_file);
+
+    // .. do stuff with file
+
+} // <- file gets freed here
+
+```
+
+Defers are "first in, last out". So later defers will run before earlier defers.
+
+```cpp
+file_manager := alloc_manager();
+defer free_manager(file_manager);
+
+file_manager.foo := open_file("foo.txt");
+defer close_file(file_manager.foo);
+
+// foo is freed, and then the file manager is freed
+```
+
 ### Functions
 
 Every Capy program must contain a `main` function. It is the entry point of the program.

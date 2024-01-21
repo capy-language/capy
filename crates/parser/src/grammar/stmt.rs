@@ -20,7 +20,8 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     let at_return = p.at(TokenKind::Return);
     let at_break = p.at(TokenKind::Break);
     let at_continue = p.at(TokenKind::Continue);
-    if at_return || at_break || at_continue {
+    let at_defer = p.at(TokenKind::Defer);
+    if at_return || at_break || at_continue || at_defer {
         let m = p.start();
         p.bump();
 
@@ -34,8 +35,19 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
             label.complete(p, NodeKind::LabelRef);
         }
 
+        if at_defer {
+            expr::parse_expr(p, "defer expression");
+        }
+
         if (at_return || at_break) && !p.at(TokenKind::Semicolon) {
-            expr::parse_expr(p, "break value");
+            expr::parse_expr(
+                p,
+                if at_break {
+                    "break value"
+                } else {
+                    "return value"
+                },
+            );
         }
 
         p.expect_with_no_skip(TokenKind::Semicolon);
@@ -46,8 +58,10 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
                 NodeKind::ReturnStmt
             } else if at_break {
                 NodeKind::BreakStmt
-            } else {
+            } else if at_continue {
                 NodeKind::ContinueStmt
+            } else {
+                NodeKind::DeferStmt
             },
         );
 

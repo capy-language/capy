@@ -8,8 +8,8 @@ use rustc_hash::FxHashSet;
 use text_size::TextRange;
 
 use crate::{
-    ty::BinaryOutput, InferenceCtx, LocalUsage, Ty, TyDiagnostic, TyDiagnosticHelp,
-    TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
+    ty::BinaryOutput, InferenceCtx, Ty, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
+    TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
 macro_rules! current_bodies {
@@ -130,10 +130,10 @@ impl InferenceCtx<'_> {
         actual_ty
     }
 
-    fn reinfer_usages(&mut self, usages: FxHashSet<LocalUsage>) {
+    fn reinfer_usages(&mut self, usages: FxHashSet<Idx<hir::Stmt>>) {
         for usage in usages {
-            match usage {
-                LocalUsage::Def(user_local_def) => {
+            match current_bodies!(self)[usage] {
+                hir::Stmt::LocalDef(user_local_def) => {
                     let user_local_body = &current_bodies!(self)[user_local_def];
 
                     let user_local_ty = self.reinfer_expr(user_local_body.value);
@@ -145,15 +145,24 @@ impl InferenceCtx<'_> {
                             .insert(user_local_def, user_local_ty);
                     }
                 }
-                LocalUsage::Assign(assign) => {
+                hir::Stmt::Assign(assign) => {
                     let assign_body = &current_bodies!(self)[assign];
 
                     self.reinfer_expr(assign_body.source);
                     self.reinfer_expr(assign_body.value);
                 }
-                LocalUsage::Expr(expr) => {
+                hir::Stmt::Expr(expr) => {
                     self.reinfer_expr(expr);
                 }
+                hir::Stmt::Break { value, .. } => {
+                    if let Some(value) = value {
+                        self.reinfer_expr(value);
+                    }
+                }
+                hir::Stmt::Defer { expr, .. } => {
+                    self.reinfer_expr(expr);
+                }
+                hir::Stmt::Continue { .. } => {}
             }
         }
     }
@@ -479,7 +488,7 @@ impl InferenceCtx<'_> {
             hir::Stmt::Expr(expr) => {
                 self.infer_expr(*expr);
 
-                self.find_usages(&[*expr], LocalUsage::Expr(*expr));
+                self.find_usages(&[*expr], stmt);
             }
             hir::Stmt::LocalDef(local_def) => {
                 let def_body = &current_bodies!(self)[*local_def];
@@ -506,7 +515,7 @@ impl InferenceCtx<'_> {
                     current_module!(self).local_tys.insert(*local_def, value_ty);
                 }
 
-                self.find_usages(&[def_body.value], LocalUsage::Def(*local_def));
+                self.find_usages(&[def_body.value], stmt);
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &current_bodies!(self)[*assign];
@@ -531,10 +540,7 @@ impl InferenceCtx<'_> {
                     self.replace_weak_tys(assign_body.value, source_ty);
                 }
 
-                self.find_usages(
-                    &[assign_body.source, assign_body.value],
-                    LocalUsage::Assign(*assign),
-                );
+                self.find_usages(&[assign_body.source, assign_body.value], stmt);
             }
             hir::Stmt::Break { label, value, .. } => {
                 let Some(label) = label else { return };
@@ -556,12 +562,7 @@ impl InferenceCtx<'_> {
                     .get(referenced_expr)
                 {
                     Some(expected_ty) => {
-                        self.expect_block_match(
-                            value.unwrap(),
-                            value_ty,
-                            referenced_expr,
-                            *expected_ty,
-                        );
+                        self.expect_block_match(*value, value_ty, referenced_expr, *expected_ty);
                     }
                     None => {
                         if must_be_void && !value_ty.is_void() {
@@ -589,10 +590,14 @@ impl InferenceCtx<'_> {
             hir::Stmt::Continue { .. } => {
                 // there's not really anything to check here
             }
+            hir::Stmt::Defer { expr, .. } => {
+                self.infer_expr(*expr);
+                self.find_usages(&[*expr], stmt);
+            }
         }
     }
 
-    fn find_usages(&mut self, exprs: &[Idx<hir::Expr>], local_usage: LocalUsage) {
+    fn find_usages(&mut self, exprs: &[Idx<hir::Expr>], local_usage: Idx<hir::Stmt>) {
         let mut locals = HashSet::default();
         for expr in exprs {
             self.get_referenced_locals(*expr, &mut locals);
@@ -649,6 +654,17 @@ impl InferenceCtx<'_> {
             Expr::Block { tail_expr, .. } => {
                 if let Some(tail_expr) = tail_expr {
                     self.get_referenced_locals(*tail_expr, local_defs);
+                }
+
+                if let Some(scope_id) = current_bodies!(self).block_to_scope_id(expr) {
+                    for usage in current_bodies!(self).scope_id_usages(scope_id) {
+                        if let hir::Stmt::Break {
+                            value: Some(value), ..
+                        } = current_bodies!(self)[*usage]
+                        {
+                            self.get_referenced_locals(value, local_defs)
+                        }
+                    }
                 }
             }
             Expr::If {
@@ -724,7 +740,7 @@ impl InferenceCtx<'_> {
                 }
             }
 
-            max_ty.unwrap()
+            max_ty.unwrap_or_else(|| Ty::NoEval.into())
         }
 
         let new_ty = match &current_bodies!(self)[expr] {
@@ -747,7 +763,7 @@ impl InferenceCtx<'_> {
                     }
                     .into()
                 } else {
-                    return current_module!(self)[expr];
+                    return previous_ty;
                 }
             }
             Expr::Deref { pointer } => {
@@ -761,7 +777,7 @@ impl InferenceCtx<'_> {
                         .map(|(_, sub_ty)| sub_ty)
                         .unwrap_or_else(|| Ty::Unknown.into())
                 } else {
-                    return current_module!(self)[expr];
+                    return previous_ty;
                 }
             }
             Expr::Binary { lhs, rhs, op } => {
@@ -782,7 +798,7 @@ impl InferenceCtx<'_> {
                         op.default_ty().into()
                     }
                 } else {
-                    return current_module!(self)[expr];
+                    return previous_ty;
                 }
             }
             Expr::Unary { expr: inner, .. } => {
@@ -792,7 +808,7 @@ impl InferenceCtx<'_> {
                 if old_inner != new_inner {
                     new_inner
                 } else {
-                    return current_module!(self)[expr];
+                    return previous_ty;
                 }
             }
             Expr::Array {
@@ -802,7 +818,7 @@ impl InferenceCtx<'_> {
                     self.reinfer_expr(*item);
                 }
 
-                return current_module!(self)[expr];
+                return previous_ty;
             }
             Expr::Index { source, index } => {
                 self.reinfer_expr(*index);
@@ -817,31 +833,29 @@ impl InferenceCtx<'_> {
                         .or_else(|| new_source.as_slice())
                         .unwrap_or_else(|| Ty::Unknown.into())
                 } else {
-                    return current_module!(self)[expr];
+                    return previous_ty;
                 }
             }
-            Expr::Block {
-                tail_expr: Some(tail_expr),
-                ..
-            } => {
-                let new_tail = self.reinfer_expr(*tail_expr);
+            Expr::Block { tail_expr, .. } => {
+                let new_tail = tail_expr.map(|tail_expr| self.reinfer_expr(tail_expr));
+
                 let new_ty = if let Some(label_id) = current_bodies!(self).block_to_scope_id(expr) {
-                    all_usages_ty(self, label_id).max(&new_tail).unwrap().into()
+                    let usages_ty = all_usages_ty(self, label_id);
+
+                    if let Some(new_tail) = new_tail {
+                        usages_ty.max(&new_tail).unwrap_or(Ty::Unknown).into()
+                    } else {
+                        usages_ty
+                    }
                 } else {
-                    new_tail
+                    new_tail.unwrap_or_else(|| Ty::Void.into())
                 };
 
-                let old_ty = current_module!(self)[expr];
-                if old_ty != new_ty {
-                    new_tail
+                if *previous_ty != Ty::NoEval && previous_ty != new_ty {
+                    new_ty
                 } else {
-                    return old_ty;
+                    return previous_ty;
                 }
-            }
-            Expr::Block {
-                tail_expr: None, ..
-            } => {
-                return current_module!(self)[expr];
             }
             Expr::If {
                 condition,
@@ -862,11 +876,10 @@ impl InferenceCtx<'_> {
                     new_body
                 };
 
-                let old_if = current_module!(self)[expr];
-                if old_if != max {
+                if previous_ty != max {
                     max
                 } else {
-                    return old_if;
+                    return previous_ty;
                 }
             }
             Expr::While { condition, body } => {
@@ -884,18 +897,27 @@ impl InferenceCtx<'_> {
                     Ty::Void.into()
                 };
 
-                let old_ty = current_module!(self)[expr];
-                if old_ty != new_ty {
+                if previous_ty != new_ty {
                     new_ty
                 } else {
-                    return old_ty;
+                    return previous_ty;
                 }
             }
             Expr::Local(local) => current_module!(self).local_tys[*local],
             _ => {
-                return current_module!(self)[expr];
+                return previous_ty;
             }
         };
+
+        #[cfg(debug_assertions)]
+        if previous_ty != new_ty && !previous_ty.is_weak_replaceable_by(&new_ty) {
+            panic!(
+                "#{} : {:?} is not weak replaceable by {:?}",
+                expr.into_raw(),
+                previous_ty,
+                new_ty
+            );
+        }
 
         current_module!(self).expr_tys.insert(expr, new_ty);
 
@@ -1170,7 +1192,7 @@ impl InferenceCtx<'_> {
                         match previous_ty {
                             Some(previous_ty) => {
                                 if let Some(max) =
-                                    self.expect_block_match(*tail, tail_ty, expr, previous_ty)
+                                    self.expect_block_match(Some(*tail), tail_ty, expr, previous_ty)
                                 {
                                     // if there was a previous_ty, then there must've been a break,
                                     // and so this block must have a scope id
@@ -1206,9 +1228,12 @@ impl InferenceCtx<'_> {
                         // if there was a break, make sure it's Void
                         if let Some(previous_ty) = current_module!(self).expr_tys.get(expr).copied()
                         {
-                            if let Some(max) =
-                                self.expect_block_match(expr, Ty::Void.into(), expr, previous_ty)
-                            {
+                            if let Some(max) = self.expect_block_match(
+                                Some(expr),
+                                Ty::Void.into(),
+                                expr,
+                                previous_ty,
+                            ) {
                                 max
                             } else {
                                 Ty::Unknown.into()
@@ -1582,7 +1607,7 @@ impl InferenceCtx<'_> {
     /// returns the max of the found expression and the current type of the block
     fn expect_block_match(
         &mut self,
-        found_expr: Idx<hir::Expr>,
+        found_expr: Option<Idx<hir::Expr>>,
         found_ty: Intern<Ty>,
         block_expr: Idx<hir::Expr>,
         block_ty: Intern<Ty>,
@@ -1594,7 +1619,9 @@ impl InferenceCtx<'_> {
         if let Some(max) = block_ty.max(&found_ty) {
             let max = max.into();
             current_module!(self).expr_tys[block_expr] = max;
-            self.replace_weak_tys(found_expr, max);
+            if let Some(found_expr) = found_expr {
+                self.replace_weak_tys(found_expr, max);
+            }
 
             Some(max)
         } else {
@@ -1612,7 +1639,7 @@ impl InferenceCtx<'_> {
                     found: found_ty,
                 },
                 module: self.current_file.unwrap(),
-                range: current_bodies!(self).range_for_expr(found_expr),
+                range: current_bodies!(self).range_for_expr(found_expr.unwrap_or(block_expr)),
                 help: Some(TyDiagnosticHelp {
                     kind: TyDiagnosticHelpKind::BreakHere { break_ty: block_ty },
                     range: current_bodies!(self).range_for_stmt(*first_usage),

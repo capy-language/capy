@@ -413,12 +413,12 @@ impl Compiler<'_> {
 
             let mut pointer_layout_data = Vec::with_capacity(self.pointer_ty.bytes() as usize * 2);
             pointer_layout_data.extend_with_num_bytes(
-                self.pointer_ty.bytes() as u32,
+                self.pointer_ty.bytes(),
                 self.pointer_ty.bits() as u8,
                 self.module.isa().endianness(),
             );
             pointer_layout_data.extend_with_num_bytes(
-                self.pointer_ty.bytes().min(8) as u32,
+                self.pointer_ty.bytes().min(8),
                 self.pointer_ty.bits() as u8,
                 self.module.isa().endianness(),
             );
@@ -813,19 +813,18 @@ impl Compiler<'_> {
             params: FxHashMap::default(),
             exits: FxHashMap::default(),
             continues: FxHashMap::default(),
+            defer_stack: Vec::new(),
         };
 
-        function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx);
-
-        if self.verbosity == Verbosity::AllFunctions
+        let debug_print = self.verbosity == Verbosity::AllFunctions
             || (self.verbosity == Verbosity::LocalFunctions
-                && !module_name.is_mod(self.mod_dir, self.interner))
-        {
-            println!(
-                "{} \x1B[90m{}\x1B[0m:\n{}",
-                unmangled_name, mangled_name, self.ctx.func
-            );
+                && !module_name.is_mod(self.mod_dir, self.interner));
+
+        if debug_print {
+            println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
+
+        function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx, debug_print);
 
         self.module
             .define_function(func_id, &mut self.ctx)

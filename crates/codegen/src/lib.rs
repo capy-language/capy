@@ -1328,5 +1328,90 @@ mod tests {
         )
     }
 
+    #[test]
+    fn r#continue() {
+        check_raw(
+            r#"
+                main :: () {
+                    i := 0;
+                    loop {
+                        i = i + 1;
+                
+                        if i == 10 {
+                            break;
+                        }
+                
+                        if i % 2 == 0 {
+                            continue;
+                        }
+                
+                        printf("%i\n", i);
+                    }
+                }
+                
+                printf :: (fmt: str, n: i32) extern;
+            "#,
+            "main",
+            expect![[r#"
+                1
+                3
+                5
+                7
+                9
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn defers() {
+        check_raw(
+            r#"
+                main :: () -> i32 {
+                    defer printf(" How ye be?");
+                    {
+                        defer printf(" Sailor!");
+                        defer printf("ly");
+                        {
+                            defer printf(" World");
+                            printf("Hello");
+                            return 5;
+                        }
+                    }
+                }
+                
+                printf :: (text: str) extern;
+            "#,
+            "main",
+            expect![[r#"
+                Hello Worldly Sailor! How ye be?
+            "#]],
+            5,
+        )
+    }
+
+    #[test]
+    fn defers_within_defers() {
+        check_raw(
+            r#"
+                main :: () {
+                    defer printf("ly Sailor!");
+                    defer {
+                        defer printf("World");
+                        printf("Hello ");
+                    };
+                }
+                
+                printf :: (text: str) extern;
+            "#,
+            "main",
+            expect![[r#"
+                Hello Worldly Sailor!
+            "#]],
+            0,
+        )
+    }
+
     // the "ptrs_to_ptrs.capy" test is not reproducible
 }

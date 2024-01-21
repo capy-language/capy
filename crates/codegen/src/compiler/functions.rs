@@ -28,6 +28,13 @@ use super::{
     comptime::ComptimeResult, FunctionToCompile, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
 };
 
+// represents a single block containing multiple defer statements
+#[derive(Debug, Clone)]
+pub(crate) struct DeferFrame {
+    id: Option<ScopeId>,
+    defers: Vec<Idx<hir::Expr>>,
+}
+
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) file_name: hir::FileName,
     pub(crate) signature: FinalSignature,
@@ -63,6 +70,7 @@ pub(crate) struct FunctionCompiler<'a> {
     // for control flow (breaks and continues)
     pub(crate) exits: FxHashMap<ScopeId, Block>,
     pub(crate) continues: FxHashMap<ScopeId, Block>,
+    pub(crate) defer_stack: Vec<DeferFrame>,
 }
 
 impl FunctionCompiler<'_> {
@@ -72,6 +80,7 @@ impl FunctionCompiler<'_> {
         return_ty: Intern<Ty>,
         function_body: Idx<hir::Expr>,
         new_idx_to_old_idx: FxHashMap<u64, u64>,
+        debug_print: bool,
     ) {
         // Create the entry block, to start emitting code in.
         let entry_block = self.builder.create_block();
@@ -164,6 +173,10 @@ impl FunctionCompiler<'_> {
             }
             None => self.builder.ins().return_(&[]),
         };
+
+        if debug_print {
+            println!("{}", self.builder.func);
+        }
 
         self.builder.seal_all_blocks();
         self.builder.finalize();
@@ -531,19 +544,47 @@ impl FunctionCompiler<'_> {
             } => {
                 let exit_block = self.exits[&label];
 
-                if let Some(value) = value {
+                let value = value.and_then(|value| {
                     let value_ty = self.tys[self.file_name][value];
-                    let Some(value) = self.compile_expr(value) else {
-                        self.builder.ins().jump(exit_block, &[]);
-                        return;
-                    };
+                    let value = self.compile_expr(value)?;
 
                     let referenced_block_ty =
                         self.tys[self.file_name][self.bodies_map[&self.file_name][label]];
 
-                    let value =
-                        super::cast(&mut self.builder, value, value_ty, referenced_block_ty);
+                    Some(super::cast(
+                        &mut self.builder,
+                        value,
+                        value_ty,
+                        referenced_block_ty,
+                    ))
+                });
 
+                // run all the defers from here, backwards to the one we are breaking out of
+
+                let mut used_frames = Vec::new();
+
+                while let Some(frame) = self.defer_stack.last().cloned() {
+                    // the exit block of every Expr::Block contains the instructions for running
+                    // the defers. This break instruction jumps to that exit block.
+                    // therefore, we only need to insert extra defer handling for everything OTHER
+                    // than the block we are breaking to.
+                    if let Some(id) = frame.id {
+                        if id == label {
+                            break;
+                        }
+                    }
+
+                    // do this in reverse for the reasons explained in the Expr::Block code
+                    for defer in frame.defers.iter().rev() {
+                        self.compile_expr(*defer);
+                    }
+
+                    used_frames.push(self.defer_stack.pop().unwrap());
+                }
+
+                self.defer_stack.extend(used_frames.into_iter().rev());
+
+                if let Some(value) = value {
                     self.builder.ins().jump(exit_block, &[value]);
                 } else {
                     self.builder.ins().jump(exit_block, &[]);
@@ -553,11 +594,22 @@ impl FunctionCompiler<'_> {
             hir::Stmt::Continue {
                 label: Some(label), ..
             } => {
-                let continue_block = self.exits[&label];
+                let continue_block = self.continues[&label];
 
                 self.builder.ins().jump(continue_block, &[]);
             }
             hir::Stmt::Continue { label: None, .. } => unreachable!(),
+            hir::Stmt::Defer { expr, .. } => {
+                // defer statements aren't actually compiled here, but only at the end of blocks,
+                // or during a break. We use stacks like this so breaks can execute all the defers
+                // between their location and the desired location.
+
+                self.defer_stack
+                    .last_mut()
+                    .expect("block didn't add to defer stack")
+                    .defers
+                    .push(expr);
+            }
         }
     }
 
@@ -1287,6 +1339,11 @@ impl FunctionCompiler<'_> {
                     self.exits.insert(scope_id, exit_block);
                 }
 
+                self.defer_stack.push(DeferFrame {
+                    id: scope_id,
+                    defers: Vec::new(),
+                });
+
                 self.builder.ins().jump(body_block, &[]);
 
                 self.builder.switch_to_block(body_block);
@@ -1333,21 +1390,29 @@ impl FunctionCompiler<'_> {
                 if !no_eval {
                     if let Some(value) = value {
                         self.builder.ins().jump(exit_block, &[value]);
-                    } else if !expr_ty.is_zero_sized() && scope_id.is_some() {
-                        // we know this block reaches it's end
-                        // (it's not noeval)
+                    } else if !expr_ty.is_void() && scope_id.is_some() {
+                        // we know this block reaches it's end (it's !noeval)
                         //
-                        // we also know it doesn't have a tail expression
+                        // we also know it doesn't have a tail expression (because `value` was None)
                         //
-                        // we also know it doesn't return void
+                        // we also know it has a non-void type (no implicit tail expression)
                         //
                         // since it doesn't have a tail expression, the type checker has already
-                        // confirmed that it *must* contain a break to it's own end
+                        // confirmed that it *must* always reach a break to it's own end.
+                        //
+                        // this break has to be somewhere deep in an grandchild block. we know it
+                        // exists, and we know that this exact point is unreachable because of that
+                        // break, and because of the absence of a tail expression.
                         //
                         // therefore it's safe to trap *here*, at the end of the `body_block`
                         //
                         // but we can't trap in the `exit_block`, since the `exit_block` *is*
-                        // reachable
+                        // reachable.
+                        //
+                        // the reason we need to trap is because cranelift forces us to end all blocks with
+                        // a "final" instruction (a jump or trap). we can't exactly jump to the exit
+                        // because we don't have a value with which to jump (and remember the exit
+                        // is expecting something non-void). so since it's safe to trap, we just trap.
                         self.builder.ins().trap(TrapCode::UnreachableCodeReached);
                     } else {
                         self.builder.ins().jump(exit_block, &[]);
@@ -1356,6 +1421,20 @@ impl FunctionCompiler<'_> {
 
                 self.builder.switch_to_block(exit_block);
                 self.builder.seal_block(exit_block);
+
+                // unwind our defers
+
+                let defer_frame = self.defer_stack.pop().expect("we just pushed this");
+
+                if !no_eval || scope_id.is_some() {
+                    debug_assert_eq!(defer_frame.id, scope_id);
+
+                    // do it in reverse to make sure later defers can still rely on the allocations of
+                    // previous defers
+                    for defer in defer_frame.defers.iter().rev() {
+                        self.compile_expr(*defer);
+                    }
+                }
 
                 if final_ty.into_real_type().is_some() {
                     Some(self.builder.block_params(exit_block)[0])

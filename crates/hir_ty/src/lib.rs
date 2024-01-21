@@ -186,18 +186,11 @@ pub struct InferenceCtx<'a> {
     bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
     world_index: &'a hir::WorldIndex,
     interner: &'a Interner,
-    local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<LocalUsage>>>,
+    local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<Idx<hir::Stmt>>>>,
     param_tys: Option<Vec<Intern<Ty>>>,
     signatures: FxHashMap<hir::Fqn, Signature>,
     modules: FxHashMap<hir::FileName, ModuleInference>,
     diagnostics: Vec<TyDiagnostic>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum LocalUsage {
-    Def(Idx<hir::LocalDef>),
-    Assign(Idx<hir::Assign>),
-    Expr(Idx<hir::Expr>),
 }
 
 impl<'a> InferenceCtx<'a> {
@@ -785,12 +778,19 @@ impl InferenceResult {
         modules.shrink_to_fit();
     }
 
-    pub fn debug(&self, mod_dir: &std::path::Path, interner: &Interner, fancy: bool) -> String {
+    pub fn debug(
+        &self,
+        mod_dir: &std::path::Path,
+        interner: &Interner,
+        include_mods: bool,
+        fancy: bool,
+    ) -> String {
         let mut s = String::new();
 
         let mut signatures = self
             .signatures
             .iter()
+            .filter(|(fqn, _)| include_mods || !fqn.file.is_mod(mod_dir, interner))
             .map(|(fqn, sig)| (fqn.to_string(mod_dir, interner), sig))
             .collect::<Vec<_>>();
 
@@ -802,7 +802,11 @@ impl InferenceResult {
             s.push_str(&format!("{}\n", sig.0.display(mod_dir, interner)));
         }
 
-        let mut files = self.files.iter().collect::<Vec<_>>();
+        let mut files = self
+            .files
+            .iter()
+            .filter(|(fqn, _)| include_mods || !fqn.is_mod(mod_dir, interner))
+            .collect::<Vec<_>>();
         files.sort_by_key(|(name, _)| **name);
 
         for (name, tys) in files {
@@ -1028,7 +1032,7 @@ mod tests {
         let (inference_result, actual_diagnostics) =
             InferenceCtx::new(&bodies_map, &world_index, &interner).finish(entry_point);
 
-        expect.assert_eq(&inference_result.debug(Path::new(""), &interner, false));
+        expect.assert_eq(&inference_result.debug(Path::new(""), &interner, true, false));
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
@@ -7015,6 +7019,24 @@ mod tests {
     }
 
     #[test]
+    fn return_only() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    return 42;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> i32
+                1 : i32
+                2 : i32
+                3 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
     fn break_from_loop() {
         check(
             r#"
@@ -7298,6 +7320,33 @@ mod tests {
     }
 
     #[test]
+    fn reinfer_break_usages() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        x := 0;
+                        break x;
+                        y : i8 = x;
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : i8
+                1 : i8
+                3 : i8
+                4 : i8
+                5 : void
+                6 : () -> void
+                l0 : i8
+                l1 : i8
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
     fn implicit_weak_ptr_to_any() {
         check(
             r#"
@@ -7530,6 +7579,40 @@ mod tests {
                 main::foo : <unknown>
             "#]],
             |_| [(TyDiagnosticKind::ExternGlobalMissingTy, 17..31, None)],
+        )
+    }
+
+    #[test]
+    fn defers() {
+        check(
+            r#"
+                foo :: () {
+                    defer 5 + 5;
+                    defer foo();
+                    defer {
+                        defer !true;
+                    };
+                    defer {
+                        break "owo";
+                    };
+                };
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : () -> void
+                4 : void
+                5 : bool
+                6 : bool
+                7 : void
+                8 : str
+                9 : str
+                10 : void
+                11 : () -> void
+            "#]],
+            |_| [],
         )
     }
 }

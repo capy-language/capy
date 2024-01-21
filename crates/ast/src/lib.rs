@@ -237,6 +237,7 @@ def_multi_node! {
     Return -> ReturnStmt
     Break -> BreakStmt
     Continue -> ContinueStmt
+    Defer -> DeferStmt
     ;
     Define -> Define
     ;
@@ -367,6 +368,14 @@ def_ast_node!(ContinueStmt);
 
 impl ContinueStmt {
     pub fn label(self, tree: &SyntaxTree) -> Option<LabelRef> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(DeferStmt);
+
+impl DeferStmt {
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
@@ -1684,6 +1693,18 @@ mod tests {
         };
 
         assert!(continue_stmt.label(&tree).is_none());
+    }
+
+    #[test]
+    fn get_defer_expr() {
+        let (tree, root) = parse("defer foo();");
+        let statement = root.stmts(&tree).next().unwrap();
+        let defer_stmt = match statement {
+            Stmt::Defer(defer_stmt) => defer_stmt,
+            _ => unreachable!(),
+        };
+
+        assert!(matches!(defer_stmt.expr(&tree), Some(Expr::Call(_))));
     }
 
     #[test]

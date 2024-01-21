@@ -209,15 +209,38 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             signed: false,
         }),
         hir_ty::Ty::String => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Array { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Slice { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Pointer { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Distinct { sub_ty: ty, .. } => {
-            calc_single(*ty, ptr_ty);
-            ty.get_final_ty()
+        hir_ty::Ty::Array { sub_ty, .. } => {
+            calc_single(*sub_ty, ptr_ty);
+            FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Function { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Struct { .. } => FinalTy::Pointer(ptr_ty),
+        hir_ty::Ty::Slice { sub_ty, .. } => {
+            calc_single(*sub_ty, ptr_ty);
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Pointer { sub_ty, .. } => {
+            calc_single(*sub_ty, ptr_ty);
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Distinct { sub_ty, .. } => {
+            calc_single(*sub_ty, ptr_ty);
+            sub_ty.get_final_ty()
+        }
+        hir_ty::Ty::Function {
+            param_tys,
+            return_ty,
+        } => {
+            for param in param_tys {
+                calc_single(*param, ptr_ty);
+            }
+            calc_single(*return_ty, ptr_ty);
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Struct { members, .. } => {
+            for (_, ty) in members {
+                calc_single(*ty, ptr_ty);
+            }
+            FinalTy::Pointer(ptr_ty)
+        }
         hir_ty::Ty::Type => FinalTy::Number(NumberType {
             ty: types::I32,
             float: false,

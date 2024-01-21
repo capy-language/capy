@@ -76,6 +76,7 @@ pub enum NodeKind {
     ReturnStmt, // todo: change these to void expressions
     BreakStmt,
     ContinueStmt,
+    DeferStmt,
     Lambda,
     ParamList,
     Param,

@@ -172,7 +172,7 @@ impl Ty {
         }
     }
 
-    /// returns true if the type is zero-sized (void, or solely contains void)
+    /// returns true if the type is zero-sized
     pub fn is_zero_sized(&self) -> bool {
         match self {
             Ty::Void => true,

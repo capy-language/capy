@@ -13,7 +13,7 @@ memcpy :: (dst: ^any, src: ^any, len: usize) extern;
 // prints a string to the screen, adds a newline at the end
 puts :: (text: str) extern;
 // prints a char to the screen
-putchar :: (char: char) extern;
+putchar :: (ch: char) extern;
 
 // opens a file for either reading "r", writing "w", appending "a",
 // open a file to update both reading and writing "r+",
@@ -24,14 +24,17 @@ fopen :: (filename: str, mode: str) -> usize extern;
 fclose :: (fp: usize) -> i32 extern;
 
 // writes a char to a file
-fputc :: (char: i8, fp: usize) -> i32 extern;
+fputc :: (ch: char, fp: usize) -> i32 extern;
 // writes a string to a file, doesn't add a newline at the end
 fputs :: (text: str, fp: usize) -> i32 extern;
 
 // read a char from a file
-fgetc :: (fp: usize) -> u8 extern;
+fgetc :: (fp: usize) -> char extern;
 // read len char's from a file and store them in buf
 fgets :: (buf: ^char, len: i32, fp: usize) -> str extern;
+
+// tests the end-of-file indicator for the given file
+feof :: (fp: usize) -> bool extern;
 
 // exits the current program
 exit :: (status: i32) extern;

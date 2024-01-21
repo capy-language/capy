@@ -33,9 +33,14 @@ impl SourceFile {
         interner: Rc<RefCell<Interner>>,
         bodies_map: Rc<RefCell<FxHashMap<hir::FileName, hir::Bodies>>>,
         world_index: Rc<RefCell<hir::WorldIndex>>,
+        mod_dir: &std::path::Path,
         verbose: u8,
     ) -> SourceFile {
-        if verbose >= 1 {
+        let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
+
+        let is_mod = module.is_mod(mod_dir, &interner.borrow());
+
+        if (!is_mod && verbose >= 1) || (is_mod && verbose >= 4) {
             println!("=== {} ===\n", file_name.display());
         }
 
@@ -49,12 +54,7 @@ impl SourceFile {
 
         let validation_diagnostics = ast::validation::validate(root, tree);
 
-        let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
         let (index, indexing_diagnostics) = hir::index(root, tree, &mut interner.borrow_mut());
-
-        if verbose >= 3 && !index.is_empty() {
-            println!("{}", index.debug(&interner.borrow()));
-        }
 
         let mut res = Self {
             file_name,
@@ -115,7 +115,9 @@ impl SourceFile {
             .borrow_mut()
             .add_file(self.module, self.index.clone());
 
-        if self.verbose >= 1 {
+        if (!self.module.is_mod(mod_dir, &self.interner.borrow()) && self.verbose >= 1)
+            || self.verbose >= 4
+        {
             let interner = self.interner.borrow();
             let debug = bodies.debug(self.module, mod_dir, &interner, self.verbose >= 2);
             if !debug.is_empty() {

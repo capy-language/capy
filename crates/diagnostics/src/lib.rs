@@ -453,6 +453,15 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             ),
             None => "can only `continue` from loops".to_string(),
         },
+        LoweringDiagnosticKind::ReturnFromDefer => {
+            "cannot `return` from within a `defer`".to_string()
+        }
+        LoweringDiagnosticKind::BreakFromDefer => {
+            "cannot `break` to an outer block from within a `defer`".to_string()
+        }
+        LoweringDiagnosticKind::ContinueFromDefer => {
+            "cannot `continue` an outer loop from within a `defer`".to_string()
+        }
     }
 }
 
@@ -693,6 +702,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Return => "`return`",
         TokenKind::Break => "`break`",
         TokenKind::Continue => "`continue`",
+        TokenKind::Defer => "`defer`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Float => "float",

@@ -20,8 +20,8 @@ pub struct Bodies {
     global_tys: FxHashMap<Name, Idx<Expr>>,
     global_bodies: FxHashMap<Name, Idx<Expr>>,
     global_externs: FxHashSet<Name>,
-    label_decls: bimap::BiMap<ScopeId, Idx<Expr>>,
-    label_usages: FxHashMap<ScopeId, Vec<Idx<Stmt>>>,
+    scope_decls: bimap::BiMap<ScopeId, Idx<Expr>>,
+    scope_usages: FxHashMap<ScopeId, Vec<Idx<Stmt>>>,
     lambdas: Arena<Lambda>,
     comptimes: Arena<Comptime>,
     imports: FxHashSet<FileName>,
@@ -131,7 +131,7 @@ pub struct Comptime {
     pub body: Idx<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Stmt {
     Expr(Idx<Expr>),
     LocalDef(Idx<LocalDef>),
@@ -145,6 +145,10 @@ pub enum Stmt {
     Continue {
         // `None` only for errors
         label: Option<ScopeId>,
+        range: TextRange,
+    },
+    Defer {
+        expr: Idx<Expr>,
         range: TextRange,
     },
 }
@@ -241,6 +245,9 @@ pub enum LoweringDiagnosticKind {
     ImportDoesNotExist { file: String },
     ImportOutsideCWD { file: String },
     ContinueNonLoop { name: Option<Key> },
+    ReturnFromDefer,
+    BreakFromDefer,
+    ContinueFromDefer,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -282,6 +289,7 @@ pub fn lower(
 enum ScopeKind {
     Block((Option<Key>, ScopeId)),
     Loop((Option<Key>, ScopeId)),
+    Defer,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -329,8 +337,8 @@ impl<'a> Ctx<'a> {
                 global_tys: FxHashMap::default(),
                 global_bodies: FxHashMap::default(),
                 global_externs: FxHashSet::default(),
-                label_decls: bimap::BiMap::default(),
-                label_usages: FxHashMap::default(),
+                scope_decls: bimap::BiMap::default(),
+                scope_usages: FxHashMap::default(),
                 lambdas: Arena::new(),
                 comptimes: Arena::new(),
                 imports: FxHashSet::default(),
@@ -484,15 +492,41 @@ impl<'a> Ctx<'a> {
             ast::Stmt::Return(return_stmt) => self.lower_return(return_stmt),
             ast::Stmt::Break(break_stmt) => self.lower_break(break_stmt),
             ast::Stmt::Continue(continue_stmt) => self.lower_continue(continue_stmt),
+            ast::Stmt::Defer(defer_stmt) => self.lower_defer(defer_stmt),
         }
     }
 
     fn lower_return(&mut self, return_stmt: ast::ReturnStmt) -> Stmt {
-        let label = self.label_kinds.first().map(|kind| match kind {
-            ScopeKind::Block((_, id)) => *id,
-            // this should be unreachable, but you never know
-            ScopeKind::Loop((_, id)) => *id,
+        let mut label_kinds = self.label_kinds.iter().rev();
+
+        let mut passed_defer = false;
+        let label = label_kinds.next().map(|mut last_kind| loop {
+            let kind = label_kinds.next();
+
+            match kind {
+                Some(new_kind) => {
+                    last_kind = new_kind;
+
+                    if matches!(new_kind, ScopeKind::Defer) {
+                        passed_defer = true;
+                    }
+                }
+                None => {
+                    break match last_kind {
+                        ScopeKind::Block((_, id)) => *id,
+                        ScopeKind::Loop((_, id)) => *id,
+                        _ => unreachable!(),
+                    };
+                }
+            }
         });
+
+        if passed_defer {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::ReturnFromDefer,
+                range: return_stmt.range(self.tree),
+            });
+        }
 
         Stmt::Break {
             label,
@@ -528,6 +562,19 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn lower_defer(&mut self, defer_stmt: ast::DeferStmt) -> Stmt {
+        self.label_kinds.push(ScopeKind::Defer);
+
+        let expr = self.lower_expr(defer_stmt.expr(self.tree));
+
+        self.label_kinds.pop();
+
+        Stmt::Defer {
+            expr,
+            range: defer_stmt.range(self.tree),
+        }
+    }
+
     fn resolve_label(
         &mut self,
         whole_range: TextRange,
@@ -540,54 +587,78 @@ impl<'a> Ctx<'a> {
             .map(|name| self.interner.intern(name));
 
         if let Some(label_name) = label_name {
-            for code in self.label_kinds.iter().rev() {
-                match code {
-                    ScopeKind::Block((Some(name), id)) if *name == label_name => {
-                        if require_loop {
-                            self.diagnostics.push(LoweringDiagnostic {
-                                kind: LoweringDiagnosticKind::ContinueNonLoop { name: Some(*name) },
-                                range: label.unwrap().range(self.tree),
-                            });
-                        }
-                        return Some(*id);
-                    }
-                    ScopeKind::Loop((Some(name), id)) if *name == label_name => {
-                        return Some(*id);
-                    }
-                    _ => continue,
-                }
-            }
+            let mut passed_defer = false;
 
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::UndefinedLabel { name: label_name },
-                range: label.unwrap().range(self.tree),
+            let result = self.label_kinds.iter().rev().find_map(|scope| match scope {
+                ScopeKind::Block((Some(name), id)) if *name == label_name => {
+                    if require_loop {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::ContinueNonLoop { name: Some(*name) },
+                            range: label.unwrap().range(self.tree),
+                        });
+                    }
+
+                    Some(*id)
+                }
+                ScopeKind::Loop((Some(name), id)) if *name == label_name => Some(*id),
+                ScopeKind::Defer => {
+                    passed_defer = true;
+                    None
+                }
+                _ => None,
             });
 
-            return None;
-        }
-
-        for code in self.label_kinds.iter().rev() {
-            match code {
-                ScopeKind::Block((_, id)) if !require_loop => {
-                    return Some(*id);
-                }
-                ScopeKind::Loop((_, id)) => {
-                    return Some(*id);
-                }
-                _ => continue,
+            if result.is_none() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::UndefinedLabel { name: label_name },
+                    range: label.unwrap().range(self.tree),
+                });
+            } else if passed_defer {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: if require_loop {
+                        LoweringDiagnosticKind::ContinueFromDefer
+                    } else {
+                        LoweringDiagnosticKind::BreakFromDefer
+                    },
+                    range: whole_range,
+                });
             }
+
+            return result;
         }
 
-        self.diagnostics.push(LoweringDiagnostic {
-            kind: if require_loop {
-                LoweringDiagnosticKind::ContinueNonLoop { name: None }
-            } else {
-                unreachable!("breaks (statements) can only be inside blocks")
-            },
-            range: whole_range,
+        let mut passed_defer = false;
+        let result = self.label_kinds.iter().rev().find_map(|kind| match kind {
+            ScopeKind::Block((_, id)) if !require_loop => Some(*id),
+            ScopeKind::Loop((_, id)) => Some(*id),
+            ScopeKind::Defer => {
+                passed_defer = true;
+                None
+            }
+            _ => None,
         });
 
-        None
+        if result.is_none() {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: if require_loop {
+                    LoweringDiagnosticKind::ContinueNonLoop { name: None }
+                } else {
+                    unreachable!("breaks (statements) should only be inside blocks")
+                },
+                range: whole_range,
+            });
+        } else if passed_defer {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: if require_loop {
+                    LoweringDiagnosticKind::ContinueFromDefer
+                } else {
+                    LoweringDiagnosticKind::BreakFromDefer
+                },
+                range: whole_range,
+            });
+        }
+
+        result
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
@@ -642,8 +713,8 @@ impl<'a> Ctx<'a> {
         let id = self.bodies.exprs.alloc(expr);
         self.bodies.expr_ranges.insert(id, range);
 
-        if scope_id.map_or(false, |id| self.bodies.label_usages.contains_key(&id)) {
-            self.bodies.label_decls.insert(scope_id.unwrap(), id);
+        if scope_id.map_or(false, |id| self.bodies.scope_usages.contains_key(&id)) {
+            self.bodies.scope_decls.insert(scope_id.unwrap(), id);
         }
 
         id
@@ -987,7 +1058,7 @@ impl<'a> Ctx<'a> {
 
             if let Some(label_id) = label_id {
                 self.bodies
-                    .label_usages
+                    .scope_usages
                     .entry(label_id)
                     .or_default()
                     .push(stmt_id);
@@ -1403,6 +1474,7 @@ impl Bodies {
             Stmt::Assign(assign) => self.assigns[assign].range,
             Stmt::Break { range, .. } => range,
             Stmt::Continue { range, .. } => range,
+            Stmt::Defer { range, .. } => range,
         }
     }
 
@@ -1416,16 +1488,16 @@ impl Bodies {
 
     /// only blocks which are actually `break`d or `continue`d out of will get a scopeid
     pub fn block_to_scope_id(&self, expr: Idx<Expr>) -> Option<ScopeId> {
-        self.label_decls.get_by_right(&expr).copied()
+        self.scope_decls.get_by_right(&expr).copied()
     }
 
     pub fn scope_id_to_block(&self, id: ScopeId) -> Idx<Expr> {
-        *self.label_decls.get_by_left(&id).unwrap()
+        *self.scope_decls.get_by_left(&id).unwrap()
     }
 
     // a `ScopeId` will only be stored if it has usages
     pub fn scope_id_usages(&self, id: ScopeId) -> &Vec<Idx<Stmt>> {
-        self.label_usages.get(&id).unwrap()
+        self.scope_usages.get(&id).unwrap()
     }
 
     fn shrink_to_fit(&mut self) {
@@ -1438,8 +1510,8 @@ impl Bodies {
             global_tys,
             global_bodies,
             global_externs,
-            label_decls,
-            label_usages,
+            scope_decls: label_decls,
+            scope_usages: label_usages,
             lambdas,
             comptimes,
             imports,
@@ -1472,7 +1544,7 @@ impl std::ops::Index<ScopeId> for Bodies {
     type Output = Idx<Expr>;
 
     fn index(&self, id: ScopeId) -> &Self::Output {
-        self.label_decls.get_by_left(&id).unwrap()
+        self.scope_decls.get_by_left(&id).unwrap()
     }
 }
 
@@ -1685,7 +1757,7 @@ impl Bodies {
                     stmts,
                     tail_expr: Some(tail_expr),
                 } if stmts.is_empty() => {
-                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                    if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
                         s.push(' ');
@@ -1725,7 +1797,7 @@ impl Bodies {
                 Expr::Block { stmts, tail_expr } => {
                     indentation += 4;
 
-                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                    if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
                         s.push(' ');
@@ -1791,7 +1863,7 @@ impl Bodies {
                 }
 
                 Expr::While { condition, body } => {
-                    if let Some(label_id) = bodies.label_decls.get_by_right(&idx) {
+                    if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
                         s.push(' ');
@@ -2068,6 +2140,11 @@ impl Bodies {
                         s.push_str("<unknown>")
                     }
                     s.push('`');
+                    s.push(';');
+                }
+                Stmt::Defer { expr, .. } => {
+                    s.push_str("defer ");
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
                     s.push(';');
                 }
             }
@@ -3430,6 +3507,138 @@ mod tests {
                 };
             "#]],
             |_| [],
+        )
+    }
+
+    #[test]
+    fn defers() {
+        check(
+            r#"
+                bar :: () {
+                    defer 5 + 5;
+                    {
+                        defer 42;
+                        defer {
+                            defer !true || !!false;
+                        };
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    defer 5 + 5;
+                    {
+                        defer 42;
+                        defer {
+                            defer !true || !!false;
+                        };
+                    }
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn outer_control_flow_in_defer() {
+        check(
+            r#"
+                bar :: () {
+                    defer { return };
+                    `blk {
+                        defer { break blk` };
+                    };
+                    loop {
+                        defer {
+                            continue;
+                        };
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () `0 {
+                    defer {
+                        break 0`;
+                    };
+                    `2 {
+                        defer {
+                            break 2`;
+                        };
+                    };
+                    `4 loop {
+                        defer {
+                            continue 4`;
+                        };
+                    }
+                };
+            "#]],
+            |_| {
+                [
+                    (LoweringDiagnosticKind::ReturnFromDefer, 57..63),
+                    (LoweringDiagnosticKind::BreakFromDefer, 126..136),
+                    (LoweringDiagnosticKind::ContinueFromDefer, 250..259),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn inner_control_flow_in_defer() {
+        check(
+            r#"
+                bar :: () {
+                    defer { break; };
+                    defer {
+                        `blk {
+                            break blk`;
+                        };
+                    };
+                    defer {
+                        loop {
+                            continue;
+                        }
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    defer `1 {
+                        break 1`;
+                    };
+                    defer {
+                        `3 {
+                            break 3`;
+                        };
+                    };
+                    defer { `5 loop {
+                            continue 5`;
+                        } };
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn defers_get_popped() {
+        check(
+            r#"
+                bar :: () {
+                    defer {
+                        return;
+                    };
+                    return;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () `0 {
+                    defer {
+                        break 0`;
+                    };
+                    break 0`;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::ReturnFromDefer, 81..88)],
         )
     }
 }

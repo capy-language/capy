@@ -11,6 +11,7 @@ use hir::WorldIndex;
 use itertools::Itertools;
 use line_index::LineIndex;
 use path_clean::PathClean;
+use platform_dirs::AppDirs;
 use rustc_hash::FxHashMap;
 use std::fs;
 use target_lexicon::Triple;
@@ -174,6 +175,8 @@ fn compile_file(
 
     let mod_dir = if let Some(mod_dir) = mod_dir {
         env::current_dir().unwrap().join(mod_dir).clean()
+    } else if let Some(mod_dir) = AppDirs::new(Some("capy"), false) {
+        mod_dir.data_dir.join("modules")
     } else {
         PathBuf::new()
             .join(std::path::MAIN_SEPARATOR_STR)
@@ -240,6 +243,7 @@ fn compile_file(
         interner.clone(),
         bodies_map.clone(),
         world_index.clone(),
+        &mod_dir,
         verbose,
     );
 
@@ -276,6 +280,7 @@ fn compile_file(
                 interner.clone(),
                 bodies_map.clone(),
                 world_index.clone(),
+                &mod_dir,
                 verbose,
             );
 
@@ -308,7 +313,7 @@ fn compile_file(
     )
     .finish(entry_point);
     if verbose >= 2 {
-        let debug = inference.debug(&mod_dir, &interner.borrow(), true);
+        let debug = inference.debug(&mod_dir, &interner.borrow(), verbose >= 4, true);
         println!("=== types ===\n");
         println!("{}", debug);
     }
