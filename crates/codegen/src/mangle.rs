@@ -1,12 +1,9 @@
 use std::borrow::Cow;
 
-use hir::Fqn;
+use hir::{FQComptime, Fqn};
 use interner::Interner;
 
-use crate::{
-    builtin::BuiltinFunction,
-    compiler::{comptime::ComptimeToCompile, FunctionToCompile},
-};
+use crate::{builtin::BuiltinFunction, compiler::FunctionToCompile};
 
 pub(crate) trait Mangle {
     fn to_mangled_name(&self, mod_dir: &std::path::Path, interner: &Interner) -> String;
@@ -51,14 +48,32 @@ impl Mangle for FunctionToCompile {
     }
 }
 
-impl Mangle for ComptimeToCompile {
+impl Mangle for FQComptime {
     fn to_mangled_name(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
         let mut mangled = String::new();
 
-        push_file_name(&mut mangled, self.file_name, mod_dir, interner, 'Z');
+        push_file_name(&mut mangled, self.file, mod_dir, interner, 'Z');
 
         mangled.push_str("c_");
         mangled.push_str(&self.comptime.into_raw().to_string());
+
+        mangled.push('E');
+
+        mangled
+    }
+}
+
+impl Mangle for (FQComptime, &str) {
+    fn to_mangled_name(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
+        let mut mangled = String::new();
+
+        push_file_name(&mut mangled, self.0.file, mod_dir, interner, 'I');
+
+        mangled.push_str(&self.1.len().to_string());
+        mangled.push_str(self.1);
+
+        mangled.push_str("c_");
+        mangled.push_str(&self.0.comptime.into_raw().to_string());
 
         mangled.push('E');
 

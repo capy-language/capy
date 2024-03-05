@@ -1,4 +1,6 @@
-libc :: mod "core".libc;
+
+core :: mod "core";
+libc :: core.libc;
 
 Person :: struct {
     name: str,
@@ -50,11 +52,15 @@ main :: () {
 // it's stack before using it
 
 print_person_by_value :: (p: Person) {
-    printf("%s is %i years old\n", p.name, p.age);
+    core.print(p.name);
+    core.print(" is ");
+    core.print(p.age);
+    core.println(" years old");
 }
 
 print_person_by_ref :: (p: ^Person) {
-    printf("%s is %i years old\n", p.name, p.age);
+    core.print(p.name);
+    core.print(" is ");
+    core.print(p.age);
+    core.println(" years old");
 }
-
-printf :: (s: str, name: str, age: i32) extern;

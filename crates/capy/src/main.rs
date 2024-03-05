@@ -2,12 +2,15 @@ mod git;
 mod source;
 
 use std::{
-    cell::RefCell, env, io, mem, path::PathBuf, process::exit, rc::Rc, str::FromStr, time::Instant,
+    cell::RefCell, env, io, mem, panic::AssertUnwindSafe, path::PathBuf, process::exit, rc::Rc,
+    str::FromStr, time::Instant,
 };
 
 use clap::{Parser, Subcommand};
 use codegen::Verbosity;
-use hir::WorldIndex;
+use hir::{FQComptime, WorldBodies, WorldIndex};
+use hir_ty::{ComptimeResult, InferenceResult};
+use interner::Interner;
 use itertools::Itertools;
 use line_index::LineIndex;
 use path_clean::PathClean;
@@ -226,7 +229,7 @@ fn compile_file(
 
     let interner = Rc::new(RefCell::new(interner::Interner::default()));
     let world_index = Rc::new(RefCell::new(WorldIndex::default()));
-    let bodies_map = Rc::new(RefCell::new(FxHashMap::default()));
+    let world_bodies = Rc::new(RefCell::new(WorldBodies::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
 
     let entry_point_name = hir::Name(interner.borrow_mut().intern(&entry_point));
@@ -241,15 +244,15 @@ fn compile_file(
         file_contents.clone(),
         uid_gen.clone(),
         interner.clone(),
-        bodies_map.clone(),
         world_index.clone(),
+        world_bodies.clone(),
         &mod_dir,
         verbose,
     );
 
     line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-    let (mut current_imports, mut comptimes) = source_file.build_bodies(&mod_dir);
+    let mut current_imports = source_file.build_bodies(&mod_dir);
     source_files.insert(source_file.module, source_file);
 
     // find all imports in the source file, compile them, then do the same for their imports
@@ -278,17 +281,16 @@ fn compile_file(
                 file_contents.clone(),
                 uid_gen.clone(),
                 interner.clone(),
-                bodies_map.clone(),
                 world_index.clone(),
+                world_bodies.clone(),
                 &mod_dir,
                 verbose,
             );
 
             line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
 
-            let (imports, new_comptimes) = source_file.build_bodies(&mod_dir);
+            let imports = source_file.build_bodies(&mod_dir);
             current_imports.extend(imports);
-            comptimes.extend(new_comptimes);
 
             source_files.insert(source_file.module, source_file);
         }
@@ -306,16 +308,69 @@ fn compile_file(
         name: entry_point_name,
     });
 
-    let (inference, ty_diagnostics) = hir_ty::InferenceCtx::new(
-        &bodies_map.borrow(),
+    let mut comptime_results = FxHashMap::<FQComptime, ComptimeResult>::default();
+
+    let InferenceResult {
+        tys,
+        diagnostics: ty_diagnostics,
+        any_were_unsafe_to_compile,
+    } = hir_ty::InferenceCtx::new(
         &world_index.borrow(),
+        &world_bodies.borrow(),
         &interner.borrow(),
+        |comptime, tys| {
+            if let Some(result) = comptime_results.get(&comptime) {
+                return result.clone();
+            }
+
+            let interner = interner.borrow();
+            let world_bodies = world_bodies.borrow();
+
+            let interner: &Interner = &interner;
+            let world_bodies: &hir::WorldBodies = &world_bodies;
+
+            if verbose >= 4 {
+                println!("comptime JIT:\n");
+            }
+
+            // i kinda did AssertUnwindSafe bc i wanted to get rid of the error.
+            // i *think* it should be fine.
+            std::panic::catch_unwind(AssertUnwindSafe(|| {
+                codegen::eval_comptime_blocks(
+                    if verbose >= 4 {
+                        Verbosity::AllFunctions
+                    } else {
+                        Verbosity::None
+                    },
+                    vec![comptime],
+                    &mut comptime_results,
+                    &mod_dir,
+                    interner,
+                    world_bodies,
+                    tys,
+                    target.pointer_width().unwrap().bits(),
+                )
+            }))
+            .unwrap_or_else(|_| {
+                println!(
+                    "\n{ansi_red}error{ansi_white}: comptime compilation panicked{ansi_reset}"
+                );
+                std::process::exit(1);
+            });
+
+            comptime_results[&comptime].clone()
+        },
     )
-    .finish(entry_point);
+    .finish(entry_point, verbose >= 3);
+
     if verbose >= 2 {
-        let debug = inference.debug(&mod_dir, &interner.borrow(), verbose >= 4, true);
+        let debug = tys.debug(&mod_dir, &interner.borrow(), verbose >= 3, true);
         println!("=== types ===\n");
         println!("{}", debug);
+
+        if any_were_unsafe_to_compile {
+            println!("\nSOMETHING WAS UNSAFE TO COMPILE");
+        }
     }
 
     // print out errors and warnings
@@ -326,8 +381,8 @@ fn compile_file(
         .iter()
         .for_each(|(_, source)| source.print_diagnostics(&mod_dir, with_color));
     for d in ty_diagnostics {
-        let line_index = &line_indexes[&d.module];
-        let source_file = &source_files[&d.module];
+        let line_index = &line_indexes[&d.file];
+        let source_file = &source_files[&d.file];
 
         println!(
             "{}",
@@ -348,6 +403,22 @@ fn compile_file(
         println!("\nnot compiling due to previous errors");
         exit(1);
     }
+
+    // evaluate any comptimes that haven't been ran yet
+    codegen::eval_comptime_blocks(
+        if verbose >= 4 {
+            Verbosity::AllFunctions
+        } else {
+            Verbosity::None
+        },
+        world_bodies.borrow().find_comptimes(),
+        &mut comptime_results,
+        &mod_dir,
+        &interner.borrow(),
+        &world_bodies.borrow(),
+        &tys,
+        target.pointer_width().unwrap().bits(),
+    );
 
     match main_files.len().cmp(&1) {
         std::cmp::Ordering::Less => {
@@ -380,24 +451,6 @@ fn compile_file(
     let interner = interner.borrow();
 
     if verbose >= 4 {
-        println!("comptime JIT:\n");
-    }
-
-    let comptime_results = codegen::eval_comptime_blocks(
-        if verbose >= 4 {
-            Verbosity::AllFunctions
-        } else {
-            Verbosity::None
-        },
-        comptimes,
-        &mod_dir,
-        &interner,
-        &bodies_map.borrow(),
-        &inference,
-        target.pointer_width().unwrap().bits(),
-    );
-
-    if verbose >= 4 {
         println!("\nactual program:\n");
     }
 
@@ -415,8 +468,8 @@ fn compile_file(
             entry_point.unwrap(),
             &mod_dir,
             &interner,
-            &bodies_map.borrow(),
-            &inference,
+            &world_bodies.borrow(),
+            &tys,
             &comptime_results,
         );
 
@@ -440,10 +493,10 @@ fn compile_file(
         entry_point.unwrap(),
         &mod_dir,
         &interner,
-        &bodies_map.borrow(),
-        &inference,
+        &world_bodies.borrow(),
+        &tys,
         &comptime_results,
-        target,
+        target.clone(),
     ) {
         Ok(bytes) => bytes,
         Err(why) => {
@@ -477,7 +530,7 @@ fn compile_file(
         return Ok(());
     }
 
-    let exec = codegen::link_to_exec(&object_file, libs);
+    let exec = codegen::link_to_exec(&object_file, target, libs);
     println!(
         "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
         output,

@@ -38,6 +38,7 @@ impl GetLayoutInfo for Intern<Ty> {
         (layouts.sizes[self] + mask) & !mask
     }
 
+    /// todo: what happens if this gets called by a distinct struct
     fn struct_layout(&self) -> Option<StructLayout> {
         let layouts = unsafe { LAYOUTS.lock() }.ok()?;
         let layouts = layouts.get()?;
@@ -90,7 +91,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
     }
 
     let size = match ty.as_ref() {
-        Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+        Ty::NotYetResolved | Ty::Unknown => 0,
         Ty::IInt(u8::MAX) | Ty::UInt(u8::MAX) => pointer_bit_width / 8,
         Ty::IInt(0) | Ty::UInt(0) => 32 / 8,
         Ty::IInt(bit_width) | Ty::UInt(bit_width) => *bit_width as u32 / 8,
@@ -143,7 +144,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
     };
 
     let align = match ty.as_ref() {
-        Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+        Ty::NotYetResolved | Ty::Unknown => 1,
         Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) => size.min(8),
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size,

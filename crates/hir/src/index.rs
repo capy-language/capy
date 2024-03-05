@@ -2,7 +2,7 @@ use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
-use text_size::TextRange;
+use text_size::{TextRange, TextSize};
 
 use crate::Name;
 
@@ -95,6 +95,10 @@ impl IndexingCtx<'_> {
                 range: name_range,
             });
         } else {
+            if def.value(self.tree).is_none() && def.r#extern(self.tree).is_none() {
+                println!("both None");
+            }
+
             self.index.definitions.insert(name);
             self.index.range_info.insert(
                 name,
@@ -106,7 +110,10 @@ impl IndexingCtx<'_> {
                         .value(self.tree)
                         .map(|value| value.range(self.tree))
                         .or(def.r#extern(self.tree).map(|ext| ext.range(self.tree)))
-                        .unwrap(),
+                        .unwrap_or_else(|| {
+                            let whole_end = def.range(self.tree).end();
+                            TextRange::new(whole_end, whole_end + TextSize::new(1))
+                        }),
                 },
             );
         }

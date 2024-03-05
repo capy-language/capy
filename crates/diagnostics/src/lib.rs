@@ -619,9 +619,6 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::ComptimePointer => {
             "comptime blocks cannot return pointers. the data won't exist at runtime".to_string()
         }
-        hir_ty::TyDiagnosticKind::ComptimeType => {
-            "comptime blocks cannot return types ... yet ;)".to_string()
-        }
         hir_ty::TyDiagnosticKind::GlobalNotConst => {
             "globals must be constant values. try wrapping this in `comptime { ... }`".to_string()
         }

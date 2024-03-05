@@ -1,9 +1,16 @@
+
+core :: mod "core";
+
 Vector3 :: distinct [3] i32;
 
 main :: () {
     my_point : Vector3 = [3] i32 { 1, 2, 3 };
 
-    printf("my_point: (%i, %i, %i)\n", my_point[0], my_point[1], my_point[2]);
+    core.print("my_point: (");
+    core.print(my_point[0]);
+    core.print(", ");
+    core.print(my_point[1]);
+    core.print(", ");
+    core.print(my_point[2]);
+    core.println(")");
 }
-
-printf :: (text: str, x: i32, y: i32, z: i32) extern;

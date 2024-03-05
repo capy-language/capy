@@ -2,7 +2,7 @@
 // this is all going to change.
 // `pub` is going to be added
 // after that, there will be a way to bypass it
-version :: "alpha 0.1.3";
+version :: "alpha 0.2.0";
 
 fmt :: import "fmt.capy";
 libc :: import "libc.capy";
@@ -18,25 +18,6 @@ assert :: (condition: bool) {
     }
 }
 
-print :: (text: str) {
-    text := text as ^char;
-    i := 0;
-    loop {
-        ch := ptr.read(text, i) as char;
-        if ch == '\0' {
-            break;
-        }
-
-        libc.putchar(ch);
-
-        i = i + 1;
-    }
-}
-
-println :: (text: str) {
-    libc.puts(text);
-}
-
 len :: (slice: [] any) -> usize extern;
 
 Any :: struct {
@@ -44,71 +25,115 @@ Any :: struct {
     data: ^any,
 };
 
-println_any :: (val: Any) {
-    print_any(val);
+println :: (val: Any) {
+    print(val);
     libc.putchar('\n');
 }
 
-print_any :: (val: Any) {
+print :: (val: Any) {
     ty := val.ty;
     data := val.data;
+
+    print_str :: (text: str) {
+        text := text as ^char;
+
+        i := 0;
+        loop {
+            ch := ptr.read(text, i) as char;
+            if ch == '\0' {
+                break;
+            }
+
+            libc.putchar(ch);
+
+            i = i + 1;
+        }
+    };
 
     if meta.is_int(ty) {
         int_info := meta.get_int_info(ty);
 
-        num := if int_info.bit_width == 8 {
-            {data as ^i8}^ as i32
-        } else if int_info.bit_width == 16 {
-            {data as ^i16}^ as i32
-        } else if int_info.bit_width == 32 {
-            {data as ^i32}^ as i32
-        } else if int_info.bit_width == 64 {
-            {data as ^i64}^ as i32
-        } else if int_info.bit_width == 128 {
-            {data as ^i128}^ as i32
-        } else {
-            0
-        };
+        str := if int_info.signed {
+            num := if int_info.bit_width == 8 {
+                {data as ^i8}^ as i64
+            } else if int_info.bit_width == 16 {
+                {data as ^i16}^ as i64
+            } else if int_info.bit_width == 32 {
+                {data as ^i32}^ as i64
+            } else if int_info.bit_width == 64 {
+                {data as ^i64}^ as i64
+            } else if int_info.bit_width == 128 {
+                {data as ^i128}^ as i64
+            } else {
+                0
+            };
 
-        str := if int_info.signed {    
-            fmt.i32_to_string(num)
+            fmt.i64_to_string(num)
         } else {
-            fmt.u32_to_string(num as u32)
+            num := if int_info.bit_width == 8 {
+                {data as ^u8}^ as u64
+            } else if int_info.bit_width == 16 {
+                {data as ^u16}^ as u64
+            } else if int_info.bit_width == 32 {
+                {data as ^u32}^ as u64
+            } else if int_info.bit_width == 64 {
+                {data as ^u64}^ as u64
+            } else if int_info.bit_width == 128 {
+                {data as ^u128}^ as u64
+            } else {
+                0
+            };
+
+            fmt.u64_to_string(num)
         };
 
         strings.print_string(^str);
         libc.free(str.buf);
+    } else if meta.is_float(ty) {
+        float_info := meta.get_float_info(ty);
+        
+        num := if float_info.bit_width == 32 {
+            {data as ^f32}^ as f64
+        } else if float_info.bit_width == 64 {
+            {data as ^f64}^ as f64
+        } else {
+            0
+        };
 
+        str := fmt.f64_to_string(num);
+
+        strings.print_string(^str);
+        libc.free(str.buf);
     } else if meta.is_bool(ty) {
         if {data as ^bool}^ {
-            print("true");
+            print_str("true");
         } else {
-            print("false");
+            print_str("false");
         }
     } else if meta.is_string(ty) {
-        print({data as ^str}^);
+        print_str(data as ^str^);
     } else if meta.is_char(ty) {
         libc.putchar({data as ^char}^);
     } else if meta.is_array(ty) {
         info := meta.get_array_info(ty);
         elem_stride := meta.stride_of(info.ty);
 
-        print("{ ");
+        print_str("{ ");
 
         idx := 0;
         while idx < info.len {
             addr := ptr.const_offset(data, elem_stride * idx);
             
-            print_any(Any { ty: info.ty, data: addr });
+            print(Any { ty: info.ty, data: addr });
 
             if idx < info.len - 1 {
-                print(", ");
+                print_str(", ");
             }
             
             idx = idx + 1;
         }
 
-        print(" }");
+        print_str(" }");
     } else if meta.is_slice(ty) {
         info := meta.get_slice_info(ty);
         elem_stride := meta.stride_of(info.ty);
@@ -116,74 +141,74 @@ print_any :: (val: Any) {
         slice := data as ^[] any;
         len := slice.len;
 
-        print("{ ");
+        print_str("{ ");
 
         idx := 0;
         while idx < len {
             addr := ptr.const_offset(slice.ptr, elem_stride * idx);
 
-            print_any(Any { ty: info.ty, data: addr });
+            print(Any { ty: info.ty, data: addr });
 
             if idx < len - 1 {
-                print(", ");
+                print_str(", ");
             }
 
             idx = idx + 1;
         }
 
-        print(" }");
+        print_str(" }");
     } else if meta.is_pointer(ty) {
-        print("^");
+        print_str("^");
 
         info := meta.get_pointer_info(ty);
 
-        print_any(Any { ty: info.ty, data: {data as ^^any}^});
+        print(Any { ty: info.ty, data: {data as ^^any}^});
     } else if meta.is_distinct(ty) {
         info := meta.get_distinct_info(ty);
 
-        print_any(Any { ty: info.ty, data: data });
+        print(Any { ty: info.ty, data: data });
     } else if meta.is_meta_type(ty) {
-        print("{type}");
+        print_str("{type}");
     } else if meta.is_any(ty) {
-        print("{any}");
+        print_str("{any}");
     } else if meta.is_file(ty) {
-        print("{import}");
+        print_str("{import}");
     } else if meta.is_function(ty) {
-        print("{function}");
+        print_str("{function}");
     } else if meta.is_struct(ty) {
         if ty == Any {
             data := data as ^Any;
 
-            print_any(data^);
+            print(data^);
 
             return;
         }
 
         info := meta.get_struct_info(ty);
 
-        print("{ ");
+        print_str("{ ");
 
         idx := 0;
         while idx < info.members.len {
             member := info.members[idx];
 
-            print(member.name);
-            print(" = ");
+            print_str(member.name);
+            print_str(" = ");
 
-            print_any(Any {
+            print(Any {
                 ty: member.ty,
                 data: ptr.const_offset(data, member.offset),
             });
 
             if idx < info.members.len - 1 {
-                print(", ");
+                print_str(", ");
             }
             idx = idx + 1;
         }
 
-        print(" }");
+        print_str(" }");
     } else if meta.is_void(ty) {
-        print("void");
+        print_str("{}");
     }
 }
 
@@ -222,4 +247,3 @@ str_eq :: (first: str, second: str) -> bool {
 
     true
 }
-

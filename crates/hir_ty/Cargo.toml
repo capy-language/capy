@@ -13,7 +13,8 @@ rustc-hash = "1.1"
 text-size = "1.1"
 internment = "0.7.1"
 indexmap = "2.0.0"
-itertools = "0.11"
+itertools = "0.12"
+topo = { path = "../topo" }
 
 [dev-dependencies]
 ast = { path = "../ast" }
@@ -24,3 +25,6 @@ parser = { path = "../parser" }
 test-utils = { path = "../test-utils" }
 uid_gen = { path = "../uid_gen" }
 text-diff = "0.4.0"
+derivative = "2.2.0"
+codegen = { path = "../codegen" }
+target-lexicon = "0.12"

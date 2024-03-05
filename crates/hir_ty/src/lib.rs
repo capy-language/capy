@@ -1,7 +1,8 @@
-mod ctx;
+mod globals;
 mod ty;
 
-use hir::FileName;
+use globals::GlobalInferenceCtx;
+use hir::{FQComptime, FQLambda, FileName};
 use interner::{Interner, Key};
 use internment::Intern;
 use itertools::Itertools;
@@ -9,23 +10,28 @@ use la_arena::{ArenaMap, Idx};
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
 
+use topo::TopoSort;
 pub use ty::*;
 
-#[derive(Clone)]
-pub struct InferenceResult {
+macro_rules! trait_alias {
+    ($vis:vis $name:ident : $trait:path) => {
+        $vis trait $name: $trait {}
+
+        impl<T: $trait> $name for T {}
+    };
+}
+
+pub(crate) use trait_alias;
+
+pub(crate) type InferResult<T> = Result<T, Vec<Inferrable>>;
+
+#[derive(Debug, Clone, Default)]
+pub struct ProjectInference {
     signatures: FxHashMap<hir::Fqn, Signature>,
-    files: FxHashMap<hir::FileName, ModuleInference>,
+    files: FxHashMap<hir::FileName, FileInference>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ModuleInference {
-    expr_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
-    /// the actual types of type expressions
-    meta_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
-    local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<Ty>>,
-}
-
-impl std::ops::Index<hir::Fqn> for InferenceResult {
+impl std::ops::Index<hir::Fqn> for ProjectInference {
     type Output = Signature;
 
     fn index(&self, fqn: hir::Fqn) -> &Self::Output {
@@ -33,21 +39,35 @@ impl std::ops::Index<hir::Fqn> for InferenceResult {
     }
 }
 
-impl std::ops::Index<hir::FileName> for InferenceResult {
-    type Output = ModuleInference;
+impl std::ops::Index<hir::FileName> for ProjectInference {
+    type Output = FileInference;
 
     fn index(&self, module: hir::FileName) -> &Self::Output {
         &self.files[&module]
     }
 }
 
-impl ModuleInference {
+impl std::ops::IndexMut<hir::FileName> for ProjectInference {
+    fn index_mut(&mut self, module: hir::FileName) -> &mut Self::Output {
+        self.files.get_mut(&module).unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FileInference {
+    expr_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
+    /// the actual types of type expressions
+    meta_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
+    local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<Ty>>,
+}
+
+impl FileInference {
     pub fn get_meta_ty(&self, expr: Idx<hir::Expr>) -> Option<Intern<Ty>> {
         self.meta_tys.get(expr).copied()
     }
 }
 
-impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
+impl std::ops::Index<Idx<hir::Expr>> for FileInference {
     type Output = Intern<Ty>;
 
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
@@ -55,7 +75,13 @@ impl std::ops::Index<Idx<hir::Expr>> for ModuleInference {
     }
 }
 
-impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
+impl std::ops::IndexMut<Idx<hir::Expr>> for FileInference {
+    fn index_mut(&mut self, expr: Idx<hir::Expr>) -> &mut Self::Output {
+        self.expr_tys.get_mut(expr).unwrap()
+    }
+}
+
+impl std::ops::Index<Idx<hir::LocalDef>> for FileInference {
     type Output = Intern<Ty>;
 
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
@@ -63,20 +89,37 @@ impl std::ops::Index<Idx<hir::LocalDef>> for ModuleInference {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Signature(pub Intern<Ty>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
+#[cfg_attr(not(test), derive(Debug))]
+#[cfg_attr(test, derive(derivative::Derivative), derivative(Debug))]
 pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
-    pub module: hir::FileName,
+    pub file: hir::FileName,
     pub range: TextRange,
+    // it's important to set this as `Some(_)` as much as possible,
+    // even if the given expression isn't technically the source of the error.
+    // this field is used for scanning through a group of expressions to see if they have any
+    // related errors (so it can be decided whether or not to attempt to compile them).
+    // only set this to None if there truly isn't a related expression.
+    #[cfg_attr(test, derivative(Debug = "ignore"))]
+    pub expr: Option<Idx<hir::Expr>>,
     pub help: Option<TyDiagnosticHelp>,
 }
 
 impl TyDiagnostic {
+    pub fn eq_ignore_expr(&self, other: &TyDiagnostic) -> bool {
+        self.kind == other.kind
+            && self.file == other.file
+            && self.range == other.range
+            && self.help == other.help
+    }
+
     pub fn is_error(&self) -> bool {
-        !matches!(self.kind, TyDiagnosticKind::IntTooBigForType { .. })
+        // !matches!(self.kind, TyDiagnosticKind::IntTooBigForType { .. })
+        true
     }
 }
 
@@ -152,7 +195,6 @@ pub enum TyDiagnosticKind {
         expected_ty: Intern<Ty>,
     },
     ComptimePointer,
-    ComptimeType,
     GlobalNotConst,
     EntryNotFunction,
     EntryHasParams,
@@ -181,57 +223,194 @@ pub enum TyDiagnosticHelpKind {
     BreakHere { break_ty: Intern<Ty> },
 }
 
-pub struct InferenceCtx<'a> {
-    current_file: Option<hir::FileName>,
-    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-    world_index: &'a hir::WorldIndex,
-    interner: &'a Interner,
-    local_usages: FxHashMap<hir::FileName, ArenaMap<Idx<hir::LocalDef>, FxHashSet<Idx<hir::Stmt>>>>,
-    param_tys: Option<Vec<Intern<Ty>>>,
-    signatures: FxHashMap<hir::Fqn, Signature>,
-    modules: FxHashMap<hir::FileName, ModuleInference>,
-    diagnostics: Vec<TyDiagnostic>,
+#[derive(Debug, Clone)]
+pub enum ComptimeResult {
+    Type(Intern<Ty>),
+    Integer { num: u64, bytes: Box<[u8]> },
+    Float { num: f64, bytes: Box<[u8]> },
+    Data(Box<[u8]>),
+    Void,
 }
 
-impl<'a> InferenceCtx<'a> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Inferrable {
+    Global(hir::Fqn),
+    Lambda(FQLambda),
+}
+
+impl Inferrable {
+    fn to_string(self, interner: &Interner) -> String {
+        match self {
+            Inferrable::Global(fqn) => fqn.to_string(std::path::Path::new(""), interner),
+            Inferrable::Lambda(lambda) => format!(
+                "lambda {} #{}",
+                lambda.file.to_string(std::path::Path::new(""), interner),
+                lambda.expr.into_raw()
+            ),
+        }
+    }
+}
+
+trait_alias! {
+    pub EvalComptimeFn:
+    FnMut(FQComptime, &ProjectInference) -> ComptimeResult
+}
+
+pub struct InferenceResult {
+    pub tys: ProjectInference,
+    pub diagnostics: Vec<TyDiagnostic>,
+    pub any_were_unsafe_to_compile: bool,
+}
+
+pub struct InferenceCtx<'a, F: EvalComptimeFn> {
+    world_index: &'a hir::WorldIndex,
+    world_bodies: &'a hir::WorldBodies,
+    interner: &'a Interner,
+    tys: ProjectInference,
+    all_inferred: FxHashSet<Inferrable>,
+    to_infer: TopoSort<Inferrable>,
+    diagnostics: Vec<TyDiagnostic>,
+    eval_comptime: F,
+}
+
+impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
     pub fn new(
-        bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
         world_index: &'a hir::WorldIndex,
+        world_bodies: &'a hir::WorldBodies,
         interner: &'a Interner,
-    ) -> InferenceCtx<'a> {
+        eval_comptime: F,
+    ) -> Self {
         Self {
-            current_file: None,
-            bodies_map,
             world_index,
+            world_bodies,
             interner,
-            local_usages: FxHashMap::default(),
-            param_tys: None,
             diagnostics: Vec::new(),
-            signatures: FxHashMap::default(),
-            modules: FxHashMap::default(),
+            tys: ProjectInference::default(),
+            all_inferred: FxHashSet::default(),
+            to_infer: TopoSort::default(),
+            eval_comptime,
         }
     }
 
     /// only pass `None` to `entry_point` if your testing type checking and you don't want to worry
     /// about the entry point
-    pub fn finish(mut self, entry_point: Option<hir::Fqn>) -> (InferenceResult, Vec<TyDiagnostic>) {
+    pub fn finish(
+        mut self,
+        entry_point: Option<hir::Fqn>,
+        track_unsafe_to_compile: bool,
+    ) -> InferenceResult {
         for (module, _) in self.world_index.get_all_files() {
-            self.modules.insert(
-                module,
-                ModuleInference {
-                    expr_tys: ArenaMap::default(),
-                    meta_tys: ArenaMap::default(),
-                    local_tys: ArenaMap::default(),
-                },
-            );
+            self.tys.files.insert(module, FileInference::default());
         }
 
-        for (file, index) in self.world_index.get_all_files() {
-            for name in index.definitions() {
-                let fqn = hir::Fqn { file, name };
+        self.to_infer
+            .extend(
+                self.world_index
+                    .get_all_files()
+                    .into_iter()
+                    .flat_map(|(file, index)| {
+                        index
+                            .definitions()
+                            .map(move |name| Inferrable::Global(hir::Fqn { file, name }))
+                            .sorted()
+                    }),
+            );
 
-                if !self.signatures.contains_key(&fqn) {
-                    self.get_signature(fqn);
+        const DEBUG: bool = false;
+
+        loop {
+            if DEBUG {
+                println!("another loop");
+            }
+
+            let leaves = match self.to_infer.peek_all() {
+                Ok(leaves) => leaves.into_iter().cloned().collect_vec(),
+                Err(_) => {
+                    let cyclic = self
+                        .to_infer
+                        .peek_all_cyclic()
+                        .unwrap()
+                        .into_iter()
+                        .cloned()
+                        .collect_vec();
+
+                    let nyr = Signature(Ty::NotYetResolved.into());
+
+                    for inferrable in &cyclic {
+                        println!("cyclic: {:?}", inferrable);
+                        if let Inferrable::Global(fqn) = inferrable {
+                            self.tys.signatures.insert(*fqn, nyr);
+                        }
+                    }
+
+                    cyclic
+                }
+            };
+
+            assert!(!leaves.is_empty());
+
+            for inferrable in leaves {
+                if DEBUG {
+                    println!("- {}", inferrable.to_string(self.interner));
+                }
+
+                match self.infer(inferrable) {
+                    Ok(_) => {
+                        self.to_infer.remove(&inferrable);
+                    }
+                    Err(deps) => {
+                        self.to_infer.insert_deps(inferrable, deps);
+                    }
+                }
+            }
+
+            if self.to_infer.is_empty() {
+                break;
+            }
+        }
+
+        let mut any_were_unsafe_to_compile = false;
+
+        if track_unsafe_to_compile {
+            for fqn in self
+                .all_inferred
+                .clone()
+                .into_iter()
+                .filter_map(|i| match i {
+                    Inferrable::Global(fqn) => Some(fqn),
+                    _ => None,
+                })
+            {
+                if self.world_bodies.is_extern(fqn) {
+                    continue;
+                }
+
+                let mut global_ctx = GlobalInferenceCtx {
+                    file: fqn.file,
+                    world_index: self.world_index,
+                    world_bodies: self.world_bodies,
+                    bodies: &self.world_bodies[fqn.file],
+                    interner: self.interner,
+                    local_usages: Default::default(),
+                    tys: &mut self.tys,
+                    param_tys: Vec::new(),
+                    all_inferred: &self.all_inferred,
+                    to_infer: &mut self.to_infer,
+                    diagnostics: &mut self.diagnostics,
+                    eval_comptime: &mut self.eval_comptime,
+                };
+
+                let body = self.world_bodies.body(fqn);
+                let ty = self.world_bodies.ty(fqn);
+
+                if !global_ctx.is_safe_to_compile(body).unwrap()
+                    || ty.map_or(false, |ty| !global_ctx.is_safe_to_compile(ty).unwrap())
+                {
+                    println!(
+                        "{} is unsafe to compile",
+                        fqn.to_string(std::path::Path::new(""), self.interner)
+                    );
+                    any_were_unsafe_to_compile = true;
                 }
             }
         }
@@ -247,20 +426,24 @@ impl<'a> InferenceCtx<'a> {
                     None => break 'entry,
                 };
 
-                let ty = self.get_signature(entry_point).0;
+                let ty = self.tys.signatures[&entry_point].0;
 
                 if let Some((param_tys, return_ty)) = ty.as_function() {
-                    let lambda = match self.bodies_map[&entry_point.file]
-                        [self.bodies_map[&entry_point.file].global_body(entry_point.name)]
+                    let lambda = match self.world_bodies[entry_point.file]
+                        [self.world_bodies.body(entry_point)]
                     {
-                        hir::Expr::Lambda(lambda) => &self.bodies_map[&entry_point.file][lambda],
+                        hir::Expr::Lambda(lambda) => &self.world_bodies[entry_point.file][lambda],
                         _ => todo!("entry point doesn't have lambda body"),
                     };
 
                     if !param_tys.is_empty() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::EntryHasParams,
-                            module: entry_point.file,
+                            file: entry_point.file,
+                            // `None` because the correctness of the entry point
+                            // will not affect the compilability of this global.
+                            // `is_safe_to_compile` should return true for this global.
+                            expr: None,
                             range: lambda.params_range,
                             help: None,
                         });
@@ -269,9 +452,10 @@ impl<'a> InferenceCtx<'a> {
                     if !return_ty.is_void() && !return_ty.is_int() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::EntryBadReturn,
-                            module: entry_point.file,
+                            file: entry_point.file,
+                            expr: None,
                             // unwrap is safe because if the return type didn't exist, it'd be void
-                            range: self.bodies_map[&entry_point.file]
+                            range: self.world_bodies[entry_point.file]
                                 .range_for_expr(lambda.return_ty.unwrap()),
                             help: None,
                         });
@@ -279,7 +463,8 @@ impl<'a> InferenceCtx<'a> {
                 } else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::EntryNotFunction,
-                        module: entry_point.file,
+                        file: entry_point.file,
+                        expr: None,
                         range: range.whole,
                         help: None,
                     });
@@ -287,29 +472,73 @@ impl<'a> InferenceCtx<'a> {
             }
         }
 
-        let mut result = InferenceResult {
-            signatures: self.signatures,
-            files: self.modules,
-        };
-        result.shrink_to_fit();
+        self.tys.shrink_to_fit();
 
-        (result, self.diagnostics)
+        InferenceResult {
+            tys: self.tys,
+            diagnostics: self.diagnostics,
+            any_were_unsafe_to_compile,
+        }
     }
 
-    fn get_signature(&mut self, fqn: hir::Fqn) -> Signature {
-        if let Some(sig) = self.signatures.get(&fqn) {
-            return sig.clone();
+    fn infer(&mut self, inferrable: Inferrable) -> InferResult<()> {
+        if self.all_inferred.contains(&inferrable) {
+            return Ok(());
         }
 
-        let old_module = self.current_file.replace(fqn.file);
+        match inferrable {
+            Inferrable::Global(fqn) => self.infer_fqn(fqn)?,
+            Inferrable::Lambda(lambda) => self.infer_lambda(lambda)?,
+        }
 
-        if self.bodies_map[&fqn.file].global_is_extern(fqn.name) {
-            let ty_annotation = match self.bodies_map[&fqn.file].global_ty(fqn.name) {
-                Some(ty) => self.parse_expr_to_ty(ty, &mut FxHashSet::default()),
+        self.all_inferred.insert(inferrable);
+
+        Ok(())
+    }
+
+    fn infer_fqn(&mut self, fqn: hir::Fqn) -> InferResult<()> {
+        let mut global_ctx = GlobalInferenceCtx {
+            file: fqn.file,
+            world_index: self.world_index,
+            world_bodies: self.world_bodies,
+            bodies: &self.world_bodies[fqn.file],
+            interner: self.interner,
+            local_usages: Default::default(),
+            tys: &mut self.tys,
+            param_tys: Default::default(),
+            all_inferred: &self.all_inferred,
+            to_infer: &mut self.to_infer,
+            diagnostics: &mut self.diagnostics,
+            eval_comptime: &mut self.eval_comptime,
+        };
+
+        let had_previous = global_ctx.tys.signatures.contains_key(&fqn);
+
+        if !had_previous {
+            // we do this before parsing the possible type annotation to avoid a recursion like this:
+            // a : a : 5;
+            global_ctx
+                .tys
+                .signatures
+                .insert(fqn, Signature(Intern::new(Ty::NotYetResolved)));
+        }
+
+        let ty_annotation = match self.world_bodies.ty(fqn) {
+            Some(ty) => Some(global_ctx.const_ty(ty).inspect_err(|_| {
+                // this is why i wish rust had `defer`
+                global_ctx.tys.signatures.remove(&fqn);
+            })?),
+            None => None,
+        };
+
+        if self.world_bodies.is_extern(fqn) {
+            let ty_annotation = match ty_annotation {
+                Some(ty) => ty,
                 None => {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ExternGlobalMissingTy,
-                        module: fqn.file,
+                        file: fqn.file,
+                        expr: None,
                         range: self.world_index.range_info(fqn).whole,
                         help: None,
                     });
@@ -318,442 +547,61 @@ impl<'a> InferenceCtx<'a> {
                 }
             };
 
-            self.signatures.insert(fqn, Signature(ty_annotation));
+            self.tys.signatures.insert(fqn, Signature(ty_annotation));
 
-            return Signature(ty_annotation);
+            return Ok(());
         }
 
-        // we do this before parsing the possible type annotation
-        // to avoid a stack overflow like this:
-        // a : a : 5;
-        self.signatures
-            .insert(fqn, Signature(Intern::new(Ty::NotYetResolved)));
+        let body = self.world_bodies.body(fqn);
 
-        let body = self.bodies_map[&self.current_file.unwrap()].global_body(fqn.name);
+        // we don't need to do anything fancy to allow recursion.
+        // the `infer_surface` stage should have already figured out the
+        // signature of every function, including this one.
 
-        // if there's a type annotation to the global, make sure it matches the type of the body
-        let ty_annotation = self.bodies_map[&self.current_file.unwrap()]
-            .global_ty(fqn.name)
-            .map(|ty| self.parse_expr_to_ty(ty, &mut FxHashSet::default()));
+        let ty = global_ctx
+            .finish_body(body, ty_annotation, true)
+            .inspect_err(|_| {
+                global_ctx.tys.signatures.remove(&fqn);
+            })?;
 
-        // we parse global functions differently to allow recursion
-        let ty = match &self.bodies_map[&self.current_file.unwrap()][body] {
-            hir::Expr::Lambda(lambda) => {
-                let ty = if let Some(ty_annotation) = ty_annotation {
-                    self.signatures.insert(fqn, Signature(ty_annotation));
+        self.tys.signatures.insert(fqn, Signature(ty));
 
-                    let ty = self.infer_lambda(body, *lambda, None);
-
-                    self.expect_match(ty, ty_annotation, body);
-
-                    ty
-                } else {
-                    self.infer_lambda(body, *lambda, Some(fqn))
-                };
-
-                self.modules
-                    .get_mut(&self.current_file.unwrap())
-                    .unwrap()
-                    .expr_tys
-                    .insert(body, ty);
-
-                ty
-            }
-            _ => {
-                let ty = self.finish_body(body, None, ty_annotation, true);
-
-                self.signatures.insert(fqn, Signature(ty));
-
-                ty
-            }
-        };
-
-        self.current_file = old_module;
-
-        Signature(ty)
+        Ok(())
     }
 
-    fn infer_lambda(
-        &mut self,
-        expr: Idx<hir::Expr>,
-        lambda: Idx<hir::Lambda>,
-        fqn: Option<hir::Fqn>,
-    ) -> Intern<Ty> {
+    fn infer_lambda(&mut self, fql: FQLambda) -> InferResult<()> {
         let hir::Lambda {
-            params,
-            return_ty,
-            body,
-            is_extern,
-            ..
-        } = &self.bodies_map[&self.current_file.unwrap()][lambda];
+            body, is_extern, ..
+        } = self.world_bodies[fql.file][fql.lambda];
 
-        let return_ty = if let Some(return_ty) = return_ty {
-            self.parse_expr_to_ty(*return_ty, &mut FxHashSet::default())
-        } else {
-            Ty::Void.into()
+        if is_extern {
+            return Ok(());
+        }
+
+        let (param_tys, return_ty) = self.tys[fql.file][fql.expr].as_function().unwrap();
+
+        let mut global_ctx = GlobalInferenceCtx {
+            file: fql.file,
+            world_index: self.world_index,
+            world_bodies: self.world_bodies,
+            bodies: &self.world_bodies[fql.file],
+            interner: self.interner,
+            local_usages: Default::default(),
+            tys: &mut self.tys,
+            param_tys,
+            all_inferred: &self.all_inferred,
+            to_infer: &mut self.to_infer,
+            diagnostics: &mut self.diagnostics,
+            eval_comptime: &mut self.eval_comptime,
         };
 
-        let param_tys = params
-            .iter()
-            .map(|param| self.parse_expr_to_ty(param.ty, &mut FxHashSet::default()))
-            .collect::<Vec<_>>();
+        global_ctx.finish_body(body, Some(return_ty), false)?;
 
-        let ty = Ty::Function {
-            param_tys: param_tys.clone(),
-            return_ty,
-        }
-        .into();
-
-        if !is_extern && self.bodies_map[&self.current_file.unwrap()][*body] == hir::Expr::Missing {
-            self.modules
-                .get_mut(&self.current_file.unwrap())
-                .unwrap()
-                .meta_tys
-                .insert(expr, ty);
-
-            return Ty::Type.into();
-        }
-
-        // this allows recursion
-        if let Some(fqn) = fqn {
-            self.signatures.insert(fqn, Signature(ty));
-        }
-
-        if !is_extern {
-            self.finish_body(*body, Some(param_tys), Some(return_ty), false);
-        }
-
-        ty
-    }
-
-    fn fqn_to_ty(
-        &mut self,
-        fqn: hir::Fqn,
-        module_range: Option<TextRange>,
-        name_range: TextRange,
-        resolve_chain: &mut FxHashSet<hir::Fqn>,
-    ) -> Intern<Ty> {
-        // this makes sure we don't stack overflow on recursion
-        if !resolve_chain.insert(fqn) {
-            return Ty::Unknown.into();
-        }
-
-        match self.world_index.definition(fqn) {
-            hir::DefinitionStatus::Defined => {
-                let ty = self.get_signature(fqn).0;
-
-                if *ty == Ty::Unknown {
-                    return Ty::Unknown.into();
-                }
-
-                if *ty == Ty::NotYetResolved {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::NotYetResolved { fqn },
-                        module: self.current_file.unwrap(),
-                        range: name_range,
-                        help: None,
-                    });
-
-                    return Ty::Unknown.into();
-                }
-
-                if *ty != Ty::Type {
-                    if !ty.is_unknown() {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::Mismatch {
-                                expected: Ty::Type.into(),
-                                found: ty,
-                            },
-                            module: self.current_file.unwrap(),
-                            range: name_range,
-                            help: None,
-                        });
-                    }
-                    return Ty::Unknown.into();
-                }
-
-                let global_body = self.bodies_map[&fqn.file].global_body(fqn.name);
-
-                let old_module = self.current_file.replace(fqn.file);
-
-                let actual_ty = self.parse_expr_to_ty(global_body, resolve_chain);
-
-                self.current_file = old_module;
-
-                // it'd be better to mutate the fqn, but that would invalidate the hash
-                // within the internment crate
-                match actual_ty.as_ref() {
-                    Ty::Distinct {
-                        fqn: None,
-                        sub_ty: ty,
-                        uid,
-                    } => Ty::Distinct {
-                        fqn: Some(fqn),
-                        uid: *uid,
-                        sub_ty: *ty,
-                    }
-                    .into(),
-                    Ty::Struct {
-                        fqn: None,
-                        members,
-                        uid,
-                    } => Ty::Struct {
-                        fqn: Some(fqn),
-                        members: members.clone(),
-                        uid: *uid,
-                    }
-                    .into(),
-                    _ => actual_ty,
-                }
-            }
-            hir::DefinitionStatus::UnknownFile => {
-                self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownFile { file: fqn.file },
-                    module: self.current_file.unwrap(),
-                    range: module_range.unwrap(),
-                    help: None,
-                });
-                Ty::Unknown.into()
-            }
-            hir::DefinitionStatus::UnknownDefinition => {
-                self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownFqn { fqn },
-                    module: self.current_file.unwrap(),
-                    range: name_range,
-                    help: None,
-                });
-                Ty::Unknown.into()
-            }
-        }
-    }
-
-    fn parse_expr_to_ty(
-        &mut self,
-        expr: Idx<hir::Expr>,
-        resolve_chain: &mut FxHashSet<hir::Fqn>,
-    ) -> Intern<Ty> {
-        if let Some(meta_ty) = self.modules[&self.current_file.unwrap()].get_meta_ty(expr) {
-            return meta_ty;
-        }
-
-        let ty = match &self.bodies_map[&self.current_file.unwrap()][expr] {
-            hir::Expr::Missing => Ty::Unknown.into(),
-            hir::Expr::Ref { mutable, expr } => {
-                let sub_ty = self.parse_expr_to_ty(*expr, resolve_chain);
-
-                Ty::Pointer {
-                    mutable: *mutable,
-                    sub_ty,
-                }
-                .into()
-            }
-            hir::Expr::Local(local_def) => {
-                let local_ty = self.modules[&self.current_file.unwrap()].local_tys[*local_def];
-
-                if *local_ty == Ty::Unknown {
-                    return Ty::Unknown.into();
-                }
-
-                if *local_ty != Ty::Type {
-                    if !local_ty.is_unknown() {
-                        self.diagnostics.push(TyDiagnostic {
-                            kind: TyDiagnosticKind::Mismatch {
-                                expected: Ty::Type.into(),
-                                found: self.modules[&self.current_file.unwrap()].local_tys
-                                    [*local_def],
-                            },
-                            module: self.current_file.unwrap(),
-                            range: self.bodies_map[&self.current_file.unwrap()]
-                                .range_for_expr(expr),
-                            help: None,
-                        });
-                    }
-
-                    return Ty::Unknown.into();
-                }
-
-                let local_def = &self.bodies_map[&self.current_file.unwrap()][*local_def];
-
-                if local_def.mutable {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::LocalTyIsMutable,
-                        module: self.current_file.unwrap(),
-                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
-                        help: Some(TyDiagnosticHelp {
-                            kind: TyDiagnosticHelpKind::MutableVariable,
-                            range: local_def.range,
-                        }),
-                    });
-
-                    return Ty::Unknown.into();
-                }
-
-                self.parse_expr_to_ty(local_def.value, resolve_chain)
-            }
-            hir::Expr::LocalGlobal(name) => self.fqn_to_ty(
-                hir::Fqn {
-                    file: self.current_file.unwrap(),
-                    name: name.name,
-                },
-                None,
-                name.range,
-                resolve_chain,
-            ),
-            hir::Expr::Param { .. } => {
-                self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::ParamNotATy,
-                    module: self.current_file.unwrap(),
-                    range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
-                    help: None,
-                });
-
-                Ty::Unknown.into()
-            }
-            hir::Expr::Member { previous, field } => {
-                let previous_ty = self.infer_expr(*previous);
-                match previous_ty.as_ref() {
-                    Ty::File(file) => self.fqn_to_ty(
-                        hir::Fqn {
-                            file: *file,
-                            name: field.name,
-                        },
-                        Some(
-                            self.bodies_map[&self.current_file.unwrap()].range_for_expr(*previous),
-                        ),
-                        field.range,
-                        resolve_chain,
-                    ),
-                    _ => {
-                        let expr_ty = self.infer_expr(expr);
-                        if !expr_ty.is_unknown() {
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::Mismatch {
-                                    expected: Ty::Type.into(),
-                                    found: expr_ty,
-                                },
-                                module: self.current_file.unwrap(),
-                                range: self.bodies_map[&self.current_file.unwrap()]
-                                    .range_for_expr(expr),
-                                help: None,
-                            });
-                        }
-
-                        Ty::Unknown.into()
-                    }
-                }
-            }
-            hir::Expr::PrimitiveTy(ty) => Ty::from_primitive(*ty).into(),
-            hir::Expr::Array {
-                size,
-                items: None,
-                ty,
-            } => {
-                let sub_ty = self.parse_expr_to_ty(*ty, resolve_chain);
-
-                if let Some(size) = size {
-                    Ty::Array {
-                        size: *size,
-                        sub_ty,
-                    }
-                    .into()
-                } else {
-                    Ty::Slice { sub_ty }.into()
-                }
-            }
-            hir::Expr::Distinct { uid, ty } => Ty::Distinct {
-                fqn: None,
-                uid: *uid,
-                sub_ty: self.parse_expr_to_ty(*ty, resolve_chain),
-            }
-            .into(),
-            hir::Expr::StructDecl { uid, members } => Ty::Struct {
-                fqn: None,
-                uid: *uid,
-                members: members
-                    .iter()
-                    .cloned()
-                    .filter_map(|(name, ty)| name.map(|name| (name, ty)))
-                    .map(|(name, ty)| {
-                        (
-                            name.name,
-                            self.parse_expr_to_ty(ty, &mut resolve_chain.clone()),
-                        )
-                    })
-                    .collect(),
-            }
-            .into(),
-            hir::Expr::Lambda(lambda) => {
-                let hir::Lambda {
-                    params,
-                    return_ty,
-                    body,
-                    is_extern,
-                    ..
-                } = &self.bodies_map[&self.current_file.unwrap()][*lambda];
-
-                let return_ty = if let Some(return_ty) = return_ty {
-                    self.parse_expr_to_ty(*return_ty, resolve_chain)
-                } else {
-                    Ty::Void.into()
-                };
-
-                let param_tys = params
-                    .iter()
-                    .map(|param| self.parse_expr_to_ty(param.ty, resolve_chain))
-                    .collect::<Vec<_>>();
-
-                let ty = Ty::Function {
-                    param_tys: param_tys.clone(),
-                    return_ty,
-                }
-                .into();
-
-                // if the function has a body (or is extern), then it isn't a type
-                if *is_extern
-                    || self.bodies_map[&self.current_file.unwrap()][*body] != hir::Expr::Missing
-                {
-                    self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::Mismatch {
-                            expected: Ty::Type.into(),
-                            found: ty,
-                        },
-                        module: self.current_file.unwrap(),
-                        range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
-                        help: None,
-                    });
-
-                    return Ty::Unknown.into();
-                }
-
-                ty
-            }
-            _ => {
-                let expr_ty = self.infer_expr(expr);
-                self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::Mismatch {
-                        expected: Ty::Type.into(),
-                        found: expr_ty,
-                    },
-                    module: self.current_file.unwrap(),
-                    range: self.bodies_map[&self.current_file.unwrap()].range_for_expr(expr),
-                    help: None,
-                });
-
-                Ty::Unknown.into()
-            }
-        };
-
-        self.modules
-            .get_mut(&self.current_file.unwrap())
-            .unwrap()
-            .meta_tys
-            .insert(expr, ty);
-
-        ty
+        Ok(())
     }
 }
 
-impl InferenceResult {
+impl ProjectInference {
     /// This might be slightly superficial in some scenarios, I'm not sure
     pub fn all_tys(&self) -> impl Iterator<Item = Intern<Ty>> + '_ {
         self.signatures
@@ -940,8 +788,10 @@ mod tests {
 
     use super::*;
     use ast::AstNode;
+    use codegen::Verbosity;
     use expect_test::{expect, Expect};
     use interner::Interner;
+    use target_lexicon::Triple;
     use uid_gen::UIDGenerator;
 
     #[track_caller]
@@ -976,7 +826,11 @@ mod tests {
         let mut world_index = hir::WorldIndex::default();
 
         let mut uid_gen = UIDGenerator::default();
-        let mut bodies_map = FxHashMap::default();
+        let mut world_bodies = hir::WorldBodies::default();
+
+        let mut parse_diags = Vec::<parser::SyntaxError>::new();
+        let mut index_diags = Vec::new();
+        let mut lowering_diags = Vec::new();
 
         for (name, text) in &modules {
             if *name == "main.capy" {
@@ -984,7 +838,10 @@ mod tests {
             }
 
             let tokens = lexer::lex(text);
-            let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
+            let parse = parser::parse_source_file(&tokens, text);
+            parse_diags.extend(parse.errors());
+            let tree = parse.into_syntax_tree();
+
             let root = ast::Root::cast(tree.root(), &tree).unwrap();
             let (index, _) = hir::index(root, &tree, &mut interner);
 
@@ -1001,17 +858,22 @@ mod tests {
                 true,
             );
             world_index.add_file(module, index);
-            bodies_map.insert(module, bodies);
+            world_bodies.add_file(module, bodies);
         }
 
         let text = &modules["main.capy"];
         let module = hir::FileName(interner.intern("main.capy"));
         let tokens = lexer::lex(text);
-        let tree = parser::parse_source_file(&tokens, text).into_syntax_tree();
-        let root = ast::Root::cast(tree.root(), &tree).unwrap();
-        let (index, _) = hir::index(root, &tree, &mut interner);
+        let parse = parser::parse_source_file(&tokens, text);
+        parse_diags.extend(parse.errors());
 
-        let (bodies, _) = hir::lower(
+        let tree = parse.into_syntax_tree();
+        let root = ast::Root::cast(tree.root(), &tree).unwrap();
+
+        let (index, d) = hir::index(root, &tree, &mut interner);
+        index_diags.extend(d);
+
+        let (bodies, d) = hir::lower(
             root,
             &tree,
             Path::new("main"),
@@ -1021,24 +883,46 @@ mod tests {
             Path::new(""),
             true,
         );
+        lowering_diags.extend(d);
         world_index.add_file(module, index);
-        bodies_map.insert(module, bodies);
+        world_bodies.add_file(module, bodies);
 
         let entry_point = entry_point.map(|entry_point| hir::Fqn {
             file: module,
             name: hir::Name(interner.intern(entry_point)),
         });
 
-        let (inference_result, actual_diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &interner).finish(entry_point);
+        let mut comptime_results = FxHashMap::default();
 
-        expect.assert_eq(&inference_result.debug(Path::new(""), &interner, true, false));
+        let InferenceResult {
+            tys,
+            diagnostics: actual_diagnostics,
+            any_were_unsafe_to_compile,
+        } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
+            codegen::eval_comptime_blocks(
+                Verbosity::LocalFunctions,
+                vec![comptime],
+                &mut comptime_results,
+                Path::new(""),
+                &interner,
+                &world_bodies,
+                // transmute to get past cyclic dependencies
+                unsafe { std::mem::transmute(tys) },
+                Triple::host().pointer_width().unwrap().bits(),
+            );
+
+            unsafe { std::mem::transmute(comptime_results[&comptime].clone()) }
+        })
+        .finish(entry_point, true);
+
+        expect.assert_eq(&tys.debug(Path::new(""), &interner, true, false));
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
             .map(|(kind, range, help)| TyDiagnostic {
                 kind,
-                module,
+                file: module,
+                expr: None,
                 range: TextRange::new(range.start.into(), range.end.into()),
                 help: help.map(|(kind, range)| TyDiagnosticHelp {
                     kind,
@@ -1047,10 +931,11 @@ mod tests {
             })
             .collect();
 
-        let expected_diagnostics = format!("{:#?}", expected_diagnostics);
-        let actual_diagnostics = format!("{:#?}", actual_diagnostics);
+        let expected_diagnostics_text = format!("{:#?}", expected_diagnostics);
+        let actual_diagnostics_text = format!("{:#?}", actual_diagnostics);
 
-        let (dist, changeset) = text_diff::diff(&expected_diagnostics, &actual_diagnostics, "");
+        let (dist, changeset) =
+            text_diff::diff(&expected_diagnostics_text, &actual_diagnostics_text, "");
 
         if dist != 0 {
             let mut diff = String::new();
@@ -1074,10 +959,45 @@ mod tests {
 
             println!(
                 "expected:\n{}\n\nactual:\n{}\n\ndiff:\n{}\n",
-                expected_diagnostics, actual_diagnostics, diff
+                expected_diagnostics_text, actual_diagnostics_text, diff
             );
 
             panic!("expected diagnostics are not equal to actual diagnostics");
+        }
+
+        let actual_diagnostics = actual_diagnostics
+            .into_iter()
+            .filter(|d| d.expr.is_some() && d.is_error())
+            .collect_vec();
+
+        let any_errs = !parse_diags.is_empty()
+            || !index_diags.is_empty()
+            || !lowering_diags.is_empty()
+            || !actual_diagnostics.is_empty();
+
+        if any_errs != any_were_unsafe_to_compile {
+            if !any_errs {
+                println!("no errors");
+            }
+            if !parse_diags.is_empty() {
+                println!("parse errors: {:#?}", parse_diags);
+            }
+            if !index_diags.is_empty() {
+                println!("index errors: {:#?}", index_diags);
+            }
+            if !lowering_diags.is_empty() {
+                println!("lowering errors: {:#?}", lowering_diags);
+            }
+            if !actual_diagnostics.is_empty() {
+                println!("type errors: {:#?}", actual_diagnostics);
+            }
+            println!("anything was unsafe: {}", any_were_unsafe_to_compile);
+
+            if !any_errs {
+                panic!("no errors but unsafe to compile");
+            } else {
+                panic!("errors but safe to compile");
+            }
         }
     }
 
@@ -1156,7 +1076,7 @@ mod tests {
 
                     my_magic := numbers.Magic_Struct {
                         mystical_field: 123 as numbers.imaginary,
-                    }
+                    };
 
                     my_magic.mystical_field
                 }
@@ -1787,20 +1707,20 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> u8
-                1 : u8
+                1 : {int}
                 2 : bool
-                3 : u8
-                4 : u8
-                5 : u8
-                6 : u8
-                7 : u8
-                8 : u8
-                9 : u8
-                10 : u8
-                11 : u8
+                3 : {int}
+                4 : {int}
+                5 : {uint}
+                6 : {int}
+                7 : {int}
+                8 : {int}
+                9 : {int}
+                10 : {int}
+                11 : {int}
                 12 : () -> u8
-                l0 : u8
-                l1 : u8
+                l0 : {int}
+                l1 : {int}
             "#]],
             |_| {
                 [(
@@ -2300,9 +2220,9 @@ mod tests {
             "#,
             expect![[r#"
                 main::neg : () -> u8
-                1 : u8
-                2 : u8
-                3 : u8
+                1 : {uint}
+                2 : {int}
+                3 : {int}
                 4 : () -> u8
             "#]],
             |_| {
@@ -2497,7 +2417,7 @@ mod tests {
             r#"
                 #- main.capy
                 a :: () -> str {
-                    greetings := import "greetings.capy"
+                    greetings := import "greetings.capy";
 
                     greetings.informal(10)
                 };
@@ -2908,12 +2828,87 @@ mod tests {
     }
 
     #[test]
-    fn recursive_definition() {
+    fn depend_depend_depend() {
+        // while this may seem dumb, it was a bug when first changing hir_ty to be iterative.
         check(
             r#"
-                foo :: comptime { bar };
+                foo :: 5;
 
-                bar :: comptime { foo };
+                bar :: comptime foo;
+
+                baz :: comptime bar;
+
+                qux :: comptime baz;
+
+                quux :: comptime qux;
+
+                corge :: comptime quux;
+
+                grault :: comptime corge;
+
+                garply :: comptime grault;
+
+                waldo :: comptime garply;
+
+                fred :: comptime waldo;
+
+                plugh :: comptime fred;
+
+                xyzzy :: comptime plugh;
+
+                thud :: comptime xyzzy;
+            "#,
+            expect![[r#"
+                main::bar : i32
+                main::baz : i32
+                main::corge : i32
+                main::foo : i32
+                main::fred : i32
+                main::garply : i32
+                main::grault : i32
+                main::plugh : i32
+                main::quux : i32
+                main::qux : i32
+                main::thud : i32
+                main::waldo : i32
+                main::xyzzy : i32
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : i32
+                7 : i32
+                8 : i32
+                9 : i32
+                10 : i32
+                11 : i32
+                12 : i32
+                13 : i32
+                14 : i32
+                15 : i32
+                16 : i32
+                17 : i32
+                18 : i32
+                19 : i32
+                20 : i32
+                21 : i32
+                22 : i32
+                23 : i32
+                24 : i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn recursive_definitions() {
+        check(
+            r#"
+                foo :: comptime bar;
+
+                bar :: comptime foo;
             "#,
             expect![[r#"
                 main::bar : <unknown>
@@ -2922,6 +2917,36 @@ mod tests {
                 1 : <unknown>
                 2 : <unknown>
                 3 : <unknown>
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("foo")),
+                        },
+                    },
+                    71..74,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn recursive_definitions_ty() {
+        // todo: this should be all <unknown>
+        check(
+            r#"
+                foo : i32 : comptime bar;
+
+                bar : i32 : comptime foo;
+            "#,
+            expect![[r#"
+                main::bar : i32
+                main::foo : i32
+                1 : i32
+                2 : i32
                 4 : <unknown>
                 5 : <unknown>
             "#]],
@@ -2933,7 +2958,7 @@ mod tests {
                             name: hir::Name(i.intern("foo")),
                         },
                     },
-                    77..80,
+                    81..84,
                     None,
                 )]
             },
@@ -3018,7 +3043,7 @@ mod tests {
             r#"
                 Foo :: struct {
                     bar: Foo,
-                }
+                };
             "#,
             expect![[r#"
                 main::Foo : type
@@ -4347,7 +4372,7 @@ mod tests {
                 0 : i32
                 1 : (^i32) -> void
                 2 : i32
-                3 : ^i32
+                3 : ^mut i32
                 4 : void
                 5 : void
                 6 : () -> void
@@ -4444,22 +4469,6 @@ mod tests {
                 let int = Ty::IInt(32).into();
                 [
                     (
-                        TyDiagnosticKind::MismatchedArgCount {
-                            found: 1,
-                            expected: 2,
-                        },
-                        84..90,
-                        None,
-                    ),
-                    (
-                        TyDiagnosticKind::Mismatch {
-                            expected: float,
-                            found: int,
-                        },
-                        88..89,
-                        None,
-                    ),
-                    (
                         TyDiagnosticKind::Mismatch {
                             expected: Ty::Function {
                                 param_tys: vec![float, Ty::IInt(8).into()],
@@ -4473,6 +4482,22 @@ mod tests {
                             .into(),
                         },
                         53..109,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::MismatchedArgCount {
+                            found: 1,
+                            expected: 2,
+                        },
+                        84..90,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::Mismatch {
+                            expected: float,
+                            found: int,
+                        },
+                        88..89,
                         None,
                     ),
                 ]
@@ -4500,11 +4525,6 @@ mod tests {
                 let int = Ty::IInt(32).into();
                 [
                     (
-                        TyDiagnosticKind::CalledNonFunction { found: int },
-                        60..66,
-                        None,
-                    ),
-                    (
                         TyDiagnosticKind::Mismatch {
                             expected: int,
                             found: Ty::Function {
@@ -4514,6 +4534,11 @@ mod tests {
                             .into(),
                         },
                         29..85,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::CalledNonFunction { found: int },
+                        60..66,
                         None,
                     ),
                 ]
@@ -5599,6 +5624,30 @@ mod tests {
     }
 
     #[test]
+    fn lambda_ty_no_return() {
+        // this is only to make sure that `is_safe_to_compile` works correctly.
+        // this will panic if there's some error and `is_safe_to_compile`
+        // returns true. since I know for a fact that the parser is going to throw an
+        // error on the following input, and I know that the following did not panic,
+        // it's safe to say that `is_safe_to_compile` returned false and
+        // works correctly on this input.
+        check(
+            r#"
+                foo :: () {
+                    (a: i32, b: str);
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                3 : type
+                4 : void
+                5 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
     fn comptime() {
         check(
             r#"
@@ -5874,58 +5923,26 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    bytes := [3] u8 { 72, 73, 0 };
-                    ptr := ^bytes as ^any;
+                    data := [3] char { 'h', 'i', '\0' };
+                    ptr := ^data as ^any;
                     str := ptr as str;
                 }
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                1 : u8
-                2 : u8
-                3 : u8
-                4 : [3]u8
-                5 : [3]u8
-                6 : ^[3]u8
+                1 : char
+                2 : char
+                3 : char
+                4 : [3]char
+                5 : [3]char
+                6 : ^[3]char
                 9 : ^any
                 10 : ^any
                 12 : str
                 13 : void
                 14 : () -> void
-                l0 : [3]u8
+                l0 : [3]char
                 l1 : ^any
-                l2 : str
-            "#]],
-            |_| [],
-        );
-    }
-
-    #[test]
-    fn u8_ptr_to_str() {
-        check(
-            r#"
-                get_any :: () {
-                    bytes := [3] u8 { 72, 73, 0 };
-                    ptr := ^bytes as ^any as ^u8;
-                    str := ptr as str;
-                }
-            "#,
-            expect![[r#"
-                main::get_any : () -> void
-                1 : u8
-                2 : u8
-                3 : u8
-                4 : [3]u8
-                5 : [3]u8
-                6 : ^[3]u8
-                9 : ^any
-                12 : ^u8
-                13 : ^u8
-                15 : str
-                16 : void
-                17 : () -> void
-                l0 : [3]u8
-                l1 : ^u8
                 l2 : str
             "#]],
             |_| [],
@@ -5935,13 +5952,13 @@ mod tests {
     #[test]
     fn char_ptr_to_str() {
         check(
-            r"
+            r#"
                 get_any :: () {
-                    chars := [3] char { 'H', 'i', '\0' };
-                    ptr := ^chars as ^any as ^char;
+                    data := [3] char { 'h', 'i', '\0' };
+                    ptr := ^data as ^any as ^char;
                     str := ptr as str;
                 }
-            ",
+            "#,
             expect![[r#"
                 main::get_any : () -> void
                 1 : char
@@ -5959,6 +5976,64 @@ mod tests {
                 l0 : [3]char
                 l1 : ^char
                 l2 : str
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn u8_ptr_to_str() {
+        check(
+            r#"
+                get_any :: () {
+                    data := [3] char { 'h', 'i', '\0' };
+                    ptr := ^data as ^any as ^u8;
+                    str := ptr as str;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                1 : char
+                2 : char
+                3 : char
+                4 : [3]char
+                5 : [3]char
+                6 : ^[3]char
+                9 : ^any
+                12 : ^u8
+                13 : ^u8
+                15 : str
+                16 : void
+                17 : () -> void
+                l0 : [3]char
+                l1 : ^u8
+                l2 : str
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn char_array_to_str() {
+        check(
+            r"
+                get_any :: () {
+                    data := [3] char { 'H', 'i', '\0' };
+                    str := data as str;
+                }
+            ",
+            expect![[r#"
+                main::get_any : () -> void
+                1 : char
+                2 : char
+                3 : char
+                4 : [3]char
+                5 : [3]char
+                7 : str
+                8 : void
+                9 : () -> void
+                l0 : [3]char
+                l1 : str
             "#]],
             |_| [],
         );
@@ -6957,6 +7032,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
+                0 : {uint}
                 1 : noeval
                 2 : () -> void
             "#]],
@@ -7031,6 +7107,44 @@ mod tests {
                 1 : i32
                 2 : i32
                 3 : () -> i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn return_with_globals() {
+        check(
+            r#"
+                a :: 42;
+                b :: comptime a;
+                c :: comptime b;
+                d :: comptime c;
+
+                foo :: () -> i32 {
+                    return 42;
+                    d;
+                    return 5;
+                }
+            "#,
+            expect![[r#"
+                main::a : i32
+                main::b : i32
+                main::c : i32
+                main::d : i32
+                main::foo : () -> i32
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : i32
+                8 : i32
+                9 : i32
+                10 : i32
+                11 : i32
+                12 : () -> i32
             "#]],
             |_| [],
         )
@@ -7557,6 +7671,20 @@ mod tests {
     }
 
     #[test]
+    fn extern_function() {
+        check(
+            r#"
+                foo :: (s: str) -> void extern;
+            "#,
+            expect![[r#"
+                main::foo : (str) -> void
+                3 : (str) -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
     fn extern_global_with_type() {
         check(
             r#"
@@ -7579,6 +7707,41 @@ mod tests {
                 main::foo : <unknown>
             "#]],
             |_| [(TyDiagnosticKind::ExternGlobalMissingTy, 17..31, None)],
+        )
+    }
+
+    #[test]
+    fn extern_global_reference() {
+        // mainly just for checking `is_safe_to_compile`
+        check(
+            r#"
+                #- main.capy
+                other :: import "other.capy";
+
+                foo : i32 : extern;
+
+                bar :: () {
+                    foo;
+                    other.baz;
+                };
+                #- other.capy
+                baz : i32 : extern;
+            "#,
+            expect![[r#"
+                main::bar : () -> void
+                main::foo : i32
+                main::other : file other
+                other::baz : i32
+                other:
+                main:
+                  0 : file other
+                  2 : i32
+                  3 : file other
+                  4 : i32
+                  5 : void
+                  6 : () -> void
+            "#]],
+            |_| [],
         )
     }
 
@@ -7611,6 +7774,110 @@ mod tests {
                 9 : str
                 10 : void
                 11 : () -> void
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn comptime_types() {
+        check(
+            r#"
+                Foo :: comptime {
+                    Bar :: comptime str;
+                    Baz :: comptime i32;
+
+                    struct {
+                        a: Bar,
+                        b : Baz,
+                    }
+                };
+
+                run :: () {
+                    my_foo := Foo {
+                        a: "hello",
+                        b: 42,
+                    };
+                };
+            "#,
+            expect![[r#"
+                main::Foo : type
+                main::run : () -> void
+                0 : type
+                1 : type
+                2 : type
+                3 : type
+                6 : type
+                7 : type
+                8 : type
+                10 : str
+                11 : i32
+                12 : main::Foo
+                13 : void
+                14 : () -> void
+                l0 : type
+                l1 : type
+                l2 : main::Foo
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn reinfer_params() {
+        // usually an argument will replace the weak type of a variable.
+        // in this case it doesn't and so more advanced replacing is needed.
+        check(
+            r#"
+                Any :: struct {
+                    ty: type,
+                    data: ^any,
+                };
+                
+                accept_any :: (val: Any) {}
+                
+                foo :: () {
+                    x := 0;
+                    accept_any(x);
+                    x as i16;
+                }
+            "#,
+            expect![[r#"
+                main::Any : type
+                main::accept_any : (main::Any) -> void
+                main::foo : () -> void
+                3 : type
+                5 : void
+                6 : (main::Any) -> void
+                7 : i16
+                8 : (main::Any) -> void
+                9 : i16
+                10 : void
+                11 : i16
+                13 : i16
+                14 : void
+                15 : () -> void
+                l0 : i16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn ty_ptr_becomes_ty() {
+        check(
+            r#"
+                foo :: () {
+                    x : type = ^i32;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : type
+                2 : type
+                3 : void
+                4 : () -> void
+                l0 : type
             "#]],
             |_| [],
         )

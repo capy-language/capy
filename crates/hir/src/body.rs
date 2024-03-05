@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, env, mem, path::Path, vec};
+use std::{cmp::Ordering, env, fmt::Debug, mem, path::Path, vec};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
@@ -10,7 +10,75 @@ use text_size::TextRange;
 
 use crate::{subdir::SubDir, FileName, Fqn, Index, Name, NameWithRange, PrimitiveTy, UIDGenerator};
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, Default)]
+pub struct WorldBodies {
+    bodies: FxHashMap<FileName, Bodies>,
+}
+
+impl std::ops::Index<FileName> for WorldBodies {
+    type Output = Bodies;
+
+    fn index(&self, index: FileName) -> &Self::Output {
+        &self.bodies[&index]
+    }
+}
+
+impl WorldBodies {
+    pub fn exists(&self, fqn: Fqn) -> bool {
+        if let Some(bodies) = self.bodies.get(&fqn.file) {
+            bodies.global_exists(fqn.name)
+        } else {
+            false
+        }
+    }
+
+    pub fn body(&self, fqn: Fqn) -> Idx<Expr> {
+        self[fqn.file].global_body(fqn.name)
+    }
+
+    pub fn ty(&self, fqn: Fqn) -> Option<Idx<Expr>> {
+        self[fqn.file].global_ty(fqn.name)
+    }
+
+    pub fn is_extern(&self, fqn: Fqn) -> bool {
+        self[fqn.file].global_is_extern(fqn.name)
+    }
+
+    pub fn add_file(&mut self, file: FileName, bodies: Bodies) {
+        self.bodies.insert(file, bodies);
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        for bodies in self.bodies.values_mut() {
+            bodies.shrink_to_fit();
+        }
+    }
+
+    pub fn find_comptimes(&self) -> Vec<FQComptime> {
+        self.bodies
+            .iter()
+            .flat_map(|(file, bodies)| {
+                bodies.global_bodies.values().flat_map(|body| {
+                    bodies
+                        .descendants(*body, DescentOpts::All)
+                        .filter_map(|desc| match desc {
+                            Descendant::Expr(expr) => match &bodies[expr] {
+                                Expr::Comptime(comptime) => Some(FQComptime {
+                                    file: *file,
+                                    expr,
+                                    comptime: *comptime,
+                                }),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
     assigns: Arena<Assign>,
@@ -126,9 +194,25 @@ pub struct Param {
     pub ty: Idx<Expr>,
 }
 
+/// Fully qualified lambda
+#[derive(Debug, Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq)]
+pub struct FQLambda {
+    pub file: FileName,
+    pub expr: Idx<Expr>,
+    pub lambda: Idx<Lambda>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Comptime {
     pub body: Idx<Expr>,
+}
+
+/// Fully qualified comptime
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct FQComptime {
+    pub file: FileName,
+    pub expr: Idx<Expr>,
+    pub comptime: Idx<Comptime>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1446,8 +1530,295 @@ impl<'a> Ctx<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Descendant {
+    Expr(Idx<Expr>),
+    Stmt(Idx<Stmt>),
+}
+
+#[derive(Clone, Copy)]
+pub enum DescentOpts<'a> {
+    /// Doesn't include anything within lambdas.
+    /// Doesn't forcefully include local def values
+    /// Includes statements.
+    Eval,
+    /// Includes parameters and return type of lambdas.
+    /// Will include the value of a referred local if a filter returns true.
+    /// Doesn't include blocks.
+    Types {
+        include_local_value: &'a dyn Fn(Idx<LocalDef>) -> bool,
+    },
+    /// Almost the same as `Eval`, except that not all statments of blocks are included.
+    /// Only the statements that break to a block are included.
+    Reinfer,
+    /// Includes everything*.
+    /// Doesn't forcefully include the values of local defs.
+    All,
+}
+
+/// A block will go through this function and end up like this:
+///
+/// {
+///   a := 42;
+///   a + 5;
+/// }
+///
+/// {expr} block
+///
+/// {stmt} expr
+///
+/// {expr} binary add
+///
+/// {expr} 5
+///
+/// {expr} local ref
+///
+/// {stmt} local def
+///
+/// {expr} 42
+///
+/// this allows for reverse iteration over the descendants while also making
+/// sure later statements (such as a local ref) can depend on older statements
+/// (such as a local def).
+pub struct Descendants<'a> {
+    bodies: &'a Bodies,
+    opts: DescentOpts<'a>,
+    todo: Vec<Descendant>,
+}
+
+impl Iterator for Descendants<'_> {
+    type Item = Descendant;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.todo.pop()?;
+
+        let include_eval = matches!(
+            self.opts,
+            DescentOpts::Eval | DescentOpts::Reinfer | DescentOpts::All
+        );
+        let include_types = matches!(self.opts, DescentOpts::Types { .. } | DescentOpts::All);
+        let is_all = matches!(self.opts, DescentOpts::All);
+
+        match next {
+            Descendant::Expr(expr) => match self.bodies[expr].clone() {
+                Expr::Missing => {}
+                Expr::IntLiteral(_) => {}
+                Expr::FloatLiteral(_) => {}
+                Expr::BoolLiteral(_) => {}
+                Expr::StringLiteral(_) => {}
+                Expr::CharLiteral(_) => {}
+                Expr::Array { items, ty, .. } => {
+                    if include_eval {
+                        if let Some(items) = items {
+                            self.todo
+                                .extend(items.into_iter().rev().map(Descendant::Expr));
+                        }
+                    }
+
+                    if include_types {
+                        self.todo.push(Descendant::Expr(ty));
+                    }
+                }
+                Expr::Index { source, index } => {
+                    self.todo.push(Descendant::Expr(index));
+                    self.todo.push(Descendant::Expr(source));
+                }
+                Expr::Ref { expr, .. } => {
+                    self.todo.push(Descendant::Expr(expr));
+                }
+                Expr::Cast { expr, .. }
+                | Expr::Deref { pointer: expr }
+                | Expr::Unary { expr, .. }
+                | Expr::Member { previous: expr, .. } => {
+                    if include_eval {
+                        self.todo.push(Descendant::Expr(expr));
+                    }
+                }
+                Expr::Binary { lhs, rhs, .. } => {
+                    self.todo.push(Descendant::Expr(rhs));
+                    self.todo.push(Descendant::Expr(lhs));
+                }
+                Expr::Block { stmts, tail_expr } => match self.opts {
+                    DescentOpts::Eval | DescentOpts::All => {
+                        self.todo.extend(stmts.into_iter().map(Descendant::Stmt));
+
+                        if let Some(tail_expr) = tail_expr {
+                            self.todo.push(Descendant::Expr(tail_expr));
+                        }
+                    }
+                    DescentOpts::Reinfer => {
+                        if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                            self.todo.extend(
+                                self.bodies
+                                    .scope_id_usages(id)
+                                    .iter()
+                                    .copied()
+                                    .map(Descendant::Stmt),
+                            )
+                        }
+
+                        if let Some(tail_expr) = tail_expr {
+                            self.todo.push(Descendant::Expr(tail_expr));
+                        }
+                    }
+                    DescentOpts::Types { .. } => {}
+                },
+                Expr::If {
+                    condition,
+                    body,
+                    else_branch,
+                } => {
+                    if let Some(else_branch) = else_branch {
+                        self.todo.push(Descendant::Expr(else_branch));
+                    }
+                    self.todo.push(Descendant::Expr(body));
+                    self.todo.push(Descendant::Expr(condition));
+                }
+                Expr::While { condition, body } => match self.opts {
+                    DescentOpts::Eval | DescentOpts::All => {
+                        self.todo.push(Descendant::Expr(body));
+                        if let Some(condition) = condition {
+                            self.todo.push(Descendant::Expr(condition));
+                        }
+                    }
+                    DescentOpts::Reinfer => {
+                        if condition.is_none() {
+                            if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                                self.todo.extend(
+                                    self.bodies
+                                        .scope_id_usages(id)
+                                        .iter()
+                                        .copied()
+                                        .map(Descendant::Stmt),
+                                );
+                            }
+                        }
+                    }
+                    DescentOpts::Types { .. } => {}
+                },
+                Expr::Local(local_def) => {
+                    if let DescentOpts::Types {
+                        include_local_value,
+                    } = self.opts
+                    {
+                        if include_local_value(local_def) {
+                            let local_def = &self.bodies[local_def];
+
+                            self.todo.push(Descendant::Expr(local_def.value));
+                        }
+                    }
+                }
+                Expr::Param { .. } => {}
+                Expr::LocalGlobal(_) => {}
+                Expr::Call { callee, args } => {
+                    self.todo.push(Descendant::Expr(callee));
+                    self.todo
+                        .extend(args.into_iter().rev().map(Descendant::Expr));
+                }
+                Expr::Lambda(lambda) => {
+                    if include_types {
+                        let lambda = &self.bodies[lambda];
+
+                        if is_all
+                            && !lambda.is_extern
+                            && !(lambda.return_ty.is_some()
+                                && self.bodies[lambda.body] == Expr::Missing)
+                        {
+                            self.todo.push(Descendant::Expr(lambda.body));
+                        }
+
+                        if let Some(return_ty) = lambda.return_ty {
+                            self.todo.push(Descendant::Expr(return_ty));
+                        }
+
+                        self.todo.extend(
+                            lambda
+                                .params
+                                .iter()
+                                .rev()
+                                .map(|param| Descendant::Expr(param.ty)),
+                        );
+                    }
+                }
+                Expr::Comptime(comptime) => {
+                    if include_eval {
+                        let comptime = self.bodies[comptime];
+
+                        self.todo.push(Descendant::Expr(comptime.body));
+                    }
+                }
+                Expr::StructLiteral { members, .. } => {
+                    self.todo.extend(
+                        members
+                            .into_iter()
+                            .rev()
+                            .map(|(_, val)| Descendant::Expr(val)),
+                    );
+                }
+                Expr::Distinct { ty, .. } => {
+                    if include_types {
+                        self.todo.push(Descendant::Expr(ty));
+                    }
+                }
+                Expr::PrimitiveTy(_) => {}
+                Expr::StructDecl { members, .. } => {
+                    if include_types {
+                        self.todo
+                            .extend(members.into_iter().map(|(_, ty)| Descendant::Expr(ty)));
+                    }
+                }
+                Expr::Import(_) => {}
+            },
+            Descendant::Stmt(stmt) => match self.bodies[stmt] {
+                Stmt::LocalDef(local_def) => {
+                    let local_def = &self.bodies[local_def];
+                    self.todo.push(Descendant::Expr(local_def.value));
+                    if is_all {
+                        if let Some(ty) = local_def.ty {
+                            self.todo.push(Descendant::Expr(ty));
+                        }
+                    }
+                }
+                Stmt::Assign(assign) => {
+                    let assign = &self.bodies[assign];
+                    self.todo.push(Descendant::Expr(assign.value));
+                    self.todo.push(Descendant::Expr(assign.source));
+                }
+                Stmt::Expr(expr) => self.todo.push(Descendant::Expr(expr)),
+                Stmt::Break {
+                    value: Some(value), ..
+                } => {
+                    self.todo.push(Descendant::Expr(value));
+                }
+                Stmt::Break { value: None, .. } => {}
+                Stmt::Continue { .. } => {}
+                Stmt::Defer { expr, .. } => {
+                    self.todo.push(Descendant::Expr(expr));
+                }
+            },
+        }
+
+        Some(next)
+    }
+}
+
 impl Bodies {
-    pub fn has_global(&self, name: Name) -> bool {
+    /// builds a depth-first iterator of the given expression and all of it's children.
+    ///
+    /// sub expressions are guarenteed to come after their parents, and early statements are
+    /// guarenteed to come after later statements.
+    ///
+    /// this allows safe reverse iteration without having to worry about children or siblings that
+    /// haven't been evaluated yet.
+    pub fn descendants<'a>(&'a self, expr: Idx<Expr>, opts: DescentOpts<'a>) -> Descendants<'a> {
+        Descendants {
+            bodies: self,
+            opts,
+            todo: vec![Descendant::Expr(expr)],
+        }
+    }
+
+    pub fn global_exists(&self, name: Name) -> bool {
         self.global_bodies.contains_key(&name)
     }
 

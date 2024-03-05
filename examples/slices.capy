@@ -20,7 +20,7 @@ print_int_slice :: (slice: [] i32) {
     idx := 0;
     core.print("{ ");
     while idx < slice.len {
-        printf("%i", slice[idx]);
+        core.print(slice[idx]);
         
         if idx < slice.len - 1 {
             core.print(", ");
@@ -35,7 +35,7 @@ print_int_array :: (arr: [6] i32) {
     idx := 0;
     core.print("{ ");
     while idx < arr.len {
-        printf("%i", arr[idx]);
+        core.print(arr[idx]);
         
         if idx < arr.len - 1 {
             core.print(", ");
@@ -45,6 +45,3 @@ print_int_array :: (arr: [6] i32) {
     }
     core.print(" }\n");
 };
-
-printf :: (text: str, n: i32) extern;
-

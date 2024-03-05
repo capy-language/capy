@@ -4,16 +4,16 @@ use cranelift::prelude::{
     AbiParam, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Variable,
 };
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use hir::FQComptime;
+use hir_ty::ComptimeResult;
 use interner::Interner;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
-use crate::{ComptimeToCompile, Verbosity};
+use crate::Verbosity;
 
-use super::{
-    cast_ty_to_cranelift, comptime::ComptimeResult, Compiler, FunctionToCompile, MetaTyData,
-};
+use super::{cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
@@ -21,10 +21,10 @@ pub(crate) fn compile_program<'a>(
     entry_point: hir::Fqn,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
-    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-    tys: &'a hir_ty::InferenceResult,
+    world_bodies: &'a hir::WorldBodies,
+    tys: &'a hir_ty::ProjectInference,
     module: &'a mut dyn Module,
-    comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
+    comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
 ) -> FuncId {
     let entry_point_ftc = {
         let (param_tys, return_ty) = tys[entry_point]
@@ -32,9 +32,9 @@ pub(crate) fn compile_program<'a>(
             .as_function()
             .expect("tried to compile non-function as entry point");
 
-        let global_body = bodies_map[&entry_point.file].global_body(entry_point.name);
+        let global_body = world_bodies.body(entry_point);
 
-        let lambda = match bodies_map[&entry_point.file][global_body] {
+        let lambda = match world_bodies[entry_point.file][global_body] {
             hir::Expr::Lambda(lambda) => lambda,
             _ => todo!("entry point does not have a lambda as it's body"),
         };
@@ -52,13 +52,13 @@ pub(crate) fn compile_program<'a>(
         verbosity,
         mod_dir,
         interner,
-        bodies_map,
+        world_bodies,
         tys,
         builder_context: FunctionBuilderContext::new(),
         ctx: module.make_context(),
-        pointer_ty: module.target_config().pointer_type(),
+        ptr_ty: module.target_config().pointer_type(),
         module,
-        data_description: DataDescription::new(),
+        data_desc: DataDescription::new(),
         functions_to_compile: VecDeque::from([entry_point_ftc]),
         meta_tys: MetaTyData::default(),
         functions: FxHashMap::default(),
@@ -66,6 +66,7 @@ pub(crate) fn compile_program<'a>(
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),
         comptime_results,
+        comptime_data: FxHashMap::default(),
     };
 
     compiler.finalize_tys();
@@ -79,10 +80,10 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
 
     let cmain_sig = Signature {
         params: vec![
-            AbiParam::new(compiler.pointer_ty),
-            AbiParam::new(compiler.pointer_ty),
+            AbiParam::new(compiler.ptr_ty),
+            AbiParam::new(compiler.ptr_ty),
         ],
-        returns: vec![AbiParam::new(compiler.pointer_ty /*isize*/)],
+        returns: vec![AbiParam::new(compiler.ptr_ty /*isize*/)],
         call_conv: compiler.module.target_config().default_call_conv,
     };
     let cmain_id = compiler
@@ -102,15 +103,15 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
     // tell the builder that the block will have no further predecessors
     builder.seal_block(entry_block);
 
-    let arg_argc = builder.append_block_param(entry_block, compiler.pointer_ty);
-    let arg_argv = builder.append_block_param(entry_block, compiler.pointer_ty);
+    let arg_argc = builder.append_block_param(entry_block, compiler.ptr_ty);
+    let arg_argv = builder.append_block_param(entry_block, compiler.ptr_ty);
 
     let var_argc = Variable::new(0);
-    builder.declare_var(var_argc, compiler.pointer_ty);
+    builder.declare_var(var_argc, compiler.ptr_ty);
     builder.def_var(var_argc, arg_argc);
 
     let var_argv = Variable::new(1);
-    builder.declare_var(var_argv, compiler.pointer_ty);
+    builder.declare_var(var_argv, compiler.ptr_ty);
     builder.def_var(var_argv, arg_argv);
 
     let local_entry_point = compiler
@@ -122,17 +123,12 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
     let (_, entry_return_ty) = compiler.tys[entry_point].0.as_function().unwrap();
 
     let exit_code = if entry_return_ty.is_void() {
-        builder.ins().iconst(compiler.pointer_ty, 0)
+        builder.ins().iconst(compiler.ptr_ty, 0)
     } else {
         let exit_code = builder.inst_results(call)[0];
 
         // cast the exit code from the entry point into a usize
-        cast_ty_to_cranelift(
-            &mut builder,
-            exit_code,
-            entry_return_ty,
-            compiler.pointer_ty,
-        )
+        cast_ty_to_cranelift(&mut builder, exit_code, entry_return_ty, compiler.ptr_ty)
     };
 
     builder.ins().return_(&[exit_code]);

@@ -89,7 +89,7 @@ pub struct FileNameWithRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(pub Key);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NameWithRange {
     pub name: Name,
     pub range: TextRange,

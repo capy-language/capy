@@ -149,7 +149,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             0 => FinalTy::Number(NumberType {
                 ty: types::I32,
                 float: false,
-                signed,
+                signed: true,
             }),
             8 => FinalTy::Number(NumberType {
                 ty: types::I8,
@@ -182,7 +182,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
 
     let final_ty = match ty.as_ref() {
         _ if ty.is_zero_sized() => FinalTy::Void,
-        hir_ty::Ty::NotYetResolved | hir_ty::Ty::Unknown => unreachable!(),
+        hir_ty::Ty::NotYetResolved | hir_ty::Ty::Unknown => FinalTy::Void,
         hir_ty::Ty::IInt(bit_width) => finalize_int(*bit_width, true),
         hir_ty::Ty::UInt(bit_width) => finalize_int(*bit_width, false),
         hir_ty::Ty::Float(bit_width) => match bit_width {
@@ -353,10 +353,11 @@ pub(crate) trait ToTyId {
 impl ToTyId for Intern<Ty> {
     fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32 {
         let id = match self.as_ref() {
-            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::NotYetResolved | Ty::Unknown => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::IInt(bit_width) => simple_id(
                 INT_DISCRIMINANT,
                 match *bit_width {
+                    0 => 32,
                     u8::MAX => pointer_ty.bits(),
                     other => other as u32,
                 },
@@ -365,12 +366,20 @@ impl ToTyId for Intern<Ty> {
             Ty::UInt(bit_width) => simple_id(
                 INT_DISCRIMINANT,
                 match *bit_width {
+                    0 => 32,
                     u8::MAX => pointer_ty.bits(),
                     other => other as u32,
                 },
                 false,
             ),
-            Ty::Float(bit_width) => simple_id(FLOAT_DISCRIMINANT, *bit_width as u32, false),
+            Ty::Float(bit_width) => simple_id(
+                FLOAT_DISCRIMINANT,
+                match *bit_width {
+                    0 => 32,
+                    other => other as u32,
+                },
+                false,
+            ),
             Ty::Bool => simple_id(BOOL_DISCRIMINANT, 8, false),
             Ty::String => simple_id(STRING_DISCRIMINANT, pointer_ty.bits(), false),
             Ty::Char => simple_id(CHAR_DISCRIMINANT, 8, false),
@@ -508,7 +517,7 @@ impl ToTyId for Intern<Ty> {
 
     fn to_previous_type_id(self, meta_tys: &MetaTyData, pointer_ty: types::Type) -> u32 {
         match self.as_ref() {
-            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::NotYetResolved | Ty::Unknown => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::IInt(bit_width) => simple_id(
                 INT_DISCRIMINANT,
                 match *bit_width {

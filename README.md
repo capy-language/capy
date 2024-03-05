@@ -45,19 +45,25 @@ capy run examples/hello_world.capy
 ### Basics
 
 Variables are declared with `name : type : value` or `name : type = value`.
-The first delcares an immutable binding, and the second declares a mutable variable.
+The first is immutable (can't be changed), and the second is mutable (can be changed).
 
 ```cpp
 name : str : "Terry";
 
 age : i32 = 42;
-age = 43;
+age = 43; // age can be changed
 ```
 
-The type can of course be elided.
+The type can also be omitted.
 
-A binding does not *necessarily* need to be const, it is a runtime store like any other.
-But there might be certain circumstances in which it must be, which will be expanded on later.
+```cpp
+name :: "Terry";
+age := 42;
+```
+
+Certain other languages have `const` definitions along with immutable variables. Capy combines these two together.
+An immutable variable does not *necessarily* need to be known at compile time, it can be a runtime store like any other.
+But there might be certain circumstances in which it must be const, which will be expanded on later.
 
 These bindings and variables can also shadow each other,
 
@@ -77,18 +83,30 @@ my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
 my_array[2] = 10;
 ```
 
-Slices look very similar but lack the length within the square brackets,
+Slices can represent an array of any possible size. They look very similar but lack a length within the square brackets.
 
 ```cpp
 my_slice := [] i32 { 1, 2, 3 };
 
-// arrays can be implicitly cast to slices, but casting a slice to an array must be done explicitly
+my_slice = [] i32 { 4, 5, 6, 7, 8 };
 
-my_new_slice : [] i32 = my_array;
-my_new_array : [3] i32 = my_slice as [3] i32;
+my_slice[2] = 10;
 ```
 
-Pointers can be either mutable or immutable, similar to Rust,
+Arrays can be implicitly cast to slices, but casting a slice to an array must be done explicitly.
+
+```cpp
+// start with an array
+my_array : [3] i32 = [3] i32 { 2, 4, 8 };
+
+// automatically turn it into a slice
+my_slice : [] i32  = my_array;
+
+// manually turn it back into an array
+my_array : [3] i32 = my_slice as [3] i32;
+```
+
+Pointers can be either mutable or immutable, similar to Rust.
 
 ```cpp
 foo := 5;
@@ -103,7 +121,7 @@ Mutable pointers greatly improve the readability of code, and allow one to see a
 
 ### Types
 
-Types are first-class in Capy, and structs are values which can be assigned to a variable like any other,
+Types are first-class in Capy, which means structs are values that can be assigned to a variable like any other,
 
 ```cpp
 Person :: struct {
@@ -131,7 +149,7 @@ y : i32 = 12;
 y = x; // ERROR! Imaginary != i32 :(
 ```
 
-You can alias a type by making a binding to that type.
+You can alias a type by simply assigning it to a variable.
 
 ```cpp
 My_Int :: i32;
@@ -142,21 +160,30 @@ y : i32 = 12;
 y = x; // yay! My_Int == i32 :)
 ```
 
-It is important to note that in order to use `My_Int` within a type annotation, it must be *const*, or, "known at compile-time."
+It is important to note that in order to actually use `My_Int` as a type, it must be *const*, or, "known at compile-time."
 Otherwise, the compiler will throw an error as it's impossible to compile a variable (`x` in this case) whose type might change at runtime.
 
 ```cpp
 My_Int := i32;
 
+if random_num() % 2 == 0 {
+    My_Int = i64;
+}
+
 x : My_Int = 42; // ERROR! My_Int's value might change at runtime! uncompilable!
 ```
 
+There are two requirements which determine if a variable is *const*.
+
+1. It must be immutable.
+2. It must either contain a literal value, a reference to another const variable, or a `comptime` block.
+
 To see all the different types, you can look through [`core/meta.capy`](./core/meta.capy),
-which contains reflection related code and documentation for all of Capy's different types.
+which contains reflection related code and documentation for all of Capy's types.
 
 ### Comptime
 
-One of the most powerful parts of the language is its arbitrary compile-time execution.
+One of the most powerful parts of Capy is its arbitrary compile-time execution.
 This allows you to run *any* code at compile-time, returning whatever data you wish.
 
 ```cpp
@@ -174,57 +201,113 @@ powers_of_two := comptime {
 ```
 
 One of the most sacred promises Capy tries it's best to keep is *any code that can be run at runtime, can also be run at compile-time*.
-There are no `const` functions to be found here. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
-Or at least, that's the end goal. A few things haven't been fully fleshed out yet, like returning types, pointers, and functions from `comptime` blocks.
+There are no special `const` functions to be found here. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
+Or at least, that's the end goal. A few wrinkles haven't been fully ironed out yet, like returning pointers and functions from `comptime` blocks.
+
+Types work well with compile-time execution, and can be arbitrarily calculated by whatever code you want,
+
+```cpp
+My_Type :: comptime {
+    if random_num() % 2 == 0 {
+        i32
+    } else {
+        i64
+    }
+};
+
+x : My_Type = 42;
+```
+
+This is obviously not a very useful example. But as this feature continues to be fleshed out, this will become the basis of Capy's compile-time generic system.
 
 ### Reflection
 
-Reflection is another powerful feature of Capy. Currently, you can get all the information you could want concerning types,
-including things such as the members of a struct (their names, types, and offsets), the size of an array type, and the sub-type of a distinct.
+Reflection is another powerful feature of Capy, and powers the language's runtime generic system.
+
+All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting
+these IDs and getting information such as the length of an array type,
 
 ```cpp
-core :: mod "core";
-meta :: core.meta;
-
-// reflect on an array type
-
-ty := [3] i32;
-info := meta.get_array_info(ty);
+array_type := [3] i32;
+info := meta.get_array_info(array_type);
 
 core.assert(info.len == 3);
-core.assert(info.ty == i32);
-
-// reflect on the members of a struct
-
-ty := struct { foo: str };
-info := meta.get_struct_info(ty);
-
-first := info.members[0];
-core.assert(core.str_eq(first.name, "foo"));
-core.assert(first.ty == str);
-core.assert(first.offset == 0);
+core.assert(info.ty  == i32);
 ```
 
-This functionality powers the `Any` type, a struct containing an `^any` and a `type`, and which can represent any possible value.
+The size of an integer type,
 
 ```cpp
-count : i32 = 5;
-should_start : bool = true;
-greeting : str = "Hi";
+int_type := i16;
 
-core.println_any(core.Any {
+core.assert(meta.size_of(int_type)  == 2);
+core.assert(meta.align_of(int_type) == 2);
+```
+
+The members of a struct,
+
+```cpp
+struct_type := struct { foo: str };
+info := meta.get_struct_info(struct_type);
+
+first := info.members[0];
+core.assert(core.str_eq(first.name,    "foo"));
+core.assert(first.ty                == str);
+core.assert(first.offset            == 0);
+```
+
+And anything else you'd like to know about your types.
+
+This information is supplied in a few global arrays at both runtime and compile-time, meaning that reflection works within both.
+
+This functionality powers the `core.Any` type, which can represent *any* possible value.
+
+```cpp
+count        : i32  = 5;
+should_start : bool = true;
+greeting     : str  = "Hi";
+
+// core.Any contains a type ID and an opaque pointer (like `void*` in C).
+// The type ID allows `core.println` to know how to display the given pointer.
+
+core.println(core.Any {
     ty: i32,
     data: ^count,
 });
-core.println_any(core.Any {
+
+core.println(core.Any {
     ty: bool,
     data: ^should_start,
 });
-core.println_any(core.Any {
+
+core.println(core.Any {
     ty: str,
     data: ^greeting,
 });
 ```
+
+This is pretty verbose, so the compiler will automatically cast values to a `core.Any` if needed,
+
+```cpp
+core.println(5);
+core.println(true);
+core.println("Hello");
+```
+
+This isn't hard coded for the `core.Any` struct, but works for *any* struct with the following members:
+
+```cpp
+struct {
+    type_id: type,
+    opaque_pointer: ^any, // `^any` and `^mut any` are opaque pointers (they have no associated type)
+}
+```
+
+As you can probably guess, `core.println` internally uses a lot of reflection to determine what to actually print to the screen when given a `core.Any`.
+Reflection is extremely useful, and allows for things like a `debug` function that doesn't need to be implemented manually for all types (like Rust), or making it easy to
+serialize and deserialize structs.
+
+If `comptime` powers Capy's compile-time generic system, reflection powers Capy's runtime generic system.
 
 In the future reflection will be made to embrace functions. When user-defined annotations are added, this will result in automation far more powerful than Rust macros.
 
@@ -239,9 +322,9 @@ The expression in a defer is guarenteed to run, regardless of any breaks or retu
     my_file := open_file("foo.txt");
     defer close_file(my_file);
 
-    // .. do stuff with file
+    // do a bunch of stuff with file
 
-} // <- file gets freed here
+} // `close_file` gets run here
 
 ```
 
@@ -273,7 +356,7 @@ main :: () -> u32 { ... };
 main :: () -> bool { ... };
 ```
 
-In Capy, everything is first-class, and that includes functions.
+In Capy, almost everything is first-class, and that includes functions.
 Functions can be put within variables and bindings just like any other value.
 
 ```cpp
@@ -293,7 +376,7 @@ apply_2_and_3(add);
 apply_2_and_3(mul);
 ```
 
-Lambdas, or anonymous functions, are a necessity in any good programming language.
+Lambdas, or anonymous functions, are extremely useful in many programming languages.
 This one singular lambda syntax allows for far more consistency and easier code evolution
 than the two separate syntaxes for lambdas and functions many languages are forced to go with.
 

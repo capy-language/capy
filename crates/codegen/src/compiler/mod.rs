@@ -8,11 +8,13 @@ use cranelift::prelude::{
     StackSlotKind, Value,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
-use hir_ty::Ty;
+use hir::FQComptime;
+use hir_ty::{ComptimeResult, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
 use rustc_hash::FxHashMap;
+use std::backtrace;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
@@ -22,10 +24,9 @@ use crate::layout::{self, GetLayoutInfo};
 use crate::mangle::{self, Mangle};
 use crate::{
     convert::{self, *},
-    ComptimeToCompile, FinalSignature, Verbosity,
+    FinalSignature, Verbosity,
 };
 
-use self::comptime::ComptimeResult;
 use self::functions::FunctionCompiler;
 
 #[cfg(not(debug_assertions))]
@@ -137,6 +138,36 @@ impl MetaTyInfoArrays {
     }
 }
 
+pub(crate) struct ComptimeData {
+    pub(crate) init_flag: DataId,
+    pub(crate) value: DataId,
+}
+
+impl ComptimeData {
+    pub(crate) fn new(
+        module: &mut dyn Module,
+        mod_dir: &std::path::Path,
+        interner: &Interner,
+        comptime: FQComptime,
+    ) -> Self {
+        let mut declare = |name: &str| {
+            module
+                .declare_data(
+                    &(comptime, name).to_mangled_name(mod_dir, interner),
+                    Linkage::Export,
+                    true,
+                    false,
+                )
+                .expect("error declaring data")
+        };
+
+        Self {
+            init_flag: declare("init_flag"),
+            value: declare("value"),
+        }
+    }
+}
+
 pub(crate) struct FunctionToCompile {
     pub(crate) file_name: hir::FileName,
     pub(crate) function_name: Option<hir::Name>,
@@ -151,14 +182,14 @@ pub(crate) struct Compiler<'a> {
     pub(crate) mod_dir: &'a std::path::Path,
 
     pub(crate) interner: &'a Interner,
-    pub(crate) bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-    pub(crate) tys: &'a hir_ty::InferenceResult,
+    pub(crate) world_bodies: &'a hir::WorldBodies,
+    pub(crate) tys: &'a hir_ty::ProjectInference,
 
     pub(crate) builder_context: FunctionBuilderContext,
     pub(crate) ctx: codegen::Context,
-    pub(crate) data_description: DataDescription,
+    pub(crate) data_desc: DataDescription,
     pub(crate) module: &'a mut dyn Module,
-    pub(crate) pointer_ty: types::Type,
+    pub(crate) ptr_ty: types::Type,
 
     // bodies to compile
     pub(crate) functions_to_compile: VecDeque<FunctionToCompile>,
@@ -169,13 +200,14 @@ pub(crate) struct Compiler<'a> {
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) meta_tys: MetaTyData,
     pub(crate) str_id_gen: UIDGenerator,
-    pub(crate) comptime_results: &'a FxHashMap<ComptimeToCompile, ComptimeResult>,
+    pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
+    pub(crate) comptime_data: FxHashMap<FQComptime, ComptimeData>,
 }
 
 impl Compiler<'_> {
     fn finalize_tys(&mut self) {
-        layout::calc_layouts(self.tys.all_tys(), self.pointer_ty.bits());
-        convert::calc_finals(self.tys.all_tys(), self.pointer_ty);
+        layout::calc_layouts(self.tys.all_tys(), self.ptr_ty.bits());
+        convert::calc_finals(self.tys.all_tys(), self.ptr_ty);
     }
 
     fn compile_queued(&mut self) {
@@ -234,12 +266,12 @@ impl Compiler<'_> {
 
                     data.extend_with_num_bytes(
                         size,
-                        self.pointer_ty.bits() as u8,
+                        self.ptr_ty.bits() as u8,
                         self.module.isa().endianness(),
                     );
                     data.extend_with_num_bytes(
                         align,
-                        self.pointer_ty.bits() as u8,
+                        self.ptr_ty.bits() as u8,
                         self.module.isa().endianness(),
                     );
                 }
@@ -250,7 +282,7 @@ impl Compiler<'_> {
                     Ty::Array { size, sub_ty } => {
                         array_info_data.extend_with_num_bytes(
                             (*size) as u32,
-                            self.pointer_ty.bits() as u8,
+                            self.ptr_ty.bits() as u8,
                             self.module.isa().endianness(),
                         );
 
@@ -261,12 +293,12 @@ impl Compiler<'_> {
                         array_info_data.extend(std::iter::repeat(0).take(padding as usize));
 
                         array_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
                             32,
                             self.module.isa().endianness(),
                         );
 
-                        let ptr_size = self.pointer_ty.bytes();
+                        let ptr_size = self.ptr_ty.bytes();
                         let padding = layout::padding_needed_for(
                             array_info_data.len() as u32,
                             ptr_size.min(8),
@@ -275,21 +307,21 @@ impl Compiler<'_> {
                     }
                     Ty::Slice { sub_ty } => {
                         slice_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
                             32,
                             self.module.isa().endianness(),
                         );
                     }
                     Ty::Pointer { sub_ty, .. } => {
                         pointer_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
                             32,
                             self.module.isa().endianness(),
                         );
                     }
                     Ty::Distinct { sub_ty: ty, .. } => {
                         distinct_info_data.extend_with_num_bytes(
-                            ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                            ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
                             32,
                             self.module.isa().endianness(),
                         );
@@ -307,8 +339,10 @@ impl Compiler<'_> {
             data_desc: &mut DataDescription,
             info_array: DataId,
             bytes: Vec<u8>,
+            align: u64,
         ) {
             data_desc.define(bytes.into_boxed_slice());
+            data_desc.set_align(align);
             module
                 .define_data(info_array, data_desc)
                 .expect("error defining data");
@@ -320,9 +354,11 @@ impl Compiler<'_> {
             data_desc: &mut DataDescription,
             info_array: DataId,
             bytes: Vec<u8>,
+            align: u64,
             relocs: Vec<(u32, DataId)>,
         ) {
             data_desc.define(bytes.into_boxed_slice());
+            data_desc.set_align(align);
 
             for (offset, id) in relocs {
                 let local = module.declare_data_in_data(id, data_desc);
@@ -355,6 +391,7 @@ impl Compiler<'_> {
                 .extend(std::iter::repeat(0).take(module.target_config().pointer_bytes() as usize));
 
             data_desc.define(bytes.into_boxed_slice());
+            data_desc.set_align(module.target_config().pointer_bytes().min(8) as u64);
 
             let local = module.declare_data_in_data(ptr, data_desc);
 
@@ -367,43 +404,49 @@ impl Compiler<'_> {
             data_desc.clear();
         }
 
+        let ptr_align = self.ptr_ty.bytes().min(8) as u64;
+        let meta_type_align = 4;
+
         if let Some(mem_arrays) = &self.meta_tys.layout_arrays {
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.array_layout_array,
                 array_mem_data,
+                ptr_align,
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.distinct_layout_array,
                 distinct_mem_data,
+                ptr_align,
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.struct_layout_array,
                 struct_mem_data,
+                ptr_align,
             );
 
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.array_layout_slice,
                 array_count,
                 mem_arrays.array_layout_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.distinct_layout_slice,
                 distinct_count,
                 mem_arrays.distinct_layout_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.struct_layout_slice,
                 struct_count,
                 mem_arrays.struct_layout_array,
@@ -411,81 +454,86 @@ impl Compiler<'_> {
 
             // pointer layout
 
-            let mut pointer_layout_data = Vec::with_capacity(self.pointer_ty.bytes() as usize * 2);
+            let mut pointer_layout_data = Vec::with_capacity(self.ptr_ty.bytes() as usize * 2);
             pointer_layout_data.extend_with_num_bytes(
-                self.pointer_ty.bytes(),
-                self.pointer_ty.bits() as u8,
+                self.ptr_ty.bytes(),
+                self.ptr_ty.bits() as u8,
                 self.module.isa().endianness(),
             );
             pointer_layout_data.extend_with_num_bytes(
-                self.pointer_ty.bytes().min(8),
-                self.pointer_ty.bits() as u8,
+                self.ptr_ty.bytes().min(8),
+                self.ptr_ty.bits() as u8,
                 self.module.isa().endianness(),
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 mem_arrays.pointer_layout,
                 pointer_layout_data,
+                ptr_align,
             );
         }
         if let Some(info_arrays) = &self.meta_tys.info_arrays {
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.array_info_array,
                 array_info_data,
+                ptr_align.max(meta_type_align),
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.slice_info_array,
                 slice_info_data,
+                ptr_align, // the alignment of a slice is the alignment of a pointer
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.pointer_info_array,
                 pointer_info_data,
+                meta_type_align,
             );
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.distinct_info_array,
                 distinct_info_data,
+                meta_type_align,
             );
 
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.array_info_slice,
                 array_count,
                 info_arrays.array_info_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.slice_info_slice,
                 slice_count,
                 info_arrays.slice_info_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.pointer_info_slice,
                 pointer_count,
                 info_arrays.pointer_info_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.distinct_info_slice,
                 distinct_count,
                 info_arrays.distinct_info_array,
             );
             define_slice(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.struct_info_slice,
                 struct_count,
                 info_arrays.struct_info_array,
@@ -519,7 +567,7 @@ impl Compiler<'_> {
                     // padding for next usize (str)
                     let padding = layout::padding_needed_for(
                         member_array_data.len() as u32,
-                        self.pointer_ty.bytes().min(8),
+                        self.ptr_ty.bytes().min(8),
                     );
                     member_array_data.extend(std::iter::repeat(0).take(padding as usize));
 
@@ -529,7 +577,7 @@ impl Compiler<'_> {
 
                     // zeroed-out str pointer, this will be written over later
                     member_array_data
-                        .extend(std::iter::repeat(0).take(self.pointer_ty.bytes() as usize));
+                        .extend(std::iter::repeat(0).take(self.ptr_ty.bytes() as usize));
 
                     let mut name_str_bytes = self.interner.lookup(name.0).as_bytes().to_vec();
                     name_str_bytes.push(0);
@@ -542,9 +590,10 @@ impl Compiler<'_> {
                     );
                     define(
                         self.module,
-                        &mut self.data_description,
+                        &mut self.data_desc,
                         name_str_id,
                         name_str_bytes,
+                        1,
                     );
 
                     member_array_relocs.push((name_offset as u32, name_str_id));
@@ -558,7 +607,7 @@ impl Compiler<'_> {
                     // ty field
 
                     member_array_data.extend_with_num_bytes(
-                        ty.to_previous_type_id(&self.meta_tys, self.pointer_ty),
+                        ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
                         32,
                         self.module.isa().endianness(),
                     );
@@ -567,7 +616,7 @@ impl Compiler<'_> {
 
                     let padding = layout::padding_needed_for(
                         member_array_data.len() as u32,
-                        self.pointer_ty.bytes().min(8),
+                        self.ptr_ty.bytes().min(8),
                     );
                     member_array_data.extend(std::iter::repeat(0).take(padding as usize));
 
@@ -575,7 +624,7 @@ impl Compiler<'_> {
 
                     member_array_data.extend_with_num_bytes(
                         member_offsets[idx],
-                        self.pointer_ty.bits() as u8,
+                        self.ptr_ty.bits() as u8,
                         self.module.isa().endianness(),
                     );
                 }
@@ -589,9 +638,10 @@ impl Compiler<'_> {
 
             define_with_relocs(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 member_array_id,
                 member_array_data,
+                meta_type_align.max(ptr_align),
                 member_array_relocs,
             );
 
@@ -599,7 +649,7 @@ impl Compiler<'_> {
 
             let member_array_local = self
                 .module
-                .declare_data_in_data(member_array_id, &mut self.data_description);
+                .declare_data_in_data(member_array_id, &mut self.data_desc);
 
             let mut struct_array_data = Vec::new();
 
@@ -611,7 +661,7 @@ impl Compiler<'_> {
 
                 struct_array_data.extend_with_num_bytes(
                     members_len as u32,
-                    self.pointer_ty.bits() as u8,
+                    self.ptr_ty.bits() as u8,
                     self.module.isa().endianness(),
                 );
 
@@ -619,13 +669,13 @@ impl Compiler<'_> {
 
                 struct_array_data.extend_with_num_bytes(
                     0,
-                    self.pointer_ty.bits() as u8,
+                    self.ptr_ty.bits() as u8,
                     self.module.isa().endianness(),
                 );
 
                 let member_array_starting_offset = member_array_starting_offsets[idx];
 
-                self.data_description.write_data_addr(
+                self.data_desc.write_data_addr(
                     ptr_member_offset as u32,
                     member_array_local,
                     member_array_starting_offset as i64,
@@ -634,9 +684,10 @@ impl Compiler<'_> {
 
             define(
                 self.module,
-                &mut self.data_description,
+                &mut self.data_desc,
                 info_arrays.struct_info_array,
                 struct_array_data,
+                ptr_align, // the alignment of a slice == the alignment of a single pointer
             );
         }
     }
@@ -644,13 +695,13 @@ impl Compiler<'_> {
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         get_func_id(
             self.module,
-            self.pointer_ty,
+            self.ptr_ty,
             self.mod_dir,
             &mut self.functions,
             &mut self.compiler_defined_functions,
             &mut self.functions_to_compile,
             self.tys,
-            self.bodies_map,
+            self.world_bodies,
             self.interner,
             fqn,
         )
@@ -659,33 +710,31 @@ impl Compiler<'_> {
     fn compile_ftc(&mut self, ftc: FunctionToCompile) {
         let hir::Lambda {
             body, is_extern, ..
-        } = &self.bodies_map[&ftc.file_name][ftc.lambda];
+        } = &self.world_bodies[ftc.file_name][ftc.lambda];
 
-        if *is_extern {
-            if let Some(compiler_defined) =
-                as_compiler_defined_func(*is_extern, &ftc, self.mod_dir, self.interner)
-            {
-                let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
-                    self.module,
-                    self.pointer_ty,
-                    self.mod_dir,
-                    self.interner,
-                );
+        if let Some(compiler_defined) =
+            as_compiler_defined_func(*is_extern, &ftc, self.mod_dir, self.interner)
+        {
+            let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
+                self.module,
+                self.ptr_ty,
+                self.mod_dir,
+                self.interner,
+            );
 
-                match compiler_defined {
-                    BuiltinFunction::PtrBitcast => self.compile_bitcast_fn(
-                        "ptr_bitcast",
-                        &mangled,
-                        sig,
-                        func_id,
-                        self.pointer_ty,
-                    ),
-                    BuiltinFunction::I32Bitcast => {
-                        self.compile_bitcast_fn("i32_bitcast", &mangled, sig, func_id, types::I32)
-                    }
+            match compiler_defined {
+                BuiltinFunction::PtrBitcast => {
+                    self.compile_bitcast_fn("ptr_bitcast", &mangled, sig, func_id, self.ptr_ty)
+                }
+                BuiltinFunction::I32Bitcast => {
+                    self.compile_bitcast_fn("i32_bitcast", &mangled, sig, func_id, types::I32)
                 }
             }
             return;
+        }
+
+        if *is_extern {
+            unreachable!("regular extern functions should not be pushed to `functions_to_compile`");
         }
 
         let unmangled_name = if let Some(name) = ftc.function_name {
@@ -777,7 +826,7 @@ impl Compiler<'_> {
         return_ty: Intern<Ty>,
     ) -> FuncId {
         let (comp_sig, new_idx_to_old_idx) =
-            (&param_tys, return_ty).to_final_signature(self.module, self.pointer_ty);
+            (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -794,11 +843,11 @@ impl Compiler<'_> {
             mod_dir: self.mod_dir,
             signature: comp_sig,
             interner: self.interner,
-            bodies_map: self.bodies_map,
+            world_bodies: self.world_bodies,
             tys: self.tys,
             module: self.module,
-            ptr_ty: self.pointer_ty,
-            data_description: &mut self.data_description,
+            ptr_ty: self.ptr_ty,
+            data_description: &mut self.data_desc,
             functions_to_compile: &mut self.functions_to_compile,
             meta_tys: &mut self.meta_tys,
             local_functions: FxHashMap::default(),
@@ -808,6 +857,7 @@ impl Compiler<'_> {
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
             comptime_results: self.comptime_results,
+            comptime_data: &mut self.comptime_data,
             var_id_gen: UIDGenerator::default(),
             locals: FxHashMap::default(),
             params: FxHashMap::default(),
@@ -852,8 +902,8 @@ fn get_func_id(
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
     compiler_defined_functions: &mut FxHashMap<BuiltinFunction, FuncId>,
     functions_to_compile: &mut VecDeque<FunctionToCompile>,
-    tys: &hir_ty::InferenceResult,
-    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
+    tys: &hir_ty::ProjectInference,
+    world_bodies: &hir::WorldBodies,
     interner: &Interner,
     fqn: hir::Fqn,
 ) -> FuncId {
@@ -866,14 +916,26 @@ fn get_func_id(
         .as_function()
         .expect("tried to compile non-function as function");
 
-    let global_body = bodies_map[&fqn.file].global_body(fqn.name);
+    if world_bodies.is_extern(fqn) {
+        let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
 
-    let lambda = match bodies_map[&fqn.file][global_body] {
+        let func_id = module
+            .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
+            .expect("There are multiple extern functions with the same name");
+
+        functions.insert(fqn, func_id);
+
+        return func_id;
+    }
+
+    let global_body = world_bodies.body(fqn);
+
+    let lambda = match world_bodies[fqn.file][global_body] {
         hir::Expr::Lambda(lambda) => lambda,
         _ => todo!("global with function type does not have a lambda as it's body"),
     };
 
-    let is_extern = bodies_map[&fqn.file][lambda].is_extern;
+    let is_extern = world_bodies[fqn.file][lambda].is_extern;
 
     let ftc = FunctionToCompile {
         file_name: fqn.file,
@@ -901,23 +963,29 @@ fn get_func_id(
         return func_id;
     }
 
+    if is_extern {
+        let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
+
+        let func_id = module
+            .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
+            .expect("There are multiple extern functions with the same name");
+
+        functions.insert(fqn, func_id);
+
+        return func_id;
+    }
+
     functions_to_compile.push_back(ftc);
 
     let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
 
-    let func_id = if is_extern {
-        module
-            .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
-            .expect("There are multiple extern functions with the same name")
-    } else {
-        module
-            .declare_function(
-                &fqn.to_mangled_name(mod_dir, interner),
-                Linkage::Export,
-                &comp_sig,
-            )
-            .unwrap()
-    };
+    let func_id = module
+        .declare_function(
+            &fqn.to_mangled_name(mod_dir, interner),
+            Linkage::Export,
+            &comp_sig,
+        )
+        .unwrap();
 
     functions.insert(fqn, func_id);
 
@@ -925,68 +993,99 @@ fn get_func_id(
 }
 
 fn cast(
+    meta_tys: &mut MetaTyData,
     builder: &mut FunctionBuilder,
-    val: Value,
+    ptr_ty: types::Type,
+    val: Option<Value>,
     cast_from: Intern<Ty>,
     cast_to: Intern<Ty>,
-) -> Value {
+) -> Option<Value> {
     if cast_from.is_functionally_equivalent_to(&cast_to, true) {
         return val;
     }
 
-    if let (Ty::Array { size, .. }, Ty::Slice { .. }) = (cast_from.as_ref(), cast_to.as_ref()) {
-        let slice_size = cast_to.size();
+    match (cast_from.as_ref(), cast_to.as_ref()) {
+        (Ty::Array { size, .. }, Ty::Slice { .. }) => {
+            let slice_size = cast_to.size();
 
-        // i don't really want to change this function's signature, so we can just get the
-        // pointer type by dividing the slice by two since a slice is always gauranteed to be
-        // two pointers
-        let ptr_size = slice_size / 2;
-        let ptr_ty = match ptr_size {
-            1 => types::I8,
-            2 => types::I16,
-            4 => types::I32,
-            8 => types::I64,
-            16 => types::I128,
-            _ => unreachable!(),
-        };
+            let slice_stack_slot = builder.create_sized_stack_slot(StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                size: slice_size,
+            });
 
-        let slice_stack_slot = builder.create_sized_stack_slot(StackSlotData {
-            kind: StackSlotKind::ExplicitSlot,
-            size: slice_size,
-        });
+            let len = builder.ins().iconst(ptr_ty, *size as i64);
+            builder.ins().stack_store(len, slice_stack_slot, 0);
 
-        let len = builder.ins().iconst(ptr_ty, *size as i64);
-        builder.ins().stack_store(len, slice_stack_slot, 0);
+            builder
+                .ins()
+                .stack_store(val?, slice_stack_slot, ptr_ty.bytes() as i32);
 
-        builder
-            .ins()
-            .stack_store(val, slice_stack_slot, ptr_size as i32);
+            return Some(builder.ins().stack_addr(ptr_ty, slice_stack_slot, 0));
+        }
+        (Ty::Slice { .. }, Ty::Array { .. }) => {
+            // todo: do a runtime check that the lengths match
 
-        return builder.ins().stack_addr(ptr_ty, slice_stack_slot, 0);
-    }
-    if let (Ty::Slice { .. }, Ty::Array { .. }) = (cast_from.as_ref(), cast_to.as_ref()) {
-        let slice_size = cast_from.size();
+            return Some(builder.ins().load(
+                ptr_ty,
+                MemFlags::trusted(),
+                val?,
+                ptr_ty.bytes() as i32,
+            ));
+        }
+        _ if cast_to.is_any_struct() => {
+            let any_stack_slot = builder.create_sized_stack_slot(StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                size: cast_to.size(),
+            });
 
-        let ptr_size = slice_size / 2;
-        let ptr_ty = match ptr_size {
-            1 => types::I8,
-            2 => types::I16,
-            4 => types::I32,
-            8 => types::I64,
-            16 => types::I128,
-            _ => unreachable!(),
-        };
+            let struct_layout = cast_to.struct_layout().unwrap();
 
-        // todo: do a runtime check that the lengths match
+            for (idx, (_, ty)) in cast_to.as_struct().unwrap().into_iter().enumerate() {
+                match ty.as_ref() {
+                    Ty::Pointer { .. } => {
+                        if let Some(val) = val {
+                            let offset = struct_layout.offsets()[idx] as i32;
 
-        return builder
-            .ins()
-            .load(ptr_ty, MemFlags::trusted(), val, ptr_size as i32);
+                            let val = if cast_from.is_aggregate() {
+                                val
+                            } else {
+                                let tmp_stack_slot =
+                                    builder.create_sized_stack_slot(StackSlotData {
+                                        kind: StackSlotKind::ExplicitSlot,
+                                        size: cast_from.size(),
+                                    });
+
+                                builder.ins().stack_store(val, tmp_stack_slot, 0);
+
+                                builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
+                            };
+
+                            builder.ins().stack_store(val, any_stack_slot, offset);
+                        }
+                    }
+                    Ty::Type => {
+                        let offset = struct_layout.offsets()[idx] as i32;
+
+                        let id = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
+                        let id = builder.ins().iconst(types::I32, id);
+
+                        builder.ins().stack_store(id, any_stack_slot, offset);
+                    }
+                    _ => {}
+                }
+            }
+
+            return Some(builder.ins().stack_addr(ptr_ty, any_stack_slot, 0));
+        }
+        _ if cast_from.is_any_struct() => {
+            unreachable!("an `Any` struct shouldn't be castable to anything other than itself")
+        }
+        _ => {}
     }
 
     match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
         (FinalTy::Number(cast_from), FinalTy::Number(cast_to)) => {
-            cast_num(builder, val, cast_from, cast_to)
+            Some(cast_num(builder, val?, cast_from, cast_to))
         }
         _ => val,
     }
@@ -1025,7 +1124,7 @@ fn cast_num(
         return val;
     }
 
-    match (cast_from.float, cast_to.float) {
+    let res = match (cast_from.float, cast_to.float) {
         (true, true) => {
             // float to float
             match cast_from.bit_width().cmp(&cast_to.bit_width()) {
@@ -1098,5 +1197,12 @@ fn cast_num(
                 std::cmp::Ordering::Greater => builder.ins().ireduce(cast_to.ty, val),
             }
         }
+    };
+
+    if res.as_u32() == 15 {
+        println!("v15 {:?} to {:?}", cast_from, cast_to);
+        println!("{}", backtrace::Backtrace::force_capture());
     }
+
+    res
 }

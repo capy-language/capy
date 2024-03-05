@@ -5,7 +5,6 @@ mod extend;
 mod layout;
 mod mangle;
 
-use compiler::comptime::ComptimeResult;
 use compiler::program::compile_program;
 use cranelift::prelude::isa::{self};
 use cranelift::prelude::{settings, Configurable};
@@ -13,12 +12,14 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_object::object::write;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
+use hir::FQComptime;
+use hir_ty::ComptimeResult;
 use interner::Interner;
 use rustc_hash::FxHashMap;
 use std::mem;
 use std::path::PathBuf;
 use std::process::{exit, Command};
-use target_lexicon::Triple;
+use target_lexicon::{OperatingSystem, Triple};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verbosity {
@@ -29,16 +30,16 @@ pub enum Verbosity {
 
 pub(crate) type FinalSignature = cranelift::prelude::Signature;
 
-pub use compiler::comptime::{eval_comptime_blocks, ComptimeToCompile};
+pub use compiler::comptime::eval_comptime_blocks;
 
 pub fn compile_jit(
     verbosity: Verbosity,
     entry_point: hir::Fqn,
     mod_dir: &std::path::Path,
     interner: &Interner,
-    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
-    tys: &hir_ty::InferenceResult,
-    comptime_results: &FxHashMap<ComptimeToCompile, ComptimeResult>,
+    world_bodies: &hir::WorldBodies,
+    tys: &hir_ty::ProjectInference,
+    comptime_results: &FxHashMap<FQComptime, ComptimeResult>,
 ) -> fn(usize, usize) -> usize {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -58,7 +59,7 @@ pub fn compile_jit(
         entry_point,
         mod_dir,
         interner,
-        bodies_map,
+        world_bodies,
         tys,
         &mut module,
         comptime_results,
@@ -81,9 +82,9 @@ pub fn compile_obj(
     entry_point: hir::Fqn,
     mod_dir: &std::path::Path,
     interner: &Interner,
-    bodies_map: &FxHashMap<hir::FileName, hir::Bodies>,
-    tys: &hir_ty::InferenceResult,
-    comptime_results: &FxHashMap<ComptimeToCompile, ComptimeResult>,
+    world_bodies: &hir::WorldBodies,
+    tys: &hir_ty::ProjectInference,
+    comptime_results: &FxHashMap<FQComptime, ComptimeResult>,
     target: Triple,
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
@@ -111,7 +112,7 @@ pub fn compile_obj(
         entry_point,
         mod_dir,
         interner,
-        bodies_map,
+        world_bodies,
         tys,
         &mut module,
         comptime_results,
@@ -126,16 +127,23 @@ pub fn compile_obj(
     product.emit()
 }
 
-pub fn link_to_exec(object_file: &PathBuf, libs: Option<&[String]>) -> PathBuf {
+pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: Option<&[String]>) -> PathBuf {
     let exe_path = object_file
         .parent()
         .unwrap()
         .join(object_file.file_stem().unwrap());
+
+    let linker_args: &[&str] = match target.operating_system {
+        OperatingSystem::MacOSX { .. } => &["-Xlinker", "-ld_classic"],
+        _ => &[],
+    };
+
     let success = if let Some(libs) = libs {
         Command::new("gcc")
             .arg(object_file)
             .arg("-o")
             .arg(&exe_path)
+            .args(linker_args)
             .args(libs.iter().map(|lib| "-l".to_string() + lib))
             .status()
             .unwrap()
@@ -144,6 +152,7 @@ pub fn link_to_exec(object_file: &PathBuf, libs: Option<&[String]>) -> PathBuf {
         Command::new("gcc")
             .arg(object_file)
             .arg("-o")
+            .args(linker_args)
             .arg(&exe_path)
             .status()
             .unwrap()
@@ -161,8 +170,9 @@ mod tests {
 
     use ast::AstNode;
     use expect_test::{expect, Expect};
-    use hir_ty::InferenceCtx;
+    use hir_ty::{InferenceCtx, InferenceResult};
     use path_clean::PathClean;
+    use target_lexicon::HOST;
     use uid_gen::UIDGenerator;
 
     use super::*;
@@ -175,6 +185,8 @@ mod tests {
         stdout_expect: Expect,
         expected_status: i32,
     ) {
+        println!("testing {main_file}");
+
         let current_dir = env!("CARGO_MANIFEST_DIR");
         env::set_current_dir(current_dir).unwrap();
 
@@ -203,7 +215,7 @@ mod tests {
         let text = fs::read_to_string(&main_file).unwrap();
         modules.insert(main_file.to_string_lossy().to_string(), text);
 
-        compile(
+        check_impl(
             modules
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -220,7 +232,7 @@ mod tests {
     fn check_raw(input: &str, entry_point: &str, stdout_expect: Expect, expected_status: i32) {
         let modules = test_utils::split_multi_module_test_data(input);
 
-        compile(
+        check_impl(
             modules,
             "main.capy",
             entry_point,
@@ -231,7 +243,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn compile(
+    fn check_impl(
         modules: FxHashMap<&str, &str>,
         main_file: &str,
         entry_point: &str,
@@ -239,15 +251,17 @@ mod tests {
         stdout_expect: Expect,
         expected_status: i32,
     ) {
-        let mod_dir = env::current_dir().unwrap().join("../../").clean();
+        let mod_dir = if fake_file_system {
+            std::path::PathBuf::new()
+        } else {
+            env::current_dir().unwrap().join("../../").clean()
+        };
 
         let mut interner = Interner::default();
         let mut world_index = hir::WorldIndex::default();
 
         let mut uid_gen = UIDGenerator::default();
-        let mut bodies_map = FxHashMap::default();
-
-        let mut comptimes = Vec::new();
+        let mut world_bodies = hir::WorldBodies::default();
 
         for (file, text) in &modules {
             if *file == main_file {
@@ -277,15 +291,10 @@ mod tests {
                 fake_file_system,
             );
 
-            comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
-                file_name: module,
-                comptime,
-            }));
-
             assert_eq!(diagnostics, vec![]);
 
             world_index.add_file(module, index);
-            bodies_map.insert(module, bodies);
+            world_bodies.add_file(module, bodies);
         }
 
         let text = &modules[main_file];
@@ -310,33 +319,47 @@ mod tests {
             &mod_dir,
             fake_file_system,
         );
-        comptimes.extend(bodies.comptimes().map(|comptime| ComptimeToCompile {
-            file_name: file,
-            comptime,
-        }));
         assert_eq!(diagnostics, vec![]);
         world_index.add_file(file, index);
-        bodies_map.insert(file, bodies);
+        world_bodies.add_file(file, bodies);
 
         let entry_point = hir::Fqn {
             file,
             name: hir::Name(interner.intern(entry_point)),
         };
 
-        let (inference_result, diagnostics) =
-            InferenceCtx::new(&bodies_map, &world_index, &interner).finish(Some(entry_point));
+        let mut comptime_results = FxHashMap::default();
+
+        let InferenceResult { tys, .. } =
+            InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
+                eval_comptime_blocks(
+                    Verbosity::LocalFunctions,
+                    vec![comptime],
+                    &mut comptime_results,
+                    Path::new(""),
+                    &interner,
+                    &world_bodies,
+                    tys,
+                    HOST.pointer_width().unwrap().bits(),
+                );
+
+                comptime_results[&comptime].clone()
+            })
+            .finish(Some(entry_point), false);
         assert_eq!(diagnostics, vec![]);
 
         println!("comptime:");
 
-        let comptime_results = eval_comptime_blocks(
-            Verbosity::LocalFunctions,
-            comptimes,
-            Path::new(""),
+        // evaluate any comptimes that haven't been ran yet
+        eval_comptime_blocks(
+            Verbosity::AllFunctions,
+            world_bodies.find_comptimes(),
+            &mut comptime_results,
+            &mod_dir,
             &interner,
-            &bodies_map,
-            &inference_result,
-            Triple::host().pointer_width().unwrap().bits(),
+            &world_bodies,
+            &tys,
+            HOST.pointer_width().unwrap().bits(),
         );
 
         println!("actual program:");
@@ -350,10 +373,10 @@ mod tests {
                 &mod_dir
             },
             &interner,
-            &bodies_map,
-            &inference_result,
+            &world_bodies,
+            &tys,
             &comptime_results,
-            Triple::host(),
+            HOST,
         )
         .unwrap();
 
@@ -369,7 +392,7 @@ mod tests {
             panic!("{}: {why}", file.display());
         });
 
-        let exec = link_to_exec(&file, None);
+        let exec = link_to_exec(&file, HOST, None);
 
         let output = std::process::Command::new(exec.clone())
             .output()
@@ -664,7 +687,7 @@ mod tests {
             ln 500 = 6.214
             log 10 = 1.000
             log 50 = 1.698
-            log 100 = 2.000
+            log 100 = 1.999
             log 500 = 2.698
 
             "#]],
@@ -730,6 +753,8 @@ mod tests {
             0,
         )
     }
+
+    // comptime_types.capy cannot be tested as it gets user input
 
     #[test]
     fn string() {
@@ -806,16 +831,14 @@ mod tests {
     }
 
     #[test]
-    fn meta_sizes() {
-        // WARNING: this test is platform specific
-        // it prints the size and align of pointer related types
-        // this might fail on platforms with non 64 bit pointers
+    fn reflection() {
         check_files(
-            "../../examples/meta_sizes.capy",
+            "../../examples/reflection.capy",
             &[],
             "main",
             expect![[r#"
                 Reflection!
+                
                 i32              (0x8000284) : size = 4, align = 4, stride = 4
                 i64              (0x8000308) : size = 8, align = 8, stride = 8
                 u64              (0x8000108) : size = 8, align = 8, stride = 8
@@ -828,8 +851,8 @@ mod tests {
                 str              (0x14000108) : size = 8, align = 8, stride = 8
                 char             (0x18000021) : size = 1, align = 1, stride = 1
                 type             (0x1c000084) : size = 4, align = 4, stride = 4
-                Person           (0x40000001) : size = 12, align = 8, stride = 16
-                Foo              (0x40000000) : size = 1, align = 1, stride = 1
+                Person           (0x40000000) : size = 12, align = 8, stride = 16
+                Foo              (0x40000001) : size = 1, align = 1, stride = 1
                 [6] Person       (0x48000000) : size = 96, align = 8, stride = 96
                 [ ] Person       (0x4c000000) : size = 16, align = 8, stride = 16
                  ^  Person       (0x50000000) : size = 8, align = 8, stride = 8
@@ -837,7 +860,7 @@ mod tests {
                 distinct Person  (0x44000001) : size = 12, align = 8, stride = 16
                 ()       -> void (0x54000000) : size = 8, align = 8, stride = 8
                 (x: i32) -> f32  (0x54000001) : size = 8, align = 8, stride = 8
-
+                
                 i32 == i16 : false
                 i32 == u32 : false
                 i32 == i32 : true
@@ -848,52 +871,41 @@ mod tests {
                 [6] Person == [6] Person : true
                 ^Person == ^Foo : false
                 ^Person == ^Person : true
-                distinct Person == distinct Person : false
-                x == x : true
-                () -> void == (x: i32) -> f32 : false
+                Person == distinct 'a Person : false
+                distinct 'a Person == distinct 'b Person : false
+                distinct 'b Person == distinct 'b Person : true
+                () -> void == (x : i32) -> f32 : false
                 () -> void == () -> void : true
-
-            "#]],
-            0,
-        )
-    }
-
-    #[test]
-    fn meta_full() {
-        check_files(
-            "../../examples/meta_full.capy",
-            &[],
-            "main",
-            expect![[r#"
+                
                 INT
                 bit_width = 32
                 signed    = true
-
+                
                 INT
                 bit_width = 8
                 signed    = false
-
+                
                 INT
                 bit_width = 128
                 signed    = false
-
+                
                 INT
                 bit_width = 64
                 signed    = true
-
+                
                 FLOAT
                 bit_width = 32
-
+                
                 FLOAT
                 bit_width = 64
-
+                
                 ARRAY
                 len = 5
                 ty =
                  INT
                  bit_width = 32
                  signed    = true
-
+                
                 ARRAY
                 len = 1000
                 ty =
@@ -902,19 +914,19 @@ mod tests {
                  ty =
                   FLOAT
                   bit_width = 64
-
+                
                 SLICE
                 ty =
                  INT
                  bit_width = 32
                  signed    = true
-
+                
                 POINTER
                 ty =
                  INT
                  bit_width = 32
                  signed    = true
-
+                
                 POINTER
                 ty =
                  POINTER
@@ -924,13 +936,13 @@ mod tests {
                    INT
                    bit_width = 128
                    signed    = true
-
+                
                 DISTINCT
                 ty =
                  INT
                  bit_width = 32
                  signed    = true
-
+                
                 DISTINCT
                 ty =
                  ARRAY
@@ -941,27 +953,26 @@ mod tests {
                    INT
                    bit_width = 8
                    signed    = true
-
+                
                 STRUCT
                 members =
                  name = a
-                 ty =
-                  INT
-                  bit_width = 32
-                  signed    = true
                  offset = 0
-
+                 ty =
+                  BOOL
+                
                 STRUCT
                 members =
                  name = text
+                 offset = 0
                  ty =
                   STRING
-                 offset = 0
                  name = flag
+                 offset = 8
                  ty =
                   BOOL
-                 offset = 8
                  name = array
+                 offset = 10
                  ty =
                   ARRAY
                   len = 3
@@ -969,39 +980,55 @@ mod tests {
                    INT
                    bit_width = 16
                    signed    = true
-                 offset = 10
-
+                
+                STRUCT
+                members =
+                 name = name
+                 offset = 0
+                 ty =
+                  STRING
+                 name = age
+                 offset = 8
+                 ty =
+                  INT
+                  bit_width = 32
+                  signed    = true
+                
                 STRUCT
                 members =
                  name = ty
+                 offset = 0
                  ty =
                   META TYPE
-                 offset = 0
                  name = data
+                 offset = 8
                  ty =
                   POINTER
                   ty =
                    ANY
-                 offset = 8
-
+                
                 DISTINCT
                 ty =
                  STRUCT
                  members =
                   name = a
-                  ty =
-                   INT
-                   bit_width = 32
-                   signed    = true
                   offset = 0
-
+                  ty =
+                   BOOL
+                
                 123
                 { 4, 8, 15, 16, 23, 42 }
                 { 1, 2, 3 }
                 ^52
                 42
-                { text = Hello, flag = false, array = { 1, 2, 3 } }
                 42
+                256
+                hello
+                { text = Hello, flag = false, array = { 1, 2, 3 } }
+                {type}
+                {}
+                { 4, 8, 15, 16, 23, 42 }
+                
             "#]],
             0,
         )
@@ -1410,6 +1437,76 @@ mod tests {
                 Hello Worldly Sailor!
             "#]],
             0,
+        )
+    }
+
+    #[test]
+    fn extern_fn_global() {
+        check_raw(
+            r#"
+                main :: () {
+                    printf("Hello World!");
+                }
+                
+                printf : (text: str) -> void : extern;
+            "#,
+            "main",
+            expect![[r#"
+                Hello World!
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn extern_fn_lambda() {
+        check_raw(
+            r#"
+                main :: () {
+                    printf("Hello World!");
+                }
+                
+                printf :: (text: str) extern;
+            "#,
+            "main",
+            expect![[r#"
+                Hello World!
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn comptime_globals_in_comptime_globals() {
+        check_raw(
+            r#"
+                foo :: comptime {
+                    puts("comptime global in comptime global");
+                    42
+                };
+
+                func :: () -> i32 {
+                    foo
+                }
+
+                bar :: comptime func();
+
+                main :: () -> i32 {
+                    baz :: comptime bar;
+
+                    baz;
+                    baz;
+
+                    baz
+                }
+                
+                puts :: (text: str) extern;
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            42,
         )
     }
 

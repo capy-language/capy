@@ -172,9 +172,28 @@ impl Ty {
         }
     }
 
+    /// Returns `true` if the struct contains only a `^any` and a `type`
+    pub fn is_any_struct(&self) -> bool {
+        match self {
+            Ty::Struct { members, .. } => {
+                if members.len() != 2 {
+                    return false;
+                }
+
+                matches!(
+                    (members[0].1.as_ref(), members[1].1.as_ref()),
+                    (Ty::Pointer { sub_ty, .. }, Ty::Type) | (Ty::Type, Ty::Pointer { sub_ty, mutable: false })
+                        if matches!(sub_ty.as_ref(), Ty::Any))
+            }
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_any_struct(),
+            _ => false,
+        }
+    }
+
     /// returns true if the type is zero-sized
     pub fn is_zero_sized(&self) -> bool {
         match self {
+            Ty::NotYetResolved | Ty::Unknown => true,
             Ty::Void => true,
             Ty::File(_) => true,
             Ty::NoEval => true,
@@ -212,6 +231,10 @@ impl Ty {
             Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
             Ty::Struct { members, .. } => members.iter().any(|(_, ty)| ty.is_unknown()),
             Ty::Distinct { sub_ty, .. } => sub_ty.is_unknown(),
+            Ty::Function {
+                param_tys,
+                return_ty,
+            } => param_tys.iter().any(|p| p.is_unknown()) || return_ty.is_unknown(),
             _ => false,
         }
     }
@@ -512,6 +535,7 @@ impl Ty {
                     sub_ty: expected_ty,
                 },
             ) => found_ty.is_functionally_equivalent_to(expected_ty, false),
+            (_, expected) if expected.is_any_struct() => true,
             (
                 Ty::Struct { uid: found_uid, .. },
                 Ty::Struct {
@@ -531,7 +555,7 @@ impl Ty {
 
     /// This is used for the `as` operator to see whether something can be casted into something else
     ///
-    /// This only allows primitives to be casted to each other, or types that are already equal
+    /// This only allows primitives to be casted to each other, or types that are already equal.
     pub(crate) fn primitive_castable(&self, primitive_ty: &Ty) -> bool {
         match (self, primitive_ty) {
             (
@@ -582,15 +606,22 @@ impl Ty {
                     || **expected_sub_ty == Ty::Any
                     || found_sub_ty.is_weak_replaceable_by(expected_sub_ty))
             }
-            // string to and from ^any and ^u8
+            // string to and from ^any and ^char and ^u8
             (Ty::String, Ty::Pointer { sub_ty, .. }) | (Ty::Pointer { sub_ty, .. }, Ty::String) => {
-                matches!(sub_ty.as_ref(), Ty::Any | Ty::UInt(8) | Ty::Char)
+                matches!(sub_ty.as_ref(), Ty::Any | Ty::Char | Ty::UInt(8))
+            }
+            // string to and from [_]char and [_]u8
+            (Ty::String, Ty::Array { sub_ty, .. }) | (Ty::Array { sub_ty, .. }, Ty::String) => {
+                matches!(sub_ty.as_ref(), Ty::Char | Ty::UInt(8))
             }
             (Ty::Array { sub_ty: from, .. }, Ty::Slice { sub_ty: to })
             | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => {
                 from.is_functionally_equivalent_to(to, true)
             }
-            _ => self.is_functionally_equivalent_to(primitive_ty, true),
+            _ => {
+                self.is_functionally_equivalent_to(primitive_ty, true)
+                    || primitive_ty.is_any_struct()
+            }
         }
     }
 
@@ -647,8 +678,8 @@ impl Ty {
             (Ty::IInt(0), Ty::IInt(bit_width)) | (Ty::UInt(0), Ty::UInt(bit_width)) => {
                 *bit_width != 0
             }
-            // always accept a switch of sign
-            (Ty::IInt(0), Ty::UInt(_)) | (Ty::UInt(0), Ty::IInt(_)) => true,
+            // always accept a switch of unsigned to signed
+            (Ty::UInt(0), Ty::IInt(_)) => true,
             // always accept a switch to float
             (Ty::IInt(0) | Ty::UInt(0), Ty::Float(_)) => true,
             // weak float to strong float

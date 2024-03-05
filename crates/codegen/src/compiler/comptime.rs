@@ -2,16 +2,17 @@
 use cranelift::prelude::{settings, types, Configurable, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Module};
+use hir::FQComptime;
+use hir_ty::ComptimeResult;
 use interner::Interner;
-use la_arena::Idx;
 use num_traits::ToBytes;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{alloc::Layout, collections::VecDeque, mem};
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler::MetaTyData,
-    convert::{FinalTy, GetFinalTy},
+    compiler::{MetaTyData, MetaTyInfoArrays},
+    convert::{FinalTy, GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
     Verbosity,
@@ -19,23 +20,16 @@ use crate::{
 
 use super::Compiler;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct ComptimeToCompile {
-    pub file_name: hir::FileName,
-    pub comptime: Idx<hir::Comptime>,
+pub(crate) trait ComptimeBytes {
+    fn into_bytes(self, meta_tys: &mut MetaTyData, ptr_ty: types::Type) -> Option<Box<[u8]>>;
 }
 
-#[derive(Debug, Clone)]
-pub enum ComptimeResult {
-    Integer { num: u64, bytes: Box<[u8]> },
-    Float { num: f64, bytes: Box<[u8]> },
-    Data(Box<[u8]>),
-    Void,
-}
-
-impl ComptimeResult {
-    pub(crate) fn into_bytes(self) -> Option<Box<[u8]>> {
+impl ComptimeBytes for ComptimeResult {
+    fn into_bytes(self, meta_tys: &mut MetaTyData, ptr_ty: types::Type) -> Option<Box<[u8]>> {
         match self {
+            ComptimeResult::Type(ty) => {
+                Some(Box::new(ty.to_type_id(meta_tys, ptr_ty).to_ne_bytes()))
+            }
             ComptimeResult::Integer { bytes, .. } => Some(bytes),
             ComptimeResult::Float { bytes, .. } => Some(bytes),
             ComptimeResult::Data(bytes) => Some(bytes),
@@ -44,17 +38,19 @@ impl ComptimeResult {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn eval_comptime_blocks<'a>(
     verbosity: Verbosity,
-    mut comptime_blocks: Vec<ComptimeToCompile>,
+    mut comptime_blocks: Vec<FQComptime>,
+    results: &'a mut FxHashMap<FQComptime, ComptimeResult>,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
-    bodies_map: &'a FxHashMap<hir::FileName, hir::Bodies>,
-    tys: &'a hir_ty::InferenceResult,
+    world_bodies: &'a hir::WorldBodies,
+    tys: &'a hir_ty::ProjectInference,
     target_pointer_bit_width: u8,
-) -> FxHashMap<ComptimeToCompile, ComptimeResult> {
+) {
     if comptime_blocks.is_empty() {
-        return FxHashMap::default();
+        return;
     }
 
     let mut flag_builder = settings::builder();
@@ -74,11 +70,11 @@ pub fn eval_comptime_blocks<'a>(
         verbosity,
         mod_dir,
         interner,
-        bodies_map,
+        world_bodies,
         tys,
         builder_context: FunctionBuilderContext::new(),
         ctx: module.make_context(),
-        data_description: DataDescription::new(),
+        data_desc: DataDescription::new(),
         module: &mut module,
         functions_to_compile: VecDeque::new(),
         meta_tys: MetaTyData::default(),
@@ -86,8 +82,9 @@ pub fn eval_comptime_blocks<'a>(
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),
-        comptime_results: &FxHashMap::default(),
-        pointer_ty: match target_pointer_bit_width {
+        comptime_results: results,
+        comptime_data: FxHashMap::default(),
+        ptr_ty: match target_pointer_bit_width {
             8 => types::I8,
             16 => types::I16,
             32 => types::I32,
@@ -98,29 +95,66 @@ pub fn eval_comptime_blocks<'a>(
 
     compiler.finalize_tys();
 
+    let mut already_done: FxHashSet<_> = comptime_blocks
+        .iter()
+        .cloned()
+        .chain(results.keys().cloned())
+        .collect();
+
     let mut comptime_funcs = Vec::new();
 
     while let Some(ctc) = comptime_blocks.pop() {
-        let hir::Comptime { body } = compiler.bodies_map[&ctc.file_name][ctc.comptime];
-        let return_ty = tys[ctc.file_name][body];
+        let hir::Comptime { body } = compiler.world_bodies[ctc.file][ctc.comptime];
+        let return_ty = tys[ctc.file][body];
 
         let func_id = compiler.compile_real_function(
             &format!(
                 "{}.comptime#{}",
-                ctc.file_name.to_string(compiler.mod_dir, compiler.interner),
+                ctc.file.to_string(compiler.mod_dir, compiler.interner),
                 ctc.comptime.into_raw()
             ),
             &ctc.to_mangled_name(compiler.mod_dir, compiler.interner),
-            ctc.file_name,
-            body,
+            ctc.file,
+            ctc.expr,
             vec![],
             return_ty,
         );
 
-        comptime_funcs.push((ctc, func_id, return_ty.get_final_ty(), return_ty.size()));
+        let extra: Vec<_> = compiler
+            .comptime_data
+            .keys()
+            .filter(|ctc| !already_done.contains(ctc))
+            .copied()
+            .collect();
+
+        already_done.extend(extra.clone());
+        comptime_blocks.extend(extra);
+
+        comptime_funcs.push((
+            ctc,
+            func_id,
+            return_ty.get_final_ty(),
+            return_ty.size(),
+            *return_ty == hir_ty::Ty::Type,
+        ));
     }
 
+    // Initializing this will force the compiler to create type info data
+    compiler.meta_tys.info_arrays = Some(MetaTyInfoArrays::new(compiler.module));
+
     compiler.compile_queued();
+
+    let meta_tys: FxHashMap<_, _> = compiler
+        .meta_tys
+        .tys_to_compile
+        .iter()
+        .map(|ty| {
+            (
+                ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
+                ty,
+            )
+        })
+        .collect();
 
     // Finalize the functions which were defined, which resolves any
     // outstanding relocations (patching in addresses, now that they're
@@ -148,10 +182,18 @@ pub fn eval_comptime_blocks<'a>(
         }
     }
 
-    let mut results = FxHashMap::default();
-
-    while let Some((ctc, func_id, return_ty, size)) = comptime_funcs.pop() {
+    while let Some((ctc, func_id, return_ty, size, is_type)) = comptime_funcs.pop() {
         let code_ptr = module.get_finalized_function(func_id);
+
+        if is_type {
+            let comptime = unsafe { mem::transmute::<_, fn() -> u32>(code_ptr) };
+            let ty = comptime();
+
+            let ty = meta_tys.get(&ty).unwrap();
+
+            results.insert(ctc, ComptimeResult::Type(**ty));
+            continue;
+        }
 
         match return_ty {
             FinalTy::Number(number_ty) => {
@@ -166,7 +208,7 @@ pub fn eval_comptime_blocks<'a>(
                         let comptime = unsafe { mem::transmute::<_, fn() -> u128>(code_ptr) };
                         let result = comptime();
 
-                        ComptimeResult::Data(result.to_ne_bytes().to_vec().into_boxed_slice())
+                        ComptimeResult::Data(Box::new(result.to_ne_bytes()))
                     }
                     _ => unreachable!(),
                 };
@@ -198,7 +240,6 @@ pub fn eval_comptime_blocks<'a>(
         }
     }
 
-    results.shrink_to_fit();
-
-    results
+    // todo: don't do this, and instead reuse previously compiled function pointers and data
+    unsafe { module.free_memory() };
 }

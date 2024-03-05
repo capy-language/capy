@@ -1,0 +1,282 @@
+core :: mod "core";
+meta :: core.meta;
+
+imaginary :: distinct i32;
+
+Foo :: struct {
+    a: bool,
+};
+
+Person :: struct {
+    name: str,
+    age: i32,
+};
+
+main :: () {
+    core.println("Reflection!\n");
+
+    check_layouts();
+    check_equality();
+    check_type_info();
+    check_any();
+}
+
+check_type_info :: () {
+    Bar :: struct {
+        text: str,
+        flag: bool,
+        array: [3] i16,
+    };
+
+    print_info(i32);
+    print_info(u8);
+    print_info(u128);
+    print_info(isize);
+    print_info(f32);
+    print_info(f64);
+    print_info([5] i32);
+    print_info([1000][3]f64);
+    print_info([]i32);
+    print_info(^i32);
+    print_info(^^^i128);
+    print_info(distinct i32);
+    print_info(distinct [2] distinct i8);
+    print_info(Foo);
+    print_info(Bar);
+    print_info(Person);
+    print_info(core.Any);
+    print_info(distinct Foo);
+}
+
+check_any :: () {
+    Bar :: struct {
+        text: str,
+        flag: bool,
+        array: [3] i16,
+    };
+
+    // The `core.Any` type combines a type id with an opaque pointer
+    // to allow representation of *any* possible value in your program.
+    // `core.Any` powers the `core.println` function, which does something
+    // different depending on the type of the `core.Any` passed in.
+
+    core.println(core.Any { ty: u8, data: ^123 as ^u8 });
+    core.println(core.Any { ty: [6]i32, data: ^[6]i32 { 4, 8, 15, 16, 23, 42 } });
+    core.println(core.Any { ty: []i32, data: ^[]i32 { 1, 2, 3 } });
+    core.println(core.Any { ty: ^i32, data: ^^52 as ^^i32 });
+
+    // `core.Any` of `core.Any`
+    
+    i := core.Any { ty: imaginary, data: ^42 as ^imaginary };
+    core.println(i);
+    core.println(core.Any { ty: core.Any, data: ^i });
+
+    // auto cast to `core.Any` (or any other struct with a `type` and a `^any`)
+
+    core.println(256);
+    core.println("hello");
+    core.println(Bar {
+        text: "Hello",
+        flag: false,
+        array: [3] i16 { 1, 2, 3 },
+    });
+    core.println(i32);
+    core.println({});
+    core.println([6] i32 { 4, 8, 15, 16, 23, 42 });
+}
+
+check_equality :: () {
+    println_val("i32 == i16 : ", i32 == i16);
+    println_val("i32 == u32 : ", i32 == u32);
+    println_val("i32 == i32 : ", i32 == i32);
+    println_val("Foo == Person : ", Foo == Person);
+    println_val("Person == Person : ", Person == Person);
+    println_val("[5] Person == [6] Person : ", [5] Person == [6] Person);
+    println_val("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
+    println_val("[6] Person == [6] Person : ", [6] Person == [6] Person);
+    println_val("^Person == ^Foo : ", ^Person == ^Foo);
+    println_val("^Person == ^Person : ", ^Person == ^Person);
+
+    d1Person :: distinct Person;
+    d2Person :: distinct Person;
+
+    println_val("Person == distinct 'a Person : ", Person == d1Person);
+    println_val("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
+    println_val("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
+    println_val("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
+    println_val("() -> void == () -> void : ", () -> void == () -> void);   
+
+    core.println("");
+}
+
+check_layouts :: () {
+    print_type_layout("i32             ", i32);
+    print_type_layout("i64             ", i64);
+    print_type_layout("u64             ", u64);
+    print_type_layout("i8              ", i8);
+    print_type_layout("u128            ", u128);
+    print_type_layout("usize           ", usize);
+    print_type_layout("f32             ", f32);
+    print_type_layout("void            ", void);
+    print_type_layout("any             ", any);
+    print_type_layout("str             ", str);
+    print_type_layout("char            ", char);
+    print_type_layout("type            ", type);
+    print_type_layout("Person          ", Person);
+    print_type_layout("Foo             ", Foo);
+    print_type_layout("[6] Person      ", [6] Person);
+    print_type_layout("[ ] Person      ", [] Person);
+    print_type_layout(" ^  Person      ", ^ Person);
+    print_type_layout("distinct Person ", distinct Person);
+    print_type_layout("distinct Person ", distinct Person);
+    print_type_layout("()       -> void", () -> void);
+    print_type_layout("(x: i32) -> f32 ", (x: i32) -> f32);
+
+    core.println("");
+}
+
+print_type_layout :: (name: str, ty: type) {
+    printf("%s (0x%x) : size = %i, align = %i, stride = %i\n", name, ty, core.meta.size_of(ty), core.meta.align_of(ty), core.meta.stride_of(ty));
+}
+
+print_info :: (ty: type) {
+    print_info_with_args(ty, 0);
+    core.println("");
+}
+
+print_indent :: (indent: i32) {
+    idx := 0;
+    while idx < indent {
+        core.libc.putchar(' ');
+        idx = idx + 1;
+    }
+}
+
+print_info_with_args :: (ty: type, indent: i32) {
+    print_front :: (indent: i32, name: str) {
+        print_indent(indent);
+        core.println(name);
+    };
+    
+    if meta.is_int(ty) {
+        print_front(indent, "INT");
+
+        info := meta.get_int_info(ty);
+
+        print_indent(indent);
+        println_val("bit_width = ", info.bit_width);
+        print_indent(indent);
+        core.print("signed    = ");
+        res := if info.signed {
+            "true"
+        } else {
+            "false"
+        };
+        core.println(res);
+    } else if meta.is_float(ty) {
+        print_front(indent, "FLOAT");
+
+        info := meta.get_float_info(ty);
+
+        print_indent(indent);
+        println_val("bit_width = ", info.bit_width);
+    } else if meta.is_array(ty) {
+        print_front(indent, "ARRAY");
+
+        info := meta.get_array_info(ty);
+
+        print_indent(indent);
+        println_val("len = ", info.len);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_slice(ty) {
+        print_front(indent, "SLICE");
+
+        info := meta.get_slice_info(ty);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_pointer(ty) {
+        print_front(indent, "POINTER");
+
+        info := meta.get_pointer_info(ty);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_distinct(ty) {
+        print_front(indent, "DISTINCT");
+
+        info := meta.get_distinct_info(ty);
+
+        print_indent(indent);
+        core.println("ty =");
+        print_info_with_args(info.ty, indent + 1);
+    } else if meta.is_struct(ty) {
+        print_front(indent, "STRUCT");
+
+        info := meta.get_struct_info(ty);
+
+        print_indent(indent);
+        core.println("members =");
+
+        indent := indent + 1;
+
+        idx := 0;
+        while idx < info.members.len {
+            member := info.members[idx];
+
+            print_indent(indent);
+            core.print("name = ");
+            core.println(member.name);
+
+            print_indent(indent);
+            println_val("offset = ", member.offset);
+
+            print_indent(indent);
+            core.println("ty =");
+            print_info_with_args(member.ty, indent + 1);
+
+            idx = idx + 1;
+        }
+    } else {
+        name := if meta.is_bool(ty) {
+            "BOOL"
+        } else if meta.is_string(ty) {
+            "STRING"
+        } else if meta.is_char(ty) {
+            "CHARACTER"
+        } else if meta.is_meta_type(ty) {
+            "META TYPE"
+        } else if meta.is_any(ty) {
+            "ANY"
+        } else if meta.is_file(ty) {
+            "FILE"
+        } else if meta.is_function(ty) {
+            "FUNCTION"
+        } else if meta.is_void(ty) {
+            "VOID"
+        } else {
+            disc := meta.meta_to_raw(ty);
+
+            core.println("\nokay you fricked up bud");
+            println_val("discriminant = ", disc);
+
+            core.libc.exit(1);
+
+            "unreachable"
+        };
+        print_front(indent, name);
+    }
+}
+
+println_val :: (label: str, val: core.Any) {
+    core.print(label);
+    core.println(val);
+}
+
+// I only include this for the %x formatter
+printf :: (s: str, s2: str, ty: type, n1: usize, n2: usize, n3: usize) extern;

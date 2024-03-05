@@ -10,8 +10,8 @@ fuzz_target!(|s: &str| {
     let mut interner = interner::Interner::default();
     let mut world_index = hir::WorldIndex::default();
 
-    let mut bodies_map = rustc_hash::FxHashMap::default();
     let mut uid_gen = uid_gen::UIDGenerator::default();
+    let mut world_bodies = hir::WorldBodies::default();
 
     let tokens = &lexer::lex(s);
     let parse = parser::parse_source_file(tokens, s);
@@ -32,11 +32,11 @@ fuzz_target!(|s: &str| {
         true,
     );
 
-    let module = hir::FileName(interner.intern("main.capy"));
+    let file = hir::FileName(interner.intern("main.capy"));
 
-    world_index.add_module(module, index);
-    bodies_map.insert(module, bodies);
+    world_index.add_file(file, index);
+    world_bodies.add_file(file, bodies);
 
     let (_inference, _ty_diagnostics) =
-        hir_ty::InferenceCtx::new(&bodies_map, &world_index).finish();
+        hir_ty::InferenceCtx::new(&world_index, &world_bodies, |_, _| None).finish();
 });
