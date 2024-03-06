@@ -57,6 +57,11 @@ enum BuildAction {
         #[arg(long)]
         mod_dir: Option<String>,
 
+        /// Whether or not to redownload the `core` module from the GitHub.
+        /// WARNING: This will wipe the entire `core` folder.
+        #[arg(long)]
+        redownload_core: bool,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -64,7 +69,7 @@ enum BuildAction {
         /// libraries to link against
         /// this literally works by passing the args to gcc with "-l"
         #[arg(long)]
-        libs: Option<Vec<String>>,
+        libs: Vec<String>,
     },
     /// Takes in one or more .capy files, compiles them, and runs the compiled executable
     Run {
@@ -89,6 +94,11 @@ enum BuildAction {
         #[arg(long)]
         mod_dir: Option<String>,
 
+        /// Whether or not to redownload the `core` module from the GitHub.
+        /// WARNING: This will wipe the entire `core` folder.
+        #[arg(long)]
+        redownload_core: bool,
+
         /// Whether or not to show advanced compiler information
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -96,7 +106,7 @@ enum BuildAction {
         /// libraries to link against
         /// this literally works by passing the args to gcc with "-l"
         #[arg(long)]
-        libs: Option<Vec<String>>,
+        libs: Vec<String>,
     },
 }
 
@@ -118,8 +128,7 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (file, entry_point, output, verbose, mod_dir, libs, config) =
-        get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, libs);
+    let (file, entry_point, output, verbose, mod_dir, redownload_core, libs, config) = get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, redownload_core, libs);
 
     let file = env::current_dir()
         .unwrap()
@@ -140,9 +149,10 @@ fn main() -> io::Result<()> {
         entry_point,
         output,
         mod_dir,
+        redownload_core,
         config,
         verbose,
-        libs.as_deref(),
+        &libs,
     )
 }
 
@@ -165,9 +175,10 @@ fn compile_file(
     entry_point: String,
     output: Option<String>,
     mod_dir: Option<String>,
+    redownload_core: bool,
     config: CompilationConfig,
     verbose: u8,
-    libs: Option<&[String]>,
+    libs: &[String],
 ) -> io::Result<()> {
     let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
     let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
@@ -187,7 +198,14 @@ fn compile_file(
             .join("modules")
             .clean()
     };
+
     let core_dir = mod_dir.join("core");
+
+    if redownload_core {
+        std::fs::remove_dir_all(&core_dir)
+            .unwrap_or_else(|why| panic!("couldn't detele `{}`: {}", core_dir.display(), why));
+    }
+
     if !core_dir.exists() {
         println!(
             "{ansi_green}Downloading{ansi_reset}: {}",

@@ -1,3 +1,6 @@
+
+io :: import "io.capy";
+
 add :: (x: i32, y: i32) -> i32 {
     x + y
 }
@@ -19,10 +22,10 @@ apply :: (fn: (x: i32, y: i32) -> i32, x: i32, y: i32) -> i32 {
 }
 
 main :: () -> i32 {
-    printf("apply add to  1 and 2 ... %i\n", apply(add, 1, 2));
-    printf("apply sub to  5 and 3 ... %i\n", apply(sub, 5, 3));
-    printf("apply mul to  3 and 2 ... %i\n", apply(mul, 3, 2));
-    printf("apply div to 10 and 2 ... %i\n", apply(div, 10, 2));
+    io.label("apply add to  1 and 2 ... ", apply(add, 1, 2));
+    io.label("apply sub to  5 and 3 ... ", apply(sub, 5, 3));
+    io.label("apply mul to  3 and 2 ... ", apply(mul, 3, 2));
+    io.label("apply div to 10 and 2 ... ", apply(div, 10, 2));
 
     pow :: (x: i32, y: i32) -> i32 {
         res := 1;
@@ -37,7 +40,7 @@ main :: () -> i32 {
         res
     };
 
-    printf("apply pow to  2 and 3 ... %i\n", apply(pow, 2, 3));
+    io.label("apply pow to  2 and 3 ... ", apply(pow, 2, 3));
 
     pow(5, 6);
 
@@ -45,5 +48,3 @@ main :: () -> i32 {
         val * 2
     }(25)
 }
-
-printf :: (text: str, n: i32) extern;

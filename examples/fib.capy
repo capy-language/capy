@@ -1,4 +1,6 @@
 
+core :: mod "core";
+
 target :: 28;
 repeat :: 5;
 answer :: 317811;
@@ -14,18 +16,14 @@ fib :: (n: i32) -> i32 {
 main :: () {
     io :: import "io.capy";
     
-    io.printf("Running Fibonacci(%d) x %d times...\nReady... Go!\n", target, repeat);
+    io.label("Running Fibonacci #", target);
+    core.println("Ready... Go!");
 
-    result := 0;
-    n := 0;
-    while n < repeat {
-        result = fib(target);
-        n = n + 1;
-    };
+    result := fib(target);
 
-    io.printf("Fibonacci number #%d = %d\n", target, result);
+    io.label_two("Fibonacci number #", target, " = ", result);
 
     if result != answer {
-        io.print_one("The answer is WRONG! Should be %d\n", answer);
+        io.label("The answer is WRONG! Should be ", answer);
     }
 }

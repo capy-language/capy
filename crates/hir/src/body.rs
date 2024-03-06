@@ -1608,20 +1608,20 @@ impl Iterator for Descendants<'_> {
                 Expr::StringLiteral(_) => {}
                 Expr::CharLiteral(_) => {}
                 Expr::Array { items, ty, .. } => {
+                    if include_types {
+                        self.todo.push(Descendant::Expr(ty));
+                    }
+
                     if include_eval {
                         if let Some(items) = items {
                             self.todo
                                 .extend(items.into_iter().rev().map(Descendant::Expr));
                         }
                     }
-
-                    if include_types {
-                        self.todo.push(Descendant::Expr(ty));
-                    }
                 }
                 Expr::Index { source, index } => {
-                    self.todo.push(Descendant::Expr(index));
                     self.todo.push(Descendant::Expr(source));
+                    self.todo.push(Descendant::Expr(index));
                 }
                 Expr::Ref { expr, .. } => {
                     self.todo.push(Descendant::Expr(expr));
@@ -1635,8 +1635,8 @@ impl Iterator for Descendants<'_> {
                     }
                 }
                 Expr::Binary { lhs, rhs, .. } => {
-                    self.todo.push(Descendant::Expr(rhs));
                     self.todo.push(Descendant::Expr(lhs));
+                    self.todo.push(Descendant::Expr(rhs));
                 }
                 Expr::Block { stmts, tail_expr } => match self.opts {
                     DescentOpts::Eval | DescentOpts::All => {
@@ -1668,18 +1668,18 @@ impl Iterator for Descendants<'_> {
                     body,
                     else_branch,
                 } => {
+                    self.todo.push(Descendant::Expr(condition));
+                    self.todo.push(Descendant::Expr(body));
                     if let Some(else_branch) = else_branch {
                         self.todo.push(Descendant::Expr(else_branch));
                     }
-                    self.todo.push(Descendant::Expr(body));
-                    self.todo.push(Descendant::Expr(condition));
                 }
                 Expr::While { condition, body } => match self.opts {
                     DescentOpts::Eval | DescentOpts::All => {
-                        self.todo.push(Descendant::Expr(body));
                         if let Some(condition) = condition {
                             self.todo.push(Descendant::Expr(condition));
                         }
+                        self.todo.push(Descendant::Expr(body));
                     }
                     DescentOpts::Reinfer => {
                         if condition.is_none() {
@@ -1719,18 +1719,6 @@ impl Iterator for Descendants<'_> {
                     if include_types {
                         let lambda = &self.bodies[lambda];
 
-                        if is_all
-                            && !lambda.is_extern
-                            && !(lambda.return_ty.is_some()
-                                && self.bodies[lambda.body] == Expr::Missing)
-                        {
-                            self.todo.push(Descendant::Expr(lambda.body));
-                        }
-
-                        if let Some(return_ty) = lambda.return_ty {
-                            self.todo.push(Descendant::Expr(return_ty));
-                        }
-
                         self.todo.extend(
                             lambda
                                 .params
@@ -1738,6 +1726,18 @@ impl Iterator for Descendants<'_> {
                                 .rev()
                                 .map(|param| Descendant::Expr(param.ty)),
                         );
+
+                        if let Some(return_ty) = lambda.return_ty {
+                            self.todo.push(Descendant::Expr(return_ty));
+                        }
+
+                        if is_all
+                            && !lambda.is_extern
+                            && !(lambda.return_ty.is_some()
+                                && self.bodies[lambda.body] == Expr::Missing)
+                        {
+                            self.todo.push(Descendant::Expr(lambda.body));
+                        }
                     }
                 }
                 Expr::Comptime(comptime) => {
@@ -1772,17 +1772,17 @@ impl Iterator for Descendants<'_> {
             Descendant::Stmt(stmt) => match self.bodies[stmt] {
                 Stmt::LocalDef(local_def) => {
                     let local_def = &self.bodies[local_def];
-                    self.todo.push(Descendant::Expr(local_def.value));
                     if is_all {
                         if let Some(ty) = local_def.ty {
                             self.todo.push(Descendant::Expr(ty));
                         }
                     }
+                    self.todo.push(Descendant::Expr(local_def.value));
                 }
                 Stmt::Assign(assign) => {
                     let assign = &self.bodies[assign];
-                    self.todo.push(Descendant::Expr(assign.value));
                     self.todo.push(Descendant::Expr(assign.source));
+                    self.todo.push(Descendant::Expr(assign.value));
                 }
                 Stmt::Expr(expr) => self.todo.push(Descendant::Expr(expr)),
                 Stmt::Break {

@@ -1,4 +1,5 @@
-libc :: mod "core".libc;
+core :: mod "core";
+io :: import "io.capy";
 
 Foo :: struct {
     a: i32,
@@ -6,28 +7,28 @@ Foo :: struct {
 };
 
 main :: () {
-    libc.puts("struct auto deref:");
+    core.println("struct auto deref:");
 
     my_foo := Foo {
         a: 4,
         b: 8,
     };
 
-    printf("my_foo.b   %i\n", my_foo.b, 0);
+    io.label("my_foo.b   ", my_foo.b);
 
     ptr := ^^^^my_foo;
 
-    printf("ptr^^^^.b  %i\n", ptr^^^^.b, 0);
-    printf("ptr^^^.b   %i\n", ptr^^^.b, 0);
-    printf("ptr^^.b    %i\n", ptr^^.b, 0);
-    printf("ptr^.b     %i\n", ptr^.b, 0);
-    printf("ptr.b      %i\n", ptr.b, 0);
+    io.label("ptr^^^^.b  ", ptr^^^^.b);
+    io.label("ptr^^^.b   ", ptr^^^.b);
+    io.label("ptr^^.b    ", ptr^^.b);
+    io.label("ptr^.b     ", ptr^.b);
+    io.label("ptr.b      ", ptr.b);
 
-    libc.puts("  give:");
+    core.println("  give:");
 
     give_struct(ptr^^);
 
-    libc.puts("\narray auto deref:");
+    core.println("\narray auto deref:");
 
     my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
 
@@ -35,39 +36,37 @@ main :: () {
 
     idx : usize = 0;
     while idx < 3 {
-        printf("ptr^[%i] %i\n", idx as i32, ptr^[idx]);
-        printf("ptr[%i]  %i\n", idx as i32, ptr[idx]);
+        io.label_two("ptr^[", idx, "] ", ptr^[idx]);
+        io.label_two("ptr[", idx, "]  ", ptr[idx]);
         idx = idx + 1;
     }
 
     ptr_ptr := ^^my_array;
 
     while idx < 6 {
-        printf("ptr_ptr^^[%i] %i\n", idx as i32, ptr_ptr^^[idx]);
-        printf("ptr_ptr^[%i]  %i\n", idx as i32, ptr_ptr^[idx]);
-        printf("ptr_ptr[%i]   %i\n", idx as i32, ptr_ptr[idx]);
+        io.label_two("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
+        io.label_two("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
+        io.label_two("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
         idx = idx + 1;
     }
 
-    libc.puts("  give:");
+    core.println("  give:");
 
     give_array(ptr_ptr);
 }
 
 give_struct :: (ptr: ^^Foo) {
-    printf("ptr^^.b    %i\n", ptr^^.b, 0);
-    printf("ptr^.b     %i\n", ptr^.b, 0);
-    printf("ptr.b      %i\n", ptr.b, 0);
+    io.label("ptr^^.b    ", ptr^^.b);
+    io.label("ptr^.b     ", ptr^.b);
+    io.label("ptr.b      ", ptr.b);
 }
 
 give_array :: (ptr_ptr: ^^[6] i32) {
     idx : usize = 0;
     while idx < 6 {
-        printf("ptr_ptr^^[%i] %i\n", idx as i32, ptr_ptr^^[idx]);
-        printf("ptr_ptr^[%i]  %i\n", idx as i32, ptr_ptr^[idx]);
-        printf("ptr_ptr[%i]   %i\n", idx as i32, ptr_ptr[idx]);
+        io.label_two("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
+        io.label_two("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
+        io.label_two("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
         idx = idx + 1;
     }
 }
-
-printf :: (s: str, n1: i32, n2: i32) extern;

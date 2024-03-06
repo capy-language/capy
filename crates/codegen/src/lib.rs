@@ -127,37 +127,26 @@ pub fn compile_obj(
     product.emit()
 }
 
-pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: Option<&[String]>) -> PathBuf {
+pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> PathBuf {
     let exe_path = object_file
         .parent()
         .unwrap()
         .join(object_file.file_stem().unwrap());
 
     let linker_args: &[&str] = match target.operating_system {
-        OperatingSystem::MacOSX { .. } => &["-Xlinker", "-ld_classic"],
+        OperatingSystem::Darwin => &["-Xlinker", "-ld_classic"],
         _ => &[],
     };
 
-    let success = if let Some(libs) = libs {
-        Command::new("gcc")
-            .arg(object_file)
-            .arg("-o")
-            .arg(&exe_path)
-            .args(linker_args)
-            .args(libs.iter().map(|lib| "-l".to_string() + lib))
-            .status()
-            .unwrap()
-            .success()
-    } else {
-        Command::new("gcc")
-            .arg(object_file)
-            .arg("-o")
-            .args(linker_args)
-            .arg(&exe_path)
-            .status()
-            .unwrap()
-            .success()
-    };
+    let success = Command::new("gcc")
+        .arg("-o")
+        .arg(&exe_path)
+        .args(linker_args)
+        .args(libs.iter().map(|lib| "-l".to_string() + lib))
+        .arg(object_file)
+        .status()
+        .unwrap()
+        .success();
 
     assert!(success);
     exe_path
@@ -392,7 +381,7 @@ mod tests {
             panic!("{}: {why}", file.display());
         });
 
-        let exec = link_to_exec(&file, HOST, None);
+        let exec = link_to_exec(&file, HOST, &[]);
 
         let output = std::process::Command::new(exec.clone())
             .output()
@@ -490,7 +479,7 @@ mod tests {
             &["../../examples/io.capy"],
             "main",
             expect![[r#"
-            Running Fibonacci(28) x 5 times...
+            Running Fibonacci #28
             Ready... Go!
             Fibonacci number #28 = 317811
 
@@ -536,7 +525,7 @@ mod tests {
     fn array_of_arrays() {
         check_files(
             "../../examples/arrays_of_arrays.capy",
-            &[],
+            &["../../examples/io.capy"],
             "main",
             expect![[r#"
                 my_array[0][0][0] = 2
@@ -699,7 +688,7 @@ mod tests {
     fn first_class_functions() {
         check_files(
             "../../examples/first_class_functions.capy",
-            &[],
+            &["../../examples/io.capy"],
             "main",
             expect![[r#"
             apply add to  1 and 2 ... 3
@@ -737,7 +726,7 @@ mod tests {
     fn comptime() {
         check_files(
             "../../examples/comptime.capy",
-            &[],
+            &["../../examples/io.capy"],
             "main",
             expect![[r#"
             Hello at runtime!
@@ -774,7 +763,7 @@ mod tests {
     fn auto_deref() {
         check_files(
             "../../examples/auto_deref.capy",
-            &[],
+            &["../../examples/io.capy"],
             "main",
             expect![[r#"
             struct auto deref:
@@ -834,32 +823,32 @@ mod tests {
     fn reflection() {
         check_files(
             "../../examples/reflection.capy",
-            &[],
+            &["../../examples/io.capy"],
             "main",
             expect![[r#"
                 Reflection!
                 
-                i32              (0x8000284) : size = 4, align = 4, stride = 4
-                i64              (0x8000308) : size = 8, align = 8, stride = 8
-                u64              (0x8000108) : size = 8, align = 8, stride = 8
-                i8               (0x8000221) : size = 1, align = 1, stride = 1
-                u128             (0x8000110) : size = 16, align = 8, stride = 16
-                usize            (0x8000108) : size = 8, align = 8, stride = 8
-                f32              (0xc000084) : size = 4, align = 4, stride = 4
-                void             (0x4000020) : size = 0, align = 1, stride = 0
-                any              (0x20000020) : size = 0, align = 1, stride = 0
-                str              (0x14000108) : size = 8, align = 8, stride = 8
-                char             (0x18000021) : size = 1, align = 1, stride = 1
-                type             (0x1c000084) : size = 4, align = 4, stride = 4
-                Person           (0x40000000) : size = 12, align = 8, stride = 16
-                Foo              (0x40000001) : size = 1, align = 1, stride = 1
-                [6] Person       (0x48000000) : size = 96, align = 8, stride = 96
-                [ ] Person       (0x4c000000) : size = 16, align = 8, stride = 16
-                 ^  Person       (0x50000000) : size = 8, align = 8, stride = 8
-                distinct Person  (0x44000000) : size = 12, align = 8, stride = 16
-                distinct Person  (0x44000001) : size = 12, align = 8, stride = 16
-                ()       -> void (0x54000000) : size = 8, align = 8, stride = 8
-                (x: i32) -> f32  (0x54000001) : size = 8, align = 8, stride = 8
+                i32              (134218372) : size = 4, align = 4, stride = 4
+                i64              (134218504) : size = 8, align = 8, stride = 8
+                u64              (134217992) : size = 8, align = 8, stride = 8
+                i8               (134218273) : size = 1, align = 1, stride = 1
+                u128             (134218000) : size = 16, align = 8, stride = 16
+                usize            (134217992) : size = 8, align = 8, stride = 8
+                f32              (201326724) : size = 4, align = 4, stride = 4
+                void             (67108896) : size = 0, align = 1, stride = 0
+                any              (536870944) : size = 0, align = 1, stride = 0
+                str              (335544584) : size = 8, align = 8, stride = 8
+                char             (402653217) : size = 1, align = 1, stride = 1
+                type             (469762180) : size = 4, align = 4, stride = 4
+                Person           (1073741824) : size = 12, align = 8, stride = 16
+                Foo              (1073741825) : size = 1, align = 1, stride = 1
+                [6] Person       (1207959552) : size = 96, align = 8, stride = 96
+                [ ] Person       (1275068416) : size = 16, align = 8, stride = 16
+                 ^  Person       (1342177280) : size = 8, align = 8, stride = 8
+                distinct Person  (1140850688) : size = 12, align = 8, stride = 16
+                distinct Person  (1140850689) : size = 12, align = 8, stride = 16
+                ()       -> void (1409286144) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32  (1409286145) : size = 8, align = 8, stride = 8
                 
                 i32 == i16 : false
                 i32 == u32 : false
@@ -1258,17 +1247,50 @@ mod tests {
         check_raw(
             r#"
                 main :: () {
-                    printf("~2147483647 =      %i\n", ~{4294967295 as u32});
-                    printf(" 5032 &  25 =     %i\n", 5032 & 32);
-                    printf(" 5000 |  20 =   %i\n", 5000 | 32);
-                    printf(" 5032 ~  36 =   %i\n", 5032 ~ 36);
-                    printf(" 5032 &~ 36 =   %i\n", 5032 &~ 36); 
-                    printf(" 5032 <<  2 =  %i\n", 5032 << 2);
-                    printf(" 5032 >>  2 =   %i\n", 5032 >> 2);
-                    printf("-5032 >>  2 =  %i\n", -5032 >> 2);
+                    print("~2147483647 =      ", ~{4294967295 as u32});
+                    print(" 5032 &  25 =     ", 5032 & 32);
+                    print(" 5000 |  20 =   ", 5000 | 32);
+                    print(" 5032 ~  36 =   ", 5032 ~ 36);
+                    print(" 5032 &~ 36 =   ", 5032 &~ 36); 
+                    print(" 5032 <<  2 =  ", 5032 << 2);
+                    print(" 5032 >>  2 =   ", 5032 >> 2);
+                    print("-5032 >>  2 =  ", -5032 >> 2);
                 }
-                
-                printf :: (s: str, n: i64) extern;
+
+                print :: (s: str, n: i64) {
+                    s := s as ^any as ^[1000] char;
+                    idx := 0;
+                    while idx < 100 {
+                        ch := s[idx];
+                        if ch == '\0' {
+                            break;
+                        }
+                        putchar(ch);
+                        idx = idx + 1;
+                    }
+
+                    iprint(n);
+                    putchar('\n');
+                }
+
+                iprint :: (n: i64) {
+                    n := n;
+                    
+                    if n < 0 {
+                        n = -n;
+                        putchar('-');
+                    }
+
+                    if n > 9 {
+                        a := n / 10;
+
+                        n = n - 10 * a;
+                        iprint(a);
+                    }
+                    putchar({'0' as u8 + n} as char);
+                }
+
+                putchar :: (ch: char) extern;
             "#,
             "main",
             expect![[r#"

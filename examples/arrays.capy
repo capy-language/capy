@@ -1,4 +1,6 @@
 
+core :: mod "core";
+
 main :: () {
     my_array : [6] i32 = build_array();
 
@@ -6,7 +8,7 @@ main :: () {
 
     idx := 0;
     while idx < 6 {
-        printf("%i\n", my_array_ptr[idx]);
+        core.println(my_array_ptr[idx]);
         idx = idx + 1;
     }
 }
@@ -16,5 +18,3 @@ build_array :: () -> [6] i32 {
 
     my_array
 }
-
-printf :: (s: str, n1: i32) extern;

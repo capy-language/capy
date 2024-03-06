@@ -1,5 +1,6 @@
 core :: mod "core";
 meta :: core.meta;
+io :: import "io.capy";
 
 imaginary :: distinct i32;
 
@@ -86,25 +87,25 @@ check_any :: () {
 }
 
 check_equality :: () {
-    println_val("i32 == i16 : ", i32 == i16);
-    println_val("i32 == u32 : ", i32 == u32);
-    println_val("i32 == i32 : ", i32 == i32);
-    println_val("Foo == Person : ", Foo == Person);
-    println_val("Person == Person : ", Person == Person);
-    println_val("[5] Person == [6] Person : ", [5] Person == [6] Person);
-    println_val("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
-    println_val("[6] Person == [6] Person : ", [6] Person == [6] Person);
-    println_val("^Person == ^Foo : ", ^Person == ^Foo);
-    println_val("^Person == ^Person : ", ^Person == ^Person);
+    io.label("i32 == i16 : ", i32 == i16);
+    io.label("i32 == u32 : ", i32 == u32);
+    io.label("i32 == i32 : ", i32 == i32);
+    io.label("Foo == Person : ", Foo == Person);
+    io.label("Person == Person : ", Person == Person);
+    io.label("[5] Person == [6] Person : ", [5] Person == [6] Person);
+    io.label("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
+    io.label("[6] Person == [6] Person : ", [6] Person == [6] Person);
+    io.label("^Person == ^Foo : ", ^Person == ^Foo);
+    io.label("^Person == ^Person : ", ^Person == ^Person);
 
     d1Person :: distinct Person;
     d2Person :: distinct Person;
 
-    println_val("Person == distinct 'a Person : ", Person == d1Person);
-    println_val("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
-    println_val("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
-    println_val("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
-    println_val("() -> void == () -> void : ", () -> void == () -> void);   
+    io.label("Person == distinct 'a Person : ", Person == d1Person);
+    io.label("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
+    io.label("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
+    io.label("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
+    io.label("() -> void == () -> void : ", () -> void == () -> void);   
 
     core.println("");
 }
@@ -136,7 +137,15 @@ check_layouts :: () {
 }
 
 print_type_layout :: (name: str, ty: type) {
-    printf("%s (0x%x) : size = %i, align = %i, stride = %i\n", name, ty, core.meta.size_of(ty), core.meta.align_of(ty), core.meta.stride_of(ty));
+    core.print(name);
+    core.print(" (");
+    core.print(meta.meta_to_raw(ty));
+    core.print(") : size = ");
+    core.print(meta.size_of(ty));
+    core.print(", align = ");
+    core.print(meta.align_of(ty));
+    core.print(", stride = ");
+    core.println(meta.stride_of(ty));
 }
 
 print_info :: (ty: type) {
@@ -164,7 +173,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         info := meta.get_int_info(ty);
 
         print_indent(indent);
-        println_val("bit_width = ", info.bit_width);
+        io.label("bit_width = ", info.bit_width);
         print_indent(indent);
         core.print("signed    = ");
         res := if info.signed {
@@ -179,14 +188,14 @@ print_info_with_args :: (ty: type, indent: i32) {
         info := meta.get_float_info(ty);
 
         print_indent(indent);
-        println_val("bit_width = ", info.bit_width);
+        io.label("bit_width = ", info.bit_width);
     } else if meta.is_array(ty) {
         print_front(indent, "ARRAY");
 
         info := meta.get_array_info(ty);
 
         print_indent(indent);
-        println_val("len = ", info.len);
+        io.label("len = ", info.len);
 
         print_indent(indent);
         core.println("ty =");
@@ -234,7 +243,7 @@ print_info_with_args :: (ty: type, indent: i32) {
             core.println(member.name);
 
             print_indent(indent);
-            println_val("offset = ", member.offset);
+            io.label("offset = ", member.offset);
 
             print_indent(indent);
             core.println("ty =");
@@ -263,7 +272,7 @@ print_info_with_args :: (ty: type, indent: i32) {
             disc := meta.meta_to_raw(ty);
 
             core.println("\nokay you fricked up bud");
-            println_val("discriminant = ", disc);
+            io.label("discriminant = ", disc);
 
             core.libc.exit(1);
 
@@ -272,11 +281,3 @@ print_info_with_args :: (ty: type, indent: i32) {
         print_front(indent, name);
     }
 }
-
-println_val :: (label: str, val: core.Any) {
-    core.print(label);
-    core.println(val);
-}
-
-// I only include this for the %x formatter
-printf :: (s: str, s2: str, ty: type, n1: usize, n2: usize, n3: usize) extern;

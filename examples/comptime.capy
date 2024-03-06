@@ -1,4 +1,6 @@
+core :: mod "core";
 libc :: mod "core".libc;
+io :: import "io.capy";
 
 // comptime blocks are JIT compiled and the bytes they return are baked into the data segment of the program
 my_global :: comptime {
@@ -10,12 +12,12 @@ my_global :: comptime {
 };
 
 main :: () {
-    libc.puts("Hello at runtime!");
+    core.println("Hello at runtime!");
 
-    printf("that global was equal to %i\n", my_global);
+    io.label("that global was equal to ", my_global);
 
     powers_of_two := comptime {
-        libc.puts("Doing heavy calculation...");
+        core.println("Doing heavy calculation...");
 
         math :: mod "core".math;
 
@@ -27,18 +29,16 @@ main :: () {
             idx = idx + 1;
         }
 
-        libc.puts("Finished heavy calculation :)");
+        core.println("Finished heavy calculation :)");
 
         array
     };
 
-    printf("2^0 = %i\n", powers_of_two[0]);
-    printf("2^1 = %i\n", powers_of_two[1]);
-    printf("2^2 = %i\n", powers_of_two[2]);
-    printf("2^3 = %i\n", powers_of_two[3]);
-    printf("2^4 = %i\n", powers_of_two[4]);
-    printf("2^5 = %i\n", powers_of_two[5]);
+    io.label("2^0 = ", powers_of_two[0]);
+    io.label("2^1 = ", powers_of_two[1]);
+    io.label("2^2 = ", powers_of_two[2]);
+    io.label("2^3 = ", powers_of_two[3]);
+    io.label("2^4 = ", powers_of_two[4]);
+    io.label("2^5 = ", powers_of_two[5]);
 }
 
-// since printf isn't techincally supposed to be here, it cannot be called from comptime blocks
-printf :: (s: str, n: i32) extern;

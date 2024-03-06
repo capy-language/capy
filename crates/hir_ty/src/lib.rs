@@ -524,10 +524,13 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         }
 
         let ty_annotation = match self.world_bodies.ty(fqn) {
-            Some(ty) => Some(global_ctx.const_ty(ty).inspect_err(|_| {
-                // this is why i wish rust had `defer`
-                global_ctx.tys.signatures.remove(&fqn);
-            })?),
+            Some(ty) => match global_ctx.const_ty(ty) {
+                Ok(ty) => Some(ty),
+                Err(why) => {
+                    global_ctx.tys.signatures.remove(&fqn);
+                    return Err(why);
+                }
+            },
             None => None,
         };
 
@@ -558,11 +561,13 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         // the `infer_surface` stage should have already figured out the
         // signature of every function, including this one.
 
-        let ty = global_ctx
-            .finish_body(body, ty_annotation, true)
-            .inspect_err(|_| {
+        let ty = match global_ctx.finish_body(body, ty_annotation, true) {
+            Ok(ty) => ty,
+            Err(why) => {
                 global_ctx.tys.signatures.remove(&fqn);
-            })?;
+                return Err(why);
+            }
+        };
 
         self.tys.signatures.insert(fqn, Signature(ty));
 
