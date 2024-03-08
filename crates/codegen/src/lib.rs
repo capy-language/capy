@@ -16,6 +16,7 @@ use hir::FQComptime;
 use hir_ty::ComptimeResult;
 use interner::Interner;
 use rustc_hash::FxHashMap;
+use std::io::Write;
 use std::mem;
 use std::path::PathBuf;
 use std::process::{exit, Command};
@@ -138,17 +139,26 @@ pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> P
         _ => &[],
     };
 
-    let success = Command::new("gcc")
+    let gcc = Command::new("gcc")
         .arg("-o")
         .arg(&exe_path)
         .args(linker_args)
         .args(libs.iter().map(|lib| "-l".to_string() + lib))
         .arg(object_file)
-        .status()
-        .unwrap()
-        .success();
+        .output()
+        .unwrap();
 
-    assert!(success);
+    if !gcc.status.success() {
+        println!("\ngcc failed!\n");
+
+        println!("stdout:\n");
+        std::io::stdout().write_all(&gcc.stdout).unwrap();
+        println!("\nstderr:\n");
+        std::io::stdout().write_all(&gcc.stderr).unwrap();
+
+        std::process::exit(1);
+    }
+
     exe_path
 }
 

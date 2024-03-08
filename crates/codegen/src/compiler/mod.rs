@@ -1199,10 +1199,5 @@ fn cast_num(
         }
     };
 
-    if res.as_u32() == 15 {
-        println!("v15 {:?} to {:?}", cast_from, cast_to);
-        println!("{}", backtrace::Backtrace::force_capture());
-    }
-
     res
 }
