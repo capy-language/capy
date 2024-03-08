@@ -14,7 +14,6 @@ use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
 use rustc_hash::FxHashMap;
-use std::backtrace;
 use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 

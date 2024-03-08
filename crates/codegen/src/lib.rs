@@ -135,7 +135,17 @@ pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> P
         .join(object_file.file_stem().unwrap());
 
     let linker_args: &[&str] = match target.operating_system {
-        OperatingSystem::Darwin => &["-Xlinker", "-ld_classic"],
+        OperatingSystem::Darwin => {
+            // check if -ld_classic is supported
+            let ld_v = Command::new("ld").arg("-v").output().unwrap();
+            let stderr = String::from_utf8(ld_v.stderr).expect("`ld` should have given utf8");
+
+            if stderr.contains("ld-classic") {
+                &["-Xlinker", "-ld_classic"]
+            } else {
+                &[]
+            }
+        }
         _ => &[],
     };
 
