@@ -122,6 +122,14 @@ impl Ty {
         }
     }
 
+    pub fn is_any_type(&self) -> bool {
+        match self {
+            Ty::Any => true,
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_any_type(),
+            _ => false,
+        }
+    }
+
     pub fn is_aggregate(&self) -> bool {
         match self {
             Ty::Struct { .. } => true,
@@ -292,7 +300,7 @@ impl Ty {
     /// an equality check that ignores distinct types.
     /// All other types must be exactly equal (i32 == i32, i32 != i64)
     ///
-    /// `two_way` controls whether or not a distinct can be made non-distinct
+    /// if `two_way` is false, distincts cannot be made non-distinct
     pub fn is_functionally_equivalent_to(&self, other: &Self, two_way: bool) -> bool {
         match (self, other) {
             (
@@ -340,7 +348,7 @@ impl Ty {
                 },
             ) => {
                 // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
-                distinct_inner.is_functionally_equivalent_to(other, two_way)
+                other.is_functionally_equivalent_to(distinct_inner, two_way)
             }
             (first, second) => first.is_equal_to(second),
         }
@@ -528,6 +536,16 @@ impl Ty {
                     || found_ty.can_fit_into(expected_ty))
             }
             (
+                Ty::Slice { sub_ty: found_ty },
+                Ty::Slice {
+                    sub_ty: expected_ty,
+                },
+            ) => {
+                // todo: do we need this `might_be_weak`?
+                (**expected_ty == Ty::Any && !found_ty.might_be_weak())
+                    || found_ty.can_fit_into(expected_ty)
+            }
+            (
                 Ty::Array {
                     sub_ty: found_ty, ..
                 },
@@ -613,6 +631,13 @@ impl Ty {
             // string to and from [_]char and [_]u8
             (Ty::String, Ty::Array { sub_ty, .. }) | (Ty::Array { sub_ty, .. }, Ty::String) => {
                 matches!(sub_ty.as_ref(), Ty::Char | Ty::UInt(8))
+            }
+            // `[]any` acts like `^any`
+            (Ty::Slice { sub_ty: from, .. }, Ty::Slice { sub_ty: to }) => {
+                from == to
+                    || **from == Ty::Any
+                    || **to == Ty::Any
+                    || from.is_weak_replaceable_by(to)
             }
             (Ty::Array { sub_ty: from, .. }, Ty::Slice { sub_ty: to })
             | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => {
@@ -742,6 +767,20 @@ impl Ty {
     }
 }
 
+pub trait InternTyExt {
+    fn remove_distinct(self) -> Intern<Ty>;
+}
+
+impl InternTyExt for Intern<Ty> {
+    #[inline]
+    fn remove_distinct(self) -> Intern<Ty> {
+        match self.as_ref() {
+            Ty::Distinct { sub_ty, .. } => sub_ty.remove_distinct(),
+            _ => self,
+        }
+    }
+}
+
 pub(crate) trait BinaryOutput {
     fn get_possible_output_ty(&self, first: &Ty, second: &Ty) -> Option<BinaryOutputTy>;
 }
@@ -804,9 +843,8 @@ impl TypedOp for hir::BinaryOp {
             | hir::BinaryOp::Sub
             | hir::BinaryOp::Mul
             | hir::BinaryOp::Div
-            | hir::BinaryOp::BAnd
-            | hir::BinaryOp::BOr
             | hir::BinaryOp::Xor => &[Ty::IInt(0), Ty::Float(0)],
+            hir::BinaryOp::BAnd | hir::BinaryOp::BOr => &[Ty::IInt(0), Ty::Float(0), Ty::Bool],
             hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => &[Ty::IInt(0)],
             hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
                 &[Ty::IInt(0), Ty::Float(0)]

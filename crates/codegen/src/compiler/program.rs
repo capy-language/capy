@@ -49,6 +49,7 @@ pub(crate) fn compile_program<'a>(
     };
 
     let mut compiler = Compiler {
+        final_binary: true,
         verbosity,
         mod_dir,
         interner,

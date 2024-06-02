@@ -2,8 +2,10 @@
 target
 out
 c-tests
-examples/test.capy
 
-hello.txt
+examples/test*.capy
+
+**/.DS_STORE
+
 Cargo.lock
 .editorconfig

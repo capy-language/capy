@@ -97,6 +97,25 @@ _write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, req
 }
 
 _write_f64_to_buf :: (n: f64, buf: ^mut u8, afterpoint: usize) -> usize {
+    if math.is_NaN(n) {
+        ptr.write(buf, 'N' as u8, 0);
+        ptr.write(buf, 'a' as u8, 1);
+        ptr.write(buf, 'N' as u8, 2);
+        return 3;
+    } else if n == math.positive_inf {
+        ptr.write(buf, '+' as u8, 0);
+        ptr.write(buf, 'I' as u8, 1);
+        ptr.write(buf, 'n' as u8, 2);
+        ptr.write(buf, 'f' as u8, 3);
+        return 4;
+    } else if n == math.negative_inf {
+        ptr.write(buf, '-' as u8, 0);
+        ptr.write(buf, 'I' as u8, 1);
+        ptr.write(buf, 'n' as u8, 2);
+        ptr.write(buf, 'f' as u8, 3);
+        return 4;
+    }
+
     ipart := n as i64;
 
     fpart := n - ipart as f64;

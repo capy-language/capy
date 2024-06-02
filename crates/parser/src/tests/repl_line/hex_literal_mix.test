@@ -1,0 +1,6 @@
+0x0123456789abcdefABCDEF
+===
+Root@0..24
+  ExprStmt@0..24
+    IntLiteral@0..24
+      Hex@0..24 "0x0123456789abcdefABCDEF"

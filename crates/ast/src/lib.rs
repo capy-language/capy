@@ -729,9 +729,15 @@ impl ComptimeExpr {
 def_ast_node!(IntLiteral);
 
 impl IntLiteral {
-    pub fn value(self, tree: &SyntaxTree) -> Option<Int> {
+    pub fn value(self, tree: &SyntaxTree) -> Option<IntValue> {
         token(self, tree)
     }
+}
+
+def_multi_token! {
+    IntValue:
+    Dec -> Int
+    Hex -> Hex
 }
 
 def_ast_node!(FloatLiteral);
@@ -847,6 +853,7 @@ def_ast_token!(Pipe);
 def_ast_token!(DoublePipe);
 def_ast_token!(Ident);
 def_ast_token!(Int);
+def_ast_token!(Hex);
 def_ast_token!(Float);
 def_ast_token!(Bool);
 
@@ -1433,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn get_value_of_int_literal() {
+    fn get_value_of_decimal_literal() {
         let (tree, root) = parse("92;");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
@@ -1446,7 +1453,34 @@ mod tests {
             _ => unreachable!(),
         };
 
-        assert_eq!(int_literal.value(&tree).unwrap().text(&tree), "92");
+        let decimal = match int_literal.value(&tree).unwrap() {
+            IntValue::Dec(dec) => dec,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(decimal.text(&tree), "92");
+    }
+
+    #[test]
+    fn get_value_of_hex_literal() {
+        let (tree, root) = parse("0xFeab1;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let int_literal = match expr {
+            Some(Expr::IntLiteral(int_literal)) => int_literal,
+            _ => unreachable!(),
+        };
+
+        let hex = match int_literal.value(&tree).unwrap() {
+            IntValue::Hex(hex) => hex,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(hex.text(&tree), "0xFeab1");
     }
 
     #[test]

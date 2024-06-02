@@ -82,6 +82,8 @@ check_any :: () {
         array: [3] i16 { 1, 2, 3 },
     });
     core.println(i32);
+    core.println(^Bar);
+    core.println(core.Any);
     core.println({});
     core.println([6] i32 { 4, 8, 15, 16, 23, 42 });
 }

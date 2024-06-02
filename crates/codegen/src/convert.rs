@@ -184,6 +184,8 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         _ if ty.is_zero_sized() => FinalTy::Void,
         hir_ty::Ty::NotYetResolved | hir_ty::Ty::Unknown => FinalTy::Void,
         hir_ty::Ty::IInt(bit_width) => finalize_int(*bit_width, true),
+        // {uint} => i32
+        hir_ty::Ty::UInt(0) => finalize_int(0, true),
         hir_ty::Ty::UInt(bit_width) => finalize_int(*bit_width, false),
         hir_ty::Ty::Float(bit_width) => match bit_width {
             0 => FinalTy::Number(NumberType {
@@ -363,6 +365,8 @@ impl ToTyId for Intern<Ty> {
                 },
                 true,
             ),
+            // {uint} => i32
+            Ty::UInt(0) => simple_id(INT_DISCRIMINANT, 32, true),
             Ty::UInt(bit_width) => simple_id(
                 INT_DISCRIMINANT,
                 match *bit_width {
@@ -526,6 +530,7 @@ impl ToTyId for Intern<Ty> {
                 },
                 true,
             ),
+            Ty::UInt(0) => simple_id(INT_DISCRIMINANT, 32, true),
             Ty::UInt(bit_width) => simple_id(
                 INT_DISCRIMINANT,
                 match *bit_width {

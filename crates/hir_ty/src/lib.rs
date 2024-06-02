@@ -70,12 +70,14 @@ impl FileInference {
 impl std::ops::Index<Idx<hir::Expr>> for FileInference {
     type Output = Intern<Ty>;
 
+    #[track_caller]
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
         &self.expr_tys[expr]
     }
 }
 
 impl std::ops::IndexMut<Idx<hir::Expr>> for FileInference {
+    #[track_caller]
     fn index_mut(&mut self, expr: Idx<hir::Expr>) -> &mut Self::Output {
         self.expr_tys.get_mut(expr).unwrap()
     }
@@ -84,6 +86,7 @@ impl std::ops::IndexMut<Idx<hir::Expr>> for FileInference {
 impl std::ops::Index<Idx<hir::LocalDef>> for FileInference {
     type Output = Intern<Ty>;
 
+    #[track_caller]
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
         &self.local_tys[local_def]
     }
@@ -98,7 +101,6 @@ pub struct Signature(pub Intern<Ty>);
 pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
     pub file: hir::FileName,
-    pub range: TextRange,
     // it's important to set this as `Some(_)` as much as possible,
     // even if the given expression isn't technically the source of the error.
     // this field is used for scanning through a group of expressions to see if they have any
@@ -106,6 +108,7 @@ pub struct TyDiagnostic {
     // only set this to None if there truly isn't a related expression.
     #[cfg_attr(test, derivative(Debug = "ignore"))]
     pub expr: Option<Idx<hir::Expr>>,
+    pub range: TextRange,
     pub help: Option<TyDiagnosticHelp>,
 }
 
@@ -165,6 +168,10 @@ pub enum TyDiagnosticKind {
         found: Intern<Ty>,
     },
     DerefAny,
+    IndexAny {
+        // set this if it is an array, leave `None` if slice
+        size: Option<u64>,
+    },
     MissingElse {
         expected: Intern<Ty>,
     },
@@ -199,7 +206,12 @@ pub enum TyDiagnosticKind {
     EntryNotFunction,
     EntryHasParams,
     EntryBadReturn,
-    ArraySizeRequired,
+    ArraySizeNotInt,
+    ArraySizeNotConst,
+    ArraySizeMismatch {
+        found: u32,
+        expected: u32,
+    },
     ExternGlobalMissingTy,
 }
 
@@ -226,8 +238,8 @@ pub enum TyDiagnosticHelpKind {
 #[derive(Debug, Clone)]
 pub enum ComptimeResult {
     Type(Intern<Ty>),
-    Integer { num: u64, bytes: Box<[u8]> },
-    Float { num: f64, bytes: Box<[u8]> },
+    Integer { num: u64, bit_width: u8 },
+    Float { num: f64, bit_width: u8 },
     Data(Box<[u8]>),
     Void,
 }
@@ -244,9 +256,16 @@ impl Inferrable {
             Inferrable::Global(fqn) => fqn.to_string(std::path::Path::new(""), interner),
             Inferrable::Lambda(lambda) => format!(
                 "lambda {} #{}",
-                lambda.file.to_string(std::path::Path::new(""), interner),
+                lambda.file.debug(interner),
                 lambda.expr.into_raw()
             ),
+        }
+    }
+
+    fn file(&self) -> FileName {
+        match self {
+            Inferrable::Global(fqn) => fqn.file,
+            Inferrable::Lambda(fql) => fql.file,
         }
     }
 }
@@ -387,6 +406,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
 
                 let mut global_ctx = GlobalInferenceCtx {
                     file: fqn.file,
+                    current_inferring: Inferrable::Global(fqn),
                     world_index: self.world_index,
                     world_bodies: self.world_bodies,
                     bodies: &self.world_bodies[fqn.file],
@@ -499,6 +519,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
     fn infer_fqn(&mut self, fqn: hir::Fqn) -> InferResult<()> {
         let mut global_ctx = GlobalInferenceCtx {
             file: fqn.file,
+            current_inferring: Inferrable::Global(fqn),
             world_index: self.world_index,
             world_bodies: self.world_bodies,
             bodies: &self.world_bodies[fqn.file],
@@ -587,6 +608,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
 
         let mut global_ctx = GlobalInferenceCtx {
             file: fql.file,
+            current_inferring: Inferrable::Lambda(fql),
             world_index: self.world_index,
             world_bodies: self.world_bodies,
             bodies: &self.world_bodies[fql.file],
@@ -1459,15 +1481,16 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
-                8 : void
-                9 : () -> void
+                7 : i32
+                8 : [6]i32
+                9 : void
+                10 : () -> void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1484,15 +1507,16 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [6]i32
-                8 : void
-                9 : () -> void
+                7 : i32
+                8 : [6]i32
+                9 : void
+                10 : () -> void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1509,18 +1533,358 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : [7]i32
-                8 : void
-                9 : () -> void
+                7 : i32
+                8 : [7]i32
+                9 : void
+                10 : () -> void
                 l0 : [7]i32
             "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::ArraySizeMismatch {
+                        found: 6,
+                        expected: 7,
+                    },
+                    70..94,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn array_with_global_size() {
+        check(
+            r#"
+                size : usize : 3;
+
+                main :: () {
+                    my_array := [size] i32 { 3, 1, 4 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                main::size : usize
+                1 : usize
+                2 : usize
+                4 : i32
+                5 : i32
+                6 : i32
+                7 : [3]i32
+                8 : void
+                9 : () -> void
+                l0 : [3]i32
+            "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_imported_global_size() {
+        check(
+            r#"
+                #- main.capy
+
+                other :: import "other.capy";
+
+                main :: () {
+                    my_array := [other.size] bool { false, true };
+                };
+
+                #- other.capy
+
+                size : usize : 2;
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                main::other : file other
+                other::size : usize
+                other:
+                  1 : usize
+                main:
+                  0 : file other
+                  1 : file other
+                  2 : usize
+                  4 : bool
+                  5 : bool
+                  6 : [2]bool
+                  7 : void
+                  8 : () -> void
+                  l0 : [2]bool
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_extern_global_size() {
+        check(
+            r#"
+                size : usize : extern;
+
+                main :: () {
+                    my_array := [size] i32 { 3, 1, 4 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                main::size : usize
+                1 : usize
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : <unknown>
+                7 : void
+                8 : () -> void
+                l0 : <unknown>
+            "#]],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 103..107, None)],
+        );
+    }
+
+    #[test]
+    fn array_with_extern_imported_global_size() {
+        check(
+            r#"
+                #- main.capy
+
+                other :: import "other.capy";
+
+                main :: () {
+                    my_array := [other.size] bool { false, true };
+                };
+
+                #- other.capy
+
+                size : usize : extern;
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                main::other : file other
+                other::size : usize
+                other:
+                main:
+                  0 : file other
+                  1 : file other
+                  2 : usize
+                  4 : bool
+                  5 : bool
+                  6 : <unknown>
+                  7 : void
+                  8 : () -> void
+                  l0 : <unknown>
+            "#]],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 110..120, None)],
+        );
+    }
+
+    #[test]
+    fn array_with_extern_global_through_regular_global_size() {
+        // I'm testing multiple things at once here.
+        check(
+            r#"
+                foo : usize : extern;
+
+                bar :: foo;
+
+                main :: () {
+                    my_array := [bar] i32 { 3, 1, 4 };
+                };
+            "#,
+            expect![[r#"
+                main::bar : usize
+                main::foo : usize
+                main::main : () -> void
+                1 : usize
+                2 : usize
+                4 : i32
+                5 : i32
+                6 : i32
+                7 : <unknown>
+                8 : void
+                9 : () -> void
+                l0 : <unknown>
+            "#]],
+            |_| {
+                [
+                    (TyDiagnosticKind::GlobalNotConst, 63..66, None),
+                    (TyDiagnosticKind::ArraySizeNotConst, 131..134, None),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn array_with_float_size() {
+        check(
+            r#"
+                main :: () {
+                    my_array := [1.0] i32 { 3, 1, 4 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : {float}
+                2 : i32
+                3 : i32
+                4 : i32
+                5 : <unknown>
+                6 : void
+                7 : () -> void
+                l0 : <unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::UInt(u8::MAX).into(),
+                        found: Ty::Float(0).into(),
+                    },
+                    63..66,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn array_with_local_size() {
+        check(
+            r#"
+                main :: () {
+                    size :: 4;
+
+                    my_array := [size] i32 { 3, 1, 4, 5 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : usize
+                1 : usize
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : i32
+                7 : [4]i32
+                8 : void
+                9 : () -> void
+                l0 : usize
+                l1 : [4]i32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_non_const_size() {
+        check(
+            r#"
+                main :: () {
+                    size := 3;
+
+                    size = size + 1;
+
+                    my_array := [size] i32 { 3, 1, 4, 5 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : usize
+                1 : usize
+                2 : usize
+                3 : usize
+                4 : usize
+                5 : usize
+                7 : i32
+                8 : i32
+                9 : i32
+                10 : i32
+                11 : <unknown>
+                12 : void
+                13 : () -> void
+                l0 : usize
+                l1 : <unknown>
+            "#]],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 133..137, None)],
+        );
+    }
+
+    #[test]
+    fn array_with_comptime_size() {
+        check(
+            r#"
+                main :: () {
+                    size :: comptime {
+                        if true {
+                            5
+                        } else {
+                            6
+                        }
+                    };
+
+                    my_array := [size] i64 { -2, -1, 0, 1, 2 };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : bool
+                1 : usize
+                2 : usize
+                3 : usize
+                4 : usize
+                5 : usize
+                6 : usize
+                7 : usize
+                8 : usize
+                10 : {int}
+                11 : {int}
+                12 : {int}
+                13 : {int}
+                14 : i64
+                15 : i64
+                16 : i64
+                17 : [5]i64
+                18 : void
+                19 : () -> void
+                l0 : usize
+                l1 : [5]i64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn array_with_negative_size() {
+        check(
+            r#"
+                main :: () {
+                    my_array := [-3] i32 { };
+                };
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : {int}
+                1 : {int}
+                3 : <unknown>
+                4 : void
+                5 : () -> void
+                l0 : <unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::UInt(u8::MAX).into(),
+                        found: Ty::IInt(0).into(),
+                    },
+                    63..65,
+                    None,
+                )]
+            },
         );
     }
 
@@ -1536,18 +1900,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> i32
-                2 : i32
+                1 : usize
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
-                8 : [6]i32
+                8 : i32
                 9 : [6]i32
-                10 : usize
-                11 : i32
+                10 : [6]i32
+                11 : usize
                 12 : i32
-                13 : () -> i32
+                13 : i32
+                14 : () -> i32
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1566,18 +1931,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> i32
-                2 : i32
+                1 : usize
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
-                8 : [6]i32
+                8 : i32
                 9 : [6]i32
-                10 : usize
-                11 : i32
+                10 : [6]i32
+                11 : usize
                 12 : i32
-                13 : () -> i32
+                13 : i32
+                14 : () -> i32
                 l0 : [6]i32
             "#]],
             |_| {
@@ -1716,7 +2082,7 @@ mod tests {
                 2 : bool
                 3 : {int}
                 4 : {int}
-                5 : {uint}
+                5 : {int}
                 6 : {int}
                 7 : {int}
                 8 : {int}
@@ -2225,7 +2591,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::neg : () -> u8
-                1 : {uint}
+                1 : {int}
                 2 : {int}
                 3 : {int}
                 4 : () -> u8
@@ -2784,22 +3150,24 @@ mod tests {
             expect![[r#"
                 main::Vector3 : type
                 main::main : () -> void
-                2 : type
-                5 : i32
-                6 : i32
+                0 : usize
+                3 : type
+                5 : usize
                 7 : i32
-                8 : [3]i32
-                9 : main::Vector3
-                10 : usize
-                11 : i32
-                12 : main::Vector3
-                13 : usize
-                14 : i32
-                15 : main::Vector3
-                16 : usize
-                17 : i32
-                18 : void
-                19 : () -> void
+                8 : i32
+                9 : i32
+                10 : [3]i32
+                11 : main::Vector3
+                12 : usize
+                13 : i32
+                14 : main::Vector3
+                15 : usize
+                16 : i32
+                17 : main::Vector3
+                18 : usize
+                19 : i32
+                20 : void
+                21 : () -> void
                 l0 : main::Vector3
                 l1 : i32
                 l2 : i32
@@ -2940,7 +3308,6 @@ mod tests {
 
     #[test]
     fn recursive_definitions_ty() {
-        // todo: this should be all <unknown>
         check(
             r#"
                 foo : i32 : comptime bar;
@@ -3197,8 +3564,9 @@ mod tests {
             expect![[r#"
                 main::a : type
                 main::b : [0]<unknown>
-                1 : type
-                3 : {uint}
+                0 : usize
+                2 : type
+                4 : {uint}
             "#]],
             |i| {
                 [(
@@ -3536,32 +3904,34 @@ mod tests {
                 main::Person : type
                 main::foo : () -> void
                 2 : type
-                5 : type
-                9 : str
-                10 : i32
-                11 : main::Person
-                13 : str
-                14 : i32
-                15 : main::Person
-                17 : str
-                18 : i32
-                19 : main::Person
-                20 : [3]main::Person
-                21 : main::Company
-                22 : main::Company
-                23 : [3]main::Person
-                24 : usize
-                25 : main::Person
-                26 : i32
-                27 : main::Company
-                28 : [3]main::Person
-                29 : usize
-                30 : main::Person
-                31 : i32
-                32 : i32
+                3 : usize
+                6 : type
+                8 : usize
+                11 : str
+                12 : i32
+                13 : main::Person
+                15 : str
+                16 : i32
+                17 : main::Person
+                19 : str
+                20 : i32
+                21 : main::Person
+                22 : [3]main::Person
+                23 : main::Company
+                24 : main::Company
+                25 : [3]main::Person
+                26 : usize
+                27 : main::Person
+                28 : i32
+                29 : main::Company
+                30 : [3]main::Person
+                31 : usize
+                32 : main::Person
                 33 : i32
-                34 : void
-                35 : () -> void
+                34 : i32
+                35 : i32
+                36 : void
+                37 : () -> void
                 l0 : main::Company
             "#]],
             |_| [],
@@ -3607,32 +3977,34 @@ mod tests {
                 main::Person : type
                 main::foo : () -> void
                 2 : type
-                5 : type
-                9 : str
-                10 : i32
-                11 : main::Person
-                13 : str
-                14 : i32
-                15 : main::Person
-                17 : str
-                18 : i32
-                19 : main::Person
-                20 : [3]main::Person
-                21 : main::Company
-                22 : main::Company
-                23 : [3]main::Person
-                24 : usize
-                25 : main::Person
-                26 : i32
-                27 : main::Company
-                28 : [3]main::Person
-                29 : usize
-                30 : main::Person
-                31 : i32
-                32 : i32
+                3 : usize
+                6 : type
+                8 : usize
+                11 : str
+                12 : i32
+                13 : main::Person
+                15 : str
+                16 : i32
+                17 : main::Person
+                19 : str
+                20 : i32
+                21 : main::Person
+                22 : [3]main::Person
+                23 : main::Company
+                24 : main::Company
+                25 : [3]main::Person
+                26 : usize
+                27 : main::Person
+                28 : i32
+                29 : main::Company
+                30 : [3]main::Person
+                31 : usize
+                32 : main::Person
                 33 : i32
-                34 : void
-                35 : () -> void
+                34 : i32
+                35 : i32
+                36 : void
+                37 : () -> void
                 l0 : main::Company
             "#]],
             |_| {
@@ -3769,16 +4141,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : usize
-                7 : i32
+                6 : [3]i32
+                7 : usize
                 8 : i32
-                9 : void
-                10 : () -> void
+                9 : i32
+                10 : void
+                11 : () -> void
                 l0 : [3]i32
             "#]],
             |_| [],
@@ -3797,16 +4170,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : usize
-                7 : i32
-                8 : {uint}
-                9 : void
-                10 : () -> void
+                6 : [3]i32
+                7 : usize
+                8 : i32
+                9 : {uint}
+                10 : void
+                11 : () -> void
                 l0 : [3]i32
             "#]],
             |_| {
@@ -3932,12 +4306,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : ([3]i32) -> void
-                2 : [3]i32
-                3 : usize
-                4 : i32
-                5 : {uint}
-                6 : void
-                7 : ([3]i32) -> void
+                0 : usize
+                3 : [3]i32
+                4 : usize
+                5 : i32
+                6 : {uint}
+                7 : void
+                8 : ([3]i32) -> void
             "#]],
             |_| {
                 [(
@@ -4735,6 +5110,45 @@ mod tests {
     }
 
     #[test]
+    fn inference_by_too_large_for_u32() {
+        check(
+            r#"
+                foo :: () {
+                    my_num := 4_294_967_296;
+                };
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : u64
+                1 : void
+                2 : () -> void
+                l0 : u64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn inference_by_too_large_for_i32() {
+        check(
+            r#"
+                foo :: () {
+                    my_num := -2_147_483_648;
+                };
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : i64
+                1 : i64
+                2 : void
+                3 : () -> void
+                l0 : i64
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
     fn struct_literal() {
         check(
             r#"
@@ -4977,7 +5391,7 @@ mod tests {
                 main::foo : () -> void
                 0 : str
                 1 : str
-                2 : {uint}
+                2 : usize
                 3 : <unknown>
                 4 : void
                 5 : () -> void
@@ -5644,7 +6058,8 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                3 : type
+                2 : <unknown>
+                3 : (i32, str) -> void
                 4 : void
                 5 : () -> void
             "#]],
@@ -5730,7 +6145,7 @@ mod tests {
     }
 
     #[test]
-    fn any_type() {
+    fn any_ptr() {
         check(
             r#"
                 get_any :: () {
@@ -5761,6 +6176,43 @@ mod tests {
                 l2 : ^any
                 l3 : ^f32
                 l4 : f32
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn any_slice() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : [] i32 = [] i32 { 100, 200 };
+
+                    ptr : [] any = foo as [] any;
+
+                    foo : [] f32 = ptr as [] f32;
+
+                    first : f32 = foo[0];
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                3 : i32
+                4 : i32
+                5 : []i32
+                8 : []i32
+                11 : []any
+                14 : []any
+                17 : []f32
+                19 : []f32
+                20 : usize
+                21 : f32
+                22 : void
+                23 : () -> void
+                l0 : []i32
+                l1 : []any
+                l2 : []f32
+                l3 : f32
             "#]],
             |_| [],
         );
@@ -5817,6 +6269,47 @@ mod tests {
     }
 
     #[test]
+    fn cast_slice_without_any() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : [] i32 = [] i32 { 100, 200 };
+
+                    foo : [] f32 = foo as [] f32;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                3 : i32
+                4 : i32
+                5 : []i32
+                8 : []i32
+                11 : []f32
+                12 : void
+                13 : () -> void
+                l0 : []i32
+                l1 : []f32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Uncastable {
+                        from: Ty::Slice {
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                        to: Ty::Slice {
+                            sub_ty: Ty::Float(32).into(),
+                        }
+                        .into(),
+                    },
+                    125..138,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
     fn deref_any() {
         check(
             r#"
@@ -5846,6 +6339,66 @@ mod tests {
                 l3 : any
             "#]],
             |_| [(TyDiagnosticKind::DerefAny, 187..191, None)],
+        );
+    }
+
+    #[test]
+    fn index_any_slice() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : [3] i32 = [3] i32 { 5, 10, 15 };
+
+                    ptr : [] i32 = foo;
+                    ptr : [] any = ptr as []any;
+
+                    foo : any = ptr[0];
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                0 : usize
+                3 : usize
+                5 : i32
+                6 : i32
+                7 : i32
+                8 : [3]i32
+                11 : [3]i32
+                14 : []i32
+                17 : []any
+                19 : []any
+                20 : usize
+                21 : <unknown>
+                22 : void
+                23 : () -> void
+                l0 : [3]i32
+                l1 : []i32
+                l2 : []any
+                l3 : any
+            "#]],
+            |_| [(TyDiagnosticKind::IndexAny { size: None }, 215..221, None)],
+        );
+    }
+
+    #[test]
+    fn index_any_array() {
+        check(
+            r#"
+                get_any :: (foo: [3] any) {
+                    foo : any = foo[0];
+                }
+            "#,
+            expect![[r#"
+                main::get_any : ([3]any) -> void
+                0 : usize
+                4 : [3]any
+                5 : usize
+                6 : <unknown>
+                7 : void
+                8 : ([3]any) -> void
+                l0 : any
+            "#]],
+            |_| [(TyDiagnosticKind::IndexAny { size: Some(3) }, 77..83, None)],
         );
     }
 
@@ -5883,7 +6436,7 @@ mod tests {
                 get_any :: () {
                     foo : i32 = 5;
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = ptr;
+                    ptr : ^any = ptr as ^any;
 
                     ptr : ^i32 = ptr;
                 }
@@ -5895,8 +6448,9 @@ mod tests {
                 5 : ^i32
                 8 : ^i32
                 11 : ^any
-                12 : void
-                13 : () -> void
+                14 : ^any
+                15 : void
+                16 : () -> void
                 l0 : i32
                 l1 : ^i32
                 l2 : ^any
@@ -5916,7 +6470,78 @@ mod tests {
                         }
                         .into(),
                     },
-                    179..182,
+                    187..190,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn auto_real_slice_to_any_slice() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : [] i32 = [] i32 { 5, 10, 15 };
+
+                    ptr : [] any = foo;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : []i32
+                9 : []i32
+                10 : void
+                11 : () -> void
+                l0 : []i32
+                l1 : []any
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn auto_any_slice_to_real_slice() {
+        check(
+            r#"
+                get_any :: () {
+                    foo : [] i32 = [] i32 { 5, 10, 15 };
+                    ptr : [] any = foo as [] any;
+
+                    ptr : [] i32 = ptr;
+                }
+            "#,
+            expect![[r#"
+                main::get_any : () -> void
+                3 : i32
+                4 : i32
+                5 : i32
+                6 : []i32
+                9 : []i32
+                12 : []any
+                15 : []any
+                16 : void
+                17 : () -> void
+                l0 : []i32
+                l1 : []any
+                l2 : []i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Slice {
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                        found: Ty::Slice {
+                            sub_ty: Ty::Any.into(),
+                        }
+                        .into(),
+                    },
+                    176..179,
                     None,
                 )]
             },
@@ -5935,17 +6560,18 @@ mod tests {
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                1 : char
+                0 : usize
                 2 : char
                 3 : char
-                4 : [3]char
+                4 : char
                 5 : [3]char
-                6 : ^[3]char
-                9 : ^any
+                6 : [3]char
+                7 : ^[3]char
                 10 : ^any
-                12 : str
-                13 : void
-                14 : () -> void
+                11 : ^any
+                13 : str
+                14 : void
+                15 : () -> void
                 l0 : [3]char
                 l1 : ^any
                 l2 : str
@@ -5966,18 +6592,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                1 : char
+                0 : usize
                 2 : char
                 3 : char
-                4 : [3]char
+                4 : char
                 5 : [3]char
-                6 : ^[3]char
-                9 : ^any
-                12 : ^char
+                6 : [3]char
+                7 : ^[3]char
+                10 : ^any
                 13 : ^char
-                15 : str
-                16 : void
-                17 : () -> void
+                14 : ^char
+                16 : str
+                17 : void
+                18 : () -> void
                 l0 : [3]char
                 l1 : ^char
                 l2 : str
@@ -5998,18 +6625,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                1 : char
+                0 : usize
                 2 : char
                 3 : char
-                4 : [3]char
+                4 : char
                 5 : [3]char
-                6 : ^[3]char
-                9 : ^any
-                12 : ^u8
+                6 : [3]char
+                7 : ^[3]char
+                10 : ^any
                 13 : ^u8
-                15 : str
-                16 : void
-                17 : () -> void
+                14 : ^u8
+                16 : str
+                17 : void
+                18 : () -> void
                 l0 : [3]char
                 l1 : ^u8
                 l2 : str
@@ -6029,14 +6657,15 @@ mod tests {
             ",
             expect![[r#"
                 main::get_any : () -> void
-                1 : char
+                0 : usize
                 2 : char
                 3 : char
-                4 : [3]char
+                4 : char
                 5 : [3]char
-                7 : str
-                8 : void
-                9 : () -> void
+                6 : [3]char
+                8 : str
+                9 : void
+                10 : () -> void
                 l0 : [3]char
                 l1 : str
             "#]],
@@ -6354,17 +6983,18 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : ^[3]i32
+                6 : [3]i32
                 7 : ^[3]i32
-                8 : usize
-                9 : i32
-                10 : void
-                11 : () -> void
+                8 : ^[3]i32
+                9 : usize
+                10 : i32
+                11 : void
+                12 : () -> void
                 l0 : [3]i32
                 l1 : ^[3]i32
             "#]],
@@ -6386,18 +7016,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : ^[3]i32
-                7 : ^^[3]i32
+                6 : [3]i32
+                7 : ^[3]i32
                 8 : ^^[3]i32
-                9 : usize
-                10 : i32
-                11 : void
-                12 : () -> void
+                9 : ^^[3]i32
+                10 : usize
+                11 : i32
+                12 : void
+                13 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
@@ -6424,7 +7055,7 @@ mod tests {
                 2 : ^{uint}
                 3 : ^^{uint}
                 4 : ^^{uint}
-                5 : {uint}
+                5 : usize
                 6 : <unknown>
                 7 : void
                 8 : () -> void
@@ -6465,18 +7096,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : ^[3]i32
-                7 : ^^[3]i32
+                6 : [3]i32
+                7 : ^[3]i32
                 8 : ^^[3]i32
-                9 : usize
-                10 : i32
-                11 : void
-                12 : () -> void
+                9 : ^^[3]i32
+                10 : usize
+                11 : i32
+                12 : void
+                13 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
@@ -6520,19 +7152,20 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : ^mut [3]i32
-                7 : ^mut ^mut [3]i32
+                6 : [3]i32
+                7 : ^mut [3]i32
                 8 : ^mut ^mut [3]i32
-                9 : usize
-                10 : i32
+                9 : ^mut ^mut [3]i32
+                10 : usize
                 11 : i32
-                12 : void
-                13 : () -> void
+                12 : i32
+                13 : void
+                14 : () -> void
                 l0 : [3]i32
                 l1 : ^mut ^mut [3]i32
             "#]],
@@ -6554,19 +7187,20 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                6 : ^[3]i32
-                7 : ^^[3]i32
+                6 : [3]i32
+                7 : ^[3]i32
                 8 : ^^[3]i32
-                9 : usize
-                10 : i32
-                11 : {uint}
-                12 : void
-                13 : () -> void
+                9 : ^^[3]i32
+                10 : usize
+                11 : i32
+                12 : {uint}
+                13 : void
+                14 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
@@ -6687,17 +7321,19 @@ mod tests {
                 main::main : () -> i32
                 1 : type
                 3 : type
-                6 : type
-                9 : {uint}
-                10 : {uint}
+                4 : usize
+                7 : type
+                9 : usize
                 11 : {uint}
-                12 : distinct'1 [3]distinct'0 i32
-                13 : distinct'1 [3]distinct'0 i32
-                14 : usize
-                15 : distinct'0 i32
-                17 : i32
-                18 : i32
-                19 : () -> i32
+                12 : {uint}
+                13 : {uint}
+                14 : distinct'1 [3]distinct'0 i32
+                15 : distinct'1 [3]distinct'0 i32
+                16 : usize
+                17 : distinct'0 i32
+                19 : i32
+                20 : i32
+                21 : () -> i32
                 l0 : type
                 l1 : type
                 l2 : type
@@ -6786,30 +7422,32 @@ mod tests {
                 main::main : () -> i32
                 1 : type
                 3 : type
-                6 : type
-                9 : type
-                11 : i32
-                12 : distinct'0 i32
-                13 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                17 : i32
-                18 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                4 : usize
+                7 : type
+                10 : type
+                12 : i32
+                13 : distinct'0 i32
+                14 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                17 : usize
                 19 : i32
                 20 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                21 : distinct'0 i32
-                23 : i32
-                24 : i32
+                21 : i32
+                22 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                23 : distinct'0 i32
                 25 : i32
-                26 : [3]i32
-                27 : [3]i32
-                28 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-                29 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-                30 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                31 : distinct'1 [3]distinct'0 i32
-                32 : usize
-                33 : distinct'0 i32
-                35 : i32
-                36 : i32
-                37 : () -> i32
+                26 : i32
+                27 : i32
+                28 : [3]i32
+                29 : [3]i32
+                30 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+                31 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+                32 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                33 : distinct'1 [3]distinct'0 i32
+                34 : usize
+                35 : distinct'0 i32
+                37 : i32
+                38 : i32
+                39 : () -> i32
                 l0 : type
                 l1 : type
                 l2 : type
@@ -7570,9 +8208,10 @@ mod tests {
                 3 : i32
                 4 : []i32
                 5 : []i32
-                8 : [3]i32
-                9 : void
-                10 : () -> void
+                6 : usize
+                9 : [3]i32
+                10 : void
+                11 : () -> void
                 l0 : []i32
                 l1 : [3]i32
             "#]],
@@ -7596,9 +8235,10 @@ mod tests {
                 2 : i32
                 3 : i32
                 4 : []i32
-                7 : []i32
-                8 : void
-                9 : () -> void
+                5 : usize
+                8 : []i32
+                9 : void
+                10 : () -> void
                 l0 : []i32
                 l1 : [3]i32
             "#]],
@@ -7634,14 +8274,15 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
+                4 : i32
                 5 : [3]i32
-                8 : []i32
-                9 : void
-                10 : () -> void
+                6 : [3]i32
+                9 : []i32
+                10 : void
+                11 : () -> void
                 l0 : [3]i32
                 l1 : []i32
             "#]],
@@ -7661,13 +8302,14 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
+                0 : usize
                 2 : i32
                 3 : i32
-                4 : [3]i32
-                7 : [3]i32
-                8 : void
-                9 : () -> void
+                4 : i32
+                5 : [3]i32
+                8 : [3]i32
+                9 : void
+                10 : () -> void
                 l0 : [3]i32
                 l1 : []i32
             "#]],
@@ -7883,6 +8525,29 @@ mod tests {
                 3 : void
                 4 : () -> void
                 l0 : type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn unknown_array_instance_as_type() {
+        // this is just to make sure that the compiler doens't show a diagnostic
+        // like "expected `type` but found `<unknown>`"
+        check(
+            r#"
+                foo :: () {
+                    x : [_] i32 {};
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : <unknown>
+                2 : <unknown>
+                3 : <unknown>
+                4 : void
+                5 : () -> void
+                l0 : <unknown>
             "#]],
             |_| [],
         )

@@ -67,6 +67,10 @@ impl FileName {
         res
     }
 
+    pub fn debug(&self, interner: &Interner) -> String {
+        interner.lookup(self.0).to_string()
+    }
+
     pub fn is_mod(&self, mod_dir: &Path, interner: &Interner) -> bool {
         let file_name = Path::new(interner.lookup(self.0));
 
@@ -108,6 +112,14 @@ impl Fqn {
         format!(
             r#"{}::{}"#,
             self.file.to_string(mod_dir, interner),
+            interner.lookup(self.name.0),
+        )
+    }
+
+    pub fn debug(&self, interner: &Interner) -> String {
+        format!(
+            r#"{}::{}"#,
+            self.file.debug(interner),
             interner.lookup(self.name.0),
         )
     }

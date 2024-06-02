@@ -7,31 +7,59 @@ malloc :: (size: usize) -> ^mut any extern;
 calloc :: (len: usize, size: usize) -> ^mut any extern;
 // frees allocated memory
 free :: (ptr: ^any) extern;
+// reallocates already allocated memory
+realloc :: (ptr: ^mut any, size: usize) -> ^mut any extern;
 // copies len bytes from dst to src
-memcpy :: (dst: ^any, src: ^any, len: usize) extern;
+memcpy :: (dst: ^mut any, src: ^any, len: usize) extern;
 
 // prints a string to the screen, adds a newline at the end
 puts :: (text: str) extern;
 // prints a char to the screen
 putchar :: (ch: char) extern;
 
-// opens a file for either reading "r", writing "w", appending "a",
-// open a file to update both reading and writing "r+",
-// create an empty file for reading and writing "w+",
-// or open a file for reading and appending "a+"
-fopen :: (filename: str, mode: str) -> usize extern;
+// a file descriptor is an integer that represents an open file
+File_Desc :: distinct i32;
+
+stdin : File_Desc : 0;
+stdout : File_Desc : 1;
+stderr : File_Desc : 2;
+
+// opens a file
+open :: (pathname: str, flags: i32) -> File_Desc extern; 
+// moves the read/write pointer of a file descriptor
+lseek :: (file: File_Desc, offset: isize, whence: i32) -> isize extern;
+// closes a file descriptor fd
+close :: (file: File_Desc) -> i32 extern;
+// writes up to count bytes from the given buffer to
+// the file referred to by the file descriptor fd.
+write :: (file: File_Desc, buf: ^u8, count: usize) -> isize extern;
+// attempts to read up to count bytes from the file into the buf.
+// this returns the number of bytes read.
+read :: (file: File_Desc, buf: ^mut u8, count: usize) -> isize extern;
+
+// there are two ways to mess with files in libc:
+// `*FILE` pointers and file descriptors.
+// `FILE` is a struct in libc but it's platform specific,
+// so here it's represented by a usize
+File_Pointer :: distinct usize;
+
+// opens a file for either reading "r", writing "w", appending "a".
+// open a file to update both reading and writing "r+".
+// create an empty file for reading and writing "w+".
+// open a file for reading and appending "a+".
+fopen :: (pathname: str, mode: str) -> File_Pointer extern;
 // closes a file
-fclose :: (fp: usize) -> i32 extern;
+fclose :: (file: File_Pointer) -> i32 extern;
 
 // writes a char to a file
-fputc :: (ch: char, fp: usize) -> i32 extern;
-// writes a string to a file, doesn't add a newline at the end
-fputs :: (text: str, fp: usize) -> i32 extern;
+fputc :: (ch: char, file: File_Pointer) -> i32 extern;
+// writes a string to a file and doesn't add a newline at the end
+fputs :: (text: str, file: File_Pointer) -> i32 extern;
 
 // read a char from a file
-fgetc :: (fp: usize) -> char extern;
+fgetc :: (fp: File_Pointer) -> char extern;
 // read len char's from a file and store them in buf
-fgets :: (buf: ^char, len: i32, fp: usize) -> str extern;
+fgets :: (buf: ^mut char, len: i32, fp: File_Pointer) -> str extern;
 
 // tests the end-of-file indicator for the given file
 feof :: (fp: usize) -> bool extern;

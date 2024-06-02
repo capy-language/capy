@@ -1,4 +1,9 @@
 
+positive_inf :: comptime 1.0  / 0.0;
+negative_inf :: comptime -1.0 / 0.0;
+// NaN != NaN, so use is_NaN instead
+NaN :: comptime 0.0 / 0.0;
+
 pow :: (base: i32, exp: i32) -> i32 {
     result := 1;
 
@@ -64,4 +69,8 @@ min_usize :: (x: usize, y: usize) -> usize {
     } else {
         y
     }
+}
+
+is_NaN :: (n: f64) -> bool {
+    n != n
 }

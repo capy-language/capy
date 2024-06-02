@@ -9,7 +9,7 @@ use cranelift::prelude::{
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use hir::FQComptime;
-use hir_ty::{ComptimeResult, Ty};
+use hir_ty::{ComptimeResult, InternTyExt, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -176,6 +176,7 @@ pub(crate) struct FunctionToCompile {
 }
 
 pub(crate) struct Compiler<'a> {
+    pub(crate) final_binary: bool,
     pub(crate) verbosity: Verbosity,
 
     pub(crate) mod_dir: &'a std::path::Path,
@@ -837,6 +838,7 @@ impl Compiler<'_> {
         let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
 
         let function_compiler = FunctionCompiler {
+            final_binary: self.final_binary,
             builder,
             file_name: module_name,
             mod_dir: self.mod_dir,
@@ -931,6 +933,50 @@ fn get_func_id(
 
     let lambda = match world_bodies[fqn.file][global_body] {
         hir::Expr::Lambda(lambda) => lambda,
+        hir::Expr::LocalGlobal(global) => {
+            let fqn = hir::Fqn {
+                file: fqn.file,
+                name: global.name,
+            };
+
+            // todo: remove recursion
+            return get_func_id(
+                module,
+                pointer_ty,
+                mod_dir,
+                functions,
+                compiler_defined_functions,
+                functions_to_compile,
+                tys,
+                world_bodies,
+                interner,
+                fqn,
+            );
+        }
+        hir::Expr::Member { previous, field } => {
+            if let Ty::File(file) = tys[fqn.file][previous].as_ref() {
+                let fqn = hir::Fqn {
+                    file: *file,
+                    name: field.name,
+                };
+
+                // todo: remove recursion
+                return get_func_id(
+                    module,
+                    pointer_ty,
+                    mod_dir,
+                    functions,
+                    compiler_defined_functions,
+                    functions_to_compile,
+                    tys,
+                    world_bodies,
+                    interner,
+                    fqn,
+                );
+            } else {
+                unreachable!("there shouldn't be any other possibilities here");
+            }
+        }
         _ => todo!("global with function type does not have a lambda as it's body"),
     };
 
@@ -1002,6 +1048,9 @@ fn cast(
     if cast_from.is_functionally_equivalent_to(&cast_to, true) {
         return val;
     }
+
+    let cast_from = cast_from.remove_distinct();
+    let cast_to = cast_to.remove_distinct();
 
     match (cast_from.as_ref(), cast_to.as_ref()) {
         (Ty::Array { size, .. }, Ty::Slice { .. }) => {

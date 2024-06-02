@@ -1,0 +1,6 @@
+0x1A
+===
+Root@0..4
+  ExprStmt@0..4
+    IntLiteral@0..4
+      Hex@0..4 "0x1A"

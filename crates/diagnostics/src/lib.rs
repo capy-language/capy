@@ -412,12 +412,6 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
-        LoweringDiagnosticKind::ArraySizeNotConst => {
-            "array sizes mut be constant integer literals".to_string()
-        }
-        LoweringDiagnosticKind::ArraySizeMismatch { found, expected } => {
-            format!("expected `{}` elements, found `{}`", expected, found)
-        }
         LoweringDiagnosticKind::ModMustBeAlphanumeric => "modules must be alphanumeric".to_string(),
         LoweringDiagnosticKind::ModDoesNotExist { module, mod_dir } => {
             format!("a `{}` module could not be found in `{}`", module, mod_dir)
@@ -567,6 +561,8 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::DerefAny => {
             "tried dereferencing `^` a pointer to `any`. try casting it to a different pointer type first".to_string()
         }
+        hir_ty::TyDiagnosticKind::IndexAny { size: Some(size) } => format!("tried indexing `[]` an array of `[{size}] any`. try casting it to a different array type first"),
+        hir_ty::TyDiagnosticKind::IndexAny { size: None } => "tried indexing `[]` a slice of `[] any`. try casting it to a different slice type first".to_string(),
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
@@ -631,8 +627,14 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::EntryBadReturn => {
             "the entry point must either return `{int}` or `void`".to_string()
         }
-        hir_ty::TyDiagnosticKind::ArraySizeRequired => {
-            "array types must have a size".to_string()
+        hir_ty::TyDiagnosticKind::ArraySizeNotInt => {
+            "array size must be an integer".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ArraySizeNotConst => {
+            "array size must be known at compile-time".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ArraySizeMismatch { found, expected } => {
+            format!("expected `{}` elements, found {}", expected, found)
         }
         hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
             "external globals must have a type annotation".to_string()
@@ -702,6 +704,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Defer => "`defer`",
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
+        TokenKind::Hex => "hex literal",
         TokenKind::Float => "float",
         TokenKind::SingleQuote => "`'`",
         TokenKind::DoubleQuote => "`\"`",

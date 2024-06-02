@@ -29,5 +29,14 @@ main :: () {
 
     core.print("log 500 = ");
     core.println(comptime core.math.log10(500));
+
+    core.print(" 1 / 0 = ");
+    core.println(1.0 / 0.0);
+
+    core.print("-1 / 0 = ");
+    core.println(-1.0 / 0.0);
+
+    core.print(" 0 / 0 = ");
+    core.println(0.0 / 0.0);
 }
 

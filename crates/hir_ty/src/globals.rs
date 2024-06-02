@@ -60,6 +60,7 @@ impl ExprMutability {
 
 pub(crate) struct GlobalInferenceCtx<'a> {
     pub(crate) file: hir::FileName,
+    pub(crate) current_inferring: Inferrable,
     pub(crate) world_index: &'a hir::WorldIndex,
     pub(crate) world_bodies: &'a hir::WorldBodies,
     pub(crate) bodies: &'a hir::Bodies,
@@ -90,7 +91,11 @@ impl GlobalInferenceCtx<'_> {
 
         let mut actual_ty = self.reinfer_expr(body);
 
+        // {int} globals -> i32
         let i32 = Ty::IInt(32).into();
+        // {float} gloabls -> f64
+        let f64 = Ty::Float(64).into();
+
         if let Some(expected_ty) = expected_ty {
             self.expect_match(actual_ty, expected_ty, body);
             self.replace_weak_tys(body, expected_ty);
@@ -98,6 +103,8 @@ impl GlobalInferenceCtx<'_> {
             actual_ty = expected_ty;
         } else if global && self.replace_weak_tys(body, i32) {
             actual_ty = i32;
+        } else if global && self.replace_weak_tys(body, f64) {
+            actual_ty = f64;
         }
 
         if global && !self.is_const(body) {
@@ -109,7 +116,7 @@ impl GlobalInferenceCtx<'_> {
                 help: None,
             });
 
-            println!("not const: {:#?}", &self.bodies[body]);
+            // println!("not const: {:#?}", &self.bodies[body]);
         }
 
         Ok(actual_ty)
@@ -321,11 +328,11 @@ impl GlobalInferenceCtx<'_> {
     }
 
     fn is_const(&self, expr: Idx<Expr>) -> bool {
-        let mut to_check = vec![expr];
+        let mut to_check = vec![(self.file, expr)];
 
         let mut idx = 0;
-        while let Some(expr) = to_check.get(idx).copied() {
-            let result = match &self.bodies[expr] {
+        while let Some((file, expr)) = to_check.get(idx).copied() {
+            let result = match &self.world_bodies[file][expr] {
                 Expr::Missing
                 | Expr::Lambda(_)
                 | Expr::Import(_)
@@ -337,13 +344,54 @@ impl GlobalInferenceCtx<'_> {
                 | Expr::IntLiteral(_)
                 | Expr::FloatLiteral(_)
                 | Expr::BoolLiteral(_) => true,
-                Expr::Array { items, .. } if self.tys[self.file][expr].is_array() => {
+                Expr::Array { items, .. } if self.tys[file][expr].is_array() => {
                     if let Some(items) = items {
-                        to_check.extend(items.iter());
+                        to_check.extend(items.iter().map(|e| (file, *e)));
                     }
                     true
                 }
-                _ => matches!(*(self.tys[self.file][expr]), Ty::Type | Ty::File(_)),
+                Expr::LocalGlobal(global) => {
+                    let fqn = hir::Fqn {
+                        file,
+                        name: global.name,
+                    };
+
+                    if self.world_bodies.is_extern(fqn) {
+                        false
+                    } else {
+                        to_check.push((file, self.world_bodies.body(fqn)));
+                        true
+                    }
+                }
+                Expr::Local(local) => {
+                    let local_def = &self.world_bodies[file][*local];
+
+                    to_check.push((file, local_def.value));
+
+                    !local_def.mutable
+                }
+                Expr::Member { previous, field } => {
+                    let old_file = file;
+
+                    if let Ty::File(file) = self.tys[old_file][*previous].as_ref() {
+                        to_check.push((old_file, *previous));
+
+                        let fqn = hir::Fqn {
+                            file: *file,
+                            name: field.name,
+                        };
+
+                        if self.world_bodies.is_extern(fqn) {
+                            false
+                        } else {
+                            to_check.push((*file, self.world_bodies.body(fqn)));
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                }
+                _ => matches!(*(self.tys[file][expr]), Ty::Type | Ty::File(_)),
             };
 
             if !result {
@@ -568,6 +616,11 @@ impl GlobalInferenceCtx<'_> {
                     }
 
                     let new_ty = match &self.bodies[expr] {
+                        Expr::IntLiteral(num) => match *previous_ty {
+                            Ty::IInt(0) if *num > i32::MAX as u64 => Ty::IInt(64).into(),
+                            Ty::UInt(0) if *num > u32::MAX as u64 => Ty::UInt(64).into(),
+                            _ => continue,
+                        },
                         Expr::Ref {
                             mutable,
                             expr: inner,
@@ -689,7 +742,44 @@ impl GlobalInferenceCtx<'_> {
                         self.tys[self.file].expr_tys.insert(expr, new_ty);
                     }
                 }
-                Descendant::Stmt(_) => {}
+                Descendant::Stmt(stmt) => match &self.bodies[stmt] {
+                    Stmt::Expr(_) => {}
+                    Stmt::LocalDef(local_def) => {
+                        let def_body = &self.bodies[*local_def];
+
+                        if def_body.ty.is_some() {
+                            // if there's a type annotation, then even if the value changed
+                            // types, the local will always have the type of it's type annotation
+                            continue;
+                        }
+
+                        let previous_ty = self.tys[self.file][*local_def];
+                        let new_ty = self.tys[self.file][def_body.value];
+
+                        let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
+                            && new_ty.is_functionally_equivalent_to(&previous_ty, false);
+
+                        #[cfg(debug_assertions)]
+                        if previous_ty != new_ty
+                            && !(previous_ty.is_weak_replaceable_by(&new_ty) || loss_of_distinct)
+                        {
+                            panic!(
+                                "#{} : {:?} is not weak replaceable by {:?}",
+                                expr.into_raw(),
+                                previous_ty,
+                                new_ty
+                            );
+                        }
+
+                        if !loss_of_distinct {
+                            self.tys[self.file].local_tys.insert(*local_def, new_ty);
+                        }
+                    }
+                    Stmt::Assign(_) => {}
+                    Stmt::Break { .. } => {}
+                    Stmt::Continue { .. } => {}
+                    Stmt::Defer { .. } => {}
+                },
             }
         }
 
@@ -707,7 +797,7 @@ impl GlobalInferenceCtx<'_> {
 
         let descendants = self.bodies.descendants(expr, hir::DescentOpts::Eval);
 
-        // This all works because parents will ALWAYS come before children
+        // This all works because children will ALWAYS come before parents
         for descendant in descendants.collect_vec().into_iter().rev() {
             match descendant {
                 Descendant::Expr(expr) => {
@@ -724,7 +814,12 @@ impl GlobalInferenceCtx<'_> {
                         Expr::BoolLiteral(_) => Ty::Bool.into(),
                         Expr::StringLiteral(_) => Ty::String.into(),
                         Expr::CharLiteral(_) => Ty::Char.into(),
-                        Expr::Array { size, items, ty } => {
+                        Expr::Array {
+                            size,
+                            items,
+                            items_range,
+                            ty,
+                        } => {
                             if let Some(items) = items {
                                 let sub_ty = self.const_ty(*ty)?;
 
@@ -734,11 +829,60 @@ impl GlobalInferenceCtx<'_> {
                                 }
 
                                 if let Some(size) = size {
-                                    Ty::Array {
-                                        size: *size,
-                                        sub_ty,
+                                    'branch: {
+                                        let usize_ty = Ty::UInt(u8::MAX).into();
+
+                                        if !self.expect_match(
+                                            self.tys[self.file][*size],
+                                            usize_ty,
+                                            *size,
+                                        ) {
+                                            break 'branch Ty::Unknown.into();
+                                        }
+                                        self.replace_weak_tys(*size, usize_ty);
+
+                                        if !self.is_const(*size) {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::ArraySizeNotConst,
+                                                file: self.file,
+                                                range: self.bodies.range_for_expr(*size),
+                                                expr: Some(*size),
+                                                help: None,
+                                            });
+
+                                            break 'branch Ty::Unknown.into();
+                                        }
+
+                                        match self.const_data(self.file, *size)? {
+                                            Some(ComptimeResult::Integer { num, .. }) => {
+                                                if num as usize != items.len() {
+                                                    self.diagnostics.push(TyDiagnostic {
+                                                        kind: TyDiagnosticKind::ArraySizeMismatch {
+                                                            found: items.len() as u32,
+                                                            expected: num as u32,
+                                                        },
+                                                        file: self.file,
+                                                        range: items_range.unwrap(),
+                                                        expr: Some(*size),
+                                                        help: None,
+                                                    });
+                                                }
+
+                                                Ty::Array { size: num, sub_ty }.into()
+                                            }
+                                            _ => {
+                                                self.diagnostics.push(TyDiagnostic {
+                                                    kind: TyDiagnosticKind::ArraySizeNotInt,
+                                                    file: self.file,
+                                                    range: self.bodies.range_for_expr(*size),
+                                                    expr: Some(*size),
+                                                    help: None,
+                                                });
+
+                                                Ty::Unknown.into()
+                                            }
+                                        }
                                     }
-                                    .into()
                                 } else {
                                     Ty::Slice { sub_ty }.into()
                                 }
@@ -756,6 +900,10 @@ impl GlobalInferenceCtx<'_> {
                             }
 
                             let index_ty = self.tys[self.file][*index];
+
+                            if self.expect_match(index_ty, Ty::UInt(u8::MAX).into(), *index) {
+                                self.replace_weak_tys(*index, Ty::UInt(u8::MAX).into());
+                            }
 
                             if *deref_source_ty == Ty::Unknown {
                                 Ty::Unknown.into()
@@ -778,13 +926,35 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                 }
 
-                                if self.expect_match(index_ty, Ty::UInt(u8::MAX).into(), *index) {
-                                    self.replace_weak_tys(*index, Ty::UInt(u8::MAX).into());
-                                }
+                                if array_sub_ty.is_any_type() {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::IndexAny {
+                                            size: Some(actual_size),
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(expr),
+                                        help: None,
+                                    });
 
-                                array_sub_ty
+                                    Ty::Unknown.into()
+                                } else {
+                                    array_sub_ty
+                                }
                             } else if let Some(slice_sub_ty) = deref_source_ty.as_slice() {
-                                slice_sub_ty
+                                if slice_sub_ty.is_any_type() {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::IndexAny { size: None },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(expr),
+                                        help: None,
+                                    });
+
+                                    Ty::Unknown.into()
+                                } else {
+                                    slice_sub_ty
+                                }
                             } else {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
@@ -954,7 +1124,11 @@ impl GlobalInferenceCtx<'_> {
 
                                 op.default_ty().into()
                             } else {
-                                op.get_possible_output_ty(expr_ty)
+                                let output = op.get_possible_output_ty(expr_ty);
+
+                                self.replace_weak_tys(*expr, output);
+
+                                output
                             }
                         }
                         Expr::Block { stmts, tail_expr } => {
@@ -1318,6 +1492,10 @@ impl GlobalInferenceCtx<'_> {
                                 ..
                             } = &self.bodies[*lambda];
 
+                            let is_type = !is_extern
+                                && return_ty.is_some()
+                                && self.bodies[*body] == hir::Expr::Missing;
+
                             let return_ty = if let Some(return_ty) = return_ty {
                                 self.const_ty(*return_ty)?
                             } else {
@@ -1335,7 +1513,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                             .into();
 
-                            if !is_extern && self.bodies[*body] == hir::Expr::Missing {
+                            if is_type {
                                 self.tys[self.file].meta_tys.insert(expr, ty);
 
                                 Ty::Type.into()
@@ -1942,15 +2120,50 @@ impl GlobalInferenceCtx<'_> {
                             size,
                             items: None,
                             ty,
-                        } => {
+                            ..
+                        } => 'branch: {
                             let sub_ty = self.tys[self.file].meta_tys[*ty];
 
                             if let Some(size) = size {
-                                Ty::Array {
-                                    size: *size,
-                                    sub_ty,
+                                // we must infer it manually because it might not
+                                // have been inferred.
+                                // todo: remove recursion
+                                self.infer_expr(*size)?;
+
+                                let usize_ty = Ty::UInt(u8::MAX).into();
+                                if !self.expect_match(self.tys[self.file][*size], usize_ty, *size) {
+                                    break 'branch Ty::Unknown.into();
                                 }
-                                .into()
+
+                                self.replace_weak_tys(*size, usize_ty);
+
+                                if !self.is_const(*size) {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::ArraySizeNotConst,
+                                        file: self.file,
+                                        range: self.bodies.range_for_expr(*size),
+                                        expr: Some(*size),
+                                        help: None,
+                                    });
+                                    break 'branch Ty::Unknown.into();
+                                }
+
+                                match self.const_data(self.file, *size)? {
+                                    Some(ComptimeResult::Integer { num, .. }) => {
+                                        Ty::Array { size: num, sub_ty }.into()
+                                    }
+                                    _ => {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::ArraySizeNotInt,
+                                            file: self.file,
+                                            range: self.bodies.range_for_expr(*size),
+                                            expr: Some(*size),
+                                            help: None,
+                                        });
+
+                                        Ty::Unknown.into()
+                                    }
+                                }
                             } else {
                                 Ty::Slice { sub_ty }.into()
                             }
@@ -2037,7 +2250,7 @@ impl GlobalInferenceCtx<'_> {
                                         _ => unreachable!(),
                                     }
                                 } else {
-                                    println!("#{} is not safe to compile", body.into_raw());
+                                    // println!("#{} is not safe to compile", body.into_raw());
                                     Ty::Unknown.into()
                                 }
                             } else {
@@ -2045,17 +2258,21 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         _ => {
+                            // todo: remove recursion
                             let expr_ty = self.infer_expr(expr)?;
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::Mismatch {
-                                    expected: Ty::Type.into(),
-                                    found: expr_ty,
-                                },
-                                file: self.file,
-                                expr: Some(expr),
-                                range: self.bodies.range_for_expr(expr),
-                                help: None,
-                            });
+
+                            if !expr_ty.is_unknown() {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::Mismatch {
+                                        expected: Ty::Type.into(),
+                                        found: expr_ty,
+                                    },
+                                    file: self.file,
+                                    expr: Some(expr),
+                                    range: self.bodies.range_for_expr(expr),
+                                    help: None,
+                                });
+                            }
 
                             Ty::Unknown.into()
                         }
@@ -2070,13 +2287,88 @@ impl GlobalInferenceCtx<'_> {
         Ok(self.tys[self.file].meta_tys[expr])
     }
 
+    pub(crate) fn const_data(
+        &mut self,
+        file: hir::FileName,
+        expr: Idx<hir::Expr>,
+    ) -> InferResult<Option<ComptimeResult>> {
+        if !self.tys[file].expr_tys.contains_idx(expr) {
+            panic!(
+                "You should have inferred {} #{} before trying to call `const_data` on it",
+                file.debug(self.interner),
+                expr.into_raw()
+            );
+        }
+
+        match &self.world_bodies[file][expr] {
+            Expr::IntLiteral(num) => Ok(Some(ComptimeResult::Integer {
+                num: *num,
+                bit_width: 32,
+            })),
+            Expr::FloatLiteral(num) => Ok(Some(ComptimeResult::Float {
+                num: *num,
+                bit_width: 32,
+            })),
+            Expr::Comptime(comptime) => {
+                let hir::Comptime { body } = self.world_bodies[file][*comptime];
+
+                if self.is_safe_to_compile(body)? {
+                    Ok(Some((self.eval_comptime)(
+                        FQComptime {
+                            file,
+                            expr,
+                            comptime: *comptime,
+                        },
+                        self.tys,
+                    )))
+                } else {
+                    // println!("#{} is not safe to compile", body.into_raw());
+                    Ok(None)
+                }
+            }
+            Expr::Local(local_def) => {
+                let local_def = &self.world_bodies[file][*local_def];
+
+                // todo: remove recursion
+                self.const_data(file, local_def.value)
+            }
+            Expr::LocalGlobal(global) => {
+                let fqn = hir::Fqn {
+                    file,
+                    name: global.name,
+                };
+
+                self.const_data(file, self.world_bodies.body(fqn))
+            }
+            Expr::Member { previous, field } => match self.tys[self.file][*previous].as_ref() {
+                Ty::File(file) => {
+                    let fqn = hir::Fqn {
+                        file: *file,
+                        name: field.name,
+                    };
+
+                    self.const_data(*file, self.world_bodies.body(fqn))
+                }
+                _ => Ok(None),
+            },
+            // todo: add the rest of the possible expressions in `is_const`
+            _ => Ok(None),
+        }
+    }
+
     // todo: this should also be tested against LoweringDiagnostics
     pub(crate) fn is_safe_to_compile(&mut self, expr: Idx<hir::Expr>) -> InferResult<bool> {
-        let mut descendants = self
-            .bodies
-            .descendants(expr, hir::DescentOpts::All)
-            .map(|desc| (self.file, desc))
-            .collect_vec();
+        let mut checking_stack = vec![(
+            self.current_inferring,
+            self.bodies
+                .descendants(
+                    expr,
+                    hir::DescentOpts::All {
+                        include_lambdas: false,
+                    },
+                )
+                .collect_vec(),
+        )];
 
         // println!("desc: {:#?}", descendants);
 
@@ -2087,20 +2379,51 @@ impl GlobalInferenceCtx<'_> {
             .filter_map(|d| Some((d.file, d.expr?)))
             .collect();
 
-        let mut checked_fqns = FxHashSet::default();
+        let mut checked = FxHashSet::default();
+        checked.insert(self.current_inferring);
 
-        while let Some((file, desc)) = descendants.pop() {
+        loop {
+            let Some((top_inferring, top_list)) = checking_stack.last_mut() else {
+                break;
+            };
+
+            let file = top_inferring.file();
+
+            let Some(desc) = top_list.pop() else {
+                checking_stack.pop();
+                continue;
+            };
+
+            let print_dbg = cfg!(debug_assertions);
+
             match desc {
                 Descendant::Expr(expr) => {
-                    if let Some(ty) = self.tys[file].get_meta_ty(expr) {
-                        if ty.is_unknown() {
+                    // println!("checking #{}", expr.into_raw());
+
+                    if error_exprs.contains(&(file, expr)) {
+                        if print_dbg {
                             println!(
                                 "{}:{} unsafe {} #{}",
                                 file!(),
                                 line!(),
-                                file.to_string(std::path::Path::new(""), self.interner),
+                                file.debug(self.interner),
                                 expr.into_raw()
                             );
+                        }
+                        return Ok(false);
+                    }
+
+                    if let Some(ty) = self.tys[file].get_meta_ty(expr) {
+                        if ty.is_unknown() {
+                            if print_dbg {
+                                println!(
+                                    "{}:{} unsafe {} #{}",
+                                    file!(),
+                                    line!(),
+                                    file.debug(self.interner),
+                                    expr.into_raw()
+                                );
+                            }
                             return Ok(false);
                         }
 
@@ -2108,47 +2431,42 @@ impl GlobalInferenceCtx<'_> {
                     }
 
                     let Some(ty) = self.tys[file].expr_tys.get(expr) else {
-                        println!(
-                            "{}:{} unsafe {} #{}",
-                            file!(),
-                            line!(),
-                            file.to_string(std::path::Path::new(""), self.interner),
-                            expr.into_raw()
-                        );
+                        if print_dbg {
+                            println!(
+                                "{}:{} unsafe {} #{}",
+                                file!(),
+                                line!(),
+                                file.debug(self.interner),
+                                expr.into_raw()
+                            );
+                        }
                         return Ok(false);
                     };
 
                     if ty.is_unknown() {
-                        println!(
-                            "{}:{} unsafe {} #{}",
-                            file!(),
-                            line!(),
-                            file.to_string(std::path::Path::new(""), self.interner),
-                            expr.into_raw()
-                        );
-                        return Ok(false);
-                    }
-
-                    if error_exprs.contains(&(file, expr)) {
-                        println!(
-                            "{}:{} unsafe {} #{}",
-                            file!(),
-                            line!(),
-                            file.to_string(std::path::Path::new(""), self.interner),
-                            expr.into_raw()
-                        );
+                        if print_dbg {
+                            println!(
+                                "{}:{} unsafe {} #{}",
+                                file!(),
+                                line!(),
+                                file.debug(self.interner),
+                                expr.into_raw()
+                            );
+                        }
                         return Ok(false);
                     }
 
                     match &self.world_bodies[file][expr] {
                         Expr::Missing => {
-                            println!(
-                                "{}:{} unsafe {} #{}",
-                                file!(),
-                                line!(),
-                                file.to_string(std::path::Path::new(""), self.interner),
-                                expr.into_raw()
-                            );
+                            if print_dbg {
+                                println!(
+                                    "{}:{} unsafe {} #{}",
+                                    file!(),
+                                    line!(),
+                                    file.debug(self.interner),
+                                    expr.into_raw()
+                                );
+                            }
                             return Ok(false);
                         }
                         Expr::IntLiteral(_) => {}
@@ -2161,20 +2479,7 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Deref { .. } => {}
                         Expr::Binary { .. } => {}
                         Expr::Unary { .. } => {}
-                        Expr::Array { size, items, .. } => {
-                            if let (Some(size), Some(items)) = (size, items) {
-                                if *size as usize != items.len() {
-                                    println!(
-                                        "{}:{} unsafe {} #{}",
-                                        file!(),
-                                        line!(),
-                                        file.to_string(std::path::Path::new(""), self.interner),
-                                        expr.into_raw()
-                                    );
-                                    return Ok(false);
-                                }
-                            }
-                        }
+                        Expr::Array { .. } => {}
                         Expr::Index { .. } => {}
                         Expr::Block { .. } => {}
                         Expr::If { .. } => {}
@@ -2182,68 +2487,56 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Local(_) => {}
                         Expr::LocalGlobal(name) => {
                             let fqn = hir::Fqn {
-                                file: self.file,
+                                file,
                                 name: name.name,
                             };
 
-                            if checked_fqns.contains(&fqn) {
+                            let new_inf = Inferrable::Global(fqn);
+
+                            if checked.contains(&new_inf) {
                                 continue;
                             }
 
-                            checked_fqns.insert(fqn);
+                            checked.insert(new_inf);
 
                             if self.world_bodies.is_extern(fqn) {
                                 continue;
                             }
 
-                            let mut deps = Vec::new();
-
-                            if !self.all_inferred.contains(&Inferrable::Global(fqn)) {
-                                deps.push(Inferrable::Global(fqn));
+                            if !self.all_inferred.contains(&new_inf) {
+                                return Err(vec![new_inf]);
                             }
 
                             let body = self.world_bodies.body(fqn);
 
-                            if let Expr::Lambda(lambda) = self.world_bodies[fqn.file][body] {
-                                let lambda = Inferrable::Lambda(FQLambda {
-                                    file: fqn.file,
-                                    expr: body,
-                                    lambda,
-                                });
-
-                                if !self.all_inferred.contains(&lambda) {
-                                    deps.push(lambda);
-                                }
-                            }
-
-                            if !deps.is_empty() {
-                                return Err(deps);
-                            }
-
-                            descendants = descendants
-                                .into_iter()
-                                .chain(
-                                    self.world_bodies[fqn.file]
-                                        .descendants(body, hir::DescentOpts::Eval)
-                                        .map(|desc| (fqn.file, desc)),
-                                )
-                                .unique()
-                                .collect();
+                            checking_stack.push((
+                                Inferrable::Global(fqn),
+                                self.world_bodies[fqn.file]
+                                    .descendants(
+                                        body,
+                                        hir::DescentOpts::All {
+                                            include_lambdas: false,
+                                        },
+                                    )
+                                    .collect(),
+                            ));
                         }
                         Expr::Param { .. } => {}
                         Expr::Member { previous, field } => {
-                            let previous_ty = self.tys[self.file][*previous];
+                            let previous_ty = self.tys[file][*previous];
                             if let Ty::File(file) = previous_ty.as_ref() {
                                 let fqn = hir::Fqn {
                                     file: *file,
                                     name: field.name,
                                 };
 
-                                if checked_fqns.contains(&fqn) {
+                                let new_inf = Inferrable::Global(fqn);
+
+                                if checked.contains(&new_inf) {
                                     continue;
                                 }
 
-                                checked_fqns.insert(fqn);
+                                checked.insert(new_inf);
 
                                 if self.world_bodies.is_extern(fqn) {
                                     continue;
@@ -2259,49 +2552,98 @@ impl GlobalInferenceCtx<'_> {
 
                                         let body = self.world_bodies.body(fqn);
 
-                                        if let Expr::Lambda(lambda) =
-                                            self.world_bodies[fqn.file][body]
-                                        {
-                                            let lambda = Inferrable::Lambda(FQLambda {
-                                                file: fqn.file,
-                                                expr: body,
-                                                lambda,
-                                            });
-
-                                            if !self.all_inferred.contains(&lambda) {
-                                                deps.push(lambda);
-                                            }
-                                        }
+                                        // if let Expr::Lambda(lambda) =
+                                        //     self.world_bodies[fqn.file][body]
+                                        // {
+                                        //     let lambda = Inferrable::Lambda(FQLambda {
+                                        //         file: fqn.file,
+                                        //         expr: body,
+                                        //         lambda,
+                                        //     });
+                                        //
+                                        //     dbg!(lambda);
+                                        //
+                                        //     if !self.all_inferred.contains(&lambda) {
+                                        //         deps.push(lambda);
+                                        //     }
+                                        // }
 
                                         if !deps.is_empty() {
                                             return Err(deps);
                                         }
 
-                                        descendants = descendants
-                                            .into_iter()
-                                            .chain(
-                                                self.world_bodies[fqn.file]
-                                                    .descendants(body, hir::DescentOpts::Eval)
-                                                    .map(|desc| (fqn.file, desc)),
-                                            )
-                                            .unique()
-                                            .collect();
+                                        checking_stack.push((
+                                            new_inf,
+                                            self.world_bodies[fqn.file]
+                                                .descendants(
+                                                    body,
+                                                    hir::DescentOpts::All {
+                                                        include_lambdas: false,
+                                                    },
+                                                )
+                                                .collect(),
+                                        ));
                                     }
                                     _ => {
-                                        println!(
-                                            "{}:{} unsafe {} #{}",
-                                            file!(),
-                                            line!(),
-                                            file.to_string(std::path::Path::new(""), self.interner),
-                                            expr.into_raw()
-                                        );
+                                        if print_dbg {
+                                            println!(
+                                                "{}:{} unsafe {} #{}",
+                                                file!(),
+                                                line!(),
+                                                file.debug(self.interner),
+                                                expr.into_raw()
+                                            );
+                                        }
                                         return Ok(false);
                                     }
                                 }
                             }
                         }
                         Expr::Call { .. } => {}
-                        Expr::Lambda(_) => {}
+                        Expr::Lambda(lambda) => {
+                            let lambda_body = &self.world_bodies[file][*lambda];
+                            let lambda = Inferrable::Lambda(FQLambda {
+                                file,
+                                expr,
+                                lambda: *lambda,
+                            });
+
+                            if checked.contains(&lambda) {
+                                continue;
+                            }
+
+                            checked.insert(lambda);
+
+                            if !self.all_inferred.contains(&lambda) {
+                                return Err(vec![lambda]);
+                            }
+
+                            let is_type = !lambda_body.is_extern
+                                && lambda_body.return_ty.is_some()
+                                && self.world_bodies[file][lambda_body.body] == Expr::Missing;
+
+                            // println!(
+                            //     "lambda #{} : {} {}",
+                            //     expr.into_raw(),
+                            //     lambda_body.is_extern,
+                            //     is_type
+                            // );
+
+                            // check if the lambda is extern, or it is being used as a type
+                            if !lambda_body.is_extern && !is_type {
+                                checking_stack.push((
+                                    lambda,
+                                    self.world_bodies[file]
+                                        .descendants(
+                                            lambda_body.body,
+                                            hir::DescentOpts::All {
+                                                include_lambdas: false,
+                                            },
+                                        )
+                                        .collect(),
+                                ));
+                            }
+                        }
                         Expr::Comptime(_) => {}
                         Expr::PrimitiveTy(_) => {}
                         Expr::Distinct { .. } => {}
@@ -2316,13 +2658,15 @@ impl GlobalInferenceCtx<'_> {
                     Stmt::Assign(_) => {}
                     Stmt::Break { label, .. } | Stmt::Continue { label, .. } => {
                         if label.is_none() {
-                            println!(
-                                "{}:{} unsafe {} #{}",
-                                file!(),
-                                line!(),
-                                file.to_string(std::path::Path::new(""), self.interner),
-                                expr.into_raw()
-                            );
+                            if print_dbg {
+                                println!(
+                                    "{}:{} unsafe {} #{}",
+                                    file!(),
+                                    line!(),
+                                    file.debug(self.interner),
+                                    expr.into_raw()
+                                );
+                            }
                             return Ok(false);
                         }
                     }

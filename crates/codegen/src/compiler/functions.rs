@@ -39,6 +39,8 @@ pub(crate) struct DeferFrame {
 }
 
 pub(crate) struct FunctionCompiler<'a> {
+    pub(crate) final_binary: bool,
+
     pub(crate) file_name: hir::FileName,
     pub(crate) signature: FinalSignature,
 
@@ -270,17 +272,58 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::Comptime(comptime) => {
                 let ctc = FQComptime {
-                    file: self.file_name,
+                    file: file_name,
                     expr,
                     comptime,
                 };
 
                 self.comptime_results
                     .get(&ctc)
-                    .ok_or(UnfinishedComptimeErr)?
+                    .ok_or_else(|| {
+                        if self.final_binary {
+                            println!("{:#?}", self.comptime_results.keys().collect::<Vec<_>>());
+                            println!(
+                                "{} {:?}",
+                                self.file_name.to_string(self.mod_dir, self.interner),
+                                ctc
+                            );
+                            panic!("The final binary should not have uncompiled comptime blocks");
+                        } else {
+                            UnfinishedComptimeErr
+                        }
+                    })?
                     .clone()
-                    .into_bytes(self.meta_tys, self.ptr_ty)
+                    .into_bytes(self.meta_tys, self.module.isa().endianness(), self.ptr_ty)
                     .unwrap()
+            }
+            hir::Expr::Local(local) => {
+                let local_def = &self.world_bodies[file_name][local];
+
+                return self.expr_to_const_data(file_name, local_def.value);
+            }
+            hir::Expr::LocalGlobal(global) => {
+                let fqn = hir::Fqn {
+                    file: file_name,
+                    name: global.name,
+                };
+
+                return self.expr_to_const_data(file_name, self.world_bodies.body(fqn));
+            }
+            hir::Expr::Member { previous, field } => {
+                if let Ty::File(file) = self.tys[file_name][previous].as_ref() {
+                    let fqn = hir::Fqn {
+                        file: *file,
+                        name: field.name,
+                    };
+
+                    return self.expr_to_const_data(fqn.file, self.world_bodies.body(fqn));
+                } else {
+                    panic!(
+                        "constant members should only access files {} #{}",
+                        file_name.to_string(self.mod_dir, self.interner),
+                        expr.into_raw()
+                    )
+                }
             }
             _ => panic!(
                 "tried to compile const with non-compilable definition {}#{}",
@@ -469,8 +512,15 @@ impl FunctionCompiler<'_> {
         }
 
         let Ok(global_data) = self.compile_global_binding_data(fqn) else {
+            // there was an unfinished comptime
             let body = self.world_bodies.body(fqn);
-            return self.compile_expr_with_args(body, no_load);
+
+            // todo: could this cause issues?
+            let old_file_name = std::mem::replace(&mut self.file_name, fqn.file);
+            let res = self.compile_expr_with_args(body, no_load);
+            self.file_name = old_file_name;
+
+            return res;
         };
 
         let local_id = self
@@ -703,12 +753,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::StructLiteral {
                 members: member_values,
                 ..
-            } => self.store_struct_fields(
-                expected_ty,
-                member_values.iter().map(|(_, val)| *val).collect(),
-                addr,
-                offset,
-            ),
+            } => self.store_struct_fields(expected_ty, member_values, addr, offset),
             _ if expected_ty.is_aggregate() => {
                 let far_off_thing = self.compile_expr(expr).unwrap();
 
@@ -738,7 +783,7 @@ impl FunctionCompiler<'_> {
     fn store_struct_fields(
         &mut self,
         struct_ty: Intern<Ty>,
-        field_values: Vec<Idx<hir::Expr>>,
+        field_values: &[(Option<hir::NameWithRange>, Idx<hir::Expr>)],
         addr: Value,
         offset: u32,
     ) {
@@ -747,16 +792,19 @@ impl FunctionCompiler<'_> {
         let field_tys = struct_ty.as_struct().unwrap();
         let struct_mem = struct_ty.struct_layout().unwrap();
 
-        for (idx, value) in field_values.into_iter().enumerate() {
-            let field_ty = field_tys[idx].1;
-            let field_size = field_ty.size();
+        for (name, value) in field_values {
+            let field = field_tys
+                .iter()
+                .enumerate()
+                .find(|(_, f)| f.0 == name.unwrap().name)
+                .unwrap();
 
             self.store_expr_in_memory(
-                value,
-                field_ty,
-                field_size,
+                *value,
+                field.1 .1,
+                field.1 .1.size(),
                 addr,
-                offset + struct_mem.offsets()[idx],
+                offset + struct_mem.offsets()[field.0],
             );
         }
     }
@@ -1098,7 +1146,14 @@ impl FunctionCompiler<'_> {
                 }
 
                 let lhs = self.compile_expr(lhs_expr).unwrap();
-                let rhs = self.compile_expr(rhs_expr).unwrap();
+                let rhs = self.compile_expr(rhs_expr).unwrap_or_else(|| {
+                    println!("{:#?}", self.world_bodies[self.file_name][rhs_expr].clone());
+                    panic!(
+                        "{}#{} is None",
+                        self.interner.lookup(self.file_name.0),
+                        rhs_expr.into_raw()
+                    );
+                });
 
                 let lhs_ty = self.tys[self.file_name][lhs_expr]
                     .get_final_ty()
@@ -1753,12 +1808,7 @@ impl FunctionCompiler<'_> {
 
                 let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                self.store_struct_fields(
-                    ty,
-                    field_values.iter().map(|(_, val)| *val).collect(),
-                    stack_addr,
-                    0,
-                );
+                self.store_struct_fields(ty, &field_values, stack_addr, 0);
 
                 Some(stack_addr)
             }

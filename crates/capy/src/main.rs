@@ -351,7 +351,7 @@ fn compile_file(
                 println!("comptime JIT:\n");
             }
 
-            // i kinda did AssertUnwindSafe bc i wanted to get rid of the error.
+            // todo: i kinda did AssertUnwindSafe bc i wanted to get rid of the error.
             // i *think* it should be fine.
             std::panic::catch_unwind(AssertUnwindSafe(|| {
                 codegen::eval_comptime_blocks(

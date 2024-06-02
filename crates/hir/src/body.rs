@@ -32,6 +32,7 @@ impl WorldBodies {
         }
     }
 
+    #[track_caller]
     pub fn body(&self, fqn: Fqn) -> Idx<Expr> {
         self[fqn.file].global_body(fqn.name)
     }
@@ -60,7 +61,12 @@ impl WorldBodies {
             .flat_map(|(file, bodies)| {
                 bodies.global_bodies.values().flat_map(|body| {
                     bodies
-                        .descendants(*body, DescentOpts::All)
+                        .descendants(
+                            *body,
+                            DescentOpts::All {
+                                include_lambdas: true,
+                            },
+                        )
                         .filter_map(|desc| match desc {
                             Descendant::Expr(expr) => match &bodies[expr] {
                                 Expr::Comptime(comptime) => Some(FQComptime {
@@ -124,8 +130,9 @@ pub enum Expr {
         op: UnaryOp,
     },
     Array {
-        size: Option<u64>,
+        size: Option<Idx<Expr>>,
         items: Option<Vec<Idx<Expr>>>,
+        items_range: Option<TextRange>,
         ty: Idx<Expr>,
     },
     Index {
@@ -316,8 +323,6 @@ pub enum LoweringDiagnosticKind {
     UndefinedRef { name: Key },
     UndefinedLabel { name: Key },
     NonGlobalExternFunc,
-    ArraySizeNotConst,
-    ArraySizeMismatch { found: u32, expected: u32 },
     InvalidEscape,
     TooManyCharsInCharLiteral,
     EmptyCharLiteral,
@@ -1068,6 +1073,11 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
+        let size = array_expr
+            .size(self.tree)
+            .and_then(|size| size.size(self.tree))
+            .map(|size| self.lower_expr(Some(size)));
+
         let ty = self.lower_expr(array_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
         let items = array_expr.body(self.tree).map(|body| {
@@ -1076,38 +1086,12 @@ impl<'a> Ctx<'a> {
                 .collect::<Vec<_>>()
         });
 
-        let items_len = items.as_ref().map(|items| items.len());
-        let size = array_expr
-            .size(self.tree)
-            .and_then(|size| size.size(self.tree))
-            .and_then(|size| match size {
-                ast::Expr::IntLiteral(_) => Some(self.lower_expr_raw(size).0),
-                other => {
-                    self.diagnostics.push(LoweringDiagnostic {
-                        kind: LoweringDiagnosticKind::ArraySizeNotConst,
-                        range: other.range(self.tree),
-                    });
-                    None
-                }
-            })
-            .and_then(|size| match (size, items_len) {
-                (Expr::IntLiteral(size), Some(items_len)) => {
-                    if size as usize != items_len {
-                        self.diagnostics.push(LoweringDiagnostic {
-                            kind: LoweringDiagnosticKind::ArraySizeMismatch {
-                                found: items_len as u32,
-                                expected: size as u32,
-                            },
-                            range: array_expr.body(self.tree).unwrap().range(self.tree),
-                        });
-                    }
-                    Some(size)
-                }
-                (Expr::IntLiteral(size), None) => Some(size),
-                _ => None,
-            });
-
-        Expr::Array { size, items, ty }
+        Expr::Array {
+            size,
+            items,
+            items_range: array_expr.body(self.tree).map(|b| b.range(self.tree)),
+            ty,
+        }
     }
 
     fn lower_block(&mut self, block: ast::Block, add_block_label: bool) -> (Expr, Option<ScopeId>) {
@@ -1317,38 +1301,58 @@ impl<'a> Ctx<'a> {
         let Some(value) = int_literal.value(self.tree) else {
             return Expr::Missing;
         };
-        let value = value.text(self.tree).replace('_', "");
-        let mut value = value.split(['e', 'E']);
 
-        // there will always be a first part
-        let Ok(base) = value.next().unwrap().parse::<u64>() else {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
-                range: int_literal.range(self.tree),
-            });
-            return Expr::Missing;
-        };
+        match value {
+            ast::IntValue::Dec(dec) => {
+                let value = dec.text(self.tree).replace('_', "");
+                let mut value = value.split(['e', 'E']);
 
-        let val = if let Some(e) = value.next() {
-            let Some(result) = e
-                .parse()
-                .ok()
-                .and_then(|e| 10_u64.checked_pow(e))
-                .and_then(|e| base.checked_mul(e))
-            else {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
-                    range: int_literal.range(self.tree),
-                });
-                return Expr::Missing;
-            };
+                // there will always be a first part
+                let Ok(base) = value.next().unwrap().parse::<u64>() else {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                        range: int_literal.range(self.tree),
+                    });
+                    return Expr::Missing;
+                };
 
-            result
-        } else {
-            base
-        };
+                let val = if let Some(e) = value.next() {
+                    let Some(result) = e
+                        .parse()
+                        .ok()
+                        .and_then(|e| 10_u64.checked_pow(e))
+                        .and_then(|e| base.checked_mul(e))
+                    else {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                            range: int_literal.range(self.tree),
+                        });
+                        return Expr::Missing;
+                    };
 
-        Expr::IntLiteral(val)
+                    result
+                } else {
+                    base
+                };
+
+                Expr::IntLiteral(val)
+            }
+            ast::IntValue::Hex(hex) => {
+                let value = hex.text(self.tree).strip_prefix("0x").unwrap();
+
+                match u64::from_str_radix(value, 16) {
+                    Ok(value) => Expr::IntLiteral(value),
+                    Err(why) => {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                            range: int_literal.range(self.tree),
+                        });
+
+                        Expr::Missing
+                    }
+                }
+            }
+        }
     }
 
     fn lower_float_literal(&mut self, float_literal: ast::FloatLiteral) -> Expr {
@@ -1551,9 +1555,11 @@ pub enum DescentOpts<'a> {
     /// Almost the same as `Eval`, except that not all statments of blocks are included.
     /// Only the statements that break to a block are included.
     Reinfer,
-    /// Includes everything*.
+    /// Includes *everything*.
     /// Doesn't forcefully include the values of local defs.
-    All,
+    /// Still won't pass `Inferrable` boundaries. You can set `include_lambdas`
+    /// to true but you'd still need to manually include referenced global bodies
+    All { include_lambdas: bool },
 }
 
 /// A block will go through this function and end up like this:
@@ -1594,10 +1600,13 @@ impl Iterator for Descendants<'_> {
 
         let include_eval = matches!(
             self.opts,
-            DescentOpts::Eval | DescentOpts::Reinfer | DescentOpts::All
+            DescentOpts::Eval | DescentOpts::Reinfer | DescentOpts::All { .. }
         );
-        let include_types = matches!(self.opts, DescentOpts::Types { .. } | DescentOpts::All);
-        let is_all = matches!(self.opts, DescentOpts::All);
+        let include_types = matches!(
+            self.opts,
+            DescentOpts::Types { .. } | DescentOpts::All { .. }
+        );
+        let is_all = matches!(self.opts, DescentOpts::All { .. });
 
         match next {
             Descendant::Expr(expr) => match self.bodies[expr].clone() {
@@ -1607,7 +1616,15 @@ impl Iterator for Descendants<'_> {
                 Expr::BoolLiteral(_) => {}
                 Expr::StringLiteral(_) => {}
                 Expr::CharLiteral(_) => {}
-                Expr::Array { items, ty, .. } => {
+                Expr::Array {
+                    size, items, ty, ..
+                } => {
+                    if include_eval {
+                        if let Some(size) = size {
+                            self.todo.push(Descendant::Expr(size));
+                        }
+                    }
+
                     if include_types {
                         self.todo.push(Descendant::Expr(ty));
                     }
@@ -1639,7 +1656,7 @@ impl Iterator for Descendants<'_> {
                     self.todo.push(Descendant::Expr(rhs));
                 }
                 Expr::Block { stmts, tail_expr } => match self.opts {
-                    DescentOpts::Eval | DescentOpts::All => {
+                    DescentOpts::Eval | DescentOpts::All { .. } => {
                         self.todo.extend(stmts.into_iter().map(Descendant::Stmt));
 
                         if let Some(tail_expr) = tail_expr {
@@ -1675,7 +1692,7 @@ impl Iterator for Descendants<'_> {
                     }
                 }
                 Expr::While { condition, body } => match self.opts {
-                    DescentOpts::Eval | DescentOpts::All => {
+                    DescentOpts::Eval | DescentOpts::All { .. } => {
                         if let Some(condition) = condition {
                             self.todo.push(Descendant::Expr(condition));
                         }
@@ -1731,10 +1748,17 @@ impl Iterator for Descendants<'_> {
                             self.todo.push(Descendant::Expr(return_ty));
                         }
 
-                        if is_all
-                            && !lambda.is_extern
-                            && !(lambda.return_ty.is_some()
-                                && self.bodies[lambda.body] == Expr::Missing)
+                        let is_type = !lambda.is_extern
+                            && lambda.return_ty.is_some()
+                            && self.bodies[lambda.body] == Expr::Missing;
+
+                        if matches!(
+                            self.opts,
+                            DescentOpts::All {
+                                include_lambdas: true
+                            }
+                        ) && !lambda.is_extern
+                            && !is_type
                         {
                             self.todo.push(Descendant::Expr(lambda.body));
                         }
@@ -1822,6 +1846,7 @@ impl Bodies {
         self.global_bodies.contains_key(&name)
     }
 
+    #[track_caller]
     pub fn global_body(&self, name: Name) -> Idx<Expr> {
         self.global_bodies[&name]
     }
@@ -1834,10 +1859,12 @@ impl Bodies {
         self.global_externs.contains(&name)
     }
 
+    #[track_caller]
     pub fn range_for_expr(&self, expr: Idx<Expr>) -> TextRange {
         self.expr_ranges[expr]
     }
 
+    #[track_caller]
     pub fn range_for_stmt(&self, stmt: Idx<Stmt>) -> TextRange {
         match self.stmts[stmt] {
             Stmt::Expr(expr) => self.range_for_expr(expr),
@@ -2010,10 +2037,12 @@ impl Bodies {
 
                 Expr::CharLiteral(char) => s.push_str(&format!("{:?}", Into::<char>::into(*char))),
 
-                Expr::Array { size, items, ty } => {
+                Expr::Array {
+                    size, items, ty, ..
+                } => {
                     s.push('[');
                     if let Some(size) = size {
-                        s.push_str(&size.to_string());
+                        write_expr(s, *size, show_idx, bodies, mod_dir, interner, indentation);
                     }
                     s.push(']');
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
@@ -3342,51 +3371,6 @@ mod tests {
                 };
             "#]],
             |_| [],
-        )
-    }
-
-    #[test]
-    fn array_with_incorrect_size() {
-        check(
-            r#"
-                main :: () -> i32 {
-                    my_array := [3] i32 { 4, 8, 15, 16, 23, 42 };
-                }
-            "#,
-            expect![[r#"
-                main::main :: () -> i32 {
-                    l0 := [3]i32{ 4, 8, 15, 16, 23, 42 };
-                };
-            "#]],
-            |_| {
-                [(
-                    LoweringDiagnosticKind::ArraySizeMismatch {
-                        found: 6,
-                        expected: 3,
-                    },
-                    77..101,
-                )]
-            },
-        )
-    }
-
-    #[test]
-    fn array_with_non_const_size() {
-        check(
-            r#"
-                main :: () -> i32 {
-                    size := 6;
-
-                    my_array := [size] i32 { 4, 8, 15, 16, 23, 42 };
-                }
-            "#,
-            expect![[r#"
-                main::main :: () -> i32 {
-                    l0 := 6;
-                    l1 := []i32{ 4, 8, 15, 16, 23, 42 };
-                };
-            "#]],
-            |_| [(LoweringDiagnosticKind::ArraySizeNotConst, 102..106)],
         )
     }
 

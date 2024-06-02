@@ -178,6 +178,8 @@ There are two requirements which determine if a variable is *const*.
 1. It must be immutable.
 2. It must either contain a literal value, a reference to another const variable, or a `comptime` block.
 
+Beyond type annotations, the size of an array is also expected to be *const*, and this value can be calculated using `comptime`.
+
 To see all the different types, you can look through [`core/meta.capy`](./core/meta.capy),
 which contains reflection related code and documentation for all of Capy's types.
 

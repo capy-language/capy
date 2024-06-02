@@ -2,6 +2,8 @@
 
 This contains the basic functionality needed for any good program. It will automatically be downloaded from GitHub if it does not exist in the modules directory.
 
+You can forcefully update your version of core with `--redownload-core`
+
 You can import any module with the `mod` keyword
 
 ```capy

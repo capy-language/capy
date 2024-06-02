@@ -35,3 +35,26 @@ mut_null :: () -> ^mut any {
 is_null :: (ptr: ^any) -> bool {
     to_raw(ptr) == 0
 }
+
+// constructs a slice from a pointer and a length
+//
+// ```capy
+// data := [3] u32 { 1, 2, 3 };
+// 
+// slice := slice_from_raw_parts(^data, 3) as [] u32;
+//
+// core.println(slice);
+// ```
+slice_from_raw_parts :: (ptr: ^any, len: usize) -> [] any {
+    Raw_Slice :: struct {
+        len: usize,
+        ptr: ^any,
+    };
+
+    raw := Raw_Slice {
+        len: 3,
+        ptr: ptr,
+    };
+
+    {^raw as ^any as ^[]any}^
+}

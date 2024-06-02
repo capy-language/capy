@@ -698,6 +698,9 @@ mod tests {
             log 50 = 1.698
             log 100 = 1.999
             log 500 = 2.698
+             1 / 0 = +Inf
+            -1 / 0 = -Inf
+             0 / 0 = NaN
 
             "#]],
             0,
@@ -1034,7 +1037,9 @@ mod tests {
                 256
                 hello
                 { text = Hello, flag = false, array = { 1, 2, 3 } }
-                {type}
+                i32
+                ^struct { text: str, flag: bool, array: [3] i16 }
+                struct { ty: type, data: ^any }
                 {}
                 { 4, 8, 15, 16, 23, 42 }
                 
@@ -1099,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_operators() {
+    fn logical_booleans() {
         check_raw(
             r#"
                 a :: (x: bool) -> bool {
@@ -1170,6 +1175,98 @@ mod tests {
                 true
 
                 a: true
+                true
+
+                a: false
+                b: true
+                true
+
+                a: false
+                b: false
+                false
+
+
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn bitwise_booleans() {
+        check_raw(
+            r#"
+                a :: (x: bool) -> bool {
+                    if x {
+                        puts("a: true");
+                    } else {
+                        puts("a: false");
+                    }
+                    x
+                }
+
+                b :: (x: bool) -> bool {
+                    if x {
+                        puts("b: true");
+                    } else {
+                        puts("b: false");
+                    }
+                    x
+                }
+
+                main :: () {
+                    puts("bitwise AND:\n");
+
+                    print_bool(a(true) & b(true));
+                    print_bool(a(true) & b(false));
+                    print_bool(a(false) & b(true));
+                    print_bool(a(false) & b(false));
+
+                    puts("bitwise OR:\n");
+
+                    print_bool(a(true) | b(true));
+                    print_bool(a(true) | b(false));
+                    print_bool(a(false) | b(true));
+                    print_bool(a(false) | b(false));
+                }
+
+                print_bool :: (b: bool) {
+                    if b {
+                        puts("true\n");
+                    } else {
+                        puts("false\n");
+                    }
+                }
+
+                puts :: (s: str) extern;
+            "#,
+            "main",
+            expect![[r#"
+                bitwise AND:
+
+                a: true
+                b: true
+                true
+
+                a: true
+                b: false
+                false
+
+                a: false
+                b: true
+                false
+
+                a: false
+                b: false
+                false
+
+                bitwise OR:
+
+                a: true
+                b: true
+                true
+
+                a: true
+                b: false
                 true
 
                 a: false
@@ -1552,5 +1649,195 @@ mod tests {
         )
     }
 
-    // the "ptrs_to_ptrs.capy" test is not reproducible
+    #[test]
+    fn globals_in_globals() {
+        check_raw(
+            r#"
+                foo :: 123;
+                bar :: foo;
+                baz :: bar;
+
+                main :: () -> i32 {
+                    baz
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            123,
+        )
+    }
+
+    #[test]
+    fn global_referring_to_function() {
+        check_raw(
+            r#"
+                add :: (a: i32, b: i32) -> i32 {
+                    a + b
+                }
+
+                foo :: add;
+
+                main :: () -> i32 {
+                    add(1, 2)
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            3,
+        )
+    }
+
+    #[test]
+    fn reorder_struct_literal_fields() {
+        // there was a bug where simply changing the order of the fields
+        // in the struct literal would also change the order of the struct.
+        // e.g.
+        // Under the bug, the following code would print this:
+        // Foo {
+        //   a = 4000000,
+        //   b = 42,
+        // }
+        // Foo {
+        //   a = 42,
+        //   b = 4000000,
+        // }
+        // even though the following code always assigns 42 to b
+        check_raw(
+            r#"
+                Foo :: struct {
+                    a: i64,
+                    b: i64,
+                };
+
+                main :: () {
+                    print_foo(Foo {
+                        a: 4_000_000,
+                        b: 42,
+                    });
+
+                    print_foo(Foo {
+                        b: 42,
+                        a: 4_000_000,
+                    });
+                }
+
+                print_foo :: (f: Foo) {
+                    print("Foo {\n  a = ");
+                    iprint(f.a);
+                    print(",\n  b = ");
+                    iprint(f.b);
+                    print(",\n}\n");
+                }
+
+                print :: (text: str) {
+                    text := text as [50] char;
+
+                    i := 0;
+                    loop {
+                        ch := text[i];
+                        if ch == '\0' {
+                            break;
+                        }
+
+                        putchar(ch);
+
+                        i = i + 1;
+                    }
+                }
+
+                iprint :: (n: i64) {
+                    n := n;
+                    
+                    if n < 0 {
+                        n = -n;
+                        putchar('-');
+                    }
+
+                    if n > 9 {
+                        a := n / 10;
+
+                        n = n - 10 * a;
+                        iprint(a);
+                    }
+                    putchar({'0' as u8 + n} as char);
+                }
+
+                puts :: (text: str) extern;
+                putchar :: (ch: char) extern;
+            "#,
+            "main",
+            expect![[r#"
+            Foo {
+              a = 4000000,
+              b = 42,
+            }
+            Foo {
+              a = 4000000,
+              b = 42,
+            }
+
+"#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn comptime_array_size() {
+        check_raw(
+            r#"
+                Type :: comptime {
+                    x := 42;
+
+                    if x > 10 {
+                        i32
+                    } else {
+                        bool
+                    }
+                };
+
+                Size : usize : comptime {
+                    {12 * 3 / 2 - 6} / 2
+                };
+
+                main :: () -> i32 {
+                    x := [Size] Type { 1, 3, 5, 7, 9, 11 };
+
+                    x[5]
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            11,
+        )
+    }
+
+    #[test]
+    fn distinct_array_to_slice() {
+        check_raw(
+            r#"
+                RGB :: distinct [3] u8;
+
+                main :: () -> u8 {
+                    red : RGB = [3] u8 { 150, 98, 123 };
+
+                    components := red as []u8;
+
+                    components[1]
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            98,
+        )
+    }
+
+    // the "ptrs_to_ptrs.capy" and "comptime_types.capy" tests are not reproducible
 }

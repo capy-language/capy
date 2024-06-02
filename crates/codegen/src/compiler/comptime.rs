@@ -1,5 +1,8 @@
 //! This module is for JIT'ing all the code needed to calculate the value of comptime blocks
-use cranelift::prelude::{settings, types, Configurable, FunctionBuilderContext};
+use cranelift::{
+    codegen::ir::Endianness,
+    prelude::{settings, types, Configurable, FunctionBuilderContext},
+};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Module};
 use hir::FQComptime;
@@ -7,7 +10,11 @@ use hir_ty::ComptimeResult;
 use interner::Interner;
 use num_traits::ToBytes;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{alloc::Layout, collections::VecDeque, mem};
+use std::{
+    alloc::Layout,
+    collections::VecDeque,
+    mem::{self, size_of},
+};
 use uid_gen::UIDGenerator;
 
 use crate::{
@@ -21,19 +28,81 @@ use crate::{
 use super::Compiler;
 
 pub(crate) trait ComptimeBytes {
-    fn into_bytes(self, meta_tys: &mut MetaTyData, ptr_ty: types::Type) -> Option<Box<[u8]>>;
+    fn into_bytes(
+        self,
+        meta_tys: &mut MetaTyData,
+        endianness: Endianness,
+        ptr_ty: types::Type,
+    ) -> Option<Box<[u8]>>;
 }
 
 impl ComptimeBytes for ComptimeResult {
-    fn into_bytes(self, meta_tys: &mut MetaTyData, ptr_ty: types::Type) -> Option<Box<[u8]>> {
+    fn into_bytes(
+        self,
+        meta_tys: &mut MetaTyData,
+        endianness: Endianness,
+        ptr_ty: types::Type,
+    ) -> Option<Box<[u8]>> {
         match self {
             ComptimeResult::Type(ty) => {
                 Some(Box::new(ty.to_type_id(meta_tys, ptr_ty).to_ne_bytes()))
             }
-            ComptimeResult::Integer { bytes, .. } => Some(bytes),
-            ComptimeResult::Float { bytes, .. } => Some(bytes),
+            ComptimeResult::Integer { num, bit_width } => {
+                Some(num.into_bytes(endianness, bit_width).into_boxed_slice())
+            }
+            ComptimeResult::Float { num, bit_width } => {
+                Some(num.into_bytes(endianness, bit_width).into_boxed_slice())
+            }
             ComptimeResult::Data(bytes) => Some(bytes),
             ComptimeResult::Void => None,
+        }
+    }
+}
+
+pub(crate) trait IntBytes {
+    fn into_bytes(self, endianness: Endianness, target_bitwidth: u8) -> Vec<u8>;
+}
+
+impl IntBytes for u64 {
+    fn into_bytes(self, endianness: Endianness, target_bitwidth: u8) -> Vec<u8> {
+        match endianness {
+            Endianness::Big => match target_bitwidth {
+                8 => (self as u8).to_be_bytes().into(),
+                16 => (self as u16).to_be_bytes().into(),
+                32 => (self as u32).to_be_bytes().into(),
+                #[allow(clippy::unnecessary_cast)]
+                64 => (self as u64).to_be_bytes().into(),
+                128 => (self as u128).to_be_bytes().into(),
+                _ => unreachable!(),
+            },
+            Endianness::Little => match target_bitwidth {
+                8 => (self as u8).to_le_bytes().into(),
+                16 => (self as u16).to_le_bytes().into(),
+                32 => (self as u32).to_le_bytes().into(),
+                #[allow(clippy::unnecessary_cast)]
+                64 => (self as u64).to_le_bytes().into(),
+                128 => (self as u128).to_le_bytes().into(),
+                _ => unreachable!(),
+            },
+        }
+    }
+}
+
+impl IntBytes for f64 {
+    fn into_bytes(self, endianness: Endianness, target_bitwidth: u8) -> Vec<u8> {
+        match endianness {
+            Endianness::Big => match target_bitwidth {
+                32 => (self as f32).to_be_bytes().into(),
+                #[allow(clippy::unnecessary_cast)]
+                64 => (self as f64).to_be_bytes().into(),
+                _ => unreachable!(),
+            },
+            Endianness::Little => match target_bitwidth {
+                32 => (self as f32).to_le_bytes().into(),
+                #[allow(clippy::unnecessary_cast)]
+                64 => (self as f64).to_le_bytes().into(),
+                _ => unreachable!(),
+            },
         }
     }
 }
@@ -41,7 +110,7 @@ impl ComptimeBytes for ComptimeResult {
 #[allow(clippy::too_many_arguments)]
 pub fn eval_comptime_blocks<'a>(
     verbosity: Verbosity,
-    mut comptime_blocks: Vec<FQComptime>,
+    mut to_eval: Vec<FQComptime>,
     results: &'a mut FxHashMap<FQComptime, ComptimeResult>,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
@@ -49,7 +118,7 @@ pub fn eval_comptime_blocks<'a>(
     tys: &'a hir_ty::ProjectInference,
     target_pointer_bit_width: u8,
 ) {
-    if comptime_blocks.is_empty() {
+    if to_eval.is_empty() {
         return;
     }
 
@@ -67,6 +136,7 @@ pub fn eval_comptime_blocks<'a>(
     let mut module = JITModule::new(builder);
 
     let mut compiler = Compiler {
+        final_binary: false,
         verbosity,
         mod_dir,
         interner,
@@ -95,7 +165,7 @@ pub fn eval_comptime_blocks<'a>(
 
     compiler.finalize_tys();
 
-    let mut already_done: FxHashSet<_> = comptime_blocks
+    let mut already_done: FxHashSet<_> = to_eval
         .iter()
         .cloned()
         .chain(results.keys().cloned())
@@ -103,7 +173,7 @@ pub fn eval_comptime_blocks<'a>(
 
     let mut comptime_funcs = Vec::new();
 
-    while let Some(ctc) = comptime_blocks.pop() {
+    while let Some(ctc) = to_eval.pop() {
         let hir::Comptime { body } = compiler.world_bodies[ctc.file][ctc.comptime];
         let return_ty = tys[ctc.file][body];
 
@@ -128,7 +198,7 @@ pub fn eval_comptime_blocks<'a>(
             .collect();
 
         already_done.extend(extra.clone());
-        comptime_blocks.extend(extra);
+        to_eval.extend(extra);
 
         comptime_funcs.push((
             ctc,
@@ -168,7 +238,7 @@ pub fn eval_comptime_blocks<'a>(
 
         ComptimeResult::Float {
             num: result.into(),
-            bytes: result.to_ne_bytes().as_ref().to_vec().into_boxed_slice(),
+            bit_width: (size_of::<T>() * 8) as u8,
         }
     }
 
@@ -178,7 +248,7 @@ pub fn eval_comptime_blocks<'a>(
 
         ComptimeResult::Integer {
             num: result.into(),
-            bytes: result.to_ne_bytes().as_ref().to_vec().into_boxed_slice(),
+            bit_width: (size_of::<T>() * 8) as u8,
         }
     }
 
