@@ -1888,6 +1888,7 @@ impl GlobalInferenceCtx<'_> {
     ) -> InferResult<Intern<Ty>> {
         match self.world_index.definition(fqn) {
             hir::DefinitionStatus::Defined => {
+                // this should also set the meta type
                 let ty = self
                     .tys
                     .signatures
@@ -1929,10 +1930,26 @@ impl GlobalInferenceCtx<'_> {
 
                 let global_body = self.world_bodies.body(fqn);
 
-                let actual_ty = *self.tys[fqn.file]
-                    .meta_tys
-                    .get(global_body)
-                    .expect("meta type should have been set by `get_or_init_signature`");
+                // most global bodies will already have set `meta_tys` with the
+                // actual type, but occasionally something slips through, and since
+                // it'd be a lot of wasted memory to insert meta_tys for locals and
+                // member accesses, and indexes, etc. that may never be used, it's
+                // better to just calculate these here.
+                // an example of this is a type alias.
+                // ```
+                // Bar :: distinct i32;
+                // Foo :: Bar;
+                //
+                // main :: () {
+                //     x : Foo = 42;
+                // }
+                // ```
+                // in this case we might code something special in the `infer_expr`
+                // code to calculate the meta type if the local is constant, but that
+                // would waste a lot of space and what about members? it's just too much
+                let old_file = std::mem::replace(&mut self.file, fqn.file);
+                let actual_ty = self.const_ty(global_body)?;
+                self.file = old_file;
 
                 // it'd be better to mutate the fqn, but that would invalidate the hash
                 // within the internment crate

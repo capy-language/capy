@@ -1,0 +1,108 @@
+core :: mod "core";
+libc :: core.libc;
+math :: core.math;
+ptr :: core.ptr;
+
+StringBuilder :: struct {
+    buf: ^mut char,
+    len: usize,
+    cap: usize,
+};
+
+make :: () -> StringBuilder {
+    buf := ptr.mut_null() as ^mut char;
+
+    StringBuilder {
+        buf: buf,
+        len: 0,
+        cap: 0,
+    }
+};
+
+make_with_capacity :: (cap: usize) -> StringBuilder {
+    if cap == 0 { return make(); }
+
+    buf := libc.malloc(cap) as ^mut char;
+
+    if cap > 0 && ptr.is_null(buf) {
+        core.panic_with("Error allocating the StringBuilder");
+    }
+
+    StringBuilder {
+        buf: buf,
+        len: 0,
+        cap: cap,
+    }
+}
+
+free :: (self: ^mut StringBuilder) {
+    libc.free(self.buf);
+    // to make sure the string isn't accidentally used after free
+    self.cap = 0;
+    self.len = 0;
+}
+
+shrink_to_fit :: (self: ^mut StringBuilder) {
+    if self.len != 0 && self.len < self.cap {
+        self.buf = libc.realloc(self.buf, self.len) as ^mut char;
+        self.cap = self.len;
+
+        if self.cap > 0 && ptr.is_null(self.buf) {
+            core.panic_with("Error reallocating the StringBuilder");
+        }
+    }
+}
+
+_grow_by :: (self: ^mut StringBuilder, len: usize) {
+    if self.len + len > self.cap {
+        new_cap := math.max_usize(self.cap * 2, 1);
+        while new_cap <= self.len + len {
+            new_cap = new_cap * 2;
+        }
+
+        self.buf = libc.realloc(self.buf, new_cap) as ^mut char;
+        self.cap = new_cap;
+
+        if ptr.is_null(self.buf) {
+            core.panic_with("Error reallocating the StringBuilder");
+        }
+    }
+}
+
+append_char :: (self: ^mut StringBuilder, ch: char) {
+    _grow_by(self, 1);
+
+    ptr.write(self.buf, ch as u8, self.len);
+
+    self.len = self.len + 1;
+}
+
+append_str :: (self: ^mut StringBuilder, s: str) {
+    len :: core.str_len(s);
+
+    _grow_by(self, len);
+
+    offset := ptr.mut_offset(self.buf, self.len);
+
+    libc.memcpy(offset, s as ^any, len);
+    
+    self.len = self.len + len;
+}
+
+as_slice :: (self: ^mut StringBuilder) -> [] char {
+    ptr.slice_from_raw_parts(self.buf, self.len) as [] char
+}
+
+print :: (self: ^StringBuilder) {
+    idx := 0;
+    while idx < self.len {
+        ch := ptr.read(self.buf, idx) as char;
+        libc.putchar(ch);
+        idx = idx + 1;
+    }
+}
+
+println :: (self: ^StringBuilder) {
+    print(self);
+    libc.putchar('\n');
+}

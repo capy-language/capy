@@ -940,7 +940,7 @@ impl<'a> Ctx<'a> {
                 return Expr::Missing;
             }
 
-            let mod_folder_path = self.mod_dir.join(&file);
+            let mod_folder_path = self.mod_dir.join(&file).join("src");
 
             if !self.fake_file_system && !mod_folder_path.is_dir() {
                 self.diagnostics.push(LoweringDiagnostic {

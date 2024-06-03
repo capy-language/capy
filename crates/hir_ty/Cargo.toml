@@ -11,9 +11,9 @@ hir = { path = "../hir" }
 interner = { path = "../interner" }
 rustc-hash = "1.1"
 text-size = "1.1"
-internment = "0.7.1"
+internment = "0.8.3"
 indexmap = "2.0.0"
-itertools = "0.12"
+itertools = "0.13"
 topo = { path = "../topo" }
 
 [dev-dependencies]

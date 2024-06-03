@@ -2,43 +2,46 @@
 // todo: I want to do smth more like zig's `allocPrint` and `bufPrint`
 // https://github.com/ziglang/zig/blob/905c85be968e6823305887474d2a821dac82f16c/lib/std/fmt.zig#L1436
 
-ptr :: import "ptr.capy";
-math :: import "math.capy";
-strings :: import "strings.capy";
+core :: mod "core";
+ptr :: core.ptr;
+math :: core.math;
+string_builder :: core.string_builder;
 
-i64_to_string :: (n: i64) -> strings.String {
+StringBuilder :: string_builder.StringBuilder;
+
+i64_to_string :: (n: i64) -> StringBuilder {
     // idk man i'm just copying rust
-    str := strings.make_string_with_capacity(39);
+    str := string_builder.make_with_capacity(39);
     
     new_len := _write_i64_to_buf(n, true, str.buf as ^mut any as ^mut u8, 0, 0);
 
     str.len = new_len;
 
-    strings.shrink_to_fit(^mut str);
+    string_builder.shrink_to_fit(^mut str);
 
     str
 }
 
-u64_to_string :: (n: u64) -> strings.String {
-    str := strings.make_string_with_capacity(39);
+u64_to_string :: (n: u64) -> StringBuilder {
+    str := string_builder.make_with_capacity(39);
     
     new_len := _write_i64_to_buf(n as i64, false, str.buf as ^mut any as ^mut u8, 0, 0);
 
     str.len = new_len;
 
-    strings.shrink_to_fit(^mut str);
+    string_builder.shrink_to_fit(^mut str);
 
     str
 }
 
-f64_to_string :: (n: f64) -> strings.String {
-    str := strings.make_string_with_capacity(39 * 2 + 1);
+f64_to_string :: (n: f64) -> StringBuilder {
+    str := string_builder.make_with_capacity(39 * 2 + 1);
 
     new_len := _write_f64_to_buf(n, str.buf as ^mut any as ^mut u8, 3);
 
     str.len = new_len;
 
-    strings.shrink_to_fit(^mut str);
+    string_builder.shrink_to_fit(^mut str);
 
     str
 }

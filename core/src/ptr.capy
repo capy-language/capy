@@ -52,7 +52,7 @@ slice_from_raw_parts :: (ptr: ^any, len: usize) -> [] any {
     };
 
     raw := Raw_Slice {
-        len: 3,
+        len: len,
         ptr: ptr,
     };
 

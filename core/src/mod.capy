@@ -1,0 +1,606 @@
+
+// this is all going to change.
+// `pub` is going to be added
+// after that, there will be a way to bypass it
+
+fmt :: import "fmt.capy";
+libc :: import "libc.capy";
+ptr :: import "ptr.capy";
+math :: import "math.capy";
+meta :: import "meta.capy";
+
+string_builder :: import "structs/string_builder.capy";
+list :: import "structs/list.capy";
+
+// builtin
+len :: (slice: [] any) -> usize extern;
+
+// for testing.
+// exits the program if a check failed
+assert :: (condition: bool) {
+    if !condition {
+        _print_str("assertion failed!\n");
+        libc.exit(1);
+    }
+}
+
+// for testing.
+// exits the program if a check failed, and prints the specificed message
+assert_with :: (condition: bool, message: str) {
+    if !condition {
+        _print_str("assertion failed: ");
+        _print_str(message);
+        _print_str("\n");
+        libc.exit(1);
+    }
+}
+
+// exits the program due to an unrecoverable state being reached
+panic :: () {
+    _print_str("explicit panic!\n");
+    libc.exit(1);
+}
+
+// exits the program due to an unrecoverable state being reached,
+// and prints the specificed message
+panic_with :: (message: str) {
+    _print_str("explicit panic: ");
+    _print_str(message);
+    _print_str("\n");
+    libc.exit(1);
+}
+
+// exits the program due to an unexpected code path being reached.
+unreachable :: () {
+    _print_str("entered unreachable code!\n");
+    libc.exit(1);
+}
+
+// exits the program due to an unexpected code path being reached,
+// and prints the specificed message
+unreachable_with :: (message: str) {
+    _print_str("entered unreachable code: ");
+    _print_str(message);
+    _print_str("\n");
+    libc.exit(1);
+}
+
+// `Any` can represent any possible value in a Capy program.
+//
+// It's a reference type, and it contains a pointer + a type id
+// which can be used to reflect on the data in any way imaginable.
+//
+// All values can implicitly cast into an `Any`, which allows
+// for a sort of runtime polymorphism.
+//
+// It's important to remember that `Any` is a reference type.
+// Even though a function may take `Any` as a value, or a value
+// may implicitly cast into an `Any`, it will always be a reference,
+// and it's a bad idea to return an `Any` from a function unless
+// you know what you're doing.
+Any :: struct {
+    ty: type,
+    data: ^any,
+};
+
+// see `print`
+println :: (val: Any) {
+    print(val);
+    libc.putchar('\n');
+}
+
+_print_str :: (text: str) {
+    text := text as ^char;
+
+    i := 0;
+    loop {
+        ch := ptr.read(text, i) as char;
+        if ch == '\0' {
+            break;
+        }
+
+        libc.putchar(ch);
+
+        i = i + 1;
+    }
+}
+
+// the print function uses the `Any` type to be able to print
+// all possible values. you don't need to implement `Display` or `Debug`,
+// struct printing just works due to the reflection system.
+print :: (val: Any) {
+    ty := val.ty;
+    data := val.data;
+
+    if meta.is_int(ty) {
+        int_info := meta.get_int_info(ty);
+
+        str := if int_info.signed {
+            num := if int_info.bit_width == 8 {
+                {data as ^i8}^ as i64
+            } else if int_info.bit_width == 16 {
+                {data as ^i16}^ as i64
+            } else if int_info.bit_width == 32 {
+                {data as ^i32}^ as i64
+            } else if int_info.bit_width == 64 {
+                {data as ^i64}^ as i64
+            } else if int_info.bit_width == 128 {
+                {data as ^i128}^ as i64
+            } else {
+                unreachable();
+                0
+            };
+
+            fmt.i64_to_string(num)
+        } else {
+            num := if int_info.bit_width == 8 {
+                {data as ^u8}^ as u64
+            } else if int_info.bit_width == 16 {
+                {data as ^u16}^ as u64
+            } else if int_info.bit_width == 32 {
+                {data as ^u32}^ as u64
+            } else if int_info.bit_width == 64 {
+                {data as ^u64}^ as u64
+            } else if int_info.bit_width == 128 {
+                {data as ^u128}^ as u64
+            } else {
+                unreachable();
+                0
+            };
+
+            fmt.u64_to_string(num)
+        };
+
+        string_builder.print(^str);
+        string_builder.free(^mut str);
+    } else if meta.is_float(ty) {
+        float_info := meta.get_float_info(ty);
+        
+        num := if float_info.bit_width == 32 {
+            {data as ^f32}^ as f64
+        } else if float_info.bit_width == 64 {
+            {data as ^f64}^ as f64
+        } else {
+            unreachable();
+            0
+        };
+
+        str := fmt.f64_to_string(num);
+
+        string_builder.print(^str);
+        string_builder.free(^mut str);
+    } else if meta.is_bool(ty) {
+        if {data as ^bool}^ {
+            _print_str("true");
+        } else {
+            _print_str("false");
+        }
+    } else if meta.is_string(ty) {
+        _print_str(data as ^str^);
+    } else if meta.is_char(ty) {
+        libc.putchar({data as ^char}^);
+    } else if meta.is_array(ty) {
+        info := meta.get_array_info(ty);
+        elem_stride := meta.stride_of(info.ty);
+
+        _print_str("{ ");
+
+        idx := 0;
+        while idx < info.len {
+            addr := ptr.const_offset(data, elem_stride * idx);
+            
+            print(Any { ty: info.ty, data: addr });
+
+            if idx < info.len - 1 {
+                _print_str(", ");
+            }
+            
+            idx = idx + 1;
+        }
+
+        _print_str(" }");
+    } else if meta.is_slice(ty) {
+        info := meta.get_slice_info(ty);
+        elem_stride := meta.stride_of(info.ty);
+
+        slice := data as ^[] any;
+        len := slice.len;
+
+        _print_str("{ ");
+
+        idx := 0;
+        while idx < len {
+            addr := ptr.const_offset(slice.ptr, elem_stride * idx);
+
+            print(Any { ty: info.ty, data: addr });
+
+            if idx < len - 1 {
+                _print_str(", ");
+            }
+
+            idx = idx + 1;
+        }
+
+        _print_str(" }");
+    } else if meta.is_pointer(ty) {
+        _print_str("^");
+
+        info := meta.get_pointer_info(ty);
+
+        print(Any { ty: info.ty, data: {data as ^^any}^});
+    } else if meta.is_distinct(ty) {
+        info := meta.get_distinct_info(ty);
+
+        print(Any { ty: info.ty, data: data });
+    } else if meta.is_meta_type(ty) {
+        print_type_info(data as ^type^);
+    } else if meta.is_any(ty) {
+        _print_str("{any}");
+    } else if meta.is_file(ty) {
+        _print_str("{import}");
+    } else if meta.is_function(ty) {
+        _print_str("{function}");
+    } else if meta.is_struct(ty) {
+        if ty == Any {
+            data := data as ^Any;
+
+            print(data^);
+
+            return;
+        }
+
+        info := meta.get_struct_info(ty);
+
+        _print_str("{ ");
+
+        idx := 0;
+        while idx < info.members.len {
+            member := info.members[idx];
+
+            _print_str(member.name);
+            _print_str(" = ");
+
+            print(Any {
+                ty: member.ty,
+                data: ptr.const_offset(data, member.offset),
+            });
+
+            if idx < info.members.len - 1 {
+                _print_str(", ");
+            }
+            idx = idx + 1;
+        }
+
+        _print_str(" }");
+    } else if meta.is_void(ty) {
+        _print_str("{}");
+    }
+}
+
+// prints a type id as a human readable string
+print_type_info :: (ty: type) {
+    _print_str :: (text: str) {
+        text := text as ^char;
+
+        i := 0;
+        loop {
+            ch := ptr.read(text, i) as char;
+            if ch == '\0' {
+                break;
+            }
+
+            libc.putchar(ch);
+
+            i = i + 1;
+        }
+    };
+
+    
+    if meta.is_int(ty) {
+        info := meta.get_int_info(ty);
+
+        if info.signed {
+            libc.putchar('i');
+        } else {
+            libc.putchar('u');
+        }
+
+        str := fmt.i64_to_string(info.bit_width);
+        defer string_builder.free(^mut str);
+
+        string_builder.print(^str);
+    } else if meta.is_float(ty) {
+        info := meta.get_float_info(ty);
+
+        libc.putchar('f');
+
+        str := fmt.i64_to_string(info.bit_width);
+        defer string_builder.free(^mut str);
+
+        string_builder.print(^str);
+    } else if meta.is_bool(ty) {
+        _print_str("bool");
+    } else if meta.is_string(ty) {
+        _print_str("str");
+    } else if meta.is_char(ty) {
+        _print_str("char");
+    } else if meta.is_array(ty) {
+        info := meta.get_array_info(ty);
+
+        libc.putchar('[');
+
+        str := fmt.i64_to_string(info.len as i64);
+        defer string_builder.free(^mut str);
+        string_builder.print(^str);
+
+        libc.putchar(']');
+        libc.putchar(' ');
+
+        print_type_info(info.ty);
+    } else if meta.is_slice(ty) {
+        info := meta.get_slice_info(ty);
+
+        _print_str("[] ");
+        print_type_info(info.ty);
+    } else if meta.is_pointer(ty) {
+        info := meta.get_pointer_info(ty);
+
+        libc.putchar('^');
+        print_type_info(info.ty);
+    } else if meta.is_distinct(ty) {
+        info := meta.get_distinct_info(ty);
+
+        _print_str("distinct ");
+        print_type_info(info.ty);
+    } else if meta.is_meta_type(ty) {
+        _print_str("type");
+    } else if meta.is_any(ty) {
+        _print_str("any");
+    } else if meta.is_file(ty) {
+        _print_str("{import}");
+    } else if meta.is_function(ty) {
+        _print_str("{function}");
+    } else if meta.is_struct(ty) {
+        info := meta.get_struct_info(ty);
+
+        _print_str("struct { ");
+
+        idx := 0;
+        while idx < info.members.len {
+            member := info.members[idx];
+
+            _print_str(member.name);
+            _print_str(": ");
+
+            print_type_info(member.ty);
+
+            if idx < info.members.len - 1 {
+                _print_str(", ");
+            }
+            idx = idx + 1;
+        }
+
+        _print_str(" }");
+    } else if meta.is_void(ty) {
+        _print_str("void");
+    }
+}
+
+// gets the length of a string.
+// strings in Capy are not slices yet,
+// and so are all null terminated like C.
+str_len :: (s: str) -> usize {
+    s_ptr := s as ^u8;
+
+    idx := 0;
+    loop {
+        ch := ptr.read(s_ptr, idx);
+
+        if ch == 0 { break; }
+
+        idx = idx + 1;
+    }
+
+    idx
+}
+
+// checks to see if two strings are equal
+str_eq :: (first: str, second: str) -> bool {
+    first_ptr := first as ^u8;
+    second_ptr := second as ^u8;
+
+    idx := 0;
+    loop {
+        first_ch := ptr.read(first_ptr, idx);
+        second_ch := ptr.read(second_ptr, idx);
+        
+        if first_ch != second_ch {
+            return false;
+        }
+
+        if first_ch == 0 { break; }
+
+        idx = idx + 1;
+    }
+
+    true
+}
+
+// casts a `core.Any` into the specificied memory.
+// the buffer must have enough space for `expected`.
+//
+// this is more than just a memcpy, it casts `value`
+// as needed so that the resulting type is `expected`.
+//
+// Think of this as a runtime `as` operator.
+//
+// The returned `Any` is made of the given `expected` and `into`
+//
+// todo: add more tests for this function
+cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
+    if meta.is_distinct(expected) {
+        info := meta.get_distinct_info(expected);
+
+        cast_into(value, info.ty, into);
+        return Any {
+            data: into,
+            ty: expected,
+        };
+    }
+
+    ty := value.ty;
+    data := value.data;
+
+    if meta.is_int(ty) {
+        from_info := meta.get_int_info(ty);
+
+        // todo: add more "in-between" casts, like int -> float etc.
+        assert_with(
+            meta.is_int(expected),
+            "int types can only be casted to int types"
+        );
+        into_info := meta.get_int_info(expected);
+
+        num := if from_info.bit_width == 8 {
+            {data as ^u8}^ as u64
+        } else if from_info.bit_width == 16 {
+            {data as ^u16}^ as u64
+        } else if from_info.bit_width == 32 {
+            {data as ^u32}^ as u64
+        } else if from_info.bit_width == 64 {
+            {data as ^u64}^ as u64
+        } else if from_info.bit_width == 128 {
+            {data as ^u128}^ as u64
+        } else {
+            unreachable();
+            0
+        };
+
+        if into_info.bit_width == 8 {
+            {into as ^mut u8} ^= num as u8;
+        } else if into_info.bit_width == 16 {
+            {into as ^mut u16} ^= num as u16;
+        } else if into_info.bit_width == 32 {
+            {into as ^mut u32} ^= num as u32;
+        } else if into_info.bit_width == 64 {
+            {into as ^mut u64} ^= num as u64;
+        } else if into_info.bit_width == 128 {
+            {into as ^mut u128} ^= num as u128;
+        } else {
+            unreachable();
+        }
+    } else if meta.is_float(ty) {
+        from_info := meta.get_float_info(ty);
+
+        assert_with(
+            meta.is_float(expected),
+            "float types can only be casted to float types"
+        );
+        into_info := meta.get_int_info(expected);
+        
+        num := if from_info.bit_width == 32 {
+            {data as ^f32}^ as f64
+        } else if from_info.bit_width == 64 {
+            {data as ^f64}^ as f64
+        } else {
+            unreachable();
+            0
+        };
+
+        if into_info.bit_width == 32 {
+            {into as ^mut f32} ^= num as f32;
+        } else if into_info.bit_width == 64 {
+            {into as ^mut f64} ^= num as f64;
+        } else {
+            unreachable();
+        }
+    } else if meta.is_bool(ty) {
+        assert_with(
+            meta.is_bool(expected),
+            "bool types can only be casted to bool types"
+        );
+        {into as ^mut bool} ^= {data as ^bool}^;
+    } else if meta.is_string(ty) {
+        assert_with(
+            meta.is_string(expected),
+            "string types can only be casted to string types"
+        );
+        {into as ^mut str} ^= {data as ^str}^;
+    } else if meta.is_char(ty) {
+        assert_with(
+            meta.is_char(expected),
+            "char types can only be casted to char types"
+        );
+        {into as ^mut char} ^= {data as ^char}^;
+    } else if meta.is_array(ty) {
+        assert_with(
+            ty == expected,
+            "array types can only be casted to themselves",
+        );
+
+        // todo: we can 100% do better than this
+
+        libc.memcpy(into, data, meta.size_of(ty));
+    } else if meta.is_slice(ty) {
+        assert_with(
+            ty == expected,
+            "slice types can only be casted to themselves",
+        );
+
+        libc.memcpy(into, data, meta.size_of(ty));
+    } else if meta.is_pointer(ty) {
+        assert_with(
+            ty == expected,
+            "pointer types can only be casted to themselves",
+        );
+
+        {into as ^mut usize} ^= {data as ^usize}^;
+    } else if meta.is_distinct(ty) {
+        info := meta.get_distinct_info(ty);
+        cast_into(Any { ty: info.ty, data: data }, expected, into);
+    } else if meta.is_meta_type(ty) {
+        assert_with(
+            ty == expected,
+            "type ids can only be casted to themselves",
+        );
+        {into as ^mut type} ^= {data as ^type}^;
+    } else if meta.is_any(ty) {
+        assert_with(
+            ty == expected,
+            "any types can only be casted to themselves",
+        );
+        // do nothing ;)
+    } else if meta.is_file(ty) {
+        assert_with(
+            ty == expected,
+            "file types can only be casted to themselves",
+        );
+        // do nothing ;)
+    } else if meta.is_function(ty) {
+        assert_with(
+            ty == expected,
+            "function types can only be casted to themselves",
+        );
+        {into as ^mut usize} ^= {data as ^usize}^;
+    } else if meta.is_struct(ty) {
+        assert_with(
+            ty == expected,
+            "array types can only be casted to themselves",
+        );
+
+        // todo: we can 100% do better than this
+
+        libc.memcpy(into, data, meta.size_of(ty));
+    } else if meta.is_void(ty) {
+        assert_with(
+            ty == expected,
+            "void types can only be casted to themselves",
+        );
+        // do nothing ;)
+    }
+
+    Any {
+        data: into,
+        ty: expected,
+    }
+}

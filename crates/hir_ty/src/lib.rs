@@ -1092,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn ty_in_other_module() {
+    fn ty_in_other_file() {
         check(
             r#"
                 #- main.capy
@@ -1138,6 +1138,73 @@ mod tests {
                   16 : () -> numbers::imaginary
                   l0 : numbers::imaginary
                   l1 : numbers::Magic_Struct
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn alias_ty() {
+        check(
+            r#"
+                Foo :: distinct i32;
+                Bar :: Foo;
+
+                fun :: () -> Foo {
+                    x : Bar = 42;
+
+                    x
+                }
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::fun : () -> main::Foo
+                1 : type
+                2 : type
+                5 : main::Foo
+                6 : main::Foo
+                7 : main::Foo
+                8 : () -> main::Foo
+                l0 : main::Foo
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn alias_ty_in_other_file() {
+        check(
+            r#"
+                #- main.capy
+                foo :: import "foo.capy";
+
+                Foo :: foo.Foo;
+
+                fun :: () -> Foo {
+                    foo : Foo = 0;
+
+                    foo
+                }
+                #- foo.capy
+                Foo :: distinct i32;
+            "#,
+            expect![[r#"
+                foo::Foo : type
+                main::Foo : type
+                main::foo : file foo
+                main::fun : () -> foo::Foo
+                foo:
+                  1 : type
+                main:
+                  0 : file foo
+                  1 : file foo
+                  2 : type
+                  5 : foo::Foo
+                  6 : foo::Foo
+                  7 : foo::Foo
+                  8 : () -> foo::Foo
+                  l0 : foo::Foo
             "#]],
             |_| [],
         );
@@ -2783,7 +2850,7 @@ mod tests {
     }
 
     #[test]
-    fn call_function_from_other_module() {
+    fn call_function_from_other_file() {
         check(
             r#"
                 #- main.capy
@@ -4453,7 +4520,7 @@ mod tests {
     }
 
     #[test]
-    fn assign_to_global_in_other_module() {
+    fn assign_to_global_in_other_file() {
         check(
             r#"
                 #- main.capy

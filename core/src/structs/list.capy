@@ -1,0 +1,119 @@
+core :: mod "core";
+ptr :: core.ptr;
+libc :: core.libc;
+math :: core.math;
+
+List :: struct {
+    ty: type,
+    buf: ^mut any,
+    cap: usize,
+    len: usize,
+};
+
+make :: (ty: type) -> List {
+    List {
+        ty: ty,
+        buf: ptr.mut_null(),
+        cap: 0,
+        len: 0,
+    }
+}
+
+make_with_capacity :: (ty: type, cap: usize) -> List {
+    if cap == 0 { return make(ty); }
+
+    buf := libc.malloc(cap) as ^mut char;
+
+    if cap > 0 && ptr.is_null(buf) {
+        core.panic_with("Error allocating the List");
+    }
+
+    List {
+        ty: ty,
+        buf: buf,
+        len: 0,
+        cap: cap,
+    }
+}
+
+free :: (self: ^mut List) {
+    libc.free(self.buf);
+    // to make sure the list isn't accidentally used after free
+    self.cap = 0;
+    self.len = 0;
+}
+
+push :: (list: ^mut List, value: core.Any) {
+    _grow_by(list, 1);
+
+    offset := ptr.mut_offset(list.buf, list.len * core.meta.stride_of(list.ty));
+
+    core.cast_into(value, list.ty, offset);
+
+    list.len = list.len + 1;
+}
+
+get :: (list: ^List, index: usize) -> core.Any {
+    if index >= list.len {
+        core.panic_with("called `get` with an index outside the list");
+    }
+
+    core.Any {
+        data: ptr.const_offset(list.buf, index * core.meta.stride_of(list.ty)),
+        ty: list.ty,
+    }
+}
+
+// todo: return the item
+pop :: (list: ^mut List) {
+    if list.len == 0 {
+        core.panic_with("cannot pop from an empty list");
+    }
+
+    list.len = list.len - 1;
+}
+
+print :: (list: ^List) {
+    ty_stride := core.meta.stride_of(list.ty);
+
+    core.print("{ ");
+
+    idx := 0;
+    while idx < list.len {
+        core.print(core.Any {
+            ty: list.ty,
+            data: ptr.const_offset(list.buf, idx * ty_stride)
+        });
+
+        idx = idx + 1;
+        
+        if idx < list.len {
+            core.print(", ");
+        }
+    }
+
+    core.print(" }");
+}
+
+println :: (list: ^List) {
+    print(list);
+    core.print('\n');
+}
+
+to_slice :: (list: ^List) -> [] any {
+    ptr.slice_from_raw_parts(list.buf, list.len)
+}
+
+_grow_by :: (list: ^mut List, len: usize) {
+    if list.len + len > list.cap {
+        new_cap := math.max_usize(list.cap * 2, 1);
+        while new_cap <= list.len + len {
+            new_cap = new_cap * 2;
+        }
+
+        ty_stride := core.meta.stride_of(list.ty);
+
+        list.buf = libc.realloc(list.buf, new_cap * ty_stride) as ^mut char;
+        list.cap = new_cap;
+    }
+}

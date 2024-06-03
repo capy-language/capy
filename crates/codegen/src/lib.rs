@@ -201,17 +201,16 @@ mod tests {
 
         let mut modules = FxHashMap::default();
 
-        const CORE_DEPS: &[&str] = &[
-            "../../core/mod.capy",
-            "../../core/ptr.capy",
-            "../../core/libc.capy",
-            "../../core/math.capy",
-            "../../core/meta.capy",
-            "../../core/strings.capy",
-            "../../core/fmt.capy",
-        ];
+        let core_deps: Vec<_> = glob::glob("../../core/src/**/*.capy")
+            .unwrap()
+            .map(|path| path.unwrap().into_os_string().into_string().unwrap())
+            .collect();
 
-        for file in other_files.iter().chain(CORE_DEPS.iter()) {
+        for file in other_files
+            .iter()
+            .copied()
+            .chain(core_deps.iter().map(|f| f.as_str()))
+        {
             let file = file.replace('/', std::path::MAIN_SEPARATOR_STR);
             let file = Path::new(current_dir).join(file).clean();
             let text = fs::read_to_string(&file).unwrap();
@@ -769,9 +768,9 @@ mod tests {
     // comptime_types.capy cannot be tested as it gets user input
 
     #[test]
-    fn string() {
+    fn strings() {
         check_files(
-            "../../examples/string.capy",
+            "../../examples/strings.capy",
             &[],
             "main",
             expect![[r#"
@@ -1042,6 +1041,21 @@ mod tests {
                 struct { ty: type, data: ^any }
                 {}
                 { 4, 8, 15, 16, 23, 42 }
+                
+            "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn lists() {
+        check_files(
+            "../../examples/lists.capy",
+            &[],
+            "main",
+            expect![[r#"
+                42
+                { 4, 8, 15, 16, 23 }
                 
             "#]],
             0,
@@ -1836,6 +1850,52 @@ mod tests {
 
 "#]],
             98,
+        )
+    }
+
+    #[test]
+    fn assign_to_cast() {
+        check_raw(
+            r#"
+                main :: () -> u32 {
+                    x : u32 = 42;
+
+                    ptr := ^mut x as ^mut any;
+
+                    {ptr as ^mut u32} ^= 5;
+
+                    x
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            5,
+        )
+    }
+
+    #[test]
+    fn assign_to_param() {
+        check_raw(
+            r#"
+                main :: () -> u32 {
+                    x : u32 = 42;
+
+                    do_stuff(^mut x);
+
+                    x
+                }
+
+                do_stuff :: (ptr: ^mut i32) {
+                    ptr ^= 5;
+                }
+            "#,
+            "main",
+            expect![[r#"
+
+"#]],
+            5,
         )
     }
 

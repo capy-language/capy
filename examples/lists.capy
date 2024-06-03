@@ -1,0 +1,28 @@
+
+core :: mod "core";
+list :: core.list;
+
+main :: () {
+    Sub_Type :: u128;
+
+    // `List` is dynamic, and uses runtime reflection
+    // to correctly store and manage it's contents
+    my_list := list.make(Sub_Type);
+
+    list.push(^mut my_list, 4);
+    list.push(^mut my_list, 8);
+    list.push(^mut my_list, 15);
+    list.push(^mut my_list, 16);
+    list.push(^mut my_list, 23);
+
+    // `List` uses `core.cast_into`, which will cast
+    // `core.Any`s into the correct type at runtime
+    last : u8 = 42;
+    list.push(^mut my_list, last);
+
+    core.println(list.get(^my_list, 5));
+
+    list.pop(^mut my_list);
+
+    core.println(list.to_slice(^my_list) as [] Sub_Type);
+}

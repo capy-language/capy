@@ -276,7 +276,7 @@ print_info_with_args :: (ty: type, indent: i32) {
             core.println("\nokay you fricked up bud");
             io.label("discriminant = ", disc);
 
-            core.libc.exit(1);
+            core.unreachable();
 
             "unreachable"
         };

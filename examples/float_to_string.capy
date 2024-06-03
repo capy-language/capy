@@ -1,6 +1,4 @@
 core :: mod "core";
-fmt :: core.fmt;
-strings :: core.strings;
 
 main :: () {
     core.println(3.14159);

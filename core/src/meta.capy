@@ -1,5 +1,8 @@
 
-// returns the underlying bit representation of the type id
+core :: mod "core";
+
+// returns the underlying bit representation of the type id.
+// builtin
 meta_to_raw :: (ty: type) -> u32 extern;
 
 Layout :: struct {
@@ -7,10 +10,14 @@ Layout :: struct {
     align: usize,
 };
 
+// builtin
 array_layouts : [] Layout : extern;
+// builtin
 distinct_layouts : [] Layout : extern;
+// builtin
 struct_layouts : [] Layout : extern;
 
+// builtin
 pointer_layout : Layout : extern;
 
 // The amount of space a type takes up in memory.
@@ -222,8 +229,10 @@ is_int :: (ty: type) -> bool {
 get_int_info :: (ty: type) -> Int_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == int_discriminant);
+    core.assert_with(
+        raw >> 26 == int_discriminant,
+        "called `get_int_info` on non-int",
+    );
 
     Int_Info {
         // 31 (0b11111)
@@ -251,8 +260,10 @@ is_float :: (ty: type) -> bool {
 get_float_info :: (ty: type) -> Float_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == float_discriminant);
+    core.assert_with(
+        raw >> 26 == float_discriminant,
+        "called `get_float_info` on non-float",
+    );
 
     Float_Info {
         // 31 (0b11111)
@@ -307,8 +318,10 @@ is_array :: (ty: type) -> bool {
 get_array_info :: (ty: type) -> Array_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == array_discriminant);
+    core.assert_with(
+        raw >> 26 == array_discriminant,
+        "called `get_array_info` on non-array",
+    );
 
     // 63 (0b111111)
     // removes the discriminant
@@ -338,8 +351,10 @@ is_slice :: (ty: type) -> bool {
 get_slice_info :: (ty: type) -> Slice_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == slice_discriminant);
+    core.assert_with(
+        raw >> 26 == slice_discriminant,
+        "called `get_slice_info` on non-slice",
+    );
 
     // 63 (0b111111)
     // removes the discriminant
@@ -367,8 +382,10 @@ is_pointer :: (ty: type) -> bool {
 get_pointer_info :: (ty: type) -> Pointer_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == pointer_discriminant);
+    core.assert_with(
+        raw >> 26 == pointer_discriminant,
+        "called `get_pointer_info` on non-pointer",
+    );
 
     // 63 (0b111111)
     // removes the discriminant
@@ -398,8 +415,10 @@ is_distinct :: (ty: type) -> bool {
 get_distinct_info :: (ty: type) -> Distinct_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == distinct_discriminant);
+    core.assert_with(
+        raw >> 26 == distinct_discriminant,
+        "called `get_distinct_info` on non-distinct",
+    );
 
     // 63 (0b111111)
     // removes the discriminant
@@ -480,8 +499,10 @@ is_struct :: (ty: type) -> bool {
 get_struct_info :: (ty: type) -> Struct_Info {
     raw := meta_to_raw(ty);
 
-    core :: import "mod.capy";
-    core.assert(raw >> 26 == struct_discriminant);
+    core.assert_with(
+        raw >> 26 == struct_discriminant,
+        "called `get_struct_info` on non-struct",
+    );
 
     // 63 (0b111111)
     // removes the discriminant

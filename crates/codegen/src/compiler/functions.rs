@@ -830,6 +830,8 @@ impl FunctionCompiler<'_> {
         self.compile_expr_with_args(expr, false)
     }
 
+    /// `no_load` will cause the first encountered deref to not deref at all.
+    /// this is used for assignment
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
         if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
@@ -1071,10 +1073,10 @@ impl FunctionCompiler<'_> {
                 let self_ty = self.tys[self.file_name][expr];
 
                 if self_ty.is_aggregate() {
-                    return self.compile_expr_with_args(pointer, no_load);
+                    return self.compile_expr_with_args(pointer, false);
                 }
 
-                let addr = self.compile_expr_with_args(pointer, no_load)?;
+                let addr = self.compile_expr_with_args(pointer, false)?;
 
                 let self_ty = self_ty.get_final_ty();
 
@@ -1084,11 +1086,17 @@ impl FunctionCompiler<'_> {
                     self_ty.into_real_type().unwrap()
                 };
 
-                Some(
-                    self.builder
-                        .ins()
-                        .load(self_ty, MemFlags::trusted(), addr, 0),
-                )
+                self.builder.ins().iconst(types::I32, 123);
+
+                if no_load {
+                    Some(addr)
+                } else {
+                    Some(
+                        self.builder
+                            .ins()
+                            .load(self_ty, MemFlags::trusted(), addr, 0),
+                    )
+                }
             }
             hir::Expr::Binary {
                 lhs: lhs_expr,
