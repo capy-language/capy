@@ -8,7 +8,7 @@ use base64::{engine::general_purpose, Engine};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
-const GITHUB_URL: &str = "https://api.github.com/repos/capy-language/capy/contents";
+const GITHUB_URL: &str = "https://api.github.com/repos/capy-language/capy/contents/";
 
 pub(crate) fn download_core(lib_dir: &Path) {
     download_github_dir(lib_dir, "core");
@@ -19,7 +19,7 @@ pub(crate) fn download_github_dir(lib_dir: &Path, path: &str) {
     let client = Client::new();
 
     let mut response = client
-        .get(format!("{GITHUB_URL}/{path}"))
+        .get(format!("{GITHUB_URL}{path}"))
         .header("User-Agent", " ")
         .send()
         .expect("Failed to get response from capy-language/capy:core");
@@ -39,8 +39,9 @@ pub(crate) fn download_github_dir(lib_dir: &Path, path: &str) {
             match file_ty {
                 "dir" => {
                     let dir_url = element["url"].as_str().expect("Invalud sub-directory URL");
+                    let dir = dir_url.strip_prefix(GITHUB_URL).unwrap();
 
-                    download_github_dir(lib_dir, dir_url);
+                    download_github_dir(lib_dir, dir);
                 }
                 "file" => {
                     let file_path = element["path"]

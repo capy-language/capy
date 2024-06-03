@@ -201,7 +201,7 @@ fn compile_file(
 
     let core_dir = mod_dir.join("core");
 
-    if redownload_core {
+    if redownload_core && core_dir.exists() {
         std::fs::remove_dir_all(&core_dir)
             .unwrap_or_else(|why| panic!("couldn't detele `{}`: {}", core_dir.display(), why));
     }
