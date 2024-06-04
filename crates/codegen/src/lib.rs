@@ -1899,5 +1899,40 @@ mod tests {
         )
     }
 
+    #[test]
+    fn hex_and_bin() {
+        check_raw(
+            r#"
+                main :: () {
+                    iprint(0x1FeeeF001239 + 0b111101010101010);
+                }
+
+                iprint :: (n: i64) {
+                    n := n;
+                    
+                    if n < 0 {
+                        n = -n;
+                        putchar('-');
+                    }
+
+                    if n > 9 {
+                        a := n / 10;
+
+                        n = n - 10 * a;
+                        iprint(a);
+                    }
+                    putchar({'0' as u8 + n} as char);
+                }
+
+                putchar :: (ch: char) extern;
+            "#,
+            "main",
+            expect![[r#"
+            35111072468195
+"#]],
+            0,
+        )
+    }
+
     // the "ptrs_to_ptrs.capy" and "comptime_types.capy" tests are not reproducible
 }

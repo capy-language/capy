@@ -738,6 +738,7 @@ def_multi_token! {
     IntValue:
     Dec -> Int
     Hex -> Hex
+    Bin -> Bin
 }
 
 def_ast_node!(FloatLiteral);
@@ -854,6 +855,7 @@ def_ast_token!(DoublePipe);
 def_ast_token!(Ident);
 def_ast_token!(Int);
 def_ast_token!(Hex);
+def_ast_token!(Bin);
 def_ast_token!(Float);
 def_ast_token!(Bool);
 
@@ -1481,6 +1483,28 @@ mod tests {
         };
 
         assert_eq!(hex.text(&tree), "0xFeab1");
+    }
+
+    #[test]
+    fn get_value_of_bin_literal() {
+        let (tree, root) = parse("0b111000111;");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let int_literal = match expr {
+            Some(Expr::IntLiteral(int_literal)) => int_literal,
+            _ => unreachable!(),
+        };
+
+        let bin = match int_literal.value(&tree).unwrap() {
+            IntValue::Bin(bin) => bin,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(bin.text(&tree), "0b111000111");
     }
 
     #[test]

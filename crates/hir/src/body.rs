@@ -1342,7 +1342,22 @@ impl<'a> Ctx<'a> {
 
                 match u64::from_str_radix(value, 16) {
                     Ok(value) => Expr::IntLiteral(value),
-                    Err(why) => {
+                    Err(_) => {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
+                            range: int_literal.range(self.tree),
+                        });
+
+                        Expr::Missing
+                    }
+                }
+            }
+            ast::IntValue::Bin(bin) => {
+                let value = bin.text(self.tree).strip_prefix("0b").unwrap();
+
+                match u64::from_str_radix(value, 2) {
+                    Ok(value) => Expr::IntLiteral(value),
+                    Err(_) => {
                         self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::OutOfRangeIntLiteral,
                             range: int_literal.range(self.tree),
@@ -2819,6 +2834,74 @@ mod tests {
                 };
             "#]],
             |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..76)],
+        )
+    }
+
+    #[test]
+    fn hex_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 0x21eFAB;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    l0 := 2224043;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn out_of_range_hex_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 0x10000000000000000;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    l0 := <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..75)],
+        )
+    }
+
+    #[test]
+    fn bin_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 0b001100101010101;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    l0 := 6485;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn out_of_range_bin_literal() {
+        check(
+            r#"
+                foo :: () {
+                    num := 0b10000000000000000000000000000000000000000000000000000000000000000;
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    l0 := <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..123)],
         )
     }
 

@@ -705,6 +705,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Bool => "boolean",
         TokenKind::Int => "integer",
         TokenKind::Hex => "hex literal",
+        TokenKind::Bin => "binary literal",
         TokenKind::Float => "float",
         TokenKind::SingleQuote => "`'`",
         TokenKind::DoubleQuote => "`\"`",

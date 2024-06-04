@@ -1,0 +1,12 @@
+0b101010101 * 0b010101010
+===
+Root@0..25
+  ExprStmt@0..25
+    BinaryExpr@0..25
+      IntLiteral@0..11
+        Bin@0..11 "0b101010101"
+      Whitespace@11..12 " "
+      Asterisk@12..13 "*"
+      Whitespace@13..14 " "
+      IntLiteral@14..25
+        Bin@14..25 "0b010101010"

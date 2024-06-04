@@ -118,7 +118,7 @@ fn parse_lhs(
         TokenKind::Tilde,
     ]);
 
-    let cm = if p.at(TokenKind::Int) || p.at(TokenKind::Hex) {
+    let cm = if p.at(TokenKind::Int) || p.at(TokenKind::Hex) || p.at(TokenKind::Bin) {
         parse_int_literal(p)
     } else if p.at(TokenKind::Float) {
         parse_float_literal(p)
@@ -286,7 +286,7 @@ fn parse_post_operators(
 }
 
 fn parse_int_literal(p: &mut Parser) -> CompletedMarker {
-    assert!(p.at(TokenKind::Int) || p.at(TokenKind::Hex));
+    assert!(p.at(TokenKind::Int) || p.at(TokenKind::Hex) || p.at(TokenKind::Bin));
     let m = p.start();
     p.bump();
     m.complete(p, NodeKind::IntLiteral)
