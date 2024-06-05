@@ -22,7 +22,7 @@ make :: (ty: type) -> List {
 make_with_capacity :: (ty: type, cap: usize) -> List {
     if cap == 0 { return make(ty); }
 
-    buf := libc.malloc(cap) as ^mut char;
+    buf := libc.malloc(cap * core.meta.stride_of(ty)) as ^mut char;
 
     if cap > 0 && ptr.is_null(buf) {
         core.panic_with("Error allocating the List");
@@ -113,7 +113,10 @@ _grow_by :: (list: ^mut List, len: usize) {
 
         ty_stride := core.meta.stride_of(list.ty);
 
-        list.buf = libc.realloc(list.buf, new_cap * ty_stride) as ^mut char;
+        list.buf = libc.reallocarray(list.buf, new_cap, ty_stride) as ^mut char;
+	if core.ptr.is_null(list.buf) {
+	    core.panic_with("failed to reallocate list");
+	}
         list.cap = new_cap;
     }
 }

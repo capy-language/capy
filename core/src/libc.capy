@@ -9,6 +9,9 @@ calloc :: (len: usize, size: usize) -> ^mut any extern;
 free :: (ptr: ^any) extern;
 // reallocates already allocated memory
 realloc :: (ptr: ^mut any, size: usize) -> ^mut any extern;
+// The reallocarray() function changes the size of (and possibly moves) the memory block pointed to by ptr
+// to be large enough for an array of nmemb elements, each of which is size bytes
+reallocarray :: (ptr: ^mut any, nmemb: usize, size: usize) -> ^mut any extern;
 // copies len bytes from dst to src
 memcpy :: (dst: ^mut any, src: ^any, len: usize) extern;
 
