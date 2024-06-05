@@ -22,7 +22,13 @@ make :: (ty: type) -> List {
 make_with_capacity :: (ty: type, cap: usize) -> List {
     if cap == 0 { return make(ty); }
 
-    buf := libc.malloc(cap * core.meta.stride_of(ty)) as ^mut char;
+    raw_cap :: cap * core.meta.stride_of(ty);
+
+    if raw_cap < cap || raw_cap < core.meta.stride_of(ty) {
+        core.panic_with("overflow when trying to allocate the backing array of a list");
+    }
+
+    buf := libc.malloc(raw_cap) as ^mut char;
 
     if cap > 0 && ptr.is_null(buf) {
         core.panic_with("Error allocating the List");
