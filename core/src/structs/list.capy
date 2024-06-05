@@ -119,7 +119,7 @@ _grow_by :: (list: ^mut List, len: usize) {
 
         ty_stride := core.meta.stride_of(list.ty);
 
-	new_cap_raw = new_cap * ty_stride;
+	new_cap_raw :: new_cap * ty_stride;
 
 	if new_cap_raw < new_cap || new_cap_raw < ty_stride {
 	    core.panic_with("overflow when trying to grow list");
