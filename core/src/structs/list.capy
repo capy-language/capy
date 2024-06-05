@@ -119,10 +119,13 @@ _grow_by :: (list: ^mut List, len: usize) {
 
         ty_stride := core.meta.stride_of(list.ty);
 
-        list.buf = libc.reallocarray(list.buf, new_cap, ty_stride) as ^mut char;
-	if core.ptr.is_null(list.buf) {
-	    core.panic_with("failed to reallocate list");
+	new_cap_raw = new_cap * ty_stride;
+
+	if new_cap_raw < new_cap || new_cap_raw < ty_stride {
+	    core.panic_with("overflow when trying to grow list");
 	}
+	
+        list.buf = libc.realloc(list.buf, new_cap_raw) as ^mut char;
         list.cap = new_cap;
     }
 }
