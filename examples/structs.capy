@@ -12,23 +12,23 @@ Company :: struct {
 };
 
 main :: () {
-    some_guy := Person {
-        name: "Terry",
-        age: 48,
+    some_guy := Person.{
+        name = "Terry",
+        age = 48,
     };
 
-    my_company := Company {
-        employees: [3] Person {
-            Person {
-                name: "Bob",
-                age: 32,
+    my_company := Company.{
+        employees = Person.[
+            Person.{
+                name = "Bob",
+                age = 32,
             },
             some_guy, // copied into the array
-            Person {
-                name: "Walter",
-                age: 52,
+            Person.{
+                name = "Walter",
+                age = 52,
             },
-        },
+        ],
     };
 
     some_guy.age = 1000;

@@ -1,26 +1,27 @@
-Foo {
-    bar: "pls don't crash!",
+Foo.{
+    bar = "pls don't crash!",
 ===
-Root@0..34
-  ExprStmt@0..34
-    StructLiteral@0..34
+Root@0..35
+  ExprStmt@0..35
+    StructLiteral@0..35
       Ty@0..3
         VarRef@0..3
           Ident@0..3 "Foo"
-      Whitespace@3..4 " "
+      Dot@3..4 "."
       LBrace@4..5 "{"
       Whitespace@5..10 "\n    "
-      MemberLiteral@10..33
+      MemberLiteral@10..34
         Ident@10..13 "bar"
-        Colon@13..14 ":"
-        Whitespace@14..15 " "
-        StringLiteral@15..33
-          DoubleQuote@15..16 "\""
-          StringContents@16..32 "pls don't crash!"
-          DoubleQuote@32..33 "\""
-      Comma@33..34 ","
-      MemberLiteral@34..34
-error at 34: missing field name
-error at 34: missing Colon
-error at 34: missing field value
-error at 34: missing RBrace
+        Whitespace@13..14 " "
+        Equals@14..15 "="
+        Whitespace@15..16 " "
+        StringLiteral@16..34
+          DoubleQuote@16..17 "\""
+          StringContents@17..33 "pls don't crash!"
+          DoubleQuote@33..34 "\""
+      Comma@34..35 ","
+      MemberLiteral@35..35
+error at 35: missing field name
+error at 35: missing Equals
+error at 35: missing field value
+error at 35: missing RBrace

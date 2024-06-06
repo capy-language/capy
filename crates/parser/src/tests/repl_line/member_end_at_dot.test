@@ -1,0 +1,9 @@
+foo.
+===
+Root@0..4
+  ExprStmt@0..4
+    Path@0..4
+      VarRef@0..3
+        Ident@0..3 "foo"
+      Dot@3..4 "."
+error at 4: missing field name

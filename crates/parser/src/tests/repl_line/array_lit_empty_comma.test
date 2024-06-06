@@ -1,0 +1,15 @@
+i32.[,]
+===
+Root@0..7
+  ExprStmt@0..7
+    ArrayLiteral@0..7
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "i32"
+      Dot@3..4 "."
+      LBrack@4..5 "["
+      ArrayItem@5..6
+        Error@5..6
+          Comma@5..6 ","
+      RBrack@6..7 "]"
+error at 5..6: expected array item but found Comma

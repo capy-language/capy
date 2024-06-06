@@ -236,7 +236,7 @@ impl Ty {
             Ty::NotYetResolved => true,
             Ty::Unknown => true,
             Ty::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
-            Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_unknown(),
+            Ty::Array { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Struct { members, .. } => members.iter().any(|(_, ty)| ty.is_unknown()),
             Ty::Distinct { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Function {

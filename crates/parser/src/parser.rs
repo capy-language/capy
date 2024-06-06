@@ -66,6 +66,7 @@ impl<'tokens> Parser<'tokens> {
         )
     }
 
+    /// this will skip all tokens except those in the default recovery set.
     pub(crate) fn expect(&mut self, kind: TokenKind) {
         self.expect_with_recovery_set(kind, TokenSet::NONE)
     }
@@ -75,6 +76,18 @@ impl<'tokens> Parser<'tokens> {
             self.bump();
         } else {
             self.error_with_recovery_set(recovery_set);
+        }
+    }
+
+    pub(crate) fn expect_with_recovery_set_no_default(
+        &mut self,
+        kind: TokenKind,
+        recovery_set: TokenSet,
+    ) {
+        if self.at(kind) {
+            self.bump();
+        } else {
+            self.error_with_recovery_set_no_default(recovery_set);
         }
     }
 
@@ -129,7 +142,7 @@ impl<'tokens> Parser<'tokens> {
 
         self.errors.push(SyntaxError {
             expected_syntax,
-            kind: SyntaxErrorKind::Unexpected {
+            kind: SyntaxErrorKind::UnexpectedToken {
                 found: self.tokens.kind(self.token_idx),
                 range: self.tokens.range(self.token_idx),
             },
@@ -138,6 +151,25 @@ impl<'tokens> Parser<'tokens> {
         let m = self.start();
         self.bump();
         Some(m.complete(self, NodeKind::Error))
+    }
+
+    pub(crate) fn mark_old_error(
+        &mut self,
+        found: NodeKind,
+        start_token: usize,
+        end_token: usize,
+        expected: ExpectedSyntax,
+    ) {
+        self.errors.push(SyntaxError {
+            expected_syntax: expected,
+            kind: SyntaxErrorKind::UnexpectedNode {
+                found,
+                range: self
+                    .tokens
+                    .range(start_token)
+                    .cover(self.tokens.range(end_token)),
+            },
+        });
     }
 
     #[must_use]

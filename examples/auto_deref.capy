@@ -9,9 +9,9 @@ Foo :: struct {
 main :: () {
     core.println("struct auto deref:");
 
-    my_foo := Foo {
-        a: 4,
-        b: 8,
+    my_foo := Foo.{
+        a = 4,
+        b = 8,
     };
 
     io.label("my_foo.b   ", my_foo.b);
@@ -30,7 +30,7 @@ main :: () {
 
     core.println("\narray auto deref:");
 
-    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+    my_array := i32.[4, 8, 15, 16, 23, 42];
 
     ptr := ^my_array;
 

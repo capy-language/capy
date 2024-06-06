@@ -243,9 +243,7 @@ impl FunctionCompiler<'_> {
                 text.push('\0');
                 text.into_bytes().into()
             }
-            hir::Expr::Array {
-                items: Some(items), ..
-            } => {
+            hir::Expr::ArrayLiteral { items, .. } => {
                 assert_ne!(items.len(), 0);
 
                 let item_ty = self.tys[file_name][items[0]];
@@ -708,14 +706,12 @@ impl FunctionCompiler<'_> {
         }
 
         match &self.world_bodies[self.file_name][expr] {
-            hir::Expr::Array {
-                items: Some(items), ..
-            } if expected_ty.is_array() => {
+            hir::Expr::ArrayLiteral { items, .. } if expected_ty.is_array() => {
+                // fixed array
                 self.store_array_items(items.iter().copied(), addr, offset)
             }
-            hir::Expr::Array {
-                items: Some(items), ..
-            } => {
+            hir::Expr::ArrayLiteral { items, .. } => {
+                // slice
                 let ty = self.tys[self.file_name][expr];
 
                 if ty.is_zero_sized() {
@@ -815,7 +811,11 @@ impl FunctionCompiler<'_> {
         addr: Value,
         offset: u32,
     ) {
-        let first = items.next().expect("expected a non-empty array");
+        let Some(first) = items.next() else {
+            // the array has a length of zero
+            return;
+        };
+
         let inner_ty = self.tys[self.file_name][first];
         let inner_stride = inner_ty.stride();
         self.store_expr_in_memory(first, inner_ty, inner_stride, addr, offset);
@@ -880,9 +880,8 @@ impl FunctionCompiler<'_> {
                 Some(self.builder.ins().symbol_value(self.ptr_ty, local_id))
             }
             hir::Expr::CharLiteral(char) => Some(self.builder.ins().iconst(types::I8, char as i64)),
-            hir::Expr::Array {
-                items: Some(items), ..
-            } => {
+            hir::Expr::ArrayDecl { .. } => None,
+            hir::Expr::ArrayLiteral { items, .. } => {
                 let ty = self.tys[self.file_name][expr];
 
                 if ty.is_zero_sized() {
@@ -928,7 +927,6 @@ impl FunctionCompiler<'_> {
                     Some(stack_addr)
                 }
             }
-            hir::Expr::Array { items: None, .. } => None,
             hir::Expr::Index { source, index } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
                     return None;
@@ -1085,8 +1083,6 @@ impl FunctionCompiler<'_> {
                 } else {
                     self_ty.into_real_type().unwrap()
                 };
-
-                self.builder.ins().iconst(types::I32, 123);
 
                 if no_load {
                     Some(addr)
@@ -1417,6 +1413,8 @@ impl FunctionCompiler<'_> {
                     Some(self.builder.inst_results(call)[0])
                 }
             }
+            hir::Expr::Paren(Some(expr)) => self.compile_expr_with_args(expr, no_load),
+            hir::Expr::Paren(None) => None,
             hir::Expr::Block { stmts, tail_expr } => {
                 let expr_ty = self.tys[self.file_name][expr];
                 let final_ty = expr_ty.get_final_ty();

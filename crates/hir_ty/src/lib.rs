@@ -1101,8 +1101,8 @@ mod tests {
                 fun :: () -> numbers.imaginary {
                     foo : numbers.imaginary = 0;
 
-                    my_magic := numbers.Magic_Struct {
-                        mystical_field: 123 as numbers.imaginary,
+                    my_magic := numbers.Magic_Struct.{
+                        mystical_field = 123 as numbers.imaginary,
                     };
 
                     my_magic.mystical_field
@@ -1207,6 +1207,49 @@ mod tests {
                   l0 : foo::Foo
             "#]],
             |_| [],
+        );
+    }
+
+    #[test]
+    fn non_existent_global_in_other_file() {
+        check(
+            r#"
+                #- main.capy
+                foo :: import "foo.capy";
+                bar :: foo.bar;
+
+                fun :: () {
+                    x : bar = 0;
+                }
+                #- foo.capy
+                // nothing here
+            "#,
+            expect![[r#"
+                main::bar : <unknown>
+                main::foo : file foo
+                main::fun : () -> void
+                foo:
+                main:
+                  0 : file foo
+                  1 : file foo
+                  2 : <unknown>
+                  4 : {uint}
+                  5 : void
+                  6 : () -> void
+                  l0 : <unknown>
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::UnknownFqn {
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("foo.capy")),
+                            name: hir::Name(i.intern("bar")),
+                        },
+                    },
+                    65..72,
+                    None,
+                )]
+            },
         );
     }
 
@@ -1543,21 +1586,20 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := i32.[4, 8, 15, 16, 23, 42];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
-                7 : i32
-                8 : [6]i32
-                9 : void
-                10 : () -> void
+                7 : [6]i32
+                8 : void
+                9 : () -> void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1565,25 +1607,25 @@ mod tests {
     }
 
     #[test]
-    fn array_with_size() {
+    fn array_ty_with_size() {
         check(
             r#"
                 main :: () {
-                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array : [6] i32 = i32.[1, 2, 3, 4, 5, 6];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
                 0 : usize
-                2 : i32
-                3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
-                8 : [6]i32
-                9 : void
-                10 : () -> void
+                8 : i32
+                9 : i32
+                10 : [6]i32
+                11 : void
+                12 : () -> void
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1591,48 +1633,13 @@ mod tests {
     }
 
     #[test]
-    fn array_with_incorrect_size() {
-        check(
-            r#"
-                main :: () {
-                    my_array := [7] i32 { 4, 8, 15, 16, 23, 42 };
-                };
-            "#,
-            expect![[r#"
-                main::main : () -> void
-                0 : usize
-                2 : i32
-                3 : i32
-                4 : i32
-                5 : i32
-                6 : i32
-                7 : i32
-                8 : [7]i32
-                9 : void
-                10 : () -> void
-                l0 : [7]i32
-            "#]],
-            |_| {
-                [(
-                    TyDiagnosticKind::ArraySizeMismatch {
-                        found: 6,
-                        expected: 7,
-                    },
-                    70..94,
-                    None,
-                )]
-            },
-        );
-    }
-
-    #[test]
-    fn array_with_global_size() {
+    fn array_ty_with_global_size() {
         check(
             r#"
                 size : usize : 3;
 
                 main :: () {
-                    my_array := [size] i32 { 3, 1, 4 };
+                    my_array : [size] i32 = i32.[1, 2, 3];
                 };
             "#,
             expect![[r#"
@@ -1640,12 +1647,12 @@ mod tests {
                 main::size : usize
                 1 : usize
                 2 : usize
-                4 : i32
-                5 : i32
                 6 : i32
-                7 : [3]i32
-                8 : void
-                9 : () -> void
+                7 : i32
+                8 : i32
+                9 : [3]i32
+                10 : void
+                11 : () -> void
                 l0 : [3]i32
             "#]],
             |_| [],
@@ -1653,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn array_with_imported_global_size() {
+    fn array_ty_with_imported_global_size() {
         check(
             r#"
                 #- main.capy
@@ -1661,7 +1668,7 @@ mod tests {
                 other :: import "other.capy";
 
                 main :: () {
-                    my_array := [other.size] bool { false, true };
+                    my_array : [other.size] bool = bool.[true, false];
                 };
 
                 #- other.capy
@@ -1678,11 +1685,11 @@ mod tests {
                   0 : file other
                   1 : file other
                   2 : usize
-                  4 : bool
-                  5 : bool
-                  6 : [2]bool
-                  7 : void
-                  8 : () -> void
+                  6 : bool
+                  7 : bool
+                  8 : [2]bool
+                  9 : void
+                  10 : () -> void
                   l0 : [2]bool
             "#]],
             |_| [],
@@ -1690,33 +1697,30 @@ mod tests {
     }
 
     #[test]
-    fn array_with_extern_global_size() {
+    fn array_ty_with_extern_global_size() {
         check(
             r#"
                 size : usize : extern;
 
                 main :: () {
-                    my_array := [size] i32 { 3, 1, 4 };
+                    my_array : [size] i32 = i32.[];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
                 main::size : usize
                 1 : usize
-                3 : i32
-                4 : i32
-                5 : i32
-                6 : <unknown>
-                7 : void
-                8 : () -> void
+                5 : [0]i32
+                6 : void
+                7 : () -> void
                 l0 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::ArraySizeNotConst, 103..107, None)],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 102..106, None)],
         );
     }
 
     #[test]
-    fn array_with_extern_imported_global_size() {
+    fn array_ty_with_extern_imported_global_size() {
         check(
             r#"
                 #- main.capy
@@ -1724,7 +1728,7 @@ mod tests {
                 other :: import "other.capy";
 
                 main :: () {
-                    my_array := [other.size] bool { false, true };
+                    my_array : [other.size] bool = bool.[];
                 };
 
                 #- other.capy
@@ -1740,19 +1744,17 @@ mod tests {
                   0 : file other
                   1 : file other
                   2 : usize
-                  4 : bool
-                  5 : bool
-                  6 : <unknown>
+                  6 : [0]bool
                   7 : void
                   8 : () -> void
                   l0 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::ArraySizeNotConst, 110..120, None)],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 109..119, None)],
         );
     }
 
     #[test]
-    fn array_with_extern_global_through_regular_global_size() {
+    fn array_ty_with_extern_global_through_regular_global_size() {
         // I'm testing multiple things at once here.
         check(
             r#"
@@ -1761,7 +1763,7 @@ mod tests {
                 bar :: foo;
 
                 main :: () {
-                    my_array := [bar] i32 { 3, 1, 4 };
+                    my_array : [bar] i32 = i32.[];
                 };
             "#,
             expect![[r#"
@@ -1770,38 +1772,33 @@ mod tests {
                 main::main : () -> void
                 1 : usize
                 2 : usize
-                4 : i32
-                5 : i32
-                6 : i32
-                7 : <unknown>
-                8 : void
-                9 : () -> void
+                6 : [0]i32
+                7 : void
+                8 : () -> void
                 l0 : <unknown>
             "#]],
             |_| {
                 [
                     (TyDiagnosticKind::GlobalNotConst, 63..66, None),
-                    (TyDiagnosticKind::ArraySizeNotConst, 131..134, None),
+                    (TyDiagnosticKind::ArraySizeNotConst, 130..133, None),
                 ]
             },
         );
     }
 
     #[test]
-    fn array_with_float_size() {
+    fn array_ty_with_float_size() {
         check(
             r#"
                 main :: () {
-                    my_array := [1.0] i32 { 3, 1, 4 };
+                    my_array : [1.0] i32 = i32.[1];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
                 0 : {float}
-                2 : i32
-                3 : i32
                 4 : i32
-                5 : <unknown>
+                5 : [1]i32
                 6 : void
                 7 : () -> void
                 l0 : <unknown>
@@ -1812,7 +1809,7 @@ mod tests {
                         expected: Ty::UInt(u8::MAX).into(),
                         found: Ty::Float(0).into(),
                     },
-                    63..66,
+                    62..65,
                     None,
                 )]
             },
@@ -1820,26 +1817,26 @@ mod tests {
     }
 
     #[test]
-    fn array_with_local_size() {
+    fn array_ty_with_local_size() {
         check(
             r#"
                 main :: () {
                     size :: 4;
 
-                    my_array := [size] i32 { 3, 1, 4, 5 };
+                    my_array : [size] i32 = i32.[1, 2, 3, 4];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
                 0 : usize
                 1 : usize
-                3 : i32
-                4 : i32
                 5 : i32
                 6 : i32
-                7 : [4]i32
-                8 : void
-                9 : () -> void
+                7 : i32
+                8 : i32
+                9 : [4]i32
+                10 : void
+                11 : () -> void
                 l0 : usize
                 l1 : [4]i32
             "#]],
@@ -1848,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn array_with_non_const_size() {
+    fn array_ty_with_non_const_size() {
         check(
             r#"
                 main :: () {
@@ -1856,7 +1853,7 @@ mod tests {
 
                     size = size + 1;
 
-                    my_array := [size] i32 { 3, 1, 4, 5 };
+                    my_array : [size] i32 = i32.[1, 2, 3, 4];
                 };
             "#,
             expect![[r#"
@@ -1867,22 +1864,22 @@ mod tests {
                 3 : usize
                 4 : usize
                 5 : usize
-                7 : i32
-                8 : i32
                 9 : i32
                 10 : i32
-                11 : <unknown>
-                12 : void
-                13 : () -> void
+                11 : i32
+                12 : i32
+                13 : [4]i32
+                14 : void
+                15 : () -> void
                 l0 : usize
                 l1 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::ArraySizeNotConst, 133..137, None)],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 132..136, None)],
         );
     }
 
     #[test]
-    fn array_with_comptime_size() {
+    fn array_ty_with_comptime_size() {
         check(
             r#"
                 main :: () {
@@ -1894,7 +1891,7 @@ mod tests {
                         }
                     };
 
-                    my_array := [size] i64 { -2, -1, 0, 1, 2 };
+                    my_array : [size] i64 = i64.[1, 2, 3, 4, 5];
                 };
             "#,
             expect![[r#"
@@ -1908,10 +1905,8 @@ mod tests {
                 6 : usize
                 7 : usize
                 8 : usize
-                10 : {int}
-                11 : {int}
-                12 : {int}
-                13 : {int}
+                12 : i64
+                13 : i64
                 14 : i64
                 15 : i64
                 16 : i64
@@ -1926,20 +1921,20 @@ mod tests {
     }
 
     #[test]
-    fn array_with_negative_size() {
+    fn array_ty_with_negative_size() {
         check(
             r#"
                 main :: () {
-                    my_array := [-3] i32 { };
+                    my_array : [-3] i32 = i32.[];
                 };
             "#,
             expect![[r#"
                 main::main : () -> void
                 0 : {int}
                 1 : {int}
-                3 : <unknown>
-                4 : void
-                5 : () -> void
+                5 : [0]i32
+                6 : void
+                7 : () -> void
                 l0 : <unknown>
             "#]],
             |_| {
@@ -1948,7 +1943,7 @@ mod tests {
                         expected: Ty::UInt(u8::MAX).into(),
                         found: Ty::IInt(0).into(),
                     },
-                    63..65,
+                    62..64,
                     None,
                 )]
             },
@@ -1960,26 +1955,25 @@ mod tests {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := i32.[4, 8, 15, 16, 23, 42];
 
                     my_array[2]
                 };
             "#,
             expect![[r#"
                 main::main : () -> i32
-                1 : usize
+                2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
-                8 : i32
+                8 : [6]i32
                 9 : [6]i32
-                10 : [6]i32
-                11 : usize
+                10 : usize
+                11 : i32
                 12 : i32
-                13 : i32
-                14 : () -> i32
+                13 : () -> i32
                 l0 : [6]i32
             "#]],
             |_| [],
@@ -1991,26 +1985,25 @@ mod tests {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array := i32.[4, 8, 15, 16, 23, 42];
 
                     my_array[1000]
                 };
             "#,
             expect![[r#"
                 main::main : () -> i32
-                1 : usize
+                2 : i32
                 3 : i32
                 4 : i32
                 5 : i32
                 6 : i32
                 7 : i32
-                8 : i32
+                8 : [6]i32
                 9 : [6]i32
-                10 : [6]i32
-                11 : usize
+                10 : usize
+                11 : i32
                 12 : i32
-                13 : i32
-                14 : () -> i32
+                13 : () -> i32
                 l0 : [6]i32
             "#]],
             |_| {
@@ -2024,7 +2017,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    124..138,
+                    118..132,
                     None,
                 )]
             },
@@ -3207,7 +3200,7 @@ mod tests {
                 Vector3 :: distinct [3] i32;
 
                 main :: () {
-                    my_point : Vector3 = [3] i32 { 4, 8, 15 };
+                    my_point : Vector3 = i32.[4, 8, 15];
 
                     x := my_point[0];
                     y := my_point[1];
@@ -3219,22 +3212,21 @@ mod tests {
                 main::main : () -> void
                 0 : usize
                 3 : type
-                5 : usize
+                6 : i32
                 7 : i32
                 8 : i32
-                9 : i32
-                10 : [3]i32
-                11 : main::Vector3
-                12 : usize
-                13 : i32
-                14 : main::Vector3
-                15 : usize
-                16 : i32
-                17 : main::Vector3
-                18 : usize
-                19 : i32
-                20 : void
-                21 : () -> void
+                9 : [3]i32
+                10 : main::Vector3
+                11 : usize
+                12 : i32
+                13 : main::Vector3
+                14 : usize
+                15 : i32
+                16 : main::Vector3
+                17 : usize
+                18 : i32
+                19 : void
+                20 : () -> void
                 l0 : main::Vector3
                 l1 : i32
                 l2 : i32
@@ -3504,7 +3496,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_struct_and_multiple_instances() {
+    fn recursive_struct_and_multiple_literals() {
         // this is handled in hir lowering
         check(
             r#"
@@ -3513,12 +3505,12 @@ mod tests {
                 };
 
                 global_foo :: comptime {
-                    Foo { bar: 0 }
+                    Foo.{ bar = 0 }
                 };
 
                 main :: () {
-                    my_foo := Foo {
-                        bar: true,
+                    my_foo := Foo.{
+                        bar = true,
                     };
                 }
             "#,
@@ -3858,9 +3850,9 @@ mod tests {
                 };
 
                 foo :: () {
-                    bob := Person {
-                        name: "Bob",
-                        age: 26,
+                    bob := Person.{
+                        name = "Bob",
+                        age = 26,
                     };
 
                     bob.age = bob.age + 1;
@@ -3897,9 +3889,9 @@ mod tests {
                 };
 
                 foo :: () {
-                    bob :: Person {
-                        name: "Bob",
-                        age: 26,
+                    bob :: Person.{
+                        name = "Bob",
+                        age = 26,
                     };
 
                     bob.age = bob.age + 1;
@@ -3925,8 +3917,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    294..316,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 164..272)),
+                    296..318,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 164..274)),
                 )]
             },
         );
@@ -3946,21 +3938,21 @@ mod tests {
                 };
 
                 foo :: () {
-                    my_company := Company {
-                        employees: [3] Person {
-                            Person {
-                                name: "Bob",
-                                age: 26,
+                    my_company := Company.{
+                        employees = Person.[
+                            Person.{
+                                name = "Bob",
+                                age = 26,
                             },
-                            Person {
-                                name: "Kyle",
-                                age: 30,
+                            Person.{
+                                name = "Kyle",
+                                age = 30,
                             },
-                            Person {
-                                name: "John",
-                                age: 23,
+                            Person.{
+                                name = "John",
+                                age = 23,
                             }
-                        },
+                        ],
                     };
 
                     my_company.employees[1].age = my_company.employees[1].age + 1;
@@ -3973,32 +3965,31 @@ mod tests {
                 2 : type
                 3 : usize
                 6 : type
-                8 : usize
-                11 : str
-                12 : i32
-                13 : main::Person
-                15 : str
-                16 : i32
-                17 : main::Person
-                19 : str
-                20 : i32
-                21 : main::Person
-                22 : [3]main::Person
+                10 : str
+                11 : i32
+                12 : main::Person
+                14 : str
+                15 : i32
+                16 : main::Person
+                18 : str
+                19 : i32
+                20 : main::Person
+                21 : [3]main::Person
+                22 : main::Company
                 23 : main::Company
-                24 : main::Company
-                25 : [3]main::Person
-                26 : usize
-                27 : main::Person
-                28 : i32
-                29 : main::Company
-                30 : [3]main::Person
-                31 : usize
-                32 : main::Person
+                24 : [3]main::Person
+                25 : usize
+                26 : main::Person
+                27 : i32
+                28 : main::Company
+                29 : [3]main::Person
+                30 : usize
+                31 : main::Person
+                32 : i32
                 33 : i32
                 34 : i32
-                35 : i32
-                36 : void
-                37 : () -> void
+                35 : void
+                36 : () -> void
                 l0 : main::Company
             "#]],
             |_| [],
@@ -4019,21 +4010,21 @@ mod tests {
                 };
 
                 foo :: () {
-                    my_company :: Company {
-                        employees: [3] Person {
-                            Person {
-                                name: "Bob",
-                                age: 26,
+                    my_company :: Company.{
+                        employees = Person.[
+                            Person.{
+                                name = "Bob",
+                                age = 26,
                             },
-                            Person {
-                                name: "Kyle",
-                                age: 30,
+                            Person.{
+                                name = "Kyle",
+                                age = 30,
                             },
-                            Person {
-                                name: "John",
-                                age: 23,
+                            Person.{
+                                name = "John",
+                                age = 23,
                             }
-                        },
+                        ],
                     };
 
                     my_company.employees[1].age = my_company.employees[1].age + 1;
@@ -4046,39 +4037,38 @@ mod tests {
                 2 : type
                 3 : usize
                 6 : type
-                8 : usize
-                11 : str
-                12 : i32
-                13 : main::Person
-                15 : str
-                16 : i32
-                17 : main::Person
-                19 : str
-                20 : i32
-                21 : main::Person
-                22 : [3]main::Person
+                10 : str
+                11 : i32
+                12 : main::Person
+                14 : str
+                15 : i32
+                16 : main::Person
+                18 : str
+                19 : i32
+                20 : main::Person
+                21 : [3]main::Person
+                22 : main::Company
                 23 : main::Company
-                24 : main::Company
-                25 : [3]main::Person
-                26 : usize
-                27 : main::Person
-                28 : i32
-                29 : main::Company
-                30 : [3]main::Person
-                31 : usize
-                32 : main::Person
+                24 : [3]main::Person
+                25 : usize
+                26 : main::Person
+                27 : i32
+                28 : main::Company
+                29 : [3]main::Person
+                30 : usize
+                31 : main::Person
+                32 : i32
                 33 : i32
                 34 : i32
-                35 : i32
-                36 : void
-                37 : () -> void
+                35 : void
+                36 : () -> void
                 l0 : main::Company
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    868..930,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 262..846)),
+                    871..933,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 262..849)),
                 )]
             },
         );
@@ -4098,10 +4088,10 @@ mod tests {
                 };
 
                 foo :: () {
-                    ref :: Ref_To_Person {
-                        person: ^Person {
-                            name: "Bob",
-                            age: 26,
+                    ref :: Ref_To_Person.{
+                        person = ^Person.{
+                            name = "Bob",
+                            age = 26,
                         },
                     };
 
@@ -4136,8 +4126,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    477..515,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 481..487)),
+                    480..518,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 484..490)),
                 )]
             },
         );
@@ -4157,10 +4147,10 @@ mod tests {
                 };
 
                 foo :: () {
-                    ref :: Ref_To_Person {
-                        person: ^mut Person {
-                            name: "Bob",
-                            age: 26,
+                    ref :: Ref_To_Person.{
+                        person = ^mut Person.{
+                            name = "Bob",
+                            age = 26,
                         },
                     };
 
@@ -4201,24 +4191,23 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    array := [3] i32 { 1, 2, 3 };
+                    array := i32.[1, 2, 3];
 
                     array[0] = 100;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : usize
+                6 : usize
+                7 : i32
                 8 : i32
-                9 : i32
-                10 : void
-                11 : () -> void
+                9 : void
+                10 : () -> void
                 l0 : [3]i32
             "#]],
             |_| [],
@@ -4230,31 +4219,30 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    array :: [3] i32 { 1, 2, 3 };
+                    array :: i32.[1, 2, 3];
 
                     array[0] = 100;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : usize
-                8 : i32
-                9 : {uint}
-                10 : void
-                11 : () -> void
+                6 : usize
+                7 : i32
+                8 : {uint}
+                9 : void
+                10 : () -> void
                 l0 : [3]i32
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    100..115,
-                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..78)),
+                    94..109,
+                    Some((TyDiagnosticHelpKind::ImmutableBinding, 49..72)),
                 )]
             },
         );
@@ -5225,9 +5213,9 @@ mod tests {
                 };
 
                 foo :: () {
-                    some_guy := Person {
-                        name: "Joe Schmoe",
-                        age: 31,
+                    some_guy := Person.{
+                        name = "Joe Schmoe",
+                        age = 31,
                     };
                 };
             "#,
@@ -5256,9 +5244,9 @@ mod tests {
                 };
 
                 foo :: () {
-                    some_guy := Person {
-                        name: false,
-                        height: "5'9\""
+                    some_guy := Person.{
+                        name = false,
+                        height = "5'9\""
                     };
                 };
             "#,
@@ -5293,7 +5281,7 @@ mod tests {
                             expected: Ty::String.into(),
                             found: Ty::Bool.into(),
                         },
-                        215..220,
+                        216..221,
                         None,
                     ),
                     (
@@ -5301,7 +5289,7 @@ mod tests {
                             member: i.intern("height"),
                             found_ty: person_ty,
                         },
-                        246..252,
+                        247..253,
                         None,
                     ),
                     (
@@ -5309,7 +5297,7 @@ mod tests {
                             member: i.intern("age"),
                             expected_ty: person_ty,
                         },
-                        176..283,
+                        176..285,
                         None,
                     ),
                 ]
@@ -5327,9 +5315,9 @@ mod tests {
                 };
 
                 foo :: () -> i32 {
-                    some_guy := Person {
-                        name: "Joe Schmoe",
-                        age: 31,
+                    some_guy := Person.{
+                        name = "Joe Schmoe",
+                        age = 31,
                     };
 
                     some_guy.age
@@ -5362,9 +5350,9 @@ mod tests {
                 };
 
                 foo :: () -> i32 {
-                    some_guy := Person {
-                        name: "Joe Schmoe",
-                        age: 31,
+                    some_guy := Person.{
+                        name = "Joe Schmoe",
+                        age = 31,
                     };
 
                     some_guy.height
@@ -5400,7 +5388,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    313..328,
+                    315..330,
                     None,
                 )]
             },
@@ -5636,9 +5624,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo;
@@ -5687,7 +5675,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    404..410,
+                    406..412,
                     None,
                 )]
             },
@@ -5709,9 +5697,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo as Bar;
@@ -5752,9 +5740,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo as Bar;
@@ -5804,7 +5792,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    404..417,
+                    406..419,
                     None,
                 )]
             },
@@ -5826,9 +5814,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo as Bar;
@@ -5878,7 +5866,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    405..418,
+                    407..420,
                     None,
                 )]
             },
@@ -5900,9 +5888,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo as Bar;
@@ -5952,7 +5940,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    404..417,
+                    406..419,
                     None,
                 )]
             },
@@ -5975,9 +5963,9 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo : Foo = Foo {
-                        a: 1,
-                        b: 2,
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = 2,
                     };
 
                     my_bar : Bar = my_foo as Bar;
@@ -6028,7 +6016,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    432..445,
+                    434..447,
                     None,
                 )]
             },
@@ -6253,7 +6241,7 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    foo : [] i32 = [] i32 { 100, 200 };
+                    foo : [] i32 = i32.[100, 200];
 
                     ptr : [] any = foo as [] any;
 
@@ -6266,7 +6254,7 @@ mod tests {
                 main::get_any : () -> void
                 3 : i32
                 4 : i32
-                5 : []i32
+                5 : [2]i32
                 8 : []i32
                 11 : []any
                 14 : []any
@@ -6340,7 +6328,7 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    foo : [] i32 = [] i32 { 100, 200 };
+                    foo : [] i32 = i32.[100, 200];
 
                     foo : [] f32 = foo as [] f32;
                 }
@@ -6349,7 +6337,7 @@ mod tests {
                 main::get_any : () -> void
                 3 : i32
                 4 : i32
-                5 : []i32
+                5 : [2]i32
                 8 : []i32
                 11 : []f32
                 12 : void
@@ -6369,7 +6357,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    125..138,
+                    120..133,
                     None,
                 )]
             },
@@ -6414,7 +6402,7 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    foo : [3] i32 = [3] i32 { 5, 10, 15 };
+                    foo : [3] i32 = i32.[5, 10, 15];
 
                     ptr : [] i32 = foo;
                     ptr : [] any = ptr as []any;
@@ -6425,25 +6413,24 @@ mod tests {
             expect![[r#"
                 main::get_any : () -> void
                 0 : usize
-                3 : usize
+                4 : i32
                 5 : i32
                 6 : i32
-                7 : i32
-                8 : [3]i32
-                11 : [3]i32
-                14 : []i32
-                17 : []any
-                19 : []any
-                20 : usize
-                21 : <unknown>
-                22 : void
-                23 : () -> void
+                7 : [3]i32
+                10 : [3]i32
+                13 : []i32
+                16 : []any
+                18 : []any
+                19 : usize
+                20 : <unknown>
+                21 : void
+                22 : () -> void
                 l0 : [3]i32
                 l1 : []i32
                 l2 : []any
                 l3 : any
             "#]],
-            |_| [(TyDiagnosticKind::IndexAny { size: None }, 215..221, None)],
+            |_| [(TyDiagnosticKind::IndexAny { size: None }, 209..215, None)],
         );
     }
 
@@ -6549,7 +6536,7 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    foo : [] i32 = [] i32 { 5, 10, 15 };
+                    foo : [] i32 = i32.[5, 10, 15];
 
                     ptr : [] any = foo;
                 }
@@ -6559,7 +6546,7 @@ mod tests {
                 3 : i32
                 4 : i32
                 5 : i32
-                6 : []i32
+                6 : [3]i32
                 9 : []i32
                 10 : void
                 11 : () -> void
@@ -6575,7 +6562,7 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    foo : [] i32 = [] i32 { 5, 10, 15 };
+                    foo : [] i32 = i32.[5, 10, 15];
                     ptr : [] any = foo as [] any;
 
                     ptr : [] i32 = ptr;
@@ -6586,7 +6573,7 @@ mod tests {
                 3 : i32
                 4 : i32
                 5 : i32
-                6 : []i32
+                6 : [3]i32
                 9 : []i32
                 12 : []any
                 15 : []any
@@ -6608,7 +6595,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    176..179,
+                    171..174,
                     None,
                 )]
             },
@@ -6620,25 +6607,24 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    data := [3] char { 'h', 'i', '\0' };
+                    data := char.['h', 'i', '\0'];
                     ptr := ^data as ^any;
                     str := ptr as str;
                 }
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                0 : usize
+                1 : char
                 2 : char
                 3 : char
-                4 : char
+                4 : [3]char
                 5 : [3]char
-                6 : [3]char
-                7 : ^[3]char
+                6 : ^[3]char
+                9 : ^any
                 10 : ^any
-                11 : ^any
-                13 : str
-                14 : void
-                15 : () -> void
+                12 : str
+                13 : void
+                14 : () -> void
                 l0 : [3]char
                 l1 : ^any
                 l2 : str
@@ -6652,26 +6638,25 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    data := [3] char { 'h', 'i', '\0' };
+                    data := char.['h', 'i', '\0'];
                     ptr := ^data as ^any as ^char;
                     str := ptr as str;
                 }
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                0 : usize
+                1 : char
                 2 : char
                 3 : char
-                4 : char
+                4 : [3]char
                 5 : [3]char
-                6 : [3]char
-                7 : ^[3]char
-                10 : ^any
+                6 : ^[3]char
+                9 : ^any
+                12 : ^char
                 13 : ^char
-                14 : ^char
-                16 : str
-                17 : void
-                18 : () -> void
+                15 : str
+                16 : void
+                17 : () -> void
                 l0 : [3]char
                 l1 : ^char
                 l2 : str
@@ -6685,26 +6670,25 @@ mod tests {
         check(
             r#"
                 get_any :: () {
-                    data := [3] char { 'h', 'i', '\0' };
+                    data := char.['h', 'i', '\0'];
                     ptr := ^data as ^any as ^u8;
                     str := ptr as str;
                 }
             "#,
             expect![[r#"
                 main::get_any : () -> void
-                0 : usize
+                1 : char
                 2 : char
                 3 : char
-                4 : char
+                4 : [3]char
                 5 : [3]char
-                6 : [3]char
-                7 : ^[3]char
-                10 : ^any
+                6 : ^[3]char
+                9 : ^any
+                12 : ^u8
                 13 : ^u8
-                14 : ^u8
-                16 : str
-                17 : void
-                18 : () -> void
+                15 : str
+                16 : void
+                17 : () -> void
                 l0 : [3]char
                 l1 : ^u8
                 l2 : str
@@ -6718,21 +6702,20 @@ mod tests {
         check(
             r"
                 get_any :: () {
-                    data := [3] char { 'H', 'i', '\0' };
+                    data := char.['H', 'i', '\0'];
                     str := data as str;
                 }
             ",
             expect![[r#"
                 main::get_any : () -> void
-                0 : usize
+                1 : char
                 2 : char
                 3 : char
-                4 : char
+                4 : [3]char
                 5 : [3]char
-                6 : [3]char
-                8 : str
-                9 : void
-                10 : () -> void
+                7 : str
+                8 : void
+                9 : () -> void
                 l0 : [3]char
                 l1 : str
             "#]],
@@ -6822,8 +6805,8 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo := Foo {
-                        a: 25
+                    my_foo := Foo.{
+                        a = 25
                     };
 
                     ptr := ^my_foo;
@@ -6859,8 +6842,8 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo := Foo {
-                        a: 25
+                    my_foo := Foo.{
+                        a = 25
                     };
 
                     ptr := ^^my_foo;
@@ -6943,8 +6926,8 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo := Foo {
-                        a: 25
+                    my_foo := Foo.{
+                        a = 25
                     };
 
                     ptr := ^^my_foo;
@@ -6990,7 +6973,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    257..262,
+                    258..263,
                     None,
                 )]
             },
@@ -7006,8 +6989,8 @@ mod tests {
                 };
 
                 main :: () {
-                    my_foo := Foo {
-                        a: 25
+                    my_foo := Foo.{
+                        a = 25
                     };
 
                     ptr := ^mut ^mut my_foo;
@@ -7041,7 +7024,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [3] i32 { 1, 2, 3 };
+                    arr := i32.[1, 2, 3];
 
                     ptr := ^arr;
 
@@ -7050,18 +7033,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
+                6 : ^[3]i32
                 7 : ^[3]i32
-                8 : ^[3]i32
-                9 : usize
-                10 : i32
-                11 : void
-                12 : () -> void
+                8 : usize
+                9 : i32
+                10 : void
+                11 : () -> void
                 l0 : [3]i32
                 l1 : ^[3]i32
             "#]],
@@ -7074,7 +7056,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [3] i32 { 1, 2, 3 };
+                    arr := i32.[1, 2, 3];
 
                     ptr := ^^arr;
 
@@ -7083,19 +7065,18 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : ^[3]i32
+                6 : ^[3]i32
+                7 : ^^[3]i32
                 8 : ^^[3]i32
-                9 : ^^[3]i32
-                10 : usize
-                11 : i32
-                12 : void
-                13 : () -> void
+                9 : usize
+                10 : i32
+                11 : void
+                12 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
@@ -7154,7 +7135,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [3] i32 { 1, 2, 3 };
+                    arr := i32.[1, 2, 3];
 
                     ptr := ^^arr;
 
@@ -7163,19 +7144,18 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : ^[3]i32
+                6 : ^[3]i32
+                7 : ^^[3]i32
                 8 : ^^[3]i32
-                9 : ^^[3]i32
-                10 : usize
-                11 : i32
-                12 : void
-                13 : () -> void
+                9 : usize
+                10 : i32
+                11 : void
+                12 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
@@ -7198,7 +7178,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    134..141,
+                    128..135,
                     None,
                 )]
             },
@@ -7210,7 +7190,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr := [3] i32 { 1, 2, 3 };
+                    arr := i32.[1, 2, 3];
 
                     ptr :: ^mut ^mut arr;
 
@@ -7219,20 +7199,19 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : ^mut [3]i32
+                6 : ^mut [3]i32
+                7 : ^mut ^mut [3]i32
                 8 : ^mut ^mut [3]i32
-                9 : ^mut ^mut [3]i32
-                10 : usize
+                9 : usize
+                10 : i32
                 11 : i32
-                12 : i32
-                13 : void
-                14 : () -> void
+                12 : void
+                13 : () -> void
                 l0 : [3]i32
                 l1 : ^mut ^mut [3]i32
             "#]],
@@ -7245,7 +7224,7 @@ mod tests {
         check(
             r#"
                 main :: () {
-                    arr :: [3] i32 { 1, 2, 3 };
+                    arr :: i32.[1, 2, 3];
 
                     ptr := ^^arr;
 
@@ -7254,28 +7233,27 @@ mod tests {
             "#,
             expect![[r#"
                 main::main : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                7 : ^[3]i32
+                6 : ^[3]i32
+                7 : ^^[3]i32
                 8 : ^^[3]i32
-                9 : ^^[3]i32
-                10 : usize
-                11 : i32
-                12 : {uint}
-                13 : void
-                14 : () -> void
+                9 : usize
+                10 : i32
+                11 : {uint}
+                12 : void
+                13 : () -> void
                 l0 : [3]i32
                 l1 : ^^[3]i32
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    134..146,
-                    Some((TyDiagnosticHelpKind::ImmutableRef, 106..111)),
+                    128..140,
+                    Some((TyDiagnosticHelpKind::ImmutableRef, 100..105)),
                 )]
             },
         );
@@ -7379,7 +7357,7 @@ mod tests {
                     imaginary :: distinct int;
                     imaginary_vec3 :: distinct [3] imaginary;
 
-                    arr : imaginary_vec3 = [3] imaginary { 1, 2, 3 };
+                    arr : imaginary_vec3 = imaginary.[1, 2, 3];
 
                     arr[0] as i32
                 }
@@ -7390,17 +7368,16 @@ mod tests {
                 3 : type
                 4 : usize
                 7 : type
-                9 : usize
+                10 : {uint}
                 11 : {uint}
                 12 : {uint}
-                13 : {uint}
+                13 : distinct'1 [3]distinct'0 i32
                 14 : distinct'1 [3]distinct'0 i32
-                15 : distinct'1 [3]distinct'0 i32
-                16 : usize
-                17 : distinct'0 i32
+                15 : usize
+                16 : distinct'0 i32
+                18 : i32
                 19 : i32
-                20 : i32
-                21 : () -> i32
+                20 : () -> i32
                 l0 : type
                 l1 : type
                 l2 : type
@@ -7422,9 +7399,9 @@ mod tests {
                         imaginary_part: imaginary,
                     };
 
-                    my_complex := complex {
-                        real_part: 5,
-                        imaginary_part: 42,
+                    my_complex := complex.{
+                        real_part = 5,
+                        imaginary_part = 42,
                     };
 
                     my_complex.real_part as i32 + my_complex.imaginary_part as i32
@@ -7469,9 +7446,9 @@ mod tests {
                         imaginary_part: imaginary,
                     };
                 
-                    my_complex := complex {
-                        real_part: 5,
-                        imaginary_part: 42,
+                    my_complex := complex.{
+                        real_part = 5,
+                        imaginary_part = 42,
                     };
                 
                     do_math :: (c: complex) -> imaginary_vec3 {
@@ -7479,7 +7456,7 @@ mod tests {
                         // in the parameters and return type, we can't access `imaginary`
                         // from inside the body of this lambda
                         // this could be alleviated by adding a `type_of` builtin
-                        [3] i32 { 1, c.real_part * c.imaginary_part as i32, 3 }
+                        i32.[1, c.real_part * c.imaginary_part as i32, 3]
                     };
                 
                     do_math(my_complex)[1] as i32
@@ -7495,26 +7472,25 @@ mod tests {
                 12 : i32
                 13 : distinct'0 i32
                 14 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                17 : usize
-                19 : i32
-                20 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                21 : i32
-                22 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                23 : distinct'0 i32
+                18 : i32
+                19 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                20 : i32
+                21 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                22 : distinct'0 i32
+                24 : i32
                 25 : i32
                 26 : i32
-                27 : i32
+                27 : [3]i32
                 28 : [3]i32
-                29 : [3]i32
+                29 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
                 30 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-                31 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-                32 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-                33 : distinct'1 [3]distinct'0 i32
-                34 : usize
-                35 : distinct'0 i32
+                31 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+                32 : distinct'1 [3]distinct'0 i32
+                33 : usize
+                34 : distinct'0 i32
+                36 : i32
                 37 : i32
-                38 : i32
-                39 : () -> i32
+                38 : () -> i32
                 l0 : type
                 l1 : type
                 l2 : type
@@ -7586,6 +7562,60 @@ mod tests {
                     )),
                 )]
             },
+        )
+    }
+
+    #[test]
+    fn paren_infer() {
+        check(
+            r#"
+                foo :: () -> u16 {
+                    (42 * (11 / 2))
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> u16
+                1 : u16
+                2 : u16
+                3 : u16
+                4 : u16
+                5 : u16
+                6 : u16
+                7 : u16
+                8 : u16
+                9 : () -> u16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn paren_spread() {
+        check(
+            r#"
+                foo :: () {
+                    x : i8 = 42;
+                    (42 * ((2 >> x) / 2));
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : i8
+                2 : i8
+                3 : i8
+                4 : i8
+                5 : i8
+                6 : i8
+                7 : i8
+                8 : i8
+                9 : i8
+                10 : i8
+                11 : i8
+                12 : void
+                13 : () -> void
+                l0 : i8
+            "#]],
+            |_| [],
         )
     }
 
@@ -8233,24 +8263,24 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x := [] i32 { 1, 2, 3 };
+                    x : [] i32 = i32.[1, 2, 3];
 
-                    y : [] i32 = [] i32 { 4, 6, 7, 8 };
+                    y : [] i32 = i32.[4, 6, 7, 8];
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
-                2 : i32
                 3 : i32
-                4 : []i32
-                8 : i32
-                9 : i32
+                4 : i32
+                5 : i32
+                6 : [3]i32
                 10 : i32
                 11 : i32
-                12 : []i32
-                13 : void
-                14 : () -> void
+                12 : i32
+                13 : i32
+                14 : [4]i32
+                15 : void
+                16 : () -> void
                 l0 : []i32
                 l1 : []i32
             "#]],
@@ -8263,22 +8293,22 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x := [] i32 { 1, 2, 3 };
+                    x : [] i32 = i32.[1, 2, 3];
                     
                     y := x as [3] i32;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
-                2 : i32
                 3 : i32
-                4 : []i32
-                5 : []i32
-                6 : usize
-                9 : [3]i32
-                10 : void
-                11 : () -> void
+                4 : i32
+                5 : i32
+                6 : [3]i32
+                7 : []i32
+                8 : usize
+                11 : [3]i32
+                12 : void
+                13 : () -> void
                 l0 : []i32
                 l1 : [3]i32
             "#]],
@@ -8291,21 +8321,21 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x := [] i32 { 1, 2, 3 };
+                    x : [] i32 = i32.[1, 2, 3];
                     
                     y : [3] i32 = x;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : i32
-                2 : i32
                 3 : i32
-                4 : []i32
-                5 : usize
-                8 : []i32
-                9 : void
-                10 : () -> void
+                4 : i32
+                5 : i32
+                6 : [3]i32
+                7 : usize
+                10 : []i32
+                11 : void
+                12 : () -> void
                 l0 : []i32
                 l1 : [3]i32
             "#]],
@@ -8322,7 +8352,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    129..130,
+                    132..133,
                     None,
                 )]
             },
@@ -8334,22 +8364,21 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x := [3] i32 { 1, 2, 3 };
+                    x := i32.[1, 2, 3];
                     
                     y := x as [] i32;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : usize
+                1 : i32
                 2 : i32
                 3 : i32
-                4 : i32
+                4 : [3]i32
                 5 : [3]i32
-                6 : [3]i32
-                9 : []i32
-                10 : void
-                11 : () -> void
+                8 : []i32
+                9 : void
+                10 : () -> void
                 l0 : [3]i32
                 l1 : []i32
             "#]],
@@ -8362,7 +8391,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x := [3] i32 { 1, 2, 3 };
+                    x : [3] i32 = i32.[1, 2, 3];
                     
                     y : [] i32 = x;
                 }
@@ -8370,13 +8399,13 @@ mod tests {
             expect![[r#"
                 main::foo : () -> void
                 0 : usize
-                2 : i32
-                3 : i32
                 4 : i32
-                5 : [3]i32
-                8 : [3]i32
-                9 : void
-                10 : () -> void
+                5 : i32
+                6 : i32
+                7 : [3]i32
+                10 : [3]i32
+                11 : void
+                12 : () -> void
                 l0 : [3]i32
                 l1 : []i32
             "#]],
@@ -8508,9 +8537,9 @@ mod tests {
                 };
 
                 run :: () {
-                    my_foo := Foo {
-                        a: "hello",
-                        b: 42,
+                    my_foo := Foo.{
+                        a = "hello",
+                        b = 42,
                     };
                 };
             "#,
@@ -8598,25 +8627,37 @@ mod tests {
     }
 
     #[test]
-    fn unknown_array_instance_as_type() {
+    fn array_literal_as_type() {
         // this is just to make sure that the compiler doens't show a diagnostic
         // like "expected `type` but found `<unknown>`"
         check(
             r#"
                 foo :: () {
-                    x : [_] i32 {};
+                    x : i32.[];
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                0 : <unknown>
+                1 : [0]i32
                 2 : <unknown>
-                3 : <unknown>
-                4 : void
-                5 : () -> void
+                3 : void
+                4 : () -> void
                 l0 : <unknown>
             "#]],
-            |_| [],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Type.into(),
+                        found: Ty::Array {
+                            size: 0,
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                    },
+                    53..59,
+                    None,
+                )]
+            },
         )
     }
 }

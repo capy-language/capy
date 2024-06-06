@@ -1,0 +1,25 @@
+i32 [1, 2, 3]
+===
+Root@0..13
+  ExprStmt@0..13
+    ArrayLiteral@0..13
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "i32"
+      Whitespace@3..4 " "
+      LBrack@4..5 "["
+      ArrayItem@5..6
+        IntLiteral@5..6
+          Int@5..6 "1"
+      Comma@6..7 ","
+      Whitespace@7..8 " "
+      ArrayItem@8..9
+        IntLiteral@8..9
+          Int@8..9 "2"
+      Comma@9..10 ","
+      Whitespace@10..11 " "
+      ArrayItem@11..12
+        IntLiteral@11..12
+          Int@11..12 "3"
+      RBrack@12..13 "]"
+error at 3: missing Dot

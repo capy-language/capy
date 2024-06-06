@@ -1,0 +1,13 @@
+[5]i32
+===
+Root@0..6
+  ExprStmt@0..6
+    ArrayDecl@0..6
+      ArraySize@0..3
+        LBrack@0..1 "["
+        IntLiteral@1..2
+          Int@1..2 "5"
+        RBrack@2..3 "]"
+      Ty@3..6
+        VarRef@3..6
+          Ident@3..6 "i32"

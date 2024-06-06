@@ -12,10 +12,10 @@ StringBuilder :: struct {
 make :: () -> StringBuilder {
     buf := ptr.mut_null() as ^mut char;
 
-    StringBuilder {
-        buf: buf,
-        len: 0,
-        cap: 0,
+    StringBuilder.{
+        buf = buf,
+        len = 0,
+        cap = 0,
     }
 };
 
@@ -28,10 +28,10 @@ make_with_capacity :: (cap: usize) -> StringBuilder {
         core.panic_with("Error allocating the StringBuilder");
     }
 
-    StringBuilder {
-        buf: buf,
-        len: 0,
-        cap: cap,
+    StringBuilder.{
+        buf = buf,
+        len = 0,
+        cap = cap,
     }
 }
 

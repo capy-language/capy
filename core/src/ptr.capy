@@ -51,10 +51,10 @@ slice_from_raw_parts :: (ptr: ^any, len: usize) -> [] any {
         ptr: ^any,
     };
 
-    raw := Raw_Slice {
-        len: len,
-        ptr: ptr,
+    raw := Raw_Slice.{
+        len = len,
+        ptr = ptr,
     };
 
-    {^raw as ^any as ^[]any}^
+    (^raw as ^any as ^[]any)^
 }

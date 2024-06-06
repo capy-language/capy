@@ -2,7 +2,7 @@
 core :: mod "core";
 
 main :: () {
-    my_array : [6] i32 = build_array();
+    my_array : [6]i32 = build_array();
 
     my_array_ptr := ^my_array;
 
@@ -14,7 +14,7 @@ main :: () {
 }
 
 build_array :: () -> [6] i32 {
-    my_array : [6] i32 = [6] i32 { 4, 8, 15, 16, 23, 42 };
+    my_array := i32.[4, 8, 15, 16, 23, 42];
 
     my_array
 }

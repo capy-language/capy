@@ -37,9 +37,9 @@ main :: () {
     core.print("size: ");
     core.println(meta.size_of(My_Type));
 
-    foo : My_Type = My_Type {
-        a: 42,
-        b: [3] i32 { 4, 8, 15, }
+    foo : My_Type = My_Type.{
+        a = 42,
+        b = i32.[4, 8, 15]
     };
     
     core.println(foo);

@@ -14,7 +14,7 @@ label_two :: (label1: str, val1: core.Any, label2: str, val2: core.Any) {
 }
 
 get_user_input :: () -> i32 {
-    buffer := [5]char{'\0', '\0', '\0', '\0', '\0'};
+    buffer := char.['\0', '\0', '\0', '\0', '\0'];
 
     core.libc.read(core.libc.stdin, ^mut buffer as ^mut any as ^mut u8, 2);
 

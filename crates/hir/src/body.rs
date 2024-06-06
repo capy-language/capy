@@ -129,16 +129,19 @@ pub enum Expr {
         expr: Idx<Expr>,
         op: UnaryOp,
     },
-    Array {
+    ArrayDecl {
         size: Option<Idx<Expr>>,
-        items: Option<Vec<Idx<Expr>>>,
-        items_range: Option<TextRange>,
         ty: Idx<Expr>,
+    },
+    ArrayLiteral {
+        ty: Idx<Expr>,
+        items: Vec<Idx<Expr>>,
     },
     Index {
         source: Idx<Expr>,
         index: Idx<Expr>,
     },
+    Paren(Option<Idx<Expr>>),
     Block {
         stmts: Vec<Idx<Stmt>>,
         tail_expr: Option<Idx<Expr>>,
@@ -817,7 +820,9 @@ impl<'a> Ctx<'a> {
                 ast::Expr::Deref(deref_expr) => self.lower_deref_expr(deref_expr),
                 ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
                 ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
-                ast::Expr::Array(array_expr) => self.lower_array_expr(array_expr),
+                ast::Expr::ArrayDecl(array_decl) => self.lower_array_decl(array_decl),
+                ast::Expr::ArrayLiteral(array_lit) => self.lower_array_literal(array_lit),
+                ast::Expr::Paren(paren_expr) => self.lower_paren_expr(paren_expr),
                 ast::Expr::Block(block) => return self.lower_block(block, true),
                 ast::Expr::If(if_expr) => self.lower_if(if_expr),
                 ast::Expr::While(while_expr) => {
@@ -1072,26 +1077,36 @@ impl<'a> Ctx<'a> {
         Expr::Unary { expr, op }
     }
 
-    fn lower_array_expr(&mut self, array_expr: ast::Array) -> Expr {
-        let size = array_expr
+    fn lower_array_decl(&mut self, array_decl: ast::ArrayDecl) -> Expr {
+        let size = array_decl
             .size(self.tree)
             .and_then(|size| size.size(self.tree))
             .map(|size| self.lower_expr(Some(size)));
 
-        let ty = self.lower_expr(array_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+        let ty = self.lower_expr(array_decl.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-        let items = array_expr.body(self.tree).map(|body| {
-            body.items(self.tree)
-                .map(|item| self.lower_expr(item.value(self.tree)))
-                .collect::<Vec<_>>()
-        });
+        Expr::ArrayDecl { size, ty }
+    }
 
-        Expr::Array {
-            size,
-            items,
-            items_range: array_expr.body(self.tree).map(|b| b.range(self.tree)),
-            ty,
-        }
+    fn lower_array_literal(&mut self, array_lit: ast::ArrayLiteral) -> Expr {
+        let ty = self.lower_expr(array_lit.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+
+        let items = array_lit
+            .items(self.tree)
+            .map(|item| self.lower_expr(item.value(self.tree)))
+            .collect::<Vec<_>>();
+
+        Expr::ArrayLiteral { ty, items }
+    }
+
+    fn lower_paren_expr(&mut self, paren_expr: ast::ParenExpr) -> Expr {
+        let expr = paren_expr.expr(self.tree);
+
+        Expr::Paren(if expr.is_some() {
+            Some(self.lower_expr(expr))
+        } else {
+            None
+        })
     }
 
     fn lower_block(&mut self, block: ast::Block, add_block_label: bool) -> (Expr, Option<ScopeId>) {
@@ -1631,10 +1646,8 @@ impl Iterator for Descendants<'_> {
                 Expr::BoolLiteral(_) => {}
                 Expr::StringLiteral(_) => {}
                 Expr::CharLiteral(_) => {}
-                Expr::Array {
-                    size, items, ty, ..
-                } => {
-                    if include_eval {
+                Expr::ArrayDecl { size, ty } => {
+                    if is_all {
                         if let Some(size) = size {
                             self.todo.push(Descendant::Expr(size));
                         }
@@ -1643,12 +1656,15 @@ impl Iterator for Descendants<'_> {
                     if include_types {
                         self.todo.push(Descendant::Expr(ty));
                     }
+                }
+                Expr::ArrayLiteral { ty, items } => {
+                    if include_types {
+                        self.todo.push(Descendant::Expr(ty));
+                    }
 
                     if include_eval {
-                        if let Some(items) = items {
-                            self.todo
-                                .extend(items.into_iter().rev().map(Descendant::Expr));
-                        }
+                        self.todo
+                            .extend(items.into_iter().rev().map(Descendant::Expr));
                     }
                 }
                 Expr::Index { source, index } => {
@@ -1670,6 +1686,8 @@ impl Iterator for Descendants<'_> {
                     self.todo.push(Descendant::Expr(lhs));
                     self.todo.push(Descendant::Expr(rhs));
                 }
+                Expr::Paren(Some(expr)) => self.todo.push(Descendant::Expr(expr)),
+                Expr::Paren(None) => {}
                 Expr::Block { stmts, tail_expr } => match self.opts {
                     DescentOpts::Eval | DescentOpts::All { .. } => {
                         self.todo.extend(stmts.into_iter().map(Descendant::Stmt));
@@ -1859,6 +1877,8 @@ impl Bodies {
 
     pub fn global_exists(&self, name: Name) -> bool {
         self.global_bodies.contains_key(&name)
+            || self.global_tys.contains_key(&name)
+            || self.global_externs.contains(&name)
     }
 
     #[track_caller]
@@ -2052,29 +2072,27 @@ impl Bodies {
 
                 Expr::CharLiteral(char) => s.push_str(&format!("{:?}", Into::<char>::into(*char))),
 
-                Expr::Array {
-                    size, items, ty, ..
-                } => {
+                Expr::ArrayDecl { size, ty } => {
                     s.push('[');
                     if let Some(size) = size {
                         write_expr(s, *size, show_idx, bodies, mod_dir, interner, indentation);
                     }
                     s.push(']');
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                }
 
-                    if let Some(items) = items {
-                        s.push('{');
+                Expr::ArrayLiteral { items, ty } => {
+                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    s.push_str(".[");
 
-                        for (idx, item) in items.iter().enumerate() {
-                            s.push(' ');
-                            write_expr(s, *item, show_idx, bodies, mod_dir, interner, indentation);
-                            if idx != items.len() - 1 {
-                                s.push(',');
-                            }
+                    for (idx, item) in items.iter().enumerate() {
+                        write_expr(s, *item, show_idx, bodies, mod_dir, interner, indentation);
+                        if idx != items.len() - 1 {
+                            s.push_str(", ");
                         }
-
-                        s.push_str(" }");
                     }
+
+                    s.push(']');
                 }
 
                 Expr::Index {
@@ -2159,6 +2177,16 @@ impl Bodies {
                     }
 
                     write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                }
+
+                Expr::Paren(Some(expr)) => {
+                    s.push('(');
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    s.push(')');
+                }
+
+                Expr::Paren(None) => {
+                    s.push_str("()");
                 }
 
                 Expr::Block {
@@ -2410,7 +2438,7 @@ impl Bodies {
                     for (idx, (name, value)) in members.iter().enumerate() {
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
-                            s.push_str(": ");
+                            s.push_str(" = ");
                         }
 
                         write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
@@ -2437,19 +2465,18 @@ impl Bodies {
                     s.push_str(&uid.to_string());
                     s.push_str(" {");
                     for (idx, (name, ty)) in members.iter().enumerate() {
-                        s.push(' ');
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
                         } else {
                             s.push('?');
                         }
-                        s.push(':');
+                        s.push_str(": ");
                         write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                         if idx != members.len() - 1 {
-                            s.push(',');
+                            s.push_str(", ");
                         }
                     }
-                    s.push_str(" }");
+                    s.push('}');
                 }
 
                 Expr::Import(file_name) => {
@@ -3424,16 +3451,16 @@ mod tests {
     }
 
     #[test]
-    fn array_with_inferred_size() {
+    fn slice() {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_slice : []i32 = i32.[4, 8, 15, 16, 23, 42];
                 }
             "#,
             expect![[r#"
                 main::main :: () -> i32 {
-                    l0 := []i32{ 4, 8, 15, 16, 23, 42 };
+                    l0 : []i32 = i32.[4, 8, 15, 16, 23, 42];
                 };
             "#]],
             |_| [],
@@ -3441,16 +3468,16 @@ mod tests {
     }
 
     #[test]
-    fn array_with_specific_size() {
+    fn array() {
         check(
             r#"
                 main :: () -> i32 {
-                    my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+                    my_array : [6]i32 = i32.[4, 8, 15, 16, 23, 42];
                 }
             "#,
             expect![[r#"
                 main::main :: () -> i32 {
-                    l0 := [6]i32{ 4, 8, 15, 16, 23, 42 };
+                    l0 : [6]i32 = i32.[4, 8, 15, 16, 23, 42];
                 };
             "#]],
             |_| [],
@@ -3604,6 +3631,21 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: (p0: <missing>, p1: <missing>) -> i8 { if p1 { 0 } else { 1 } };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn paren() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    ((5 + 5) * 25)
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 { ((5 + 5) * 25) };
             "#]],
             |_| [],
         )
@@ -4077,6 +4119,32 @@ mod tests {
                 };
             "#]],
             |_| [(LoweringDiagnosticKind::ReturnFromDefer, 81..88)],
+        )
+    }
+
+    #[test]
+    fn structs() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: struct {
+                        x: i32,
+                        y: str,
+                    };
+
+                    my_foo := Foo.{
+                        x = 42,
+                        y = 5,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := struct'0 {x: i32, y: str};
+                    l1 := l0 {x = 42, y = 5};
+                };
+            "#]],
+            |_| [],
         )
     }
 }

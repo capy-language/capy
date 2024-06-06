@@ -12,31 +12,40 @@ pub struct ValidationDiagnostic {
 pub enum ValidationDiagnosticKind {
     AlwaysTrue,
     AlwaysFalse,
+    ParenInCondition,
 }
 
 pub fn validate(ast: impl AstNode, tree: &SyntaxTree) -> Vec<ValidationDiagnostic> {
     let mut errors = Vec::new();
 
     for node in ast.syntax().descendant_nodes(tree) {
-        if let Some(Expr::BoolLiteral(bool_lit)) = IfExpr::cast(node, tree)
+        match IfExpr::cast(node, tree)
             .and_then(|if_expr| if_expr.condition(tree))
             .or_else(|| {
                 WhileExpr::cast(node, tree)
                     .and_then(|while_expr| while_expr.condition(tree))
                     .and_then(|cond| cond.value(tree))
-            })
-        {
-            if bool_lit.text(tree) == "true" {
+            }) {
+            Some(Expr::Paren(paren_expr)) => {
                 errors.push(ValidationDiagnostic {
-                    kind: ValidationDiagnosticKind::AlwaysTrue,
-                    range: node.range(tree),
-                });
-            } else {
-                errors.push(ValidationDiagnostic {
-                    kind: ValidationDiagnosticKind::AlwaysFalse,
-                    range: node.range(tree),
+                    kind: ValidationDiagnosticKind::ParenInCondition,
+                    range: paren_expr.range(tree),
                 });
             }
+            Some(Expr::BoolLiteral(bool_lit)) => {
+                if bool_lit.text(tree) == "true" {
+                    errors.push(ValidationDiagnostic {
+                        kind: ValidationDiagnosticKind::AlwaysTrue,
+                        range: node.range(tree),
+                    });
+                } else {
+                    errors.push(ValidationDiagnostic {
+                        kind: ValidationDiagnosticKind::AlwaysFalse,
+                        range: node.range(tree),
+                    });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -138,6 +147,27 @@ mod tests {
         check_repl_line(
             "while false {}",
             [(ValidationDiagnosticKind::AlwaysFalse, (0..14))],
+        );
+    }
+
+    #[test]
+    fn validate_parentheses() {
+        check_repl_line("(true)", []);
+    }
+
+    #[test]
+    fn validate_parentheses_in_if() {
+        check_repl_line(
+            "if (true) {}",
+            [(ValidationDiagnosticKind::ParenInCondition, (3..9))],
+        );
+    }
+
+    #[test]
+    fn validate_parentheses_in_while() {
+        check_repl_line(
+            "while (true) {}",
+            [(ValidationDiagnosticKind::ParenInCondition, (6..12))],
         );
     }
 }

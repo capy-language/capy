@@ -1,0 +1,9 @@
+[]
+===
+Root@0..2
+  ExprStmt@0..2
+    ArrayDecl@0..2
+      ArraySize@0..2
+        LBrack@0..1 "["
+        RBrack@1..2 "]"
+error at 2: missing array type

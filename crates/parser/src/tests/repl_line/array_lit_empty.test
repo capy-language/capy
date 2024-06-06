@@ -1,0 +1,11 @@
+i32.[]
+===
+Root@0..6
+  ExprStmt@0..6
+    ArrayLiteral@0..6
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "i32"
+      Dot@3..4 "."
+      LBrack@4..5 "["
+      RBrack@5..6 "]"

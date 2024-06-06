@@ -394,11 +394,13 @@ def_multi_node! {
     StringLiteral -> StringLiteral
     StructDecl -> StructDecl
     StructLiteral -> StructLiteral
-    Array -> Array
+    ArrayDecl -> ArrayDecl
+    ArrayLiteral -> ArrayLiteral
     IndexExpr -> IndexExpr
     VarRef -> VarRef    // `foo` in `foo.bar`
     Path -> Path        // `foo.bar`
     Call -> Call
+    Paren -> ParenExpr
     Block -> Block
     If -> IfExpr
     While -> WhileExpr
@@ -462,6 +464,14 @@ def_ast_node!(Distinct);
 
 impl Distinct {
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(ParenExpr);
+
+impl ParenExpr {
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
@@ -590,9 +600,9 @@ impl MemberLiteral {
     }
 }
 
-def_ast_node!(Array);
+def_ast_node!(ArrayDecl);
 
-impl Array {
+impl ArrayDecl {
     pub fn size(self, tree: &SyntaxTree) -> Option<ArraySize> {
         node(self, tree)
     }
@@ -600,15 +610,15 @@ impl Array {
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
-
-    pub fn body(self, tree: &SyntaxTree) -> Option<ArrayBody> {
-        node(self, tree)
-    }
 }
 
-def_ast_node!(ArrayBody);
+def_ast_node!(ArrayLiteral);
 
-impl ArrayBody {
+impl ArrayLiteral {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+
     pub fn items(self, tree: &SyntaxTree) -> impl Iterator<Item = ArrayItem> + '_ {
         nodes(self, tree)
     }
@@ -989,7 +999,7 @@ mod tests {
 
     #[test]
     fn get_array_ty_of_var_def() {
-        let (tree, root) = parse("foo : [3]i32 = []i32{1, 2, 3};");
+        let (tree, root) = parse("foo : [3]i32 = i32.[1, 2, 3];");
         let statement = root.stmts(&tree).next().unwrap();
 
         let def = match statement {
@@ -1003,7 +1013,7 @@ mod tests {
         };
 
         let array_ty = match var_def.ty(&tree).unwrap().expr(&tree) {
-            Some(Expr::Array(array)) => array,
+            Some(Expr::ArrayDecl(array)) => array,
             _ => {
                 unreachable!()
             }
@@ -1012,8 +1022,6 @@ mod tests {
         let size = array_ty.size(&tree).unwrap().size(&tree);
         assert!(matches!(size, Some(Expr::IntLiteral(_))));
         assert_eq!(size.unwrap().text(&tree), "3");
-
-        assert!(array_ty.body(&tree).is_none());
 
         let sub_ty = match array_ty.ty(&tree).unwrap().expr(&tree) {
             Some(Expr::VarRef(name)) => name,
@@ -1194,8 +1202,8 @@ mod tests {
     }
 
     #[test]
-    fn get_ty_of_array() {
-        let (tree, root) = parse("[]bool{true, false}");
+    fn array_lit_old_syntax() {
+        let (tree, root) = parse(r#"[3] str { "hi", "hullo", "ahoy" }"#);
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1203,7 +1211,31 @@ mod tests {
         };
 
         let array_expr = match expr {
-            Some(Expr::Array(array)) => array,
+            Some(Expr::ArrayLiteral(array)) => array,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(array_expr.ty(&tree).unwrap().text(&tree), "str");
+
+        let mut items = array_expr.items(&tree);
+
+        assert_eq!(items.next().unwrap().text(&tree), r#""hi""#);
+        assert_eq!(items.next().unwrap().text(&tree), r#""hullo""#);
+        assert_eq!(items.next().unwrap().text(&tree), r#""ahoy""#);
+        assert!(items.next().is_none());
+    }
+
+    #[test]
+    fn get_ty_of_array_lit() {
+        let (tree, root) = parse("bool.[true, false]");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let array_expr = match expr {
+            Some(Expr::ArrayLiteral(array)) => array,
             _ => unreachable!(),
         };
 
@@ -1211,8 +1243,8 @@ mod tests {
     }
 
     #[test]
-    fn get_items_of_array() {
-        let (tree, root) = parse("[]i32{4, 8, 15, 16, 23, 42}");
+    fn get_items_of_array_literal() {
+        let (tree, root) = parse("i32.[4, 8, 15 / 2, 16, 23, 42]");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -1220,15 +1252,15 @@ mod tests {
         };
 
         let array_expr = match expr {
-            Some(Expr::Array(array)) => array,
+            Some(Expr::ArrayLiteral(array)) => array,
             _ => unreachable!(),
         };
 
-        let mut items = array_expr.body(&tree).unwrap().items(&tree);
+        let mut items = array_expr.items(&tree);
 
         assert_eq!(items.next().unwrap().text(&tree), "4");
         assert_eq!(items.next().unwrap().text(&tree), "8");
-        assert_eq!(items.next().unwrap().text(&tree), "15");
+        assert_eq!(items.next().unwrap().text(&tree), "15 / 2");
         assert_eq!(items.next().unwrap().text(&tree), "16");
         assert_eq!(items.next().unwrap().text(&tree), "23");
         assert_eq!(items.next().unwrap().text(&tree), "42");
@@ -1601,6 +1633,44 @@ mod tests {
         assert_eq!(escaped_quote.text(&tree), "\\\'");
 
         assert!(components.next().is_none());
+    }
+
+    #[test]
+    fn get_paren_expr() {
+        let (tree, root) = parse("(true || false & true | !true);");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let paren = match expr {
+            Some(Expr::Paren(paren)) => paren,
+            _ => unreachable!(),
+        };
+
+        let expr = paren.expr(&tree);
+
+        assert!(matches!(expr, Some(Expr::Binary(_))));
+    }
+
+    #[test]
+    fn get_paren_empty() {
+        let (tree, root) = parse("();");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let paren = match expr {
+            Some(Expr::Paren(paren)) => paren,
+            _ => unreachable!(),
+        };
+
+        let expr = paren.expr(&tree);
+
+        assert!(expr.is_none());
     }
 
     #[test]
@@ -2107,7 +2177,7 @@ mod tests {
 
     #[test]
     fn struct_literal_get_fields() {
-        let (tree, root) = parse(r#"Some_Record_Type { foo: 123, bar: "hello" };"#);
+        let (tree, root) = parse(r#"Some_Record_Type.{ foo = 123, bar = "hello" };"#);
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),

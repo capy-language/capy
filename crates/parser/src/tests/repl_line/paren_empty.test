@@ -1,0 +1,7 @@
+()
+===
+Root@0..2
+  ExprStmt@0..2
+    ParenExpr@0..2
+      LParen@0..1 "("
+      RParen@1..2 ")"

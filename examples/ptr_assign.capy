@@ -14,7 +14,7 @@ main :: () {
     core.print(x);
     core.print("\n\n");
 
-    x := [3] i32 { 1, 2, 3 };
+    x := i32.[1, 2, 3];
     y :: ^mut x;
 
     core.print("x = { ");

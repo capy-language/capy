@@ -4,7 +4,7 @@ core :: mod "core";
 Vector3 :: distinct [3] i32;
 
 main :: () {
-    my_point : Vector3 = [3] i32 { 1, 2, 3 };
+    my_point : Vector3 = i32.[1, 2, 3];
 
     core.print("my_point: (");
     core.print(my_point[0]);

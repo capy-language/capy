@@ -1,0 +1,30 @@
+if some_type == [3] i32 {
+
+}
+===
+Root@0..28
+  ExprStmt@0..28
+    IfExpr@0..28
+      If@0..2 "if"
+      Whitespace@2..3 " "
+      BinaryExpr@3..23
+        VarRef@3..12
+          Ident@3..12 "some_type"
+        Whitespace@12..13 " "
+        DoubleEquals@13..15 "=="
+        Whitespace@15..16 " "
+        ArrayDecl@16..23
+          ArraySize@16..19
+            LBrack@16..17 "["
+            IntLiteral@17..18
+              Int@17..18 "3"
+            RBrack@18..19 "]"
+          Whitespace@19..20 " "
+          Ty@20..23
+            VarRef@20..23
+              Ident@20..23 "i32"
+      Whitespace@23..24 " "
+      Block@24..28
+        LBrace@24..25 "{"
+        Whitespace@25..27 "\n\n"
+        RBrace@27..28 "}"

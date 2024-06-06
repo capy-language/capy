@@ -233,6 +233,7 @@ mod tests {
             false,
             stdout_expect,
             expected_status,
+            core::panic::Location::caller(),
         )
     }
 
@@ -247,10 +248,10 @@ mod tests {
             true,
             stdout_expect,
             expected_status,
+            core::panic::Location::caller(),
         )
     }
 
-    #[track_caller]
     fn check_impl(
         modules: FxHashMap<&str, &str>,
         main_file: &str,
@@ -258,6 +259,7 @@ mod tests {
         fake_file_system: bool,
         stdout_expect: Expect,
         expected_status: i32,
+        caller: &'static std::panic::Location<'static>,
     ) {
         let mod_dir = if fake_file_system {
             std::path::PathBuf::new()
@@ -373,7 +375,7 @@ mod tests {
         println!("actual program:");
 
         let bytes = compile_obj(
-            Verbosity::LocalFunctions,
+            Verbosity::AllFunctions,
             entry_point,
             if fake_file_system {
                 Path::new("")
@@ -392,7 +394,6 @@ mod tests {
 
         let _ = fs::create_dir(&output_folder);
 
-        let caller = core::panic::Location::caller();
         let out_name = format!("test{}", caller.line());
 
         let file = output_folder.join(format!("{}.o", out_name));
@@ -405,6 +406,8 @@ mod tests {
         let output = std::process::Command::new(exec.clone())
             .output()
             .unwrap_or_else(|_| panic!("{} did not run successfully", exec.display()));
+
+        println!("test exited with {}", output.status);
 
         assert_eq!(output.status.code().unwrap(), expected_status);
 
@@ -615,11 +618,10 @@ mod tests {
             &[],
             "main",
             expect![[r#"
-            { 4, 8, 15, 16, 23, 42 }
-            { 1, 2, 3 }
-            { 4, 5, 6, 7, 8 }
-            { 4, 8, 15, 16, 23, 42 }
-            { 4, 8, 15, 16, 23, 42 }
+            [ 4, 8, 15, 16, 23, 42 ]
+            [ 1, 2, 3 ]
+            [ 4, 5, 6, 7, 8 ]
+            [ 4, 8, 15, 16, 23, 42 ]
             
             "#]],
             0,
@@ -1028,19 +1030,19 @@ mod tests {
                    BOOL
                 
                 123
-                { 4, 8, 15, 16, 23, 42 }
-                { 1, 2, 3 }
+                [ 4, 8, 15, 16, 23, 42 ]
+                [ 1, 2, 3 ]
                 ^52
                 42
                 42
                 256
                 hello
-                { text = Hello, flag = false, array = { 1, 2, 3 } }
+                { text = Hello, flag = false, array = [ 1, 2, 3 ] }
                 i32
                 ^struct { text: str, flag: bool, array: [3] i16 }
                 struct { ty: type, data: ^any }
                 {}
-                { 4, 8, 15, 16, 23, 42 }
+                [ 4, 8, 15, 16, 23, 42 ]
                 
             "#]],
             0,
@@ -1055,7 +1057,7 @@ mod tests {
             "main",
             expect![[r#"
                 42
-                { 4, 8, 15, 16, 23 }
+                [ 4, 8, 15, 16, 23 ]
                 
             "#]],
             0,
@@ -1093,9 +1095,9 @@ mod tests {
                         imaginary_part: imaginary,
                     };
                 
-                    my_complex := complex {
-                        real_part: 5,
-                        imaginary_part: 42,
+                    my_complex := complex.{
+                        real_part = 5,
+                        imaginary_part = 42,
                     };
                 
                     do_math :: (c: complex) -> imaginary_vec3 {
@@ -1103,7 +1105,7 @@ mod tests {
                         // in the parameters and return type, we can't access `imaginary`
                         // from inside the body of this lambda
                         // this could be alleviated by adding a `type_of` builtin
-                        [3] i32 { 1, c.real_part * c.imaginary_part as i32, 3 }
+                        i32.[1, c.real_part * c.imaginary_part as i32, 3]
                     };
                 
                     do_math(my_complex)[1] as i32
@@ -1728,14 +1730,14 @@ mod tests {
                 };
 
                 main :: () {
-                    print_foo(Foo {
-                        a: 4_000_000,
-                        b: 42,
+                    print_foo(Foo.{
+                        a = 4_000_000,
+                        b = 42,
                     });
 
-                    print_foo(Foo {
-                        b: 42,
-                        a: 4_000_000,
+                    print_foo(Foo.{
+                        b = 42,
+                        a = 4_000_000,
                     });
                 }
 
@@ -1807,18 +1809,18 @@ mod tests {
                     x := 42;
 
                     if x > 10 {
-                        i32
+                        i8
                     } else {
                         bool
                     }
                 };
 
                 Size : usize : comptime {
-                    {12 * 3 / 2 - 6} / 2
+                    ((12.0 * (3.0 / 2.0) - 6.0) / 2.0) as usize
                 };
 
-                main :: () -> i32 {
-                    x := [Size] Type { 1, 3, 5, 7, 9, 11 };
+                main :: () -> i8 {
+                    x : [Size] Type = Type.[1, 3, 5, 7, 9, 11];
 
                     x[5]
                 }
@@ -1838,7 +1840,7 @@ mod tests {
                 RGB :: distinct [3] u8;
 
                 main :: () -> u8 {
-                    red : RGB = [3] u8 { 150, 98, 123 };
+                    red : RGB = u8.[150, 98, 123];
 
                     components := red as []u8;
 

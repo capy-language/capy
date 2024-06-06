@@ -117,15 +117,15 @@ print :: (val: Any) {
 
         str := if int_info.signed {
             num := if int_info.bit_width == 8 {
-                {data as ^i8}^ as i64
+                (data as ^i8)^ as i64
             } else if int_info.bit_width == 16 {
-                {data as ^i16}^ as i64
+                (data as ^i16)^ as i64
             } else if int_info.bit_width == 32 {
-                {data as ^i32}^ as i64
+                (data as ^i32)^ as i64
             } else if int_info.bit_width == 64 {
-                {data as ^i64}^ as i64
+                (data as ^i64)^ as i64
             } else if int_info.bit_width == 128 {
-                {data as ^i128}^ as i64
+                (data as ^i128)^ as i64
             } else {
                 unreachable();
                 0
@@ -134,15 +134,15 @@ print :: (val: Any) {
             fmt.i64_to_string(num)
         } else {
             num := if int_info.bit_width == 8 {
-                {data as ^u8}^ as u64
+                (data as ^u8)^ as u64
             } else if int_info.bit_width == 16 {
-                {data as ^u16}^ as u64
+                (data as ^u16)^ as u64
             } else if int_info.bit_width == 32 {
-                {data as ^u32}^ as u64
+                (data as ^u32)^ as u64
             } else if int_info.bit_width == 64 {
-                {data as ^u64}^ as u64
+                (data as ^u64)^ as u64
             } else if int_info.bit_width == 128 {
-                {data as ^u128}^ as u64
+                (data as ^u128)^ as u64
             } else {
                 unreachable();
                 0
@@ -157,9 +157,9 @@ print :: (val: Any) {
         float_info := meta.get_float_info(ty);
         
         num := if float_info.bit_width == 32 {
-            {data as ^f32}^ as f64
+            (data as ^f32)^ as f64
         } else if float_info.bit_width == 64 {
-            {data as ^f64}^ as f64
+            (data as ^f64)^ as f64
         } else {
             unreachable();
             0
@@ -170,7 +170,7 @@ print :: (val: Any) {
         string_builder.print(^str);
         string_builder.free(^mut str);
     } else if meta.is_bool(ty) {
-        if {data as ^bool}^ {
+        if (data as ^bool)^ {
             _print_str("true");
         } else {
             _print_str("false");
@@ -183,13 +183,13 @@ print :: (val: Any) {
         info := meta.get_array_info(ty);
         elem_stride := meta.stride_of(info.ty);
 
-        _print_str("{ ");
+        _print_str("[ ");
 
         idx := 0;
         while idx < info.len {
             addr := ptr.const_offset(data, elem_stride * idx);
             
-            print(Any { ty: info.ty, data: addr });
+            print(Any.{ ty = info.ty, data = addr });
 
             if idx < info.len - 1 {
                 _print_str(", ");
@@ -198,7 +198,7 @@ print :: (val: Any) {
             idx = idx + 1;
         }
 
-        _print_str(" }");
+        _print_str(" ]");
     } else if meta.is_slice(ty) {
         info := meta.get_slice_info(ty);
         elem_stride := meta.stride_of(info.ty);
@@ -206,13 +206,13 @@ print :: (val: Any) {
         slice := data as ^[] any;
         len := slice.len;
 
-        _print_str("{ ");
+        _print_str("[ ");
 
         idx := 0;
         while idx < len {
             addr := ptr.const_offset(slice.ptr, elem_stride * idx);
 
-            print(Any { ty: info.ty, data: addr });
+            print(Any.{ ty = info.ty, data = addr });
 
             if idx < len - 1 {
                 _print_str(", ");
@@ -221,17 +221,17 @@ print :: (val: Any) {
             idx = idx + 1;
         }
 
-        _print_str(" }");
+        _print_str(" ]");
     } else if meta.is_pointer(ty) {
         _print_str("^");
 
         info := meta.get_pointer_info(ty);
 
-        print(Any { ty: info.ty, data: {data as ^^any}^});
+        print(Any.{ ty = info.ty, data = (data as ^^any)^});
     } else if meta.is_distinct(ty) {
         info := meta.get_distinct_info(ty);
 
-        print(Any { ty: info.ty, data: data });
+        print(Any.{ ty = info.ty, data = data });
     } else if meta.is_meta_type(ty) {
         print_type_info(data as ^type^);
     } else if meta.is_any(ty) {
@@ -260,9 +260,9 @@ print :: (val: Any) {
             _print_str(member.name);
             _print_str(" = ");
 
-            print(Any {
-                ty: member.ty,
-                data: ptr.const_offset(data, member.offset),
+            print(Any.{
+                ty = member.ty,
+                data = ptr.const_offset(data, member.offset),
             });
 
             if idx < info.members.len - 1 {
@@ -442,9 +442,9 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         info := meta.get_distinct_info(expected);
 
         cast_into(value, info.ty, into);
-        return Any {
-            data: into,
-            ty: expected,
+        return Any.{
+            data = into,
+            ty = expected,
         };
     }
 
@@ -462,30 +462,30 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         into_info := meta.get_int_info(expected);
 
         num := if from_info.bit_width == 8 {
-            {data as ^u8}^ as u64
+            (data as ^u8)^ as u64
         } else if from_info.bit_width == 16 {
-            {data as ^u16}^ as u64
+            (data as ^u16)^ as u64
         } else if from_info.bit_width == 32 {
-            {data as ^u32}^ as u64
+            (data as ^u32)^ as u64
         } else if from_info.bit_width == 64 {
-            {data as ^u64}^ as u64
+            (data as ^u64)^ as u64
         } else if from_info.bit_width == 128 {
-            {data as ^u128}^ as u64
+            (data as ^u128)^ as u64
         } else {
             unreachable();
             0
         };
 
         if into_info.bit_width == 8 {
-            {into as ^mut u8} ^= num as u8;
+            (into as ^mut u8) ^= num as u8;
         } else if into_info.bit_width == 16 {
-            {into as ^mut u16} ^= num as u16;
+            (into as ^mut u16) ^= num as u16;
         } else if into_info.bit_width == 32 {
-            {into as ^mut u32} ^= num as u32;
+            (into as ^mut u32) ^= num as u32;
         } else if into_info.bit_width == 64 {
-            {into as ^mut u64} ^= num as u64;
+            (into as ^mut u64) ^= num as u64;
         } else if into_info.bit_width == 128 {
-            {into as ^mut u128} ^= num as u128;
+            (into as ^mut u128) ^= num as u128;
         } else {
             unreachable();
         }
@@ -499,18 +499,18 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         into_info := meta.get_int_info(expected);
         
         num := if from_info.bit_width == 32 {
-            {data as ^f32}^ as f64
+            (data as ^f32)^ as f64
         } else if from_info.bit_width == 64 {
-            {data as ^f64}^ as f64
+            (data as ^f64)^ as f64
         } else {
             unreachable();
             0
         };
 
         if into_info.bit_width == 32 {
-            {into as ^mut f32} ^= num as f32;
+            (into as ^mut f32) ^= num as f32;
         } else if into_info.bit_width == 64 {
-            {into as ^mut f64} ^= num as f64;
+            (into as ^mut f64) ^= num as f64;
         } else {
             unreachable();
         }
@@ -519,19 +519,19 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
             meta.is_bool(expected),
             "bool types can only be casted to bool types"
         );
-        {into as ^mut bool} ^= {data as ^bool}^;
+        (into as ^mut bool) ^= (data as ^bool)^;
     } else if meta.is_string(ty) {
         assert_with(
             meta.is_string(expected),
             "string types can only be casted to string types"
         );
-        {into as ^mut str} ^= {data as ^str}^;
+        (into as ^mut str) ^= (data as ^str)^;
     } else if meta.is_char(ty) {
         assert_with(
             meta.is_char(expected),
             "char types can only be casted to char types"
         );
-        {into as ^mut char} ^= {data as ^char}^;
+        (into as ^mut char) ^= (data as ^char)^;
     } else if meta.is_array(ty) {
         assert_with(
             ty == expected,
@@ -547,23 +547,30 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
             "slice types can only be casted to themselves",
         );
 
-        libc.memcpy(into, data, meta.size_of(ty));
+        (into as ^mut []any) ^= (data as ^[]any)^;
     } else if meta.is_pointer(ty) {
         assert_with(
             ty == expected,
             "pointer types can only be casted to themselves",
         );
 
-        {into as ^mut usize} ^= {data as ^usize}^;
+        (into as ^mut usize) ^= (data as ^usize)^;
     } else if meta.is_distinct(ty) {
         info := meta.get_distinct_info(ty);
-        cast_into(Any { ty: info.ty, data: data }, expected, into);
+        cast_into(
+            Any.{
+                ty = info.ty,
+                data = data
+            },
+            expected,
+            into
+        );
     } else if meta.is_meta_type(ty) {
         assert_with(
             ty == expected,
             "type ids can only be casted to themselves",
         );
-        {into as ^mut type} ^= {data as ^type}^;
+        (into as ^mut type) ^= (data as ^type)^;
     } else if meta.is_any(ty) {
         assert_with(
             ty == expected,
@@ -581,7 +588,7 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
             ty == expected,
             "function types can only be casted to themselves",
         );
-        {into as ^mut usize} ^= {data as ^usize}^;
+        (into as ^mut usize) ^= (data as ^usize)^;
     } else if meta.is_struct(ty) {
         assert_with(
             ty == expected,
@@ -599,8 +606,8 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         // do nothing ;)
     }
 
-    Any {
-        data: into,
-        ty: expected,
+    Any.{
+        data = into,
+        ty = expected,
     }
 }

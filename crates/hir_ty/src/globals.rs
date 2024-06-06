@@ -16,6 +16,24 @@ use crate::{
     UnaryOutput,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExprIsConst {
+    Const,
+    Runtime,
+    /// the same as `Runtime` but doesn't report an error since there's missing information
+    Unknown,
+}
+
+impl ExprIsConst {
+    fn should_report_not_const(self) -> bool {
+        matches!(self, ExprIsConst::Runtime)
+    }
+
+    fn is_const(self) -> bool {
+        matches!(self, ExprIsConst::Const)
+    }
+}
+
 enum ExprMutability {
     Mutable,
     ImmutableBinding(TextRange),
@@ -107,7 +125,7 @@ impl GlobalInferenceCtx<'_> {
             actual_ty = f64;
         }
 
-        if global && !self.is_const(body) {
+        if global && self.get_const(body).should_report_not_const() {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::GlobalNotConst,
                 file: self.file,
@@ -207,6 +225,9 @@ impl GlobalInferenceCtx<'_> {
                         });
                     }
                 }
+            }
+            Expr::Paren(Some(expr)) => {
+                self.replace_weak_tys(expr, new_ty);
             }
             Expr::Block { tail_expr, .. } => {
                 if let Some(scope_id) = self.bodies.block_to_scope_id(expr) {
@@ -327,7 +348,7 @@ impl GlobalInferenceCtx<'_> {
         true
     }
 
-    fn is_const(&self, expr: Idx<Expr>) -> bool {
+    fn get_const(&self, expr: Idx<Expr>) -> ExprIsConst {
         let mut to_check = vec![(self.file, expr)];
 
         let mut idx = 0;
@@ -343,12 +364,10 @@ impl GlobalInferenceCtx<'_> {
                 | Expr::StringLiteral(_)
                 | Expr::IntLiteral(_)
                 | Expr::FloatLiteral(_)
-                | Expr::BoolLiteral(_) => true,
-                Expr::Array { items, .. } if self.tys[file][expr].is_array() => {
-                    if let Some(items) = items {
-                        to_check.extend(items.iter().map(|e| (file, *e)));
-                    }
-                    true
+                | Expr::BoolLiteral(_) => ExprIsConst::Const,
+                Expr::ArrayLiteral { items, .. } if self.tys[file][expr].is_array() => {
+                    to_check.extend(items.iter().map(|e| (file, *e)));
+                    ExprIsConst::Const
                 }
                 Expr::LocalGlobal(global) => {
                     let fqn = hir::Fqn {
@@ -357,10 +376,10 @@ impl GlobalInferenceCtx<'_> {
                     };
 
                     if self.world_bodies.is_extern(fqn) {
-                        false
+                        ExprIsConst::Runtime
                     } else {
                         to_check.push((file, self.world_bodies.body(fqn)));
-                        true
+                        ExprIsConst::Const
                     }
                 }
                 Expr::Local(local) => {
@@ -368,7 +387,11 @@ impl GlobalInferenceCtx<'_> {
 
                     to_check.push((file, local_def.value));
 
-                    !local_def.mutable
+                    if local_def.mutable {
+                        ExprIsConst::Runtime
+                    } else {
+                        ExprIsConst::Const
+                    }
                 }
                 Expr::Member { previous, field } => {
                     let old_file = file;
@@ -381,27 +404,36 @@ impl GlobalInferenceCtx<'_> {
                             name: field.name,
                         };
 
-                        if self.world_bodies.is_extern(fqn) {
-                            false
+                        if !self.world_bodies.exists(fqn) {
+                            ExprIsConst::Unknown
+                        } else if self.world_bodies.is_extern(fqn) {
+                            ExprIsConst::Runtime
                         } else {
+                            println!("checking {}", fqn.debug(self.interner));
                             to_check.push((*file, self.world_bodies.body(fqn)));
-                            true
+                            ExprIsConst::Const
                         }
                     } else {
-                        false
+                        ExprIsConst::Runtime
                     }
                 }
-                _ => matches!(*(self.tys[file][expr]), Ty::Type | Ty::File(_)),
+                _ => {
+                    if matches!(*(self.tys[file][expr]), Ty::Type | Ty::File(_)) {
+                        ExprIsConst::Const
+                    } else {
+                        ExprIsConst::Runtime
+                    }
+                }
             };
 
-            if !result {
-                return false;
+            if result == ExprIsConst::Runtime || result == ExprIsConst::Unknown {
+                return result;
             }
 
             idx += 1;
         }
 
-        true
+        ExprIsConst::Const
     }
 
     /// `deref` allows certain expressions to be mutable
@@ -409,7 +441,7 @@ impl GlobalInferenceCtx<'_> {
     fn get_mutability(&self, expr: Idx<Expr>, assignment: bool, deref: bool) -> ExprMutability {
         match &self.bodies[expr] {
             Expr::Missing => ExprMutability::Mutable,
-            Expr::Array { .. } => ExprMutability::Mutable,
+            Expr::ArrayLiteral { .. } => ExprMutability::Mutable,
             Expr::StructLiteral { .. } => ExprMutability::Mutable,
             Expr::Ref { mutable, .. } => match (*mutable, deref) {
                 (true, _) => ExprMutability::Mutable,
@@ -535,6 +567,7 @@ impl GlobalInferenceCtx<'_> {
                     _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
                 }
             }
+            Expr::Paren(Some(expr)) => self.get_mutability(*expr, assignment, deref),
             _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
         }
     }
@@ -814,82 +847,22 @@ impl GlobalInferenceCtx<'_> {
                         Expr::BoolLiteral(_) => Ty::Bool.into(),
                         Expr::StringLiteral(_) => Ty::String.into(),
                         Expr::CharLiteral(_) => Ty::Char.into(),
-                        Expr::Array {
-                            size,
-                            items,
-                            items_range,
-                            ty,
-                        } => {
-                            if let Some(items) = items {
-                                let sub_ty = self.const_ty(*ty)?;
-
-                                for item in items {
-                                    let item_ty = self.tys[self.file][*item];
-                                    self.expect_match(item_ty, sub_ty, *item);
-                                }
-
-                                if let Some(size) = size {
-                                    'branch: {
-                                        let usize_ty = Ty::UInt(u8::MAX).into();
-
-                                        if !self.expect_match(
-                                            self.tys[self.file][*size],
-                                            usize_ty,
-                                            *size,
-                                        ) {
-                                            break 'branch Ty::Unknown.into();
-                                        }
-                                        self.replace_weak_tys(*size, usize_ty);
-
-                                        if !self.is_const(*size) {
-                                            self.diagnostics.push(TyDiagnostic {
-                                                kind: TyDiagnosticKind::ArraySizeNotConst,
-                                                file: self.file,
-                                                range: self.bodies.range_for_expr(*size),
-                                                expr: Some(*size),
-                                                help: None,
-                                            });
-
-                                            break 'branch Ty::Unknown.into();
-                                        }
-
-                                        match self.const_data(self.file, *size)? {
-                                            Some(ComptimeResult::Integer { num, .. }) => {
-                                                if num as usize != items.len() {
-                                                    self.diagnostics.push(TyDiagnostic {
-                                                        kind: TyDiagnosticKind::ArraySizeMismatch {
-                                                            found: items.len() as u32,
-                                                            expected: num as u32,
-                                                        },
-                                                        file: self.file,
-                                                        range: items_range.unwrap(),
-                                                        expr: Some(*size),
-                                                        help: None,
-                                                    });
-                                                }
-
-                                                Ty::Array { size: num, sub_ty }.into()
-                                            }
-                                            _ => {
-                                                self.diagnostics.push(TyDiagnostic {
-                                                    kind: TyDiagnosticKind::ArraySizeNotInt,
-                                                    file: self.file,
-                                                    range: self.bodies.range_for_expr(*size),
-                                                    expr: Some(*size),
-                                                    help: None,
-                                                });
-
-                                                Ty::Unknown.into()
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    Ty::Slice { sub_ty }.into()
-                                }
-                            } else {
-                                self.const_ty(expr)?;
-                                Ty::Type.into()
+                        Expr::ArrayDecl { size, ty } => {
+                            self.const_ty(expr)?;
+                            Ty::Type.into()
+                        }
+                        Expr::ArrayLiteral { ty, items } => {
+                            let sub_ty = self.const_ty(*ty)?;
+                            for item in items {
+                                let item_ty = self.tys[self.file][*item];
+                                self.expect_match(item_ty, sub_ty, *item);
                             }
+
+                            Ty::Array {
+                                size: items.len() as u64,
+                                sub_ty,
+                            }
+                            .into()
                         }
                         Expr::Index { source, index } => {
                             let source_ty = self.tys[self.file][*source];
@@ -1131,6 +1104,10 @@ impl GlobalInferenceCtx<'_> {
                                 output
                             }
                         }
+                        Expr::Paren(expr) => match expr {
+                            Some(expr) => self.tys[self.file][*expr],
+                            None => Ty::Void.into(),
+                        },
                         Expr::Block { stmts, tail_expr } => {
                             let label = self.bodies.block_to_scope_id(expr);
 
@@ -2133,12 +2110,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::PrimitiveTy(ty) => Ty::from_primitive(*ty).into(),
-                        Expr::Array {
-                            size,
-                            items: None,
-                            ty,
-                            ..
-                        } => 'branch: {
+                        Expr::ArrayDecl { size, ty } => 'branch: {
                             let sub_ty = self.tys[self.file].meta_tys[*ty];
 
                             if let Some(size) = size {
@@ -2154,16 +2126,21 @@ impl GlobalInferenceCtx<'_> {
 
                                 self.replace_weak_tys(*size, usize_ty);
 
-                                if !self.is_const(*size) {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::ArraySizeNotConst,
-                                        file: self.file,
-                                        range: self.bodies.range_for_expr(*size),
-                                        expr: Some(*size),
-                                        help: None,
-                                    });
+                                let expr_const = self.get_const(*size);
+                                if !expr_const.is_const() {
+                                    println!("not const {expr_const:?}");
+                                    if expr_const.should_report_not_const() {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::ArraySizeNotConst,
+                                            file: self.file,
+                                            range: self.bodies.range_for_expr(*size),
+                                            expr: Some(*size),
+                                            help: None,
+                                        });
+                                    }
                                     break 'branch Ty::Unknown.into();
                                 }
+                                println!("it was const");
 
                                 match self.const_data(self.file, *size)? {
                                     Some(ComptimeResult::Integer { num, .. }) => {
@@ -2274,6 +2251,11 @@ impl GlobalInferenceCtx<'_> {
                                 Ty::Unknown.into()
                             }
                         }
+                        Expr::Paren(Some(paren_expr)) => {
+                            // todo: remove recursion
+                            self.const_ty(*paren_expr)?
+                        }
+                        Expr::Block { .. } => todo!("blocks as types"),
                         _ => {
                             // todo: remove recursion
                             let expr_ty = self.infer_expr(expr)?;
@@ -2496,8 +2478,10 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Deref { .. } => {}
                         Expr::Binary { .. } => {}
                         Expr::Unary { .. } => {}
-                        Expr::Array { .. } => {}
+                        Expr::ArrayDecl { .. } => {}
+                        Expr::ArrayLiteral { .. } => {}
                         Expr::Index { .. } => {}
+                        Expr::Paren(_) => {}
                         Expr::Block { .. } => {}
                         Expr::If { .. } => {}
                         Expr::While { .. } => {}

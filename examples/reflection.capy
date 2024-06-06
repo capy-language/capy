@@ -61,31 +61,31 @@ check_any :: () {
     // `core.Any` powers the `core.println` function, which does something
     // different depending on the type of the `core.Any` passed in.
 
-    core.println(core.Any { ty: u8, data: ^123 as ^u8 });
-    core.println(core.Any { ty: [6]i32, data: ^[6]i32 { 4, 8, 15, 16, 23, 42 } });
-    core.println(core.Any { ty: []i32, data: ^[]i32 { 1, 2, 3 } });
-    core.println(core.Any { ty: ^i32, data: ^^52 as ^^i32 });
+    core.println(core.Any.{ ty = u8, data = ^123 as ^u8 });
+    core.println(core.Any.{ ty = [6]i32, data = ^i32.[ 4, 8, 15, 16, 23, 42 ] });
+    core.println(core.Any.{ ty = []i32, data = ^(i32.[ 1, 2, 3 ] as []i32) });
+    core.println(core.Any.{ ty = ^i32, data = ^^52 as ^^i32 });
 
     // `core.Any` of `core.Any`
     
-    i := core.Any { ty: imaginary, data: ^42 as ^imaginary };
+    i := core.Any.{ ty = imaginary, data = ^42 as ^imaginary };
     core.println(i);
-    core.println(core.Any { ty: core.Any, data: ^i });
+    core.println(core.Any.{ ty = core.Any, data = ^i });
 
     // auto cast to `core.Any` (or any other struct with a `type` and a `^any`)
 
     core.println(256);
     core.println("hello");
-    core.println(Bar {
-        text: "Hello",
-        flag: false,
-        array: [3] i16 { 1, 2, 3 },
+    core.println(Bar.{
+        text = "Hello",
+        flag = false,
+        array = i16.[1, 2, 3],
     });
     core.println(i32);
     core.println(^Bar);
     core.println(core.Any);
     core.println({});
-    core.println([6] i32 { 4, 8, 15, 16, 23, 42 });
+    core.println(i32.[4, 8, 15, 16, 23, 42]);
 }
 
 check_equality :: () {
