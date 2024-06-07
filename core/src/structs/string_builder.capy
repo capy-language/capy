@@ -56,9 +56,10 @@ shrink_to_fit :: (self: ^mut StringBuilder) {
 _grow_by :: (self: ^mut StringBuilder, len: usize) {
     if self.len + len > self.cap {
         new_cap := math.max_usize(self.cap * 2, 1);
-        while new_cap <= self.len + len {
-            new_cap = new_cap * 2;
-        }
+        new_cap = math.max_usize(
+	                        math.next_pow_of_two(list.len + len), 
+				new_cap
+				);
 
         self.buf = libc.realloc(self.buf, new_cap) as ^mut char;
         self.cap = new_cap;
