@@ -113,9 +113,10 @@ to_slice :: (list: ^List) -> [] any {
 _grow_by :: (list: ^mut List, len: usize) {
     if list.len + len > list.cap {
         new_cap := math.max_usize(list.cap * 2, 1);
-        while new_cap <= list.len + len {
-            new_cap = new_cap * 2;
-        }
+        new_cap = math.max_usize(
+	                         math.next_pow_of_two(list.len + len), 
+				 new_cap
+				 );
 
         ty_stride := core.meta.stride_of(list.ty);
 

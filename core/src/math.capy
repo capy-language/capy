@@ -71,6 +71,23 @@ min_usize :: (x: usize, y: usize) -> usize {
     }
 }
 
+next_pow_of_two :: (x: usize) -> usize {
+    // see https://stackoverflow.com/questions/1322510/given-an-integer-how-do-i-find-the-next-largest-power-of-two-using-bit-twiddlin/1322548#1322548 
+    // for an explanation of how this works
+    x := x - 1;
+
+    x = x | {x >> 1};
+    x = x | {x >> 2};
+    x = x | {x >> 4};
+    x = x | {x >> 8};
+    x = x | {x >> 16};
+    x = x | {x >> 32};
+    x = x | {x >> 64}; // for platforms with a register width of 128
+                       // for other platforms this should compile down to a nop
+
+    x + 1
+}
+
 is_NaN :: (n: f64) -> bool {
     n != n
 }
