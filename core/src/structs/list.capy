@@ -11,11 +11,11 @@ List :: struct {
 };
 
 make :: (ty: type) -> List {
-    List {
-        ty: ty,
-        buf: ptr.mut_null(),
-        cap: 0,
-        len: 0,
+    List.{
+        ty = ty,
+        buf = ptr.mut_null(),
+        cap = 0,
+        len = 0,
     }
 }
 
@@ -34,11 +34,11 @@ make_with_capacity :: (ty: type, cap: usize) -> List {
         core.panic_with("Error allocating the List");
     }
 
-    List {
-        ty: ty,
-        buf: buf,
-        len: 0,
-        cap: cap,
+    List.{
+        ty = ty,
+        buf = buf,
+        len = 0,
+        cap = cap,
     }
 }
 
@@ -64,9 +64,9 @@ get :: (list: ^List, index: usize) -> core.Any {
         core.panic_with("called `get` with an index outside the list");
     }
 
-    core.Any {
-        data: ptr.const_offset(list.buf, index * core.meta.stride_of(list.ty)),
-        ty: list.ty,
+    core.Any.{
+        data = ptr.const_offset(list.buf, index * core.meta.stride_of(list.ty)),
+        ty = list.ty,
     }
 }
 
@@ -82,13 +82,13 @@ pop :: (list: ^mut List) {
 print :: (list: ^List) {
     ty_stride := core.meta.stride_of(list.ty);
 
-    core.print("{ ");
+    core.print("[ ");
 
     idx := 0;
     while idx < list.len {
-        core.print(core.Any {
-            ty: list.ty,
-            data: ptr.const_offset(list.buf, idx * ty_stride)
+        core.print(core.Any.{
+            ty = list.ty,
+            data = ptr.const_offset(list.buf, idx * ty_stride)
         });
 
         idx = idx + 1;
@@ -98,7 +98,7 @@ print :: (list: ^List) {
         }
     }
 
-    core.print(" }");
+    core.print(" ]");
 }
 
 println :: (list: ^List) {

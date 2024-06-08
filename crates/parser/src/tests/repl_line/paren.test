@@ -1,0 +1,46 @@
+(true + 5 * 25 / 2 || ("woah dude what's this" & 2)^)
+===
+Root@0..53
+  ExprStmt@0..53
+    ParenExpr@0..53
+      LParen@0..1 "("
+      BinaryExpr@1..52
+        BinaryExpr@1..18
+          BoolLiteral@1..5
+            Bool@1..5 "true"
+          Whitespace@5..6 " "
+          Plus@6..7 "+"
+          Whitespace@7..8 " "
+          BinaryExpr@8..18
+            BinaryExpr@8..14
+              IntLiteral@8..9
+                Int@8..9 "5"
+              Whitespace@9..10 " "
+              Asterisk@10..11 "*"
+              Whitespace@11..12 " "
+              IntLiteral@12..14
+                Int@12..14 "25"
+            Whitespace@14..15 " "
+            Slash@15..16 "/"
+            Whitespace@16..17 " "
+            IntLiteral@17..18
+              Int@17..18 "2"
+        Whitespace@18..19 " "
+        DoublePipe@19..21 "||"
+        Whitespace@21..22 " "
+        DerefExpr@22..52
+          ParenExpr@22..51
+            LParen@22..23 "("
+            BinaryExpr@23..50
+              StringLiteral@23..46
+                DoubleQuote@23..24 "\""
+                StringContents@24..45 "woah dude what's this"
+                DoubleQuote@45..46 "\""
+              Whitespace@46..47 " "
+              And@47..48 "&"
+              Whitespace@48..49 " "
+              IntLiteral@49..50
+                Int@49..50 "2"
+            RParen@50..51 ")"
+          Caret@51..52 "^"
+      RParen@52..53 ")"

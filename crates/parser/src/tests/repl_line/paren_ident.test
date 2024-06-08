@@ -1,0 +1,9 @@
+(foo)
+===
+Root@0..5
+  ExprStmt@0..5
+    ParenExpr@0..5
+      LParen@0..1 "("
+      VarRef@1..4
+        Ident@1..4 "foo"
+      RParen@4..5 ")"

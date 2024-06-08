@@ -1,0 +1,37 @@
+Foo.{
+    name: "Paul Atreides",
+    spice_levels: 0.9,
+}
+===
+Root@0..57
+  ExprStmt@0..57
+    StructLiteral@0..57
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "Foo"
+      Dot@3..4 "."
+      LBrace@4..5 "{"
+      Whitespace@5..10 "\n    "
+      MemberLiteral@10..31
+        Ident@10..14 "name"
+        Error@14..15
+          Colon@14..15 ":"
+        Whitespace@15..16 " "
+        StringLiteral@16..31
+          DoubleQuote@16..17 "\""
+          StringContents@17..30 "Paul Atreides"
+          DoubleQuote@30..31 "\""
+      Comma@31..32 ","
+      Whitespace@32..37 "\n    "
+      MemberLiteral@37..54
+        Ident@37..49 "spice_levels"
+        Error@49..50
+          Colon@49..50 ":"
+        Whitespace@50..51 " "
+        FloatLiteral@51..54
+          Float@51..54 "0.9"
+      Comma@54..55 ","
+      Whitespace@55..56 "\n"
+      RBrace@56..57 "}"
+error at 14..15: expected Equals but found Colon
+error at 49..50: expected Equals but found Colon

@@ -1,0 +1,23 @@
+str.["Hello", "World"]
+===
+Root@0..22
+  ExprStmt@0..22
+    ArrayLiteral@0..22
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "str"
+      Dot@3..4 "."
+      LBrack@4..5 "["
+      ArrayItem@5..12
+        StringLiteral@5..12
+          DoubleQuote@5..6 "\""
+          StringContents@6..11 "Hello"
+          DoubleQuote@11..12 "\""
+      Comma@12..13 ","
+      Whitespace@13..14 " "
+      ArrayItem@14..21
+        StringLiteral@14..21
+          DoubleQuote@14..15 "\""
+          StringContents@15..20 "World"
+          DoubleQuote@20..21 "\""
+      RBrack@21..22 "]"

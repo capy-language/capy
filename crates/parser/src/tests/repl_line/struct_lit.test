@@ -1,49 +1,52 @@
-Foo {
-    bar: "Fancy!",
-    baz: 1200,
-    qux: true as u8,
+Foo.{
+    bar = "Fancy!",
+    baz = 1200,
+    qux = true as u8,
 }
 ===
-Root@0..62
-  ExprStmt@0..62
-    StructLiteral@0..62
+Root@0..65
+  ExprStmt@0..65
+    StructLiteral@0..65
       Ty@0..3
         VarRef@0..3
           Ident@0..3 "Foo"
-      Whitespace@3..4 " "
+      Dot@3..4 "."
       LBrace@4..5 "{"
       Whitespace@5..10 "\n    "
-      MemberLiteral@10..23
+      MemberLiteral@10..24
         Ident@10..13 "bar"
-        Colon@13..14 ":"
-        Whitespace@14..15 " "
-        StringLiteral@15..23
-          DoubleQuote@15..16 "\""
-          StringContents@16..22 "Fancy!"
-          DoubleQuote@22..23 "\""
-      Comma@23..24 ","
-      Whitespace@24..29 "\n    "
-      MemberLiteral@29..38
-        Ident@29..32 "baz"
-        Colon@32..33 ":"
+        Whitespace@13..14 " "
+        Equals@14..15 "="
+        Whitespace@15..16 " "
+        StringLiteral@16..24
+          DoubleQuote@16..17 "\""
+          StringContents@17..23 "Fancy!"
+          DoubleQuote@23..24 "\""
+      Comma@24..25 ","
+      Whitespace@25..30 "\n    "
+      MemberLiteral@30..40
+        Ident@30..33 "baz"
         Whitespace@33..34 " "
-        IntLiteral@34..38
-          Int@34..38 "1200"
-      Comma@38..39 ","
-      Whitespace@39..44 "\n    "
-      MemberLiteral@44..59
-        Ident@44..47 "qux"
-        Colon@47..48 ":"
-        Whitespace@48..49 " "
-        CastExpr@49..59
-          BoolLiteral@49..53
-            Bool@49..53 "true"
-          Whitespace@53..54 " "
-          As@54..56 "as"
+        Equals@34..35 "="
+        Whitespace@35..36 " "
+        IntLiteral@36..40
+          Int@36..40 "1200"
+      Comma@40..41 ","
+      Whitespace@41..46 "\n    "
+      MemberLiteral@46..62
+        Ident@46..49 "qux"
+        Whitespace@49..50 " "
+        Equals@50..51 "="
+        Whitespace@51..52 " "
+        CastExpr@52..62
+          BoolLiteral@52..56
+            Bool@52..56 "true"
           Whitespace@56..57 " "
-          Ty@57..59
-            VarRef@57..59
-              Ident@57..59 "u8"
-      Comma@59..60 ","
-      Whitespace@60..61 "\n"
-      RBrace@61..62 "}"
+          As@57..59 "as"
+          Whitespace@59..60 " "
+          Ty@60..62
+            VarRef@60..62
+              Ident@60..62 "u8"
+      Comma@62..63 ","
+      Whitespace@63..64 "\n"
+      RBrace@64..65 "}"

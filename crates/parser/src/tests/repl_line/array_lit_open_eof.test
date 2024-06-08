@@ -1,0 +1,12 @@
+i32.[
+===
+Root@0..5
+  ExprStmt@0..5
+    ArrayLiteral@0..5
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "i32"
+      Dot@3..4 "."
+      LBrack@4..5 "["
+error at 5: missing array item
+error at 5: missing RBrack

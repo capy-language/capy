@@ -1,0 +1,38 @@
+[3] i32 { 1, 2, 3 }
+===
+Root@0..19
+  ExprStmt@0..19
+    ArrayLiteral@0..19
+      ArraySize@0..3
+        LBrack@0..1 "["
+        IntLiteral@1..2
+          Int@1..2 "3"
+        RBrack@2..3 "]"
+      Whitespace@3..4 " "
+      Ty@4..7
+        VarRef@4..7
+          Ident@4..7 "i32"
+      Whitespace@7..8 " "
+      Error@8..9
+        LBrace@8..9 "{"
+      Whitespace@9..10 " "
+      ArrayItem@10..11
+        IntLiteral@10..11
+          Int@10..11 "1"
+      Comma@11..12 ","
+      Whitespace@12..13 " "
+      ArrayItem@13..14
+        IntLiteral@13..14
+          Int@13..14 "2"
+      Comma@14..15 ","
+      Whitespace@15..16 " "
+      ArrayItem@16..17
+        IntLiteral@16..17
+          Int@16..17 "3"
+      Whitespace@17..18 " "
+      Error@18..19
+        RBrace@18..19 "}"
+error at 0..4: expected nothing but found ArraySize
+error at 7: missing Dot
+error at 8..9: expected LBrack but found LBrace
+error at 18..19: expected RBrack but found RBrace

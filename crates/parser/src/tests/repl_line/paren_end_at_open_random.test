@@ -1,0 +1,9 @@
+(5
+===
+Root@0..2
+  ExprStmt@0..2
+    ParenExpr@0..2
+      LParen@0..1 "("
+      IntLiteral@1..2
+        Int@1..2 "5"
+error at 2: missing RParen

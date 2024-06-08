@@ -75,20 +75,20 @@ foo :: 5;
 foo := "Hullo :3";
 ```
 
-Static arrays are declared as follows,
+Fixed arrays are declared as follows,
 
 ```cpp
-my_array := [6] i32 { 4, 8, 15, 16, 23, 42 };
+my_array : [6]i32 = i32.[4, 8, 15, 16, 23, 42];
 
 my_array[2] = 10;
 ```
 
-Slices can represent an array of any possible size. They look very similar but lack a length within the square brackets.
+Slices are a type of pointer that can represent an array of any possible size.
+They look very similar but lack a length within the square brackets.
 
 ```cpp
-my_slice := [] i32 { 1, 2, 3 };
-
-my_slice = [] i32 { 4, 5, 6, 7, 8 };
+my_slice : []i32 = i32.[1, 2, 3];
+my_slice : []i32 = i32.[4, 5, 6, 7, 8];
 
 my_slice[2] = 10;
 ```
@@ -97,13 +97,13 @@ Arrays can be implicitly cast to slices, but casting a slice to an array must be
 
 ```cpp
 // start with an array
-my_array : [3] i32 = [3] i32 { 2, 4, 8 };
+my_array : [3]i32 = i32.[2, 4, 8];
 
 // automatically turn it into a slice
-my_slice : [] i32  = my_array;
+my_slice : []i32  = my_array;
 
 // manually turn it back into an array
-my_array : [3] i32 = my_slice as [3] i32;
+my_array : [3]i32 = my_slice as [3]i32;
 ```
 
 Pointers can be either mutable or immutable, similar to Rust.
@@ -129,9 +129,9 @@ Person :: struct {
     age: i32
 };
 
-gandalf := Person {
-    name: "Gandalf",
-    age: 2000,
+gandalf := Person.{
+    name = "Gandalf",
+    age = 2000,
 };
 
 // birthday!
@@ -192,7 +192,7 @@ This allows you to run *any* code at compile-time, returning whatever data you w
 math :: mod "core".math;
 
 powers_of_two := comptime {
-    array := [3] i32 { 0, 0, 0 };
+    array := i32.[0, 0, 0];
 
     array[0] = math.pow(2, 1);
     array[1] = math.pow(2, 2);
@@ -230,7 +230,7 @@ All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/me
 these IDs and getting information such as the length of an array type,
 
 ```cpp
-array_type := [3] i32;
+array_type := [3]i32;
 info := meta.get_array_info(array_type);
 
 core.assert(info.len == 3);
@@ -249,7 +249,9 @@ core.assert(meta.align_of(int_type) == 2);
 The members of a struct,
 
 ```cpp
-struct_type := struct { foo: str };
+struct_type := struct {
+    foo: str
+};
 info := meta.get_struct_info(struct_type);
 
 first := info.members[0];
@@ -272,19 +274,19 @@ greeting     : str  = "Hi";
 // core.Any contains a type ID and an opaque pointer (like `void*` in C).
 // The type ID allows `core.println` to know how to display the given pointer.
 
-core.println(core.Any {
-    ty: i32,
-    data: ^count,
+core.println(core.Any.{
+    ty = i32,
+    data = ^count,
 });
 
-core.println(core.Any {
-    ty: bool,
-    data: ^should_start,
+core.println(core.Any.{
+    ty = bool,
+    data = ^should_start,
 });
 
-core.println(core.Any {
-    ty: str,
-    data: ^greeting,
+core.println(core.Any.{
+    ty = str,
+    data = ^greeting,
 });
 ```
 
@@ -417,6 +419,8 @@ If you find any bugs in the compiler, please be sure to [make an issue](https://
 
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), the structure of this entire codebase is largely based on [gingerbread](https://github.com/gingerbread-lang/gingerbread) and [eldiro](https://github.com/lunacookies/eldiro).
 Her help in teaching how programming languages really work is immeasurable and I'm very thankful.
+
+Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in finding bugs and testing the limits of the language. Due to her help we've managed to expand the language to new heights.
 
 Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and cranelift made all my dreams come true.
 

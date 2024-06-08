@@ -57,9 +57,8 @@ size_of :: (ty: type) -> usize {
     // all the discriminants < 16 are simple
     // (they contain all relevant information as bit flags)
     if discriminant < 16 {
-        // 31 (0b11111)
         // the first 5 bits in a simple type id are the size
-        {ty & 31} as usize
+        (ty & 0b11111) as usize
     } else {
         // about 5 types have complex id's
         // (they contain only a discriminant and an index)
@@ -79,9 +78,8 @@ size_of :: (ty: type) -> usize {
             return pointer_layout.size;
         };
 
-        // 63 (0b111111)
-        // removes the discriminant
-        index := ty &~ {63 << 26};
+        // removes the discriminant (6 bits)
+        index := ty &~ (0b111111 << 26);
 
         layouts[index].size
     }
@@ -182,9 +180,8 @@ align_of :: (ty: type) -> usize {
     // all the discriminants < 16 are simple
     // (they contain all relevant information as bit flags)
     if discriminant < 16 {
-        // 15 (0b1111)
         // the second 4 bits in a simple type id are the alignment
-        {{ty >> 5} & 15} as usize
+        ((ty >> 5) & 0b1111) as usize
     } else {
         // about 5 types have complex id's
         // (they contain only a discriminant and an index)
@@ -201,9 +198,8 @@ align_of :: (ty: type) -> usize {
             return pointer_layout.align;
         };
 
-        // 63 (0b111111)
-        // removes the discriminant
-        index := ty &~ {63 << 26};
+        // removes the discriminant (6 bits)
+        index := ty &~ (0b111111 << 26);
 
         layouts[index].align
     }
@@ -234,12 +230,11 @@ get_int_info :: (ty: type) -> Int_Info {
         "called `get_int_info` on non-int",
     );
 
-    Int_Info {
-        // 31 (0b11111)
+    Int_Info.{
         // the first five bits is the size in bytes
-        bit_width: {{raw & 31} * 8} as u8,
+        bit_width = ((raw & 0b11111) * 8) as u8,
         // the ninth bit is the sign flag
-        signed: {{raw >> 9} & 1} as bool,
+        signed = ((raw >> 9) & 1) as bool,
     }
 }
 
@@ -265,10 +260,9 @@ get_float_info :: (ty: type) -> Float_Info {
         "called `get_float_info` on non-float",
     );
 
-    Float_Info {
-        // 31 (0b11111)
+    Float_Info.{
         // the first five bits is the size in bytes
-        bit_width: {{raw & 31} * 8} as u8,
+        bit_width = ((raw & 0b11111) * 8) as u8,
     }
 }
 
@@ -323,9 +317,8 @@ get_array_info :: (ty: type) -> Array_Info {
         "called `get_array_info` on non-array",
     );
 
-    // 63 (0b111111)
-    // removes the discriminant
-    idx := raw &~ {63 << 26};
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
 
     array_infos[idx]
 }
@@ -356,9 +349,8 @@ get_slice_info :: (ty: type) -> Slice_Info {
         "called `get_slice_info` on non-slice",
     );
 
-    // 63 (0b111111)
-    // removes the discriminant
-    idx := raw &~ {63 << 26};
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
 
     slice_infos[idx]
 }
@@ -387,9 +379,8 @@ get_pointer_info :: (ty: type) -> Pointer_Info {
         "called `get_pointer_info` on non-pointer",
     );
 
-    // 63 (0b111111)
-    // removes the discriminant
-    idx := raw &~ {63 << 26};
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
 
     pointer_infos[idx]
 }
@@ -420,9 +411,8 @@ get_distinct_info :: (ty: type) -> Distinct_Info {
         "called `get_distinct_info` on non-distinct",
     );
 
-    // 63 (0b111111)
-    // removes the discriminant
-    idx := raw &~ {63 << 26};
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
 
     distinct_infos[idx]
 }
@@ -504,9 +494,8 @@ get_struct_info :: (ty: type) -> Struct_Info {
         "called `get_struct_info` on non-struct",
     );
 
-    // 63 (0b111111)
-    // removes the discriminant
-    idx := raw &~ {63 << 26};
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
 
     struct_infos[idx]
 }

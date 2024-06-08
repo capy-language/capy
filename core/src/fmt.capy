@@ -79,7 +79,7 @@ _write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, req
         remainder := n % 10;
         n = n / 10;
 
-        ptr.write(buf, {'0' as u8 + remainder} as u8, idx);
+        ptr.write(buf, ('0' as u8 + remainder) as u8, idx);
 
         idx = idx + 1;
     }

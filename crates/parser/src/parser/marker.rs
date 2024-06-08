@@ -2,6 +2,7 @@ use std::mem;
 
 use drop_bomb::DropBomb;
 use syntax::NodeKind;
+use text_size::TextRange;
 
 use crate::event::Event;
 

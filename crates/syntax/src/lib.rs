@@ -43,8 +43,9 @@ pub enum NodeKind {
     Call,
     ArgList,
     Arg,
-    Array,
+    ArrayDecl,
     ArraySize,
+    ArrayLiteral,
     ArrayBody,
     ArrayItem,
     IndexExpr, // the entire expression of indexing. e.g. `my_array[6]`
@@ -52,6 +53,7 @@ pub enum NodeKind {
     Source,
     Distinct,
     ComptimeExpr,
+    ParenExpr,
     Block,
     IfExpr,
     ElseBranch,

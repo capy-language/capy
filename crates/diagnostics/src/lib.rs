@@ -6,7 +6,7 @@ use hir_ty::{TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
-use syntax::TokenKind;
+use syntax::{NodeKind, TokenKind};
 use text_size::{TextRange, TextSize};
 
 pub struct Diagnostic(Repr);
@@ -144,7 +144,9 @@ impl Diagnostic {
                 ..
             }) => TextRange::new(offset, offset + TextSize::from(1)),
             Repr::Syntax(SyntaxError {
-                kind: SyntaxErrorKind::Unexpected { range, .. },
+                kind:
+                    SyntaxErrorKind::UnexpectedToken { range, .. }
+                    | SyntaxErrorKind::UnexpectedNode { range, .. },
                 ..
             }) => range,
             Repr::Validation(ValidationDiagnostic { range, .. }) => range,
@@ -374,10 +376,15 @@ fn syntax_error_message(e: &SyntaxError) -> String {
             message.push_str("missing ");
             write_expected_syntax(&mut message);
         }
-        SyntaxErrorKind::Unexpected { found, .. } => {
+        SyntaxErrorKind::UnexpectedToken { found, .. } => {
             message.push_str("expected ");
             write_expected_syntax(&mut message);
             message.push_str(&format!(" but found {}", format_kind(found)));
+        }
+        SyntaxErrorKind::UnexpectedNode { found, .. } => {
+            message.push_str("expected ");
+            write_expected_syntax(&mut message);
+            message.push_str(&format!(" but found {}", format_node(found)));
         }
     }
 
@@ -388,6 +395,9 @@ fn validation_diagnostic_message(d: &ValidationDiagnostic) -> String {
     match d.kind {
         ValidationDiagnosticKind::AlwaysTrue => "this is always true".to_string(),
         ValidationDiagnosticKind::AlwaysFalse => "this is always false".to_string(),
+        ValidationDiagnosticKind::ParenInCondition => {
+            "you can remove the `(` and `)`, conditions don't need parentheses".to_string()
+        }
     }
 }
 
@@ -536,12 +546,19 @@ fn ty_diagnostic_message(
             actual_size,
             array_ty,
         } => {
-            format!(
-                "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
-                index,
-                array_ty.display(mod_dir, interner),
-                actual_size - 1,
-            )
+            match actual_size.checked_sub(1) {
+                Some(up_to) => format!(
+                    "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
+                    index,
+                    array_ty.display(mod_dir, interner),
+                    up_to,
+                ),
+                None => format!(
+                    "index `[{}]` is too big for `{}`",
+                    index,
+                    array_ty.display(mod_dir, interner),
+                )
+            }
         }
         hir_ty::TyDiagnosticKind::MismatchedArgCount { found, expected } => {
             format!("expected {} arguments but found {}", expected, found)
@@ -747,5 +764,14 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Whitespace => "whitespace",
         TokenKind::CommentContents | TokenKind::CommentLeader => "comment",
         TokenKind::Error => "an unrecognized token",
+    }
+}
+
+fn format_node(kind: NodeKind) -> &'static str {
+    // since this is only currently used for `array_size`, it's fine to just leave everything else
+    // as unimplemented!()
+    match kind {
+        NodeKind::ArraySize => "array size",
+        _ => unimplemented!(),
     }
 }

@@ -1,0 +1,26 @@
+Person.{
+    name = "Joe Shmoe",
+};
+===
+Root@0..35
+  ExprStmt@0..35
+    StructLiteral@0..34
+      Ty@0..6
+        VarRef@0..6
+          Ident@0..6 "Person"
+      Dot@6..7 "."
+      LBrace@7..8 "{"
+      Whitespace@8..13 "\n    "
+      MemberLiteral@13..31
+        Ident@13..17 "name"
+        Whitespace@17..18 " "
+        Equals@18..19 "="
+        Whitespace@19..20 " "
+        StringLiteral@20..31
+          DoubleQuote@20..21 "\""
+          StringContents@21..30 "Joe Shmoe"
+          DoubleQuote@30..31 "\""
+      Comma@31..32 ","
+      Whitespace@32..33 "\n"
+      RBrace@33..34 "}"
+    Semicolon@34..35 ";"

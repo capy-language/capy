@@ -1,4 +1,4 @@
-Foo {
+Foo.{
 ===
 Root@0..5
   ExprStmt@0..5
@@ -6,10 +6,10 @@ Root@0..5
       Ty@0..3
         VarRef@0..3
           Ident@0..3 "Foo"
-      Whitespace@3..4 " "
+      Dot@3..4 "."
       LBrace@4..5 "{"
       MemberLiteral@5..5
 error at 5: missing field name
-error at 5: missing Colon
+error at 5: missing Equals
 error at 5: missing field value
 error at 5: missing RBrace
