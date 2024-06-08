@@ -418,7 +418,9 @@ str_eq :: (first: str, second: str) -> bool {
             return false;
         }
 
-        if first_ch == 0 { break; }
+        if first_ch == 0 || second_ch == 0 { 
+	    return first_ch == second_ch;
+	}
 
         idx = idx + 1;
     }
