@@ -251,7 +251,7 @@ pub enum Stmt {
 pub struct LocalDef {
     pub mutable: bool,
     pub ty: Option<Idx<Expr>>,
-    pub value: Idx<Expr>,
+    pub value: Option<Idx<Expr>>,
     pub ast: ast::Define,
     pub range: TextRange,
 }
@@ -754,14 +754,14 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
-        let ty = local_def.ty(self.tree).and_then(|ty| ty.expr(self.tree));
-        let ty = if ty.is_some() {
-            Some(self.lower_expr(ty))
-        } else {
-            None
-        };
+        let ty = local_def
+            .ty(self.tree)
+            .and_then(|ty| ty.expr(self.tree))
+            .map(|expr| self.lower_expr(Some(expr)));
 
-        let value = self.lower_expr(local_def.value(self.tree));
+        let value = local_def
+            .value(self.tree)
+            .map(|expr| self.lower_expr(Some(expr)));
         let id = self.bodies.local_defs.alloc(LocalDef {
             mutable: matches!(local_def, ast::Define::Variable(_)),
             ty,
@@ -1754,7 +1754,9 @@ impl Iterator for Descendants<'_> {
                         if include_local_value(local_def) {
                             let local_def = &self.bodies[local_def];
 
-                            self.todo.push(Descendant::Expr(local_def.value));
+                            if let Some(value) = local_def.value {
+                                self.todo.push(Descendant::Expr(value));
+                            }
                         }
                     }
                 }
@@ -1834,7 +1836,9 @@ impl Iterator for Descendants<'_> {
                             self.todo.push(Descendant::Expr(ty));
                         }
                     }
-                    self.todo.push(Descendant::Expr(local_def.value));
+                    if let Some(value) = local_def.value {
+                        self.todo.push(Descendant::Expr(value));
+                    }
                 }
                 Stmt::Assign(assign) => {
                     let assign = &self.bodies[assign];
@@ -2522,20 +2526,15 @@ impl Bodies {
                     if let Some(ty) = local_def.ty {
                         s.push(' ');
                         write_expr(s, ty, show_idx, bodies, mod_dir, interner, indentation);
-                        s.push(' ');
+                        if local_def.value.is_some() {
+                            s.push(' ');
+                        }
                     }
 
-                    s.push_str("= ");
-
-                    write_expr(
-                        s,
-                        local_def.value,
-                        show_idx,
-                        bodies,
-                        mod_dir,
-                        interner,
-                        indentation,
-                    );
+                    if let Some(value) = local_def.value {
+                        s.push_str("= ");
+                        write_expr(s, value, show_idx, bodies, mod_dir, interner, indentation);
+                    }
                     s.push(';');
                 }
                 Stmt::Assign(local_set_id) => {

@@ -656,6 +656,9 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
             "external globals must have a type annotation".to_string()
         }
+        hir_ty::TyDiagnosticKind::DeclTypeHasNoDefault { ty } => {
+            format!("`{}` does not have a default value. one must be supplied", ty.display(mod_dir, interner))
+        }
     }
 }
 
@@ -762,6 +765,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::LBrace => "`{`",
         TokenKind::RBrace => "`}`",
         TokenKind::Whitespace => "whitespace",
+        TokenKind::NonBreakingSpace => "non-breaking space character",
         TokenKind::CommentContents | TokenKind::CommentLeader => "comment",
         TokenKind::Error => "an unrecognized token",
     }

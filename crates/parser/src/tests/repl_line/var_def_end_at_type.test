@@ -1,0 +1,11 @@
+x: some_type
+===
+Root@0..12
+  VarDef@0..12
+    Ident@0..1 "x"
+    Colon@1..2 ":"
+    Whitespace@2..3 " "
+    Ty@3..12
+      VarRef@3..12
+        Ident@3..12 "some_type"
+error at 12: missing Semicolon

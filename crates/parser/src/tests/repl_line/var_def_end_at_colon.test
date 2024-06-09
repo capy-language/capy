@@ -1,0 +1,8 @@
+x:
+===
+Root@0..2
+  VarDef@0..2
+    Ident@0..1 "x"
+    Colon@1..2 ":"
+error at 2: missing type annotation
+error at 2: missing Semicolon

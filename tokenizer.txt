@@ -1,6 +1,8 @@
 // This is a DSL I quickly put together to make it easier to
 // make new tokens or alter existing tokens
 Whitespace = /[ \t\r\n]+/
+// Ideally this would be a literal instead of a regex
+NonBreakingSpace = /\xa0/
 As = 'as'
 If = 'if'
 Else = 'else'

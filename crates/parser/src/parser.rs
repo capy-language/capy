@@ -19,7 +19,7 @@ use marker::Marker;
 
 use self::marker::CompletedMarker;
 
-const DEFAULT_RECOVERY_SET: TokenSet =
+pub(crate) const DEFAULT_RECOVERY_SET: TokenSet =
     TokenSet::new([TokenKind::Semicolon, TokenKind::LBrace, TokenKind::RBrace]);
 
 pub(crate) struct Parser<'tokens> {

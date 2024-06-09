@@ -1,0 +1,12 @@
+a :: a;
+===
+Root@0..7
+  Binding@0..7
+    Ident@0..1 "a"
+    Whitespace@1..2 " "
+    Colon@2..3 ":"
+    Colon@3..4 ":"
+    Whitespace@4..5 " "
+    VarRef@5..6
+      Ident@5..6 "a"
+    Semicolon@6..7 ";"

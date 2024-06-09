@@ -83,7 +83,10 @@ pub(crate) struct GlobalInferenceCtx<'a> {
     pub(crate) world_bodies: &'a hir::WorldBodies,
     pub(crate) bodies: &'a hir::Bodies,
     pub(crate) interner: &'a Interner,
+    // todo: what happens to this when an uninferred global is reached?
+    // should this be stored in `InferenceCtx`?
     pub(crate) local_usages: ArenaMap<Idx<hir::LocalDef>, FxHashSet<Idx<hir::Stmt>>>,
+    pub(crate) inferred_stmts: &'a mut FxHashSet<(hir::FileName, Idx<hir::Stmt>)>,
     pub(crate) tys: &'a mut ProjectInference,
     pub(crate) param_tys: Vec<Intern<Ty>>,
     pub(crate) all_inferred: &'a FxHashSet<Inferrable>,
@@ -146,13 +149,15 @@ impl GlobalInferenceCtx<'_> {
                 hir::Stmt::LocalDef(user_local_def) => {
                     let user_local_body = &self.bodies[user_local_def];
 
-                    let user_local_ty = self.reinfer_expr(user_local_body.value);
+                    if let Some(value) = user_local_body.value {
+                        let user_local_ty = self.reinfer_expr(value);
 
-                    // if there is no type annotation on the user, then replace it's type
-                    if user_local_body.ty.is_none() {
-                        self.tys[self.file]
-                            .local_tys
-                            .insert(user_local_def, user_local_ty);
+                        // if there is no type annotation on the user, then replace it's type
+                        if user_local_body.ty.is_none() {
+                            self.tys[self.file]
+                                .local_tys
+                                .insert(user_local_def, user_local_ty);
+                        }
                     }
                 }
                 hir::Stmt::Assign(assign) => {
@@ -313,8 +318,12 @@ impl GlobalInferenceCtx<'_> {
                 self.replace_weak_tys(expr, new_ty);
             }
             Expr::Local(local_def) => {
-                if self.replace_weak_tys(self.bodies[local_def].value, new_ty) {
-                    self.tys[self.file].local_tys.insert(local_def, new_ty);
+                let local_body = &self.bodies[local_def];
+
+                if let Some(value) = local_body.value {
+                    if self.replace_weak_tys(value, new_ty) {
+                        self.tys[self.file].local_tys.insert(local_def, new_ty);
+                    }
                 }
 
                 // now get everything that used this variable and make sure the types are correct for those things
@@ -385,10 +394,15 @@ impl GlobalInferenceCtx<'_> {
                 Expr::Local(local) => {
                     let local_def = &self.world_bodies[file][*local];
 
-                    to_check.push((file, local_def.value));
+                    if let Some(value) = local_def.value {
+                        to_check.push((file, value));
+                    }
 
                     if local_def.mutable {
                         ExprIsConst::Runtime
+                    } else if local_def.value.is_none() {
+                        // this protects against cases like `x ::;`
+                        ExprIsConst::Unknown
                     } else {
                         ExprIsConst::Const
                     }
@@ -409,7 +423,6 @@ impl GlobalInferenceCtx<'_> {
                         } else if self.world_bodies.is_extern(fqn) {
                             ExprIsConst::Runtime
                         } else {
-                            println!("checking {}", fqn.debug(self.interner));
                             to_check.push((*file, self.world_bodies.body(fqn)));
                             ExprIsConst::Const
                         }
@@ -463,7 +476,12 @@ impl GlobalInferenceCtx<'_> {
             Expr::Local(local_def) if deref => {
                 let local_def = &self.bodies[*local_def];
 
-                self.get_mutability(local_def.value, false, deref)
+                if let Some(value) = local_def.value {
+                    self.get_mutability(value, false, deref)
+                } else {
+                    // todo: does this make sense?
+                    ExprMutability::CannotMutate(self.bodies.range_for_expr(expr))
+                }
             }
             Expr::Local(local_def) if !deref => {
                 let local_def = &self.bodies[*local_def];
@@ -786,8 +804,12 @@ impl GlobalInferenceCtx<'_> {
                             continue;
                         }
 
+                        let Some(value) = def_body.value else {
+                            continue;
+                        };
+
                         let previous_ty = self.tys[self.file][*local_def];
-                        let new_ty = self.tys[self.file][def_body.value];
+                        let new_ty = self.tys[self.file][value];
 
                         let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
                             && new_ty.is_functionally_equivalent_to(&previous_ty, false);
@@ -847,7 +869,7 @@ impl GlobalInferenceCtx<'_> {
                         Expr::BoolLiteral(_) => Ty::Bool.into(),
                         Expr::StringLiteral(_) => Ty::String.into(),
                         Expr::CharLiteral(_) => Ty::Char.into(),
-                        Expr::ArrayDecl { size, ty } => {
+                        Expr::ArrayDecl { .. } => {
                             self.const_ty(expr)?;
                             Ty::Type.into()
                         }
@@ -1624,118 +1646,147 @@ impl GlobalInferenceCtx<'_> {
 
                     self.tys[self.file].expr_tys.insert(expr, ty);
                 }
-                Descendant::Stmt(stmt) => match self.bodies[stmt] {
-                    Stmt::Expr(expr) => {
-                        self.find_usages(&[expr], stmt);
+                Descendant::Stmt(stmt) => {
+                    if self.inferred_stmts.contains(&(self.file, stmt)) {
+                        continue;
                     }
-                    Stmt::LocalDef(local_def) => {
-                        let def_body = &self.bodies[local_def];
-                        let value_ty = self.tys[self.file][def_body.value];
 
-                        if let Some(ty_annotation) = def_body.ty {
-                            let ty_annotation = self.const_ty(ty_annotation)?;
-
-                            // the definition has an annotation, so the value should match
-                            if self.expect_match(value_ty, ty_annotation, def_body.value)
-                                && self.replace_weak_tys(def_body.value, ty_annotation)
-                            {
-                                self.tys[self.file]
-                                    .expr_tys
-                                    .insert(def_body.value, ty_annotation);
-                            }
-                            self.tys[self.file]
-                                .local_tys
-                                .insert(local_def, ty_annotation);
-                        } else {
-                            // the definition does not have an annotation,
-                            // so use the type of it's value
-                            self.tys[self.file].local_tys.insert(local_def, value_ty);
+                    match self.bodies[stmt] {
+                        Stmt::Expr(expr) => {
+                            self.find_usages(&[expr], stmt);
                         }
+                        Stmt::LocalDef(local_def) => {
+                            let def_body = &self.bodies[local_def];
 
-                        self.find_usages(&[def_body.value], stmt);
-                    }
-                    Stmt::Assign(assign) => {
-                        let assign_body = &self.bodies[assign];
+                            if let Some(ty_annotation_expr) = def_body.ty {
+                                let ty_annotation = self.const_ty(ty_annotation_expr)?;
 
-                        let source_ty = self.tys[self.file][assign_body.source];
-                        let value_ty = self.tys[self.file][assign_body.value];
-
-                        let help = self
-                            .get_mutability(assign_body.source, true, false)
-                            .into_diagnostic();
-
-                        if help.is_some() {
-                            self.diagnostics.push(TyDiagnostic {
-                                kind: TyDiagnosticKind::CannotMutate,
-                                file: self.file,
-                                // making expr the source isn't technically correct, but it works
-                                expr: Some(assign_body.source),
-                                range: assign_body.range,
-                                help,
-                            })
-                        } else if source_ty.is_weak_replaceable_by(&value_ty) {
-                            self.replace_weak_tys(assign_body.source, source_ty);
-                        } else if self.expect_match(value_ty, source_ty, assign_body.value) {
-                            self.replace_weak_tys(assign_body.value, source_ty);
-                        }
-
-                        self.find_usages(&[assign_body.source, assign_body.value], stmt);
-                    }
-                    Stmt::Break { label, value, .. } => {
-                        let Some(label) = label else {
-                            continue;
-                        };
-                        let referenced_expr = self.bodies[label];
-
-                        let value_ty = value
-                            .map_or_else(|| Ty::Void.into(), |value| self.tys[self.file][value]);
-
-                        let must_be_void = matches!(
-                            self.bodies[referenced_expr],
-                            Expr::While {
-                                condition: Some(_),
-                                ..
-                            }
-                        );
-
-                        match self.tys[self.file].expr_tys.get(referenced_expr) {
-                            Some(expected_ty) => {
-                                self.expect_block_match(
-                                    value,
-                                    value_ty,
-                                    referenced_expr,
-                                    *expected_ty,
-                                );
-                            }
-                            None => {
-                                if must_be_void && !value_ty.is_void() {
+                                // the definition has an annotation, so the value should match
+                                if let Some(value) = def_body.value {
+                                    let value_ty = self.tys[self.file][value];
+                                    if self.expect_match(value_ty, ty_annotation, value)
+                                        && self.replace_weak_tys(value, ty_annotation)
+                                    {
+                                        self.tys[self.file].expr_tys.insert(value, ty_annotation);
+                                    }
+                                } else if !ty_annotation.has_default_value() {
                                     self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::Mismatch {
-                                            expected: Ty::Void.into(),
-                                            found: value_ty,
+                                        kind: TyDiagnosticKind::DeclTypeHasNoDefault {
+                                            ty: ty_annotation,
                                         },
                                         file: self.file,
-                                        expr: value,
-                                        range: self.bodies.range_for_expr(value.unwrap()),
+                                        expr: Some(ty_annotation_expr),
+                                        range: self.bodies.range_for_expr(ty_annotation_expr),
                                         help: None,
                                     });
+                                }
 
-                                    self.tys[self.file]
-                                        .expr_tys
-                                        .insert(referenced_expr, Ty::Unknown.into());
-                                } else {
-                                    self.tys[self.file]
-                                        .expr_tys
-                                        .insert(referenced_expr, value_ty);
+                                self.tys[self.file]
+                                    .local_tys
+                                    .insert(local_def, ty_annotation);
+                            } else {
+                                // the definition does not have an annotation,
+                                // so use the type of it's value
+                                let value_ty = def_body
+                                    .value
+                                    .map(|value| self.tys[self.file][value])
+                                    .unwrap_or(Ty::Unknown.into());
+                                self.tys[self.file].local_tys.insert(local_def, value_ty);
+                            }
+
+                            if let Some(value) = def_body.value {
+                                self.find_usages(&[value], stmt);
+                            }
+                        }
+                        Stmt::Assign(assign) => {
+                            let assign_body = &self.bodies[assign];
+
+                            let source_ty = self.tys[self.file][assign_body.source];
+                            let value_ty = self.tys[self.file][assign_body.value];
+
+                            let help = self
+                                .get_mutability(assign_body.source, true, false)
+                                .into_diagnostic();
+
+                            if help.is_some() {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::CannotMutate,
+                                    file: self.file,
+                                    // making expr the source isn't technically correct, but it works
+                                    expr: Some(assign_body.source),
+                                    range: assign_body.range,
+                                    help,
+                                })
+                            } else if source_ty.is_weak_replaceable_by(&value_ty) {
+                                self.replace_weak_tys(assign_body.source, source_ty);
+                            } else if self.expect_match(value_ty, source_ty, assign_body.value) {
+                                self.replace_weak_tys(assign_body.value, source_ty);
+                            }
+
+                            self.find_usages(&[assign_body.source, assign_body.value], stmt);
+                        }
+                        Stmt::Break { label: None, .. } => {}
+                        Stmt::Break {
+                            label: Some(label),
+                            value,
+                            ..
+                        } => {
+                            let referenced_expr = self.bodies[label];
+
+                            let value_ty = value.map_or_else(
+                                || Ty::Void.into(),
+                                |value| self.tys[self.file][value],
+                            );
+
+                            let must_be_void = matches!(
+                                self.bodies[referenced_expr],
+                                Expr::While {
+                                    condition: Some(_),
+                                    ..
+                                }
+                            );
+
+                            match self.tys[self.file].expr_tys.get(referenced_expr) {
+                                Some(expected_ty) => {
+                                    self.expect_block_match(
+                                        value,
+                                        value_ty,
+                                        referenced_expr,
+                                        *expected_ty,
+                                    );
+                                }
+                                None => {
+                                    if must_be_void && !value_ty.is_void() {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::Mismatch {
+                                                expected: Ty::Void.into(),
+                                                found: value_ty,
+                                            },
+                                            file: self.file,
+                                            expr: value,
+                                            range: self.bodies.range_for_expr(value.unwrap()),
+                                            help: None,
+                                        });
+
+                                        self.tys[self.file]
+                                            .expr_tys
+                                            .insert(referenced_expr, Ty::Unknown.into());
+                                    } else {
+                                        self.tys[self.file]
+                                            .expr_tys
+                                            .insert(referenced_expr, value_ty);
+                                    }
                                 }
                             }
                         }
+                        Stmt::Continue { .. } => {}
+                        Stmt::Defer { expr, .. } => {
+                            self.find_usages(&[expr], stmt);
+                        }
                     }
-                    Stmt::Continue { .. } => {}
-                    Stmt::Defer { expr, .. } => {
-                        self.find_usages(&[expr], stmt);
-                    }
-                },
+
+                    self.inferred_stmts.insert((self.file, stmt));
+                }
             };
         }
 
@@ -2055,7 +2106,12 @@ impl GlobalInferenceCtx<'_> {
                                 break 'branch Ty::Unknown.into();
                             }
 
-                            self.tys[self.file].get_meta_ty(local_def.value).unwrap()
+                            // this protects against cases like `x ::;`
+                            if let Some(value) = local_def.value {
+                                self.tys[self.file].get_meta_ty(value).unwrap()
+                            } else {
+                                Ty::Unknown.into()
+                            }
                         }
                         Expr::LocalGlobal(name) => self.fqn_to_ty(
                             hir::Fqn {
@@ -2140,7 +2196,6 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                     break 'branch Ty::Unknown.into();
                                 }
-                                println!("it was const");
 
                                 match self.const_data(self.file, *size)? {
                                     Some(ComptimeResult::Integer { num, .. }) => {
@@ -2328,8 +2383,13 @@ impl GlobalInferenceCtx<'_> {
             Expr::Local(local_def) => {
                 let local_def = &self.world_bodies[file][*local_def];
 
+                assert!(
+                    local_def.value.is_some(),
+                    "`get_const` should have set this type of variable to non-const"
+                );
+
                 // todo: remove recursion
-                self.const_data(file, local_def.value)
+                self.const_data(file, local_def.value.unwrap())
             }
             Expr::LocalGlobal(global) => {
                 let fqn = hir::Fqn {

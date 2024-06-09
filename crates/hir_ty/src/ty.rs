@@ -74,6 +74,30 @@ impl Ty {
         }
     }
 
+    pub fn has_default_value(&self) -> bool {
+        match self {
+            Ty::NotYetResolved => true,
+            Ty::Unknown => true,
+            Ty::IInt(_) => true,
+            Ty::UInt(_) => true,
+            Ty::Float(_) => true,
+            Ty::Bool => true,
+            Ty::String => false,
+            Ty::Char => true,
+            Ty::Array { sub_ty, .. } => sub_ty.has_default_value(),
+            Ty::Slice { .. } => false,
+            Ty::Pointer { .. } => false,
+            Ty::Distinct { sub_ty, .. } => sub_ty.has_default_value(),
+            Ty::Type => false,
+            Ty::Any => false,
+            Ty::File(_) => false,
+            Ty::Function { .. } => false,
+            Ty::Struct { members, .. } => members.iter().all(|(_, ty)| ty.has_default_value()),
+            Ty::Void => true,
+            Ty::NoEval => true,
+        }
+    }
+
     /// If self is a struct, this returns the fields
     pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<Ty>)>> {
         match self {

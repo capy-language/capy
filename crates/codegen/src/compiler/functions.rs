@@ -297,7 +297,9 @@ impl FunctionCompiler<'_> {
             hir::Expr::Local(local) => {
                 let local_def = &self.world_bodies[file_name][local];
 
-                return self.expr_to_const_data(file_name, local_def.value);
+                assert!(local_def.value.is_some(), "if the value doesn't exist, `get_const` should've returned non-const, and there should be an error before codegen");
+
+                return self.expr_to_const_data(file_name, local_def.value.unwrap());
             }
             hir::Expr::LocalGlobal(global) => {
                 let fqn = hir::Fqn {
@@ -565,7 +567,11 @@ impl FunctionCompiler<'_> {
 
                 let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                self.store_expr_in_memory(value, ty, size, stack_addr, 0);
+                if let Some(value) = value {
+                    self.store_expr_in_memory(value, ty, size, stack_addr, 0);
+                } else {
+                    self.store_default_in_memory(ty, stack_addr, 0);
+                }
 
                 self.locals.insert(local_def, stack_addr);
             }
@@ -671,6 +677,62 @@ impl FunctionCompiler<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn store_default_in_memory(&mut self, expected_ty: Intern<Ty>, addr: Value, offset: u32) {
+        let value = match expected_ty.as_ref() {
+            Ty::NotYetResolved | Ty::Unknown => unreachable!(),
+            Ty::IInt(_) | Ty::UInt(_) => {
+                let number_ty = expected_ty.get_final_ty().into_number_type().unwrap();
+                match number_ty.bit_width() {
+                    128 => todo!(),
+                    _ => self.builder.ins().iconst(number_ty.ty, 0),
+                }
+            }
+            Ty::Float(bit_width) => match bit_width {
+                32 => self.builder.ins().f32const(0.0),
+                64 => self.builder.ins().f64const(0.0),
+                _ => unreachable!(),
+            },
+            Ty::Bool => self.builder.ins().iconst(types::I8, 0),
+            Ty::String => unreachable!("str does not have a default value"),
+            Ty::Char => self.builder.ins().iconst(types::I8, 0),
+            Ty::Array { size, sub_ty } => {
+                let inner_stride = sub_ty.stride();
+
+                for idx in 0..*size {
+                    let byte_offset = idx as u32 * inner_stride;
+                    self.store_default_in_memory(*sub_ty, addr, offset + byte_offset);
+                }
+                return;
+            }
+            Ty::Slice { .. } => unreachable!("slices do not have default values"),
+            Ty::Pointer { .. } => unreachable!("pointers do not have default values"),
+            Ty::Distinct { sub_ty, .. } => {
+                self.store_default_in_memory(*sub_ty, addr, offset);
+                return;
+            }
+            Ty::Type => unreachable!("types do not have default values"),
+            Ty::Any => unreachable!("any does not have a default value"),
+            Ty::File(_) => unreachable!("files do not have default values"),
+            Ty::Function { .. } => unreachable!("functions do not have default values"),
+            Ty::Struct { members, .. } => {
+                let struct_mem = expected_ty.struct_layout().unwrap();
+
+                for (idx, (_, ty)) in members.iter().enumerate() {
+                    self.store_default_in_memory(*ty, addr, offset + struct_mem.offsets()[idx]);
+                }
+                return;
+            }
+            // void is just a no-op
+            Ty::Void => return,
+            Ty::NoEval => return,
+        };
+
+        self.builder
+            .ins()
+            .store(MemFlags::trusted(), value, addr, offset as i32);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn store_expr_in_memory(
         &mut self,
         expr: Idx<hir::Expr>,
@@ -710,6 +772,7 @@ impl FunctionCompiler<'_> {
                 // fixed array
                 self.store_array_items(items.iter().copied(), addr, offset)
             }
+            // todo: this should be unreachable now after the syntax changes
             hir::Expr::ArrayLiteral { items, .. } => {
                 // slice
                 let ty = self.tys[self.file_name][expr];
@@ -816,6 +879,7 @@ impl FunctionCompiler<'_> {
             return;
         };
 
+        // todo: this might break autocasting
         let inner_ty = self.tys[self.file_name][first];
         let inner_stride = inner_ty.stride();
         self.store_expr_in_memory(first, inner_ty, inner_stride, addr, offset);
@@ -1344,9 +1408,10 @@ impl FunctionCompiler<'_> {
                     {
                         let value = self.world_bodies[self.file_name][local].value;
 
-                        if let hir::Expr::Lambda(lambda) = self.world_bodies[self.file_name][value]
+                        if let Some(hir::Expr::Lambda(lambda)) =
+                            value.map(|value| &self.world_bodies[self.file_name][value])
                         {
-                            let local_func = self.unnamed_func_to_local(callee, lambda);
+                            let local_func = self.unnamed_func_to_local(callee, *lambda);
 
                             self.builder.ins().call(local_func, &arg_values)
                         } else {

@@ -22,7 +22,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
             p.error_with_recovery_set_no_default(TokenSet::NONE);
             continue;
         }
-        stmt::parse_def(p, true);
+        stmt::parse_decl(p, true);
     }
 
     m.complete(p, NodeKind::Root);

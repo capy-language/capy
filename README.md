@@ -75,6 +75,8 @@ foo :: 5;
 foo := "Hullo :3";
 ```
 
+The value can be omitted and a default/zero value will be supplied.
+
 Fixed arrays are declared as follows,
 
 ```cpp

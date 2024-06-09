@@ -1,0 +1,12 @@
+bar : 5
+===
+Root@0..7
+  VarDef@0..7
+    Ident@0..3 "bar"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Whitespace@5..6 " "
+    Ty@6..7
+      IntLiteral@6..7
+        Int@6..7 "5"
+error at 7: missing Semicolon

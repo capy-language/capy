@@ -213,6 +213,9 @@ pub enum TyDiagnosticKind {
         expected: u32,
     },
     ExternGlobalMissingTy,
+    DeclTypeHasNoDefault {
+        ty: Intern<Ty>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,6 +238,9 @@ pub enum TyDiagnosticHelpKind {
     BreakHere { break_ty: Intern<Ty> },
 }
 
+// todo: I want to make this more expansive. `Data` should be removed and
+// there should be variants for structs, arrays, etc. This will allow indexing
+// at compile-time.
 #[derive(Debug, Clone)]
 pub enum ComptimeResult {
     Type(Intern<Ty>),
@@ -288,6 +294,7 @@ pub struct InferenceCtx<'a, F: EvalComptimeFn> {
     tys: ProjectInference,
     all_inferred: FxHashSet<Inferrable>,
     to_infer: TopoSort<Inferrable>,
+    inferred_stmts: FxHashSet<(hir::FileName, Idx<hir::Stmt>)>,
     diagnostics: Vec<TyDiagnostic>,
     eval_comptime: F,
 }
@@ -304,9 +311,10 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             world_bodies,
             interner,
             diagnostics: Vec::new(),
-            tys: ProjectInference::default(),
-            all_inferred: FxHashSet::default(),
-            to_infer: TopoSort::default(),
+            tys: Default::default(),
+            all_inferred: Default::default(),
+            to_infer: Default::default(),
+            inferred_stmts: Default::default(),
             eval_comptime,
         }
     }
@@ -415,6 +423,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     tys: &mut self.tys,
                     param_tys: Vec::new(),
                     all_inferred: &self.all_inferred,
+                    inferred_stmts: &mut self.inferred_stmts,
                     to_infer: &mut self.to_infer,
                     diagnostics: &mut self.diagnostics,
                     eval_comptime: &mut self.eval_comptime,
@@ -525,6 +534,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             bodies: &self.world_bodies[fqn.file],
             interner: self.interner,
             local_usages: Default::default(),
+            inferred_stmts: &mut self.inferred_stmts,
             tys: &mut self.tys,
             param_tys: Default::default(),
             all_inferred: &self.all_inferred,
@@ -614,6 +624,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             bodies: &self.world_bodies[fql.file],
             interner: self.interner,
             local_usages: Default::default(),
+            inferred_stmts: &mut self.inferred_stmts,
             tys: &mut self.tys,
             param_tys,
             all_inferred: &self.all_inferred,
@@ -8639,9 +8650,8 @@ mod tests {
             expect![[r#"
                 main::foo : () -> void
                 1 : [0]i32
-                2 : <unknown>
-                3 : void
-                4 : () -> void
+                2 : void
+                3 : () -> void
                 l0 : <unknown>
             "#]],
             |_| {
@@ -8655,6 +8665,223 @@ mod tests {
                         .into(),
                     },
                     53..59,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn default_value_i32() {
+        check(
+            r#"
+                defaults :: () {
+                    x : i32;
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                1 : void
+                2 : () -> void
+                l0 : i32
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn default_value_char_array() {
+        check(
+            r#"
+                defaults :: () {
+                    x : [10]char;
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                0 : usize
+                3 : void
+                4 : () -> void
+                l0 : [10]char
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn default_value_distinct_distinct_struct_with_valid_types() {
+        check(
+            r#"
+                defaults :: () {
+                    x : distinct distinct struct {
+                        a: [2][4]u8,
+                        b: i16,
+                        c: distinct f32,
+                        d: bool,
+                        e: char,
+                        f: void,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                0 : usize
+                1 : usize
+                14 : void
+                15 : () -> void
+                l0 : distinct'3 distinct'2 struct'1 {a: [2][4]u8, b: i16, c: distinct'0 f32, d: bool, e: char, f: void}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn default_value_i32_ptr() {
+        check(
+            r#"
+                defaults :: () {
+                    x : ^i32;
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                2 : void
+                3 : () -> void
+                l0 : ^i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::DeclTypeHasNoDefault {
+                        ty: Ty::Pointer {
+                            mutable: false,
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                    },
+                    58..62,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn default_value_distinct_bool_slice() {
+        check(
+            r#"
+                defaults :: () {
+                    x : distinct []bool;
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                3 : void
+                4 : () -> void
+                l0 : distinct'0 []bool
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::DeclTypeHasNoDefault {
+                        ty: Ty::Distinct {
+                            fqn: None,
+                            uid: 0,
+                            sub_ty: Ty::Slice {
+                                sub_ty: Ty::Bool.into(),
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    58..73,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn default_value_distinct_struct_with_str() {
+        check(
+            r#"
+                defaults :: () {
+                    x : distinct struct {
+                        foo: str,
+                        bar: u8,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::defaults : () -> void
+                4 : void
+                5 : () -> void
+                l0 : distinct'1 struct'0 {foo: str, bar: u8}
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::DeclTypeHasNoDefault {
+                        ty: Ty::Distinct {
+                            fqn: None,
+                            uid: 1,
+                            sub_ty: Ty::Struct {
+                                fqn: None,
+                                uid: 0,
+                                members: vec![
+                                    (hir::Name(i.intern("foo")), Ty::String.into()),
+                                    (hir::Name(i.intern("bar")), Ty::UInt(8).into()),
+                                ],
+                            }
+                            .into(),
+                        }
+                        .into(),
+                    },
+                    58..164,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn default_value_with_uninferred_globals() {
+        // this is to check for a bug where errors would get reported twice
+        // because when an uninferred global was reached it would
+        // throw away all the previously done statement inferring.
+        check(
+            r#"
+                Foo :: distinct u8;
+                Bar :: ^Foo;
+                Baz :: struct { a: Bar };
+
+                defaults :: () {
+                    x: ^i32;
+                    Baz;
+                }
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Baz : type
+                main::Foo : type
+                main::defaults : () -> void
+                1 : type
+                2 : type
+                3 : type
+                5 : type
+                8 : type
+                9 : void
+                10 : () -> void
+                l0 : ^i32
+            "#]],
+            |_| {
+                // under the bug, this appears twice
+                [(
+                    TyDiagnosticKind::DeclTypeHasNoDefault {
+                        ty: Ty::Pointer {
+                            mutable: false,
+                            sub_ty: Ty::IInt(32).into(),
+                        }
+                        .into(),
+                    },
+                    165..169,
                     None,
                 )]
             },

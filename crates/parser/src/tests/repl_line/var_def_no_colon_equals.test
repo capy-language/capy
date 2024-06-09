@@ -1,0 +1,11 @@
+bar 5
+===
+Root@0..5
+  ExprStmt@0..3
+    VarRef@0..3
+      Ident@0..3 "bar"
+  Whitespace@3..4 " "
+  ExprStmt@4..5
+    IntLiteral@4..5
+      Int@4..5 "5"
+error at 3: missing Semicolon

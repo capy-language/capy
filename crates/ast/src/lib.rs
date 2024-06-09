@@ -1050,6 +1050,25 @@ mod tests {
     }
 
     #[test]
+    fn get_type_and_value_of_var_decl() {
+        let (tree, root) = parse("bar : i32;");
+        let statement = root.stmts(&tree).next().unwrap();
+
+        let def = match statement {
+            Stmt::Define(var_def) => var_def,
+            _ => unreachable!(),
+        };
+
+        let var_def = match def {
+            Define::Variable(var) => var,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(var_def.ty(&tree).unwrap().text(&tree), "i32");
+        assert!(var_def.value(&tree).is_none());
+    }
+
+    #[test]
     fn get_name_of_binding() {
         let (tree, root) = parse("foo :: 10;");
         let statement = root.stmts(&tree).next().unwrap();

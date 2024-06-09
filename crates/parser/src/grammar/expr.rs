@@ -702,9 +702,13 @@ fn parse_array_literal(
 
     let m = array_decl.unwrap_or_else(|| previous_ty.precede(p));
 
+    const DEFAULT_NO_BRACES: TokenSet = crate::parser::DEFAULT_RECOVERY_SET
+        .without(TokenKind::LBrace)
+        .without(TokenKind::RBrace);
+
     p.expect_with_no_skip(TokenKind::Dot);
     // if we are `at_lbrace` this will report an error
-    p.expect_with_recovery_set_no_default(TokenKind::LBrack, TokenSet::new([TokenKind::Semicolon]));
+    p.expect_with_recovery_set_no_default(TokenKind::LBrack, DEFAULT_NO_BRACES);
 
     loop {
         if p.at(TokenKind::RBrack) || p.at(TokenKind::RBrace) {
@@ -723,7 +727,7 @@ fn parse_array_literal(
             p.expect_with_no_skip(TokenKind::Comma);
         }
     }
-    p.expect_with_recovery_set_no_default(TokenKind::RBrack, TokenSet::new([TokenKind::Semicolon]));
+    p.expect_with_recovery_set_no_default(TokenKind::RBrack, DEFAULT_NO_BRACES);
 
     m.complete(p, NodeKind::ArrayLiteral)
 }

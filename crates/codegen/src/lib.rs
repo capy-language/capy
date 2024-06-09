@@ -175,7 +175,7 @@ pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> P
 #[cfg(test)]
 mod tests {
     use core::panic;
-    use std::{env, fs, path::Path};
+    use std::{collections::HashMap, env, fs, path::Path};
 
     use ast::AstNode;
     use expect_test::{expect, Expect};
@@ -238,18 +238,66 @@ mod tests {
     }
 
     #[track_caller]
-    fn check_raw(input: &str, entry_point: &str, stdout_expect: Expect, expected_status: i32) {
+    fn check_raw(
+        input: &str,
+        entry_point: &str,
+        include_core: bool,
+        stdout_expect: Expect,
+        expected_status: i32,
+    ) {
         let modules = test_utils::split_multi_module_test_data(input);
 
-        check_impl(
-            modules,
-            "main.capy",
-            entry_point,
-            true,
-            stdout_expect,
-            expected_status,
-            core::panic::Location::caller(),
-        )
+        if include_core {
+            let current_dir = env!("CARGO_MANIFEST_DIR");
+            env::set_current_dir(current_dir).unwrap();
+
+            let core_deps: Vec<_> = glob::glob("../../core/src/**/*.capy")
+                .unwrap()
+                .map(|path| path.unwrap().into_os_string().into_string().unwrap())
+                .collect();
+
+            let mut modules: HashMap<_, _> = modules
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        format!("{current_dir}{}{k}", std::path::MAIN_SEPARATOR),
+                        v.to_string(),
+                    )
+                })
+                .collect();
+
+            println!("{:#?}", modules);
+
+            for file in core_deps {
+                let file = Path::new(current_dir).join(file).clean();
+                let text = fs::read_to_string(&file).unwrap();
+
+                modules.insert(file.to_string_lossy().to_string(), text);
+            }
+
+            check_impl(
+                modules
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect(),
+                &format!("{current_dir}{}main.capy", std::path::MAIN_SEPARATOR),
+                entry_point,
+                false,
+                stdout_expect,
+                expected_status,
+                core::panic::Location::caller(),
+            )
+        } else {
+            check_impl(
+                modules,
+                "main.capy",
+                entry_point,
+                true,
+                stdout_expect,
+                expected_status,
+                core::panic::Location::caller(),
+            )
+        }
     }
 
     fn check_impl(
@@ -1075,6 +1123,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1112,6 +1161,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1168,6 +1218,7 @@ mod tests {
                 puts :: (s: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 logical AND:
 
@@ -1256,6 +1307,7 @@ mod tests {
                 puts :: (s: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 bitwise AND:
 
@@ -1341,6 +1393,7 @@ mod tests {
                 printf :: (s: str, n1: i32, n2: i32) -> i32 extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 before return
                 before break
@@ -1368,6 +1421,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1426,6 +1480,7 @@ mod tests {
                 putchar :: (ch: char) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 ~2147483647 =      0
                  5032 &  25 =     32
@@ -1476,6 +1531,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1503,6 +1559,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1534,6 +1591,7 @@ mod tests {
                 printf :: (fmt: str, n: i32) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 1
                 3
@@ -1566,6 +1624,7 @@ mod tests {
                 printf :: (text: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 Hello Worldly Sailor! How ye be?
             "#]],
@@ -1588,6 +1647,7 @@ mod tests {
                 printf :: (text: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 Hello Worldly Sailor!
             "#]],
@@ -1606,6 +1666,7 @@ mod tests {
                 printf : (text: str) -> void : extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 Hello World!
             "#]],
@@ -1624,6 +1685,7 @@ mod tests {
                 printf :: (text: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
                 Hello World!
             "#]],
@@ -1658,6 +1720,7 @@ mod tests {
                 puts :: (text: str) extern;
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1678,6 +1741,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1700,6 +1764,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1786,6 +1851,7 @@ mod tests {
                 putchar :: (ch: char) extern;
             "#,
             "main",
+            false,
             expect![[r#"
             Foo {
               a = 4000000,
@@ -1826,6 +1892,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1848,6 +1915,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1870,6 +1938,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1894,6 +1963,7 @@ mod tests {
                 }
             "#,
             "main",
+            false,
             expect![[r#"
 
 "#]],
@@ -1929,9 +1999,41 @@ mod tests {
                 putchar :: (ch: char) extern;
             "#,
             "main",
+            false,
             expect![[r#"
             35111072468195
 "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn default_values() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                Foo :: distinct distinct struct {
+                    a: [2][4]u8,
+                    b: i16,
+                    c: distinct f32,
+                    d: bool,
+                    e: char,
+                    f: void,
+                };
+
+                main :: () {
+                    x: Foo;
+                    
+                    core.println(x);
+                }
+            "#,
+            "main",
+            true,
+            expect![["
+            { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.000, d = false, e = \0, f = {} }
+
+"]],
             0,
         )
     }

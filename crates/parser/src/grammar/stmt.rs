@@ -75,7 +75,7 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     // Idents can start expressions AND definitions
     // this code tells the difference by looking ahead
     if p.at(TokenKind::Ident) && p.at_ahead(1, TokenSet::new([TokenKind::Colon])) {
-        let res = parse_def(p, false);
+        let res = parse_decl(p, false);
         while p.at(TokenKind::Semicolon) {
             p.bump();
         }
@@ -124,7 +124,7 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     res
 }
 
-pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> CompletedMarker {
+pub(crate) fn parse_decl(p: &mut Parser, top_level: bool) -> CompletedMarker {
     let m = p.start();
 
     // todo: this is not very descriptive, but i don't think "variable name" fits either
@@ -132,12 +132,16 @@ pub(crate) fn parse_def(p: &mut Parser, top_level: bool) -> CompletedMarker {
     p.expect_with_no_skip(TokenKind::Ident);
 
     let first_colon = p.at(TokenKind::Colon);
-
     p.expect_with_no_skip(TokenKind::Colon);
 
     const DEF_SET: TokenSet = TokenSet::new([TokenKind::Equals, TokenKind::Colon]);
     if first_colon && !p.at_set(DEF_SET) {
         expr::parse_ty(p, "type annotation", DEF_SET);
+    }
+
+    if p.at_eof() || p.at(TokenKind::Semicolon) {
+        p.expect_with_no_skip(TokenKind::Semicolon);
+        return m.complete(p, NodeKind::VarDef);
     }
 
     let def_kind = if top_level || p.at(TokenKind::Colon) {
