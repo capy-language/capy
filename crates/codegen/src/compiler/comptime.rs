@@ -285,7 +285,7 @@ pub fn eval_comptime_blocks<'a>(
 
                 results.insert(ctc, result);
             }
-            FinalTy::Pointer(_) => {
+            FinalTy::Pointer { .. } => {
                 let layout = Layout::from_size_align(size as usize, std::mem::align_of::<u8>())
                     .expect("Invalid layout");
                 let raw = unsafe { std::alloc::alloc(layout) };

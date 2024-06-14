@@ -1,17 +1,23 @@
 use std::{cell::OnceCell, sync::Mutex};
 
-use cranelift::prelude::{types, AbiParam};
+use cranelift::{
+    codegen::ir::ArgumentPurpose,
+    prelude::{types, AbiParam},
+};
 use cranelift_module::Module;
 use hir_ty::Ty;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
-use crate::{compiler::MetaTyData, FinalSignature};
+use crate::{compiler::MetaTyData, layout::GetLayoutInfo, FinalSignature};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FinalTy {
     Number(NumberType),
-    Pointer(types::Type),
+    Pointer {
+        ty: types::Type,
+        aggr_pointee_size: Option<u32>,
+    },
     Void,
 }
 
@@ -57,7 +63,7 @@ impl FinalTy {
     }
 
     pub(crate) fn is_pointer_type(&self) -> bool {
-        matches!(self, FinalTy::Pointer(_))
+        matches!(self, FinalTy::Pointer { .. })
     }
 
     #[allow(unused)]
@@ -68,7 +74,25 @@ impl FinalTy {
     pub(crate) fn into_real_type(self) -> Option<types::Type> {
         match self {
             FinalTy::Number(NumberType { ty, .. }) => Some(ty),
-            FinalTy::Pointer(ty) => Some(ty),
+            FinalTy::Pointer { ty, .. } => Some(ty),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_abi_param(self) -> Option<AbiParam> {
+        match self {
+            FinalTy::Number(NumberType { ty, .. })
+            | FinalTy::Pointer {
+                ty,
+                aggr_pointee_size: None,
+            } => Some(AbiParam::new(ty)),
+            FinalTy::Pointer {
+                ty,
+                aggr_pointee_size: Some(sz),
+            } => Some(AbiParam::special(
+                ty,
+                ArgumentPurpose::StructArgument(sz as u32),
+            )),
             _ => None,
         }
     }
@@ -210,18 +234,30 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             float: false,
             signed: false,
         }),
-        hir_ty::Ty::String => FinalTy::Pointer(ptr_ty),
+        hir_ty::Ty::String => FinalTy::Pointer {
+            ty: ptr_ty,
+            aggr_pointee_size: None,
+        },
         hir_ty::Ty::Array { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
-            FinalTy::Pointer(ptr_ty)
+            FinalTy::Pointer {
+                ty: ptr_ty,
+                aggr_pointee_size: Some(ty.stride().next_multiple_of(8)),
+            }
         }
         hir_ty::Ty::Slice { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
-            FinalTy::Pointer(ptr_ty)
+            FinalTy::Pointer {
+                ty: ptr_ty,
+                aggr_pointee_size: None,
+            }
         }
         hir_ty::Ty::Pointer { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
-            FinalTy::Pointer(ptr_ty)
+            FinalTy::Pointer {
+                ty: ptr_ty,
+                aggr_pointee_size: None,
+            }
         }
         hir_ty::Ty::Distinct { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
@@ -235,13 +271,19 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
                 calc_single(*param, ptr_ty);
             }
             calc_single(*return_ty, ptr_ty);
-            FinalTy::Pointer(ptr_ty)
+            FinalTy::Pointer {
+                ty: ptr_ty,
+                aggr_pointee_size: None,
+            }
         }
         hir_ty::Ty::Struct { members, .. } => {
             for (_, ty) in members {
                 calc_single(*ty, ptr_ty);
             }
-            FinalTy::Pointer(ptr_ty)
+            FinalTy::Pointer {
+                ty: ptr_ty,
+                aggr_pointee_size: Some(ty.stride().next_multiple_of(8)),
+            }
         }
         hir_ty::Ty::Type => FinalTy::Number(NumberType {
             ty: types::I32,
@@ -286,7 +328,7 @@ impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
             .iter()
             .enumerate()
             .filter_map(|(idx, param_ty)| {
-                let param_ty = param_ty.get_final_ty().into_real_type().map(AbiParam::new);
+                let param_ty = param_ty.get_final_ty().into_abi_param();
                 if param_ty.is_some() {
                     new_idx_to_old_idx.insert(real_ty_count, idx as u64);
                     real_ty_count += 1;
@@ -299,7 +341,7 @@ impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
-            param_types.push(AbiParam::new(pointer_ty));
+            param_types.push(AbiParam::special(pointer_ty, ArgumentPurpose::StructReturn));
         }
 
         (
