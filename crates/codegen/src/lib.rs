@@ -1038,7 +1038,7 @@ mod tests {
                  ty =
                   BOOL
                  name = array
-                 offset = 16
+                 offset = 10
                  ty =
                   ARRAY
                   len = 3
