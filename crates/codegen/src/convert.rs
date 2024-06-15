@@ -89,10 +89,13 @@ impl FinalTy {
             FinalTy::Pointer {
                 ty,
                 aggr_pointee_size: Some(sz),
-            } => Some(AbiParam::special(
-                ty,
-                ArgumentPurpose::StructArgument(sz as u32),
-            )),
+            } => {
+                dbg!(sz);
+                Some(AbiParam::special(
+                    ty,
+                    ArgumentPurpose::StructArgument(sz as u32),
+                ))
+            }
             _ => None,
         }
     }
@@ -240,9 +243,10 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         },
         hir_ty::Ty::Array { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
+            let mask = ptr_ty.bytes() - 1;
             FinalTy::Pointer {
                 ty: ptr_ty,
-                aggr_pointee_size: Some(ty.stride()),
+                aggr_pointee_size: Some((ty.stride() + mask) & !mask),
             }
         }
         hir_ty::Ty::Slice { sub_ty, .. } => {
@@ -280,9 +284,10 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             for (_, ty) in members {
                 calc_single(*ty, ptr_ty);
             }
+            let mask = ptr_ty.bytes() - 1;
             FinalTy::Pointer {
                 ty: ptr_ty,
-                aggr_pointee_size: Some(ty.stride()),
+                aggr_pointee_size: Some((ty.stride() + mask) & !mask),
             }
         }
         hir_ty::Ty::Type => FinalTy::Number(NumberType {
@@ -343,7 +348,6 @@ impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
             // to store it in
             let ret_arg = AbiParam::special(pointer_ty, ArgumentPurpose::StructReturn);
             param_types.push(ret_arg);
-            // vec![ret_arg]
             vec![]
         } else {
             return_ty

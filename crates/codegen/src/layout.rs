@@ -149,7 +149,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size,
         // the sub_ty was already `calc()`ed just before
-        Ty::Array { sub_ty, .. } => sub_ty.align().max(8),
+        Ty::Array { sub_ty, .. } => sub_ty.align(),
         Ty::Slice { .. } => size / 2,
         Ty::Distinct { sub_ty: ty, .. } => ty.align(),
         Ty::Struct { .. } => ty.struct_layout().unwrap().align,
