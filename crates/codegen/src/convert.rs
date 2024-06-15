@@ -337,21 +337,26 @@ impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
             })
             .collect::<Vec<_>>();
 
-        if return_ty.is_aggregate() {
+        let ret_params = if return_ty.is_aggregate() {
             // if the callee is expected to return an array,
             // the caller function must supply a memory address
             // to store it in
-            param_types.push(AbiParam::special(pointer_ty, ArgumentPurpose::StructReturn));
-        }
+            let ret_arg = AbiParam::special(pointer_ty, ArgumentPurpose::StructReturn);
+            param_types.push(ret_arg);
+            // vec![ret_arg]
+            vec![]
+        } else {
+            return_ty
+                .get_final_ty()
+                .into_abi_param()
+                .map(|ty| vec![ty])
+                .unwrap_or_default()
+        };
 
         (
             FinalSignature {
                 params: param_types,
-                returns: return_ty
-                    .get_final_ty()
-                    .into_real_type()
-                    .map(|ty| vec![AbiParam::new(ty)])
-                    .unwrap_or_default(),
+                returns: ret_params,
                 call_conv: module.target_config().default_call_conv,
             },
             new_idx_to_old_idx,

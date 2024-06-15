@@ -165,7 +165,7 @@ impl FunctionCompiler<'_> {
                         aggregate_size,
                     );
 
-                    self.builder.ins().return_(&[dest])
+                    self.builder.ins().return_(&[])
                 } else {
                     self.builder.ins().return_(&[body])
                 }
@@ -1380,7 +1380,7 @@ impl FunctionCompiler<'_> {
                     })
                     .collect::<Vec<_>>();
 
-                if return_ty.is_aggregate() {
+                let ret_addr = if return_ty.is_aggregate() {
                     let aggregate_size = return_ty.size();
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
@@ -1390,7 +1390,10 @@ impl FunctionCompiler<'_> {
                     let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
                     arg_values.push(stack_slot_addr);
-                }
+                    Some(stack_slot_addr)
+                } else {
+                    None
+                };
 
                 let call = match self.world_bodies[self.file_name][callee] {
                     hir::Expr::LocalGlobal(name) => {
@@ -1471,8 +1474,9 @@ impl FunctionCompiler<'_> {
                             .call_indirect(sig_ref, callee, &arg_values)
                     }
                 };
-
-                if return_ty.is_zero_sized() {
+                if ret_addr.is_some() {
+                    ret_addr
+                } else if return_ty.is_zero_sized() {
                     None
                 } else {
                     Some(self.builder.inst_results(call)[0])
