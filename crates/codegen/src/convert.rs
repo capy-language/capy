@@ -242,7 +242,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             calc_single(*sub_ty, ptr_ty);
             FinalTy::Pointer {
                 ty: ptr_ty,
-                aggr_pointee_size: Some(ty.stride().next_multiple_of(8)),
+                aggr_pointee_size: Some(ty.stride()),
             }
         }
         hir_ty::Ty::Slice { sub_ty, .. } => {
@@ -282,7 +282,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             }
             FinalTy::Pointer {
                 ty: ptr_ty,
-                aggr_pointee_size: Some(ty.stride().next_multiple_of(8)),
+                aggr_pointee_size: Some(ty.stride()),
             }
         }
         hir_ty::Ty::Type => FinalTy::Number(NumberType {

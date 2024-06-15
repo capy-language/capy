@@ -91,6 +91,11 @@ pub fn compile_obj(
     let mut flag_builder = settings::builder();
     // flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "true").unwrap();
+    flag_builder.set("opt_level", "speed").unwrap();
+    flag_builder.set("enable_alias_analysis", "true").unwrap();
+    flag_builder.set("enable_pinned_reg", "true").unwrap();
+    flag_builder.set("enable_atomics", "true").unwrap();
+    flag_builder.set("enable_jump_tables", "true").unwrap();
 
     let isa_builder = isa::lookup(target).unwrap_or_else(|msg| {
         println!("invalid target: {}", msg);
@@ -1033,7 +1038,7 @@ mod tests {
                  ty =
                   BOOL
                  name = array
-                 offset = 10
+                 offset = 16
                  ty =
                   ARRAY
                   len = 3
