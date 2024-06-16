@@ -29,8 +29,6 @@ use super::{
     MetaTyLayoutArrays,
 };
 
-const MEMCPY_THREASHOLD: u64 = 64;
-
 struct UnfinishedComptimeErr;
 
 // represents a single block containing multiple defer statements
@@ -136,27 +134,16 @@ impl FunctionCompiler<'_> {
 
                 let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                if size > 32 {
-                    let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
-
-                    self.builder.call_memcpy(
-                        self.module.target_config(),
-                        stack_slot_addr,
-                        value,
-                        size,
-                    )
-                } else {
-                    self.builder.emit_small_memory_copy(
-                        self.module.target_config(),
-                        stack_slot_addr,
-                        value,
-                        param_ty.stride() as u64,
-                        param_ty.align() as u8,
-                        param_ty.align() as u8,
-                        true,
-                        MemFlags::trusted(),
-                    )
-                }
+                self.builder.emit_small_memory_copy(
+                    self.module.target_config(),
+                    stack_slot_addr,
+                    value,
+                    param_ty.stride() as u64,
+                    param_ty.align() as u8,
+                    param_ty.align() as u8,
+                    true,
+                    MemFlags::trusted(),
+                );
 
                 self.builder.def_var(var, stack_slot_addr);
             } else {
@@ -479,44 +466,29 @@ impl FunctionCompiler<'_> {
     }
 
     fn build_memcpy_ty(&mut self, src: Value, dest: Value, ty: Intern<Ty>, non_overlapping: bool) {
-        let size = ty.size();
-        if size > (MEMCPY_THREASHOLD as u32) {
-            let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
-
-            self.builder
-                .call_memcpy(self.module.target_config(), dest, src, size)
-        } else {
-            self.builder.emit_small_memory_copy(
-                self.module.target_config(),
-                dest,
-                src,
-                ty.stride() as u64,
-                ty.align() as u8,
-                ty.align() as u8,
-                non_overlapping,
-                MemFlags::trusted(),
-            )
-        }
+        self.builder.emit_small_memory_copy(
+            self.module.target_config(),
+            dest,
+            src,
+            ty.stride() as u64,
+            ty.align() as u8,
+            ty.align() as u8,
+            non_overlapping,
+            MemFlags::trusted(),
+        )
     }
 
     fn build_memcpy_size(&mut self, src: Value, dest: Value, size: u64, non_overlapping: bool) {
-        if size > MEMCPY_THREASHOLD {
-            let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
-
-            self.builder
-                .call_memcpy(self.module.target_config(), dest, src, size)
-        } else {
-            self.builder.emit_small_memory_copy(
-                self.module.target_config(),
-                dest,
-                src,
-                size,
-                1,
-                1,
-                non_overlapping,
-                MemFlags::trusted(),
-            )
-        }
+        self.builder.emit_small_memory_copy(
+            self.module.target_config(),
+            dest,
+            src,
+            size,
+            1,
+            1,
+            non_overlapping,
+            MemFlags::trusted(),
+        )
     }
 
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
