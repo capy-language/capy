@@ -126,10 +126,12 @@ impl FunctionCompiler<'_> {
             let param_ty = param_tys[old_idx as usize];
             if param_ty.is_aggregate() {
                 let size = param_ty.size();
+                // TODO: this most likely oveshoots the abi align on some architectures
+                const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size,
+                    size: (param_ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                 });
 
                 let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
@@ -559,10 +561,12 @@ impl FunctionCompiler<'_> {
                 let value = self.world_bodies[self.file_name][local_def].value;
 
                 let size = ty.size();
+                // TODO: this most likely oveshoots the abi align on some architectures
+                const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size,
+                    size: (ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                 });
 
                 let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
@@ -785,10 +789,12 @@ impl FunctionCompiler<'_> {
                     return;
                 };
                 let array_size = sub_ty.stride() * items.len() as u32;
+                // TODO: this most likely oveshoots the abi align on some architectures
+                const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                 let array_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: array_size,
+                    size: (array_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                 });
 
                 let array_addr = self.builder.ins().stack_addr(self.ptr_ty, array_slot, 0);
@@ -957,10 +963,12 @@ impl FunctionCompiler<'_> {
                 } else {
                     ty.size()
                 };
+                // TODO: this most likely oveshoots the abi align on some architectures
+                const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: array_size,
+                    size: (array_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                 });
 
                 let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
@@ -1118,10 +1126,12 @@ impl FunctionCompiler<'_> {
                     let inner_size = self.tys[self.file_name][expr].size();
 
                     // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
+                    // TODO: this most likely oveshoots the abi align on some architectures
+                    const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: inner_size,
+                        size: (inner_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                     });
 
                     let expr = self.compile_expr(expr).unwrap();
@@ -1382,10 +1392,12 @@ impl FunctionCompiler<'_> {
 
                 let ret_addr = if return_ty.is_aggregate() {
                     let aggregate_size = return_ty.size();
+                    // TODO: this most likely oveshoots the abi align on some architectures
+                    const ABI_ALIGN_MASK: u32 = 8 - 1;
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: aggregate_size,
+                        size: (aggregate_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
                     });
                     let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
@@ -1876,10 +1888,13 @@ impl FunctionCompiler<'_> {
             } => {
                 let ty = self.tys[self.file_name][expr];
 
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: ty.size(),
-                });
+                                // TODO: this most likely oveshoots the abi align on some architectures
+                                const ABI_ALIGN_MASK: u32 = 8 - 1;
+
+                                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                                    kind: StackSlotKind::ExplicitSlot,
+                                    size: (ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
+                                });
 
                 let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
