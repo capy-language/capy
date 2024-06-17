@@ -1,4 +1,11 @@
-use std::{cmp::Ordering, env, fmt::Debug, mem, path::Path, vec};
+use std::{
+    cmp::Ordering,
+    env,
+    fmt::{Debug, Display},
+    mem,
+    path::Path,
+    vec,
+};
 
 use ast::{AstNode, AstToken};
 use interner::{Interner, Key};
@@ -387,9 +394,9 @@ enum ScopeKind {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct ScopeId(u32);
 
-impl ToString for ScopeId {
-    fn to_string(&self) -> String {
-        self.0.to_string()
+impl Display for ScopeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.to_string())
     }
 }
 

@@ -85,7 +85,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
     {
         let layouts = unsafe { LAYOUTS.lock() }.unwrap();
         let layouts = layouts.get().unwrap();
-        if layouts.sizes.get(&ty).is_some() {
+        if layouts.sizes.contains_key(&ty) {
             return;
         }
     }
