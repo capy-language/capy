@@ -194,7 +194,8 @@ This allows you to run *any* code at compile-time, returning whatever data you w
 math :: mod "core".math;
 
 powers_of_two := comptime {
-    array := i32.[0, 0, 0];
+    // array with default value (all zeros)
+    array : [3]i32;
 
     array[0] = math.pow(2, 1);
     array[1] = math.pow(2, 2);
@@ -422,7 +423,7 @@ If you find any bugs in the compiler, please be sure to [make an issue](https://
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), the structure of this entire codebase is largely based on [gingerbread](https://github.com/gingerbread-lang/gingerbread) and [eldiro](https://github.com/lunacookies/eldiro).
 Her help in teaching how programming languages really work is immeasurable and I'm very thankful.
 
-Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in finding bugs and testing the limits of the language. Due to her help we've managed to expand the language to new heights.
+Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in finding bugs and testing the limits of the language. Due to her help the language has really expanded to new heights.
 
 Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and cranelift made all my dreams come true.
 

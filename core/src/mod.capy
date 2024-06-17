@@ -279,23 +279,6 @@ print :: (val: Any) {
 
 // prints a type id as a human readable string
 print_type_info :: (ty: type) {
-    _print_str :: (text: str) {
-        text := text as ^char;
-
-        i := 0;
-        loop {
-            ch := ptr.read(text, i) as char;
-            if ch == '\0' {
-                break;
-            }
-
-            libc.putchar(ch);
-
-            i = i + 1;
-        }
-    };
-
-    
     if meta.is_int(ty) {
         info := meta.get_int_info(ty);
 
@@ -613,3 +596,9 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         ty = expected,
     }
 }
+
+// todo: make this a comptime parameter
+type_of :: (val: Any) -> type {
+    val.ty
+}
+

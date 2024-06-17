@@ -2195,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn struct_literal_get_fields() {
+    fn struct_literal() {
         let (tree, root) = parse(r#"Some_Record_Type.{ foo = 123, bar = "hello" };"#);
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
@@ -2207,6 +2207,11 @@ mod tests {
             Some(Expr::StructLiteral(struct_lit)) => struct_lit,
             _ => unreachable!(),
         };
+
+        assert_eq!(
+            struct_lit.ty(&tree).unwrap().text(&tree),
+            "Some_Record_Type"
+        );
 
         let mut fields = struct_lit.members(&tree);
 
@@ -2224,6 +2229,51 @@ mod tests {
         assert!(matches!(
             field.unwrap().value(&tree),
             Some(Expr::StringLiteral(_))
+        ));
+
+        assert!(fields.next().is_none());
+    }
+
+    #[test]
+    fn anonymous_struct_literal() {
+        let (tree, root) = parse(r#".{ a = true, b = 0.0, c = 'z' };"#);
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let struct_lit = match expr {
+            Some(Expr::StructLiteral(struct_lit)) => struct_lit,
+            _ => unreachable!(),
+        };
+
+        assert!(struct_lit.ty(&tree).is_none());
+
+        let mut fields = struct_lit.members(&tree);
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "a");
+        assert!(matches!(
+            field.unwrap().value(&tree),
+            Some(Expr::BoolLiteral(_))
+        ));
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "b");
+        assert!(matches!(
+            field.unwrap().value(&tree),
+            Some(Expr::FloatLiteral(_))
+        ));
+
+        let field = fields.next();
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(&tree).unwrap().text(&tree), "c");
+        assert!(matches!(
+            field.unwrap().value(&tree),
+            Some(Expr::CharLiteral(_))
         ));
 
         assert!(fields.next().is_none());

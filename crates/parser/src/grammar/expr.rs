@@ -155,6 +155,10 @@ fn parse_lhs(
         parse_array_decl(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
         parse_block(p, None, recovery_set)
+    } else if p.at(TokenKind::Dot) && p.at_ahead(1, TokenSet::new([TokenKind::LBrack])) {
+        parse_array_literal(p, None, recovery_set, None)
+    } else if p.at(TokenKind::Dot) && p.at_ahead(1, TokenSet::new([TokenKind::LBrace])) {
+        parse_struct_literal(p, None, recovery_set)
     } else if p.at(TokenKind::Backtick) {
         let label = p.start();
         p.bump();
@@ -197,7 +201,7 @@ fn parse_post_operators(
         && p.at(TokenKind::LBrace)
     {
         let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-        cm = parse_struct_literal(p, ty_cm, recovery_set);
+        cm = parse_struct_literal(p, Some(ty_cm), recovery_set);
     }
 
     loop {
@@ -205,7 +209,7 @@ fn parse_post_operators(
             Some(TokenKind::LBrack) => {
                 if p.at_ahead(2, TokenSet::new([TokenKind::Comma])) {
                     let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-                    cm = parse_array_literal(p, ty_cm, recovery_set, None)
+                    cm = parse_array_literal(p, Some(ty_cm), recovery_set, None)
                 } else {
                     let indexing_expr = cm.precede(p).complete(p, NodeKind::Source).precede(p);
                     p.bump();
@@ -266,10 +270,10 @@ fn parse_post_operators(
             Some(TokenKind::Dot) => {
                 if p.at_ahead(1, TokenSet::new([TokenKind::LBrace])) {
                     let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-                    cm = parse_struct_literal(p, ty_cm, recovery_set)
+                    cm = parse_struct_literal(p, Some(ty_cm), recovery_set)
                 } else if p.at_ahead(1, TokenSet::new([TokenKind::LBrack])) {
                     let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-                    cm = parse_array_literal(p, ty_cm, recovery_set, None)
+                    cm = parse_array_literal(p, Some(ty_cm), recovery_set, None)
                 } else {
                     let path = cm.precede(p);
                     p.bump();
@@ -295,7 +299,7 @@ fn parse_post_operators(
         && p.at(TokenKind::LBrace)
     {
         let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
-        cm = parse_struct_literal(p, ty_cm, recovery_set);
+        cm = parse_struct_literal(p, Some(ty_cm), recovery_set);
     }
 
     cm
@@ -623,10 +627,12 @@ fn parse_struct_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker 
 
 fn parse_struct_literal(
     p: &mut Parser,
-    previous_ty: CompletedMarker,
+    previous_ty: Option<CompletedMarker>,
     recovery_set: TokenSet,
 ) -> CompletedMarker {
-    assert_eq!(previous_ty.kind(), NodeKind::Ty);
+    if let Some(previous_ty) = previous_ty {
+        assert_eq!(previous_ty.kind(), NodeKind::Ty);
+    }
 
     let at_dot = p.at(TokenKind::Dot);
     let at_lbrace = p.at(TokenKind::LBrace);
@@ -638,7 +644,9 @@ fn parse_struct_literal(
         assert!(at_lbrace);
     }
 
-    let m = previous_ty.precede(p);
+    let m = previous_ty
+        .map(|ty| ty.precede(p))
+        .unwrap_or_else(|| p.start());
 
     p.expect_with_no_skip(TokenKind::Dot);
     p.bump();
@@ -680,14 +688,19 @@ fn parse_struct_literal(
 }
 
 /// `array_decl` is ONLY used by `parse_array_decl` to pass it's previously created marker.
-/// This allows the array literal to completely replace the array declaration
+/// This allows the array literal to completely replace the array declaration.
+///
+/// If previous_ty is set to None, this will be treated as an untyped array literal
+/// `.[1, 2, 3]`
 fn parse_array_literal(
     p: &mut Parser,
-    previous_ty: CompletedMarker,
+    previous_ty: Option<CompletedMarker>,
     recovery_set: TokenSet,
     array_decl: Option<Marker>,
 ) -> CompletedMarker {
-    assert_eq!(previous_ty.kind(), NodeKind::Ty);
+    if let Some(previous_ty) = previous_ty {
+        assert_eq!(previous_ty.kind(), NodeKind::Ty);
+    }
 
     let at_dot = p.at(TokenKind::Dot);
     let at_lbrace = p.at(TokenKind::LBrace);
@@ -700,7 +713,9 @@ fn parse_array_literal(
         assert!(at_lbrace || at_lbrack);
     }
 
-    let m = array_decl.unwrap_or_else(|| previous_ty.precede(p));
+    let m = array_decl
+        .or_else(|| previous_ty.map(|ty| ty.precede(p)))
+        .unwrap_or_else(|| p.start());
 
     const DEFAULT_NO_BRACES: TokenSet = crate::parser::DEFAULT_RECOVERY_SET
         .without(TokenKind::LBrace)
@@ -768,7 +783,7 @@ fn parse_array_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
                 size_end,
                 crate::ExpectedSyntax::Named("nothing"),
             );
-            parse_array_literal(p, ty, recovery_set, Some(array))
+            parse_array_literal(p, Some(ty), recovery_set, Some(array))
         }
         _ => array.complete(p, NodeKind::ArrayDecl),
     }

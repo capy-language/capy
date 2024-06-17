@@ -30,7 +30,8 @@ Bar :: struct {
 Foo2 :: distinct Foo;
 
 main :: () {
-    array := [] i32 { 1, 2, 3 };
+    old_array := [] i32 { 1, 2, 3 };
+    new_array := i32.[1, 2, 3];
 
     str := "Wowza!";
 
@@ -47,10 +48,10 @@ main :: () {
 
     ptr^ = 42;
 
-    if !{array[0] as bool} {
+    if !(array[0] as bool) {
         // wow look at this comment!
 
-        ptr^ = {^array}^[2] * ptr^ * a;
+        ptr^ = (^array)^[2] * ptr^ * a;
 
         // so fancy!
     }
@@ -74,9 +75,14 @@ main :: () {
         age: i32,
     };
 
-    gandalf := Person {
+    old_gandalf := Person {
         name: "Gandalf",
         age: 2000,
+    };
+
+    new_gandalf := Person.{
+        name = "Gandalf",
+        age = 2000,
     };
 
     gandalf.age = gandalf.age + 1;
