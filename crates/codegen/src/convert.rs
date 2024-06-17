@@ -134,7 +134,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
     {
         let finals = unsafe { FINAL_TYS.lock() }.unwrap();
         let finals = finals.get().unwrap();
-        if finals.finals.get(&ty).is_some() {
+        if finals.finals.contains_key(&ty) {
             return;
         }
     }
@@ -340,7 +340,7 @@ fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
 
     let byte_width = bit_width / 8;
 
-    let align = byte_width.min(8).max(1) << 5;
+    let align = byte_width.clamp(1, 8) << 5;
 
     let sign = (signed as u32) << 9;
 
