@@ -134,10 +134,16 @@ impl FunctionCompiler<'_> {
 
                 let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
-                let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
-
-                self.builder
-                    .call_memcpy(self.module.target_config(), stack_slot_addr, value, size);
+                self.builder.emit_small_memory_copy(
+                    self.module.target_config(),
+                    stack_slot_addr,
+                    value,
+                    param_ty.stride() as u64,
+                    param_ty.align() as u8,
+                    param_ty.align() as u8,
+                    true,
+                    MemFlags::trusted(),
+                );
 
                 self.builder.def_var(var, stack_slot_addr);
             } else {
@@ -151,19 +157,7 @@ impl FunctionCompiler<'_> {
             Some(body) => {
                 if return_ty.is_aggregate() {
                     let dest = self.builder.use_var(dest_param.unwrap());
-
-                    let aggregate_size = return_ty.size();
-                    let aggregate_size = self
-                        .builder
-                        .ins()
-                        .iconst(self.ptr_ty, aggregate_size as i64);
-
-                    self.builder.call_memcpy(
-                        self.module.target_config(),
-                        dest,
-                        body,
-                        aggregate_size,
-                    );
+                    self.build_memcpy_ty(body, dest, return_ty, true);
 
                     self.builder.ins().return_(&[dest])
                 } else {
@@ -471,6 +465,32 @@ impl FunctionCompiler<'_> {
         self.create_global_data(&name, false, text.into_bytes().into_boxed_slice(), 1)
     }
 
+    fn build_memcpy_ty(&mut self, src: Value, dest: Value, ty: Intern<Ty>, non_overlapping: bool) {
+        self.builder.emit_small_memory_copy(
+            self.module.target_config(),
+            dest,
+            src,
+            ty.stride() as u64,
+            ty.align() as u8,
+            ty.align() as u8,
+            non_overlapping,
+            MemFlags::trusted(),
+        )
+    }
+
+    fn build_memcpy_size(&mut self, src: Value, dest: Value, size: u64, non_overlapping: bool) {
+        self.builder.emit_small_memory_copy(
+            self.module.target_config(),
+            dest,
+            src,
+            size,
+            1,
+            1,
+            non_overlapping,
+            MemFlags::trusted(),
+        )
+    }
+
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         super::get_func_id(
             self.module,
@@ -754,10 +774,7 @@ impl FunctionCompiler<'_> {
                 let offset = self.builder.ins().iconst(self.ptr_ty, offset as i64);
                 let actual_addr = self.builder.ins().iadd(addr, offset);
 
-                let size = self.builder.ins().iconst(self.ptr_ty, expr_size as i64);
-
-                self.builder
-                    .call_memcpy(self.module.target_config(), actual_addr, value, size);
+                self.build_memcpy_size(value, actual_addr, expr_size as u64, false);
             } else {
                 self.builder
                     .ins()
@@ -820,14 +837,7 @@ impl FunctionCompiler<'_> {
 
                 let actual_addr = self.builder.ins().iadd(addr, offset);
 
-                let size = self.builder.ins().iconst(self.ptr_ty, expr_size as i64);
-
-                self.builder.call_memcpy(
-                    self.module.target_config(),
-                    actual_addr,
-                    far_off_thing,
-                    size,
-                )
+                self.build_memcpy_size(far_off_thing, actual_addr, expr_size as u64, false);
             }
             _ => {
                 if let Some(value) = self.compile_and_cast(expr, expected_ty) {
