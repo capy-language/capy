@@ -141,7 +141,7 @@ pub enum Expr {
         ty: Idx<Expr>,
     },
     ArrayLiteral {
-        ty: Idx<Expr>,
+        ty: Option<Idx<Expr>>,
         items: Vec<Idx<Expr>>,
     },
     Index {
@@ -190,7 +190,7 @@ pub enum Expr {
         members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
     StructLiteral {
-        ty: Idx<Expr>,
+        ty: Option<Idx<Expr>>,
         members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
     },
     Import(FileName),
@@ -911,7 +911,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_struct_literal(&mut self, struct_lit: ast::StructLiteral) -> Expr {
-        let ty = self.lower_expr(struct_lit.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+        let ty = struct_lit
+            .ty(self.tree)
+            .map(|ty| self.lower_expr(ty.expr(self.tree)));
 
         let mut members = Vec::new();
 
@@ -1096,7 +1098,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_array_literal(&mut self, array_lit: ast::ArrayLiteral) -> Expr {
-        let ty = self.lower_expr(array_lit.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
+        let ty = array_lit
+            .ty(self.tree)
+            .map(|ty| self.lower_expr(ty.expr(self.tree)));
 
         let items = array_lit
             .items(self.tree)
@@ -1666,7 +1670,9 @@ impl Iterator for Descendants<'_> {
                 }
                 Expr::ArrayLiteral { ty, items } => {
                     if include_types {
-                        self.todo.push(Descendant::Expr(ty));
+                        if let Some(ty) = ty {
+                            self.todo.push(Descendant::Expr(ty));
+                        }
                     }
 
                     if include_eval {
@@ -1813,7 +1819,12 @@ impl Iterator for Descendants<'_> {
                         self.todo.push(Descendant::Expr(comptime.body));
                     }
                 }
-                Expr::StructLiteral { members, .. } => {
+                Expr::StructLiteral { ty, members, .. } => {
+                    if is_all {
+                        if let Some(ty) = ty {
+                            self.todo.push(Descendant::Expr(ty));
+                        }
+                    }
                     self.todo.extend(
                         members
                             .into_iter()
@@ -2093,7 +2104,9 @@ impl Bodies {
                 }
 
                 Expr::ArrayLiteral { items, ty } => {
-                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    if let Some(ty) = ty {
+                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    }
                     s.push_str(".[");
 
                     for (idx, item) in items.iter().enumerate() {
@@ -2442,9 +2455,11 @@ impl Bodies {
                 }
 
                 Expr::StructLiteral { ty, members } => {
-                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    if let Some(ty) = ty {
+                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    }
 
-                    s.push_str(" {");
+                    s.push_str(".{");
 
                     for (idx, (name, value)) in members.iter().enumerate() {
                         if let Some(name) = name {
@@ -4147,7 +4162,7 @@ mod tests {
             expect![[r#"
                 main::bar :: () {
                     l0 := struct'0 {x: i32, y: str};
-                    l1 := l0 {x = 42, y = 5};
+                    l1 := l0.{x = 42, y = 5};
                 };
             "#]],
             |_| [],

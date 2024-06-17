@@ -240,7 +240,7 @@ pub enum TyDiagnosticHelpKind {
 
 // todo: I want to make this more expansive. `Data` should be removed and
 // there should be variants for structs, arrays, etc. This will allow indexing
-// at compile-time.
+// and member access at compile-time.
 #[derive(Debug, Clone)]
 pub enum ComptimeResult {
     Type(Intern<Ty>),
@@ -749,8 +749,16 @@ impl Ty {
             Self::Bool => "bool".to_string(),
             Self::String => "str".to_string(),
             Self::Char => "char".to_string(),
-            Self::Array { size, sub_ty } => {
-                format!("[{size}]{}", sub_ty.display(mod_dir, interner))
+            Self::Array {
+                anonymous,
+                size,
+                sub_ty,
+            } => {
+                format!(
+                    "[{size}]{}{}",
+                    if *anonymous { "~" } else { "" },
+                    sub_ty.display(mod_dir, interner)
+                )
             }
             Self::Slice { sub_ty } => format!("[]{}", sub_ty.display(mod_dir, interner)),
             Self::Pointer { mutable, sub_ty } => {
@@ -788,11 +796,16 @@ impl Ty {
             }
             Self::Struct { fqn: Some(fqn), .. } => fqn.to_string(mod_dir, interner),
             Self::Struct {
+                anonymous,
                 fqn: None,
                 uid,
                 members,
             } => {
-                let mut res = format!("struct'{} {{", uid);
+                let mut res = if *anonymous {
+                    "struct ~{".to_string()
+                } else {
+                    format!("struct'{} {{", uid)
+                };
 
                 for (idx, (name, ty)) in members.iter().enumerate() {
                     res.push_str(interner.lookup(name.0));
@@ -2023,6 +2036,7 @@ mod tests {
                         index: 1000,
                         actual_size: 6,
                         array_ty: Ty::Array {
+                            anonymous: false,
                             size: 6,
                             sub_ty: Ty::IInt(32).into(),
                         }
@@ -5274,6 +5288,7 @@ mod tests {
             "#]],
             |i| {
                 let person_ty = Ty::Struct {
+                    anonymous: false,
                     fqn: Some(hir::Fqn {
                         file: hir::FileName(i.intern("main.capy")),
                         name: hir::Name(i.intern("Person")),
@@ -5387,6 +5402,7 @@ mod tests {
                     TyDiagnosticKind::NonExistentMember {
                         member: i.intern("height"),
                         found_ty: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Person")),
@@ -5662,6 +5678,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::Mismatch {
                         expected: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
@@ -5674,6 +5691,7 @@ mod tests {
                         }
                         .into(),
                         found: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
@@ -5775,43 +5793,12 @@ mod tests {
                 l0 : main::Foo
                 l1 : main::Bar
             "#]],
-            |i| {
-                [(
-                    TyDiagnosticKind::Uncastable {
-                        from: Ty::Struct {
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Foo")),
-                            }),
-                            uid: 0,
-                            members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
-                            ],
-                        }
-                        .into(),
-                        to: Ty::Struct {
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Bar")),
-                            }),
-                            uid: 1,
-                            members: vec![
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                            ],
-                        }
-                        .into(),
-                    },
-                    406..419,
-                    None,
-                )]
-            },
+            |_| [],
         );
     }
 
     #[test]
-    fn cast_struct_diff_field_ty() {
+    fn cast_struct_diff_field_ty_castable() {
         check(
             r#"
                 Foo :: struct {
@@ -5849,10 +5836,58 @@ mod tests {
                 l0 : main::Foo
                 l1 : main::Bar
             "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn cast_struct_diff_field_ty_uncastable() {
+        check(
+            r#"
+                Foo :: struct {
+                    a: i32,
+                    b: [2]i32,
+                };
+
+                Bar :: struct {
+                    a: i32,
+                    b: [3]i32,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo.{
+                        a = 1,
+                        b = .[2, 3],
+                    };
+
+                    my_bar : Bar = my_foo as Bar;
+                };
+            "#,
+            expect![[r#"
+                main::Bar : type
+                main::Foo : type
+                main::main : () -> void
+                1 : usize
+                4 : type
+                6 : usize
+                9 : type
+                12 : i32
+                13 : i32
+                14 : i32
+                15 : [2]i32
+                16 : main::Foo
+                18 : main::Foo
+                20 : main::Bar
+                21 : void
+                22 : () -> void
+                l0 : main::Foo
+                l1 : main::Bar
+            "#]],
             |i| {
                 [(
                     TyDiagnosticKind::Uncastable {
                         from: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
@@ -5860,11 +5895,20 @@ mod tests {
                             uid: 0,
                             members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                (
+                                    hir::Name(i.intern("b")),
+                                    Ty::Array {
+                                        anonymous: false,
+                                        size: 2,
+                                        sub_ty: Ty::IInt(32).into(),
+                                    }
+                                    .into(),
+                                ),
                             ],
                         }
                         .into(),
                         to: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
@@ -5872,12 +5916,20 @@ mod tests {
                             uid: 1,
                             members: vec![
                                 (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(16).into()),
+                                (
+                                    hir::Name(i.intern("b")),
+                                    Ty::Array {
+                                        anonymous: false,
+                                        size: 3,
+                                        sub_ty: Ty::IInt(32).into(),
+                                    }
+                                    .into(),
+                                ),
                             ],
                         }
                         .into(),
                     },
-                    407..420,
+                    420..433,
                     None,
                 )]
             },
@@ -5927,6 +5979,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::Uncastable {
                         from: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
@@ -5939,6 +5992,7 @@ mod tests {
                         }
                         .into(),
                         to: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
@@ -6002,6 +6056,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::Uncastable {
                         from: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Foo")),
@@ -6014,6 +6069,7 @@ mod tests {
                         }
                         .into(),
                         to: Ty::Struct {
+                            anonymous: false,
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
                                 name: hir::Name(i.intern("Bar")),
@@ -6971,6 +7027,7 @@ mod tests {
                             sub_ty: Ty::Pointer {
                                 mutable: false,
                                 sub_ty: Ty::Struct {
+                                    anonymous: false,
                                     fqn: Some(hir::Fqn {
                                         file: hir::FileName(i.intern("main.capy")),
                                         name: hir::Name(i.intern("Foo")),
@@ -7180,6 +7237,7 @@ mod tests {
                             sub_ty: Ty::Pointer {
                                 mutable: false,
                                 sub_ty: Ty::Array {
+                                    anonymous: false,
                                     size: 3,
                                     sub_ty: Ty::IInt(32).into(),
                                 }
@@ -8354,6 +8412,7 @@ mod tests {
                 [(
                     TyDiagnosticKind::Mismatch {
                         expected: Ty::Array {
+                            anonymous: false,
                             size: 3,
                             sub_ty: Ty::IInt(32).into(),
                         }
@@ -8659,6 +8718,7 @@ mod tests {
                     TyDiagnosticKind::Mismatch {
                         expected: Ty::Type.into(),
                         found: Ty::Array {
+                            anonymous: false,
                             size: 0,
                             sub_ty: Ty::IInt(32).into(),
                         }
@@ -8823,6 +8883,7 @@ mod tests {
                             fqn: None,
                             uid: 1,
                             sub_ty: Ty::Struct {
+                                anonymous: false,
                                 fqn: None,
                                 uid: 0,
                                 members: vec![
@@ -8882,6 +8943,779 @@ mod tests {
                         .into(),
                     },
                     165..169,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_struct() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .{
+                        a = 5,
+                        b = "hello",
+                        c = 5.5,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {uint}
+                1 : str
+                2 : {float}
+                3 : struct ~{a: {uint}, b: str, c: {float}}
+                4 : void
+                5 : () -> void
+                l0 : struct ~{a: {uint}, b: str, c: {float}}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo : Foo_Type = .{
+                        a = 5,
+                        b = "hello",
+                        c = 5.5,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : u8
+                6 : str
+                7 : f64
+                8 : main::Foo_Type
+                9 : void
+                10 : () -> void
+                l0 : main::Foo_Type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct_mixed_fields() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo : Foo_Type = .{
+                        b = "hello",
+                        c = 5.5,
+                        a = 5,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : str
+                6 : f64
+                7 : u8
+                8 : main::Foo_Type
+                9 : void
+                10 : () -> void
+                l0 : main::Foo_Type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct_by_inference() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo := .{
+                        b = "hello",
+                        c = 5.5,
+                        a = 5,
+                    };
+
+                    bar : Foo_Type = foo;
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                4 : str
+                5 : f64
+                6 : u8
+                7 : main::Foo_Type
+                9 : main::Foo_Type
+                10 : void
+                11 : () -> void
+                l0 : main::Foo_Type
+                l1 : main::Foo_Type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_as_known_struct() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo := .{
+                        b = "hello",
+                        c = 5.5,
+                        a = 5,
+                    };
+
+                    bar := foo as Foo_Type;
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                4 : str
+                5 : f64
+                6 : u8
+                7 : main::Foo_Type
+                8 : main::Foo_Type
+                10 : main::Foo_Type
+                11 : void
+                12 : () -> void
+                l0 : main::Foo_Type
+                l1 : main::Foo_Type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_as_known_struct_diff_field_ty() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    c : f32 = 5.5;
+
+                    foo := .{
+                        b = "hello",
+                        c = c,
+                        a = 3.14,
+                    } as Foo_Type;
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : f32
+                6 : str
+                7 : f32
+                8 : {float}
+                9 : struct ~{b: str, c: f32, a: {float}}
+                11 : main::Foo_Type
+                12 : void
+                13 : () -> void
+                l0 : f32
+                l1 : main::Foo_Type
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct_missing_field() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo : Foo_Type = .{
+                        a = 5,
+                        b = "hello",
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : {uint}
+                6 : str
+                7 : struct ~{a: {uint}, b: str}
+                8 : void
+                9 : () -> void
+                l0 : main::Foo_Type
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Struct {
+                            anonymous: false,
+                            fqn: Some(hir::Fqn {
+                                file: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo_Type")),
+                            }),
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                            ],
+                        }
+                        .into(),
+                        found: Ty::Struct {
+                            anonymous: true,
+                            fqn: None,
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    207..299,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct_extra_field() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo : Foo_Type = .{
+                        a = 5,
+                        b = "hello",
+                        c = 3.14,
+                        d = true,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : {uint}
+                6 : str
+                7 : {float}
+                8 : bool
+                9 : struct ~{a: {uint}, b: str, c: {float}, d: bool}
+                10 : void
+                11 : () -> void
+                l0 : main::Foo_Type
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Struct {
+                            anonymous: false,
+                            fqn: Some(hir::Fqn {
+                                file: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo_Type")),
+                            }),
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                            ],
+                        }
+                        .into(),
+                        found: Ty::Struct {
+                            anonymous: true,
+                            fqn: None,
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                (hir::Name(i.intern("c")), Ty::Float(0).into()),
+                                (hir::Name(i.intern("d")), Ty::Bool.into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    207..367,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_struct_into_known_struct_misnamed_field() {
+        check(
+            r#"
+                Foo_Type :: struct {
+                    a: u8,
+                    b: str,
+                    c: f64,
+                };
+
+                anon :: () {
+                    foo : Foo_Type = .{
+                        a = 5,
+                        b = "hello",
+                        last = 0.3,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Foo_Type : type
+                main::anon : () -> void
+                3 : type
+                5 : {uint}
+                6 : str
+                7 : {float}
+                8 : struct ~{a: {uint}, b: str, last: {float}}
+                9 : void
+                10 : () -> void
+                l0 : main::Foo_Type
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Struct {
+                            anonymous: false,
+                            fqn: Some(hir::Fqn {
+                                file: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Foo_Type")),
+                            }),
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                            ],
+                        }
+                        .into(),
+                        found: Ty::Struct {
+                            anonymous: true,
+                            fqn: None,
+                            uid: 0,
+                            members: vec![
+                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
+                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                (hir::Name(i.intern("last")), Ty::Float(0).into()),
+                            ],
+                        }
+                        .into(),
+                    },
+                    207..335,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_array() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, 2, 3];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : [3]~{uint}
+                4 : void
+                5 : () -> void
+                l0 : [3]~{uint}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_array() {
+        check(
+            r#"
+                anon :: () {
+                    foo : [3]u16 = .[1, 2, 3];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : usize
+                3 : u16
+                4 : u16
+                5 : u16
+                6 : [3]u16
+                7 : void
+                8 : () -> void
+                l0 : [3]u16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_slice() {
+        // todo: this should actually replace the {uint} with u16
+        check(
+            r#"
+                anon :: () {
+                    foo : []u16 = .[1, 2, 3];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                2 : {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : [3]~{uint}
+                6 : void
+                7 : () -> void
+                l0 : []u16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_as_known_array() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, 2, 3] as [3]u128;
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : u128
+                1 : u128
+                2 : u128
+                3 : [3]u128
+                4 : usize
+                7 : [3]u128
+                8 : void
+                9 : () -> void
+                l0 : [3]u128
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_as_known_slice() {
+        // this looks wrong
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, 2, 3] as []i8;
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : [3]~{uint}
+                6 : []i8
+                7 : void
+                8 : () -> void
+                l0 : []i8
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_array_too_large() {
+        check(
+            r#"
+                anon :: () {
+                    foo : [3]i16 = .[1, 2, 3, 4];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : usize
+                3 : {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : {uint}
+                7 : [4]~{uint}
+                8 : void
+                9 : () -> void
+                l0 : [3]i16
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Array {
+                            anonymous: false,
+                            size: 3,
+                            sub_ty: Ty::IInt(16).into(),
+                        }
+                        .into(),
+                        found: Ty::Array {
+                            anonymous: true,
+                            size: 4,
+                            sub_ty: Ty::UInt(0).into(),
+                        }
+                        .into(),
+                    },
+                    65..78,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_array_too_small() {
+        check(
+            r#"
+                anon :: () {
+                    foo : [3]i16 = .[1, 2];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : usize
+                3 : {uint}
+                4 : {uint}
+                5 : [2]~{uint}
+                6 : void
+                7 : () -> void
+                l0 : [3]i16
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::Array {
+                            anonymous: false,
+                            size: 3,
+                            sub_ty: Ty::IInt(16).into(),
+                        }
+                        .into(),
+                        found: Ty::Array {
+                            anonymous: true,
+                            size: 2,
+                            sub_ty: Ty::UInt(0).into(),
+                        }
+                        .into(),
+                    },
+                    65..72,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_array_by_inference() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, 2];
+
+                    bar : [2]i128 = foo;
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : i128
+                1 : i128
+                2 : [2]i128
+                3 : usize
+                6 : [2]i128
+                7 : void
+                8 : () -> void
+                l0 : [2]i128
+                l1 : [2]i128
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_into_known_slice_by_inference() {
+        // todo: this should actually replace the {uint} with u128
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, 2];
+
+                    bar : []u128 = foo;
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : [2]~{uint}
+                5 : [2]~{uint}
+                6 : void
+                7 : () -> void
+                l0 : [2]~{uint}
+                l1 : []u128
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_signed_int_inner_type() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .[4, -5, 6];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {int}
+                1 : {int}
+                2 : {int}
+                3 : {int}
+                4 : [3]~{int}
+                5 : void
+                6 : () -> void
+                l0 : [3]~{int}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_i64_inner_type() {
+        check(
+            r#"
+                anon :: () {
+                    second : i64 = 42;
+
+                    foo := .[4, second, 6];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                1 : i64
+                2 : i64
+                3 : i64
+                4 : i64
+                5 : [3]~i64
+                6 : void
+                7 : () -> void
+                l0 : i64
+                l1 : [3]~i64
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_i64_i128_inner_type() {
+        check(
+            r#"
+                anon :: () {
+                    second : i64 = 42;
+                    third : i128 = 5;
+
+                    foo := .[4, second, third, 7];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                1 : i64
+                3 : i128
+                4 : i128
+                5 : i64
+                6 : i128
+                7 : i128
+                8 : [4]~i128
+                9 : void
+                10 : () -> void
+                l0 : i64
+                l1 : i128
+                l2 : [4]~i128
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn anon_array_mismatch_inner_types() {
+        check(
+            r#"
+                anon :: () {
+                    foo := .[1, -2, true, "Hello, Sailor!", 0.1];
+                }
+            "#,
+            expect![[r#"
+                main::anon : () -> void
+                0 : {uint}
+                1 : {int}
+                2 : {int}
+                3 : bool
+                4 : str
+                5 : {float}
+                6 : [5]~<unknown>
+                7 : void
+                8 : () -> void
+                l0 : [5]~<unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::IInt(0).into(),
+                        found: Ty::Bool.into(),
+                    },
+                    66..70,
                     None,
                 )]
             },

@@ -6,7 +6,7 @@ use interner::Interner;
 use internment::Intern;
 use itertools::Itertools;
 use la_arena::{ArenaMap, Idx};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
 use topo::TopoSort;
 
@@ -231,6 +231,13 @@ impl GlobalInferenceCtx<'_> {
                     }
                 }
             }
+            Expr::ArrayLiteral { ty: None, items } => {
+                let (_, sub_ty) = new_ty.as_array().unwrap();
+
+                for item in items {
+                    self.replace_weak_tys(item, sub_ty);
+                }
+            }
             Expr::Paren(Some(expr)) => {
                 self.replace_weak_tys(expr, new_ty);
             }
@@ -343,10 +350,12 @@ impl GlobalInferenceCtx<'_> {
                 // self.reinfer_expr(self.bodies[local_def].value);
             }
             Expr::StructLiteral { members, .. } => {
-                let member_tys = new_ty.as_struct().unwrap();
+                let member_tys: FxHashMap<_, _> =
+                    new_ty.as_struct().unwrap().iter().copied().collect();
 
-                for (idx, (_, value)) in members.into_iter().enumerate() {
-                    let new_member_ty = member_tys[idx].1;
+                for (name, value) in members.into_iter() {
+                    let Some(name) = name else { continue };
+                    let new_member_ty = member_tys[&name.name];
 
                     self.replace_weak_tys(value, new_member_ty);
                 }
@@ -480,7 +489,7 @@ impl GlobalInferenceCtx<'_> {
                     self.get_mutability(value, false, deref)
                 } else {
                     // todo: does this make sense?
-                    ExprMutability::CannotMutate(self.bodies.range_for_expr(expr))
+                    ExprMutability::Mutable
                 }
             }
             Expr::Local(local_def) if !deref => {
@@ -873,7 +882,10 @@ impl GlobalInferenceCtx<'_> {
                             self.const_ty(expr)?;
                             Ty::Type.into()
                         }
-                        Expr::ArrayLiteral { ty, items } => {
+                        Expr::ArrayLiteral {
+                            ty: Some(ty),
+                            items,
+                        } => {
                             let sub_ty = self.const_ty(*ty)?;
                             for item in items {
                                 let item_ty = self.tys[self.file][*item];
@@ -881,6 +893,66 @@ impl GlobalInferenceCtx<'_> {
                             }
 
                             Ty::Array {
+                                anonymous: false,
+                                size: items.len() as u64,
+                                sub_ty,
+                            }
+                            .into()
+                        }
+                        Expr::ArrayLiteral { ty: None, items } => {
+                            // todo: allow `.[ .. ]` to cast to `[]core.Any`
+                            let mut max_ty = None;
+                            let mut any_error = false;
+                            for item in items {
+                                let item_ty = self.tys[self.file][*item];
+
+                                match max_ty {
+                                    None => max_ty = Some(item_ty),
+                                    Some(previous) => {
+                                        if !any_error {
+                                            max_ty = Some(
+                                                previous
+                                                    .max(&item_ty)
+                                                    .unwrap_or_else(|| {
+                                                        if !any_error {
+                                                            self.diagnostics.push(TyDiagnostic {
+                                                                kind: TyDiagnosticKind::Mismatch {
+                                                                    expected: previous,
+                                                                    found: item_ty,
+                                                                },
+                                                                file: self.file,
+                                                                expr: Some(*item),
+                                                                range: self
+                                                                    .bodies
+                                                                    .range_for_expr(*item),
+                                                                help: None,
+                                                            });
+                                                            any_error = true;
+                                                        }
+                                                        Ty::Unknown
+                                                    })
+                                                    .into(),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Some(max_ty) = max_ty.filter(|_| !any_error) {
+                                for item in items {
+                                    self.replace_weak_tys(*item, max_ty);
+                                }
+                            }
+
+                            let sub_ty = if any_error {
+                                Ty::Unknown.into()
+                            } else {
+                                // todo: instead of void, create a new type that casts to anything
+                                max_ty.unwrap_or_else(|| Ty::Void.into())
+                            };
+
+                            Ty::Array {
+                                anonymous: true,
                                 size: items.len() as u64,
                                 sub_ty,
                             }
@@ -973,7 +1045,7 @@ impl GlobalInferenceCtx<'_> {
                                 if cast_ty.is_unknown() {
                                     Ty::Unknown.into()
                                 } else {
-                                    if !expr_ty.primitive_castable(&cast_ty) {
+                                    if !expr_ty.can_cast_to(&cast_ty) {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::Uncastable {
                                                 from: expr_ty,
@@ -1549,7 +1621,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::StructLiteral {
-                            ty: ty_expr,
+                            ty: Some(ty_expr),
                             members: member_values,
                         } => 'struct_lit: {
                             let expected_ty = self.const_ty(*ty_expr)?;
@@ -1632,6 +1704,22 @@ impl GlobalInferenceCtx<'_> {
 
                             expected_ty
                         }
+                        Expr::StructLiteral {
+                            ty: None,
+                            members: member_values,
+                        } => Ty::Struct {
+                            anonymous: true,
+                            fqn: None,
+                            uid: 0,
+                            members: member_values
+                                .iter()
+                                .copied()
+                                .filter_map(|(name, value)| {
+                                    name.map(|name| (name.name, self.tys[self.file][value]))
+                                })
+                                .collect(),
+                        }
+                        .into(),
                         Expr::Distinct { .. } | Expr::PrimitiveTy(_) => {
                             // resolving the type might reveal diagnostics such as recursive types
                             self.const_ty(expr)?;
@@ -1993,10 +2081,12 @@ impl GlobalInferenceCtx<'_> {
                     }
                     .into(),
                     Ty::Struct {
+                        anonymous,
                         fqn: None,
                         members,
                         uid,
                     } => Ty::Struct {
+                        anonymous: *anonymous,
                         fqn: Some(fqn),
                         members: members.clone(),
                         uid: *uid,
@@ -2198,9 +2288,12 @@ impl GlobalInferenceCtx<'_> {
                                 }
 
                                 match self.const_data(self.file, *size)? {
-                                    Some(ComptimeResult::Integer { num, .. }) => {
-                                        Ty::Array { size: num, sub_ty }.into()
+                                    Some(ComptimeResult::Integer { num, .. }) => Ty::Array {
+                                        anonymous: false,
+                                        size: num,
+                                        sub_ty,
                                     }
+                                    .into(),
                                     _ => {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::ArraySizeNotInt,
@@ -2224,6 +2317,7 @@ impl GlobalInferenceCtx<'_> {
                         }
                         .into(),
                         Expr::StructDecl { uid, members } => Ty::Struct {
+                            anonymous: false,
                             fqn: None,
                             uid: *uid,
                             members: members
@@ -2310,6 +2404,8 @@ impl GlobalInferenceCtx<'_> {
                             // todo: remove recursion
                             self.const_ty(*paren_expr)?
                         }
+                        // todo: should we remove the void type?
+                        Expr::Paren(None) => Ty::Void.into(),
                         Expr::Block { .. } => todo!("blocks as types"),
                         _ => {
                             // todo: remove recursion
@@ -2415,7 +2511,9 @@ impl GlobalInferenceCtx<'_> {
         }
     }
 
-    // todo: this should also be tested against LoweringDiagnostics
+    // todo: this is actually a great opportunity for fuzzing to make sure this function never
+    // returns true when something was actually unsafe. the fuzzer has already been updated it just
+    // needs to be used.
     pub(crate) fn is_safe_to_compile(&mut self, expr: Idx<hir::Expr>) -> InferResult<bool> {
         let mut checking_stack = vec![(
             self.current_inferring,

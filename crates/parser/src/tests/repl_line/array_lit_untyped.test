@@ -1,0 +1,23 @@
+.[true, false, "huh?"]
+===
+Root@0..22
+  ExprStmt@0..22
+    ArrayLiteral@0..22
+      Dot@0..1 "."
+      LBrack@1..2 "["
+      ArrayItem@2..6
+        BoolLiteral@2..6
+          Bool@2..6 "true"
+      Comma@6..7 ","
+      Whitespace@7..8 " "
+      ArrayItem@8..13
+        BoolLiteral@8..13
+          Bool@8..13 "false"
+      Comma@13..14 ","
+      Whitespace@14..15 " "
+      ArrayItem@15..21
+        StringLiteral@15..21
+          DoubleQuote@15..16 "\""
+          StringContents@16..20 "huh?"
+          DoubleQuote@20..21 "\""
+      RBrack@21..22 "]"

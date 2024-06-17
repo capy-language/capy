@@ -66,6 +66,7 @@ pub(crate) fn compile_program<'a>(
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),
+        i128_id_gen: UIDGenerator::default(),
         comptime_results,
         comptime_data: FxHashMap::default(),
     };

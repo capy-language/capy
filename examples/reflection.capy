@@ -76,16 +76,34 @@ check_any :: () {
 
     core.println(256);
     core.println("hello");
+    core.println({});
+    
+    // printing types
+    core.println(i32);
+    core.println(^Bar);
+    core.println(core.Any);
+
+    // printing arrays
+    core.println(.[3, -1, 4, 1, 5, 9]);
+    core.println(.[4, 8, 15, 16, 23, 42] as []i32);
+    core.println(core.Any.[1, "hello", true, 5.3]);
+
+    // printing structs
     core.println(Bar.{
         text = "Hello",
         flag = false,
         array = i16.[1, 2, 3],
     });
-    core.println(i32);
-    core.println(^Bar);
-    core.println(core.Any);
-    core.println({});
-    core.println(i32.[4, 8, 15, 16, 23, 42]);
+    core.println(.{
+        hello = "world",
+        foo = .{
+            bar = .{
+                baz = .{
+                    qux = 1.2,
+                }
+            }
+        }
+    });
 }
 
 check_equality :: () {

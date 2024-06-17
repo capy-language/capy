@@ -2,6 +2,7 @@ pub mod comptime;
 mod functions;
 pub mod program;
 
+use cranelift::codegen::ir::StackSlot;
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
     types, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, StackSlotData,
@@ -200,6 +201,7 @@ pub(crate) struct Compiler<'a> {
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) meta_tys: MetaTyData,
     pub(crate) str_id_gen: UIDGenerator,
+    pub(crate) i128_id_gen: UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
     pub(crate) comptime_data: FxHashMap<FQComptime, ComptimeData>,
 }
@@ -279,7 +281,7 @@ impl Compiler<'_> {
 
             if self.meta_tys.info_arrays.is_some() {
                 match ty.as_ref() {
-                    Ty::Array { size, sub_ty } => {
+                    Ty::Array { size, sub_ty, .. } => {
                         array_info_data.extend_with_num_bytes(
                             (*size) as u32,
                             self.ptr_ty.bits() as u8,
@@ -857,6 +859,7 @@ impl Compiler<'_> {
             compiler_defined_functions: &mut self.compiler_defined_functions,
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
+            i128_id_gen: &mut self.i128_id_gen,
             comptime_results: self.comptime_results,
             comptime_data: &mut self.comptime_data,
             var_id_gen: UIDGenerator::default(),
@@ -1037,16 +1040,135 @@ fn get_func_id(
     func_id
 }
 
-fn cast(
+#[derive(Debug, Clone, Copy)]
+struct MemoryLoc {
+    addr: Value,
+    offset: u32,
+}
+
+impl MemoryLoc {
+    fn from_stack(
+        stack_slot: StackSlot,
+        offset: u32,
+        builder: &mut FunctionBuilder,
+        ptr_ty: types::Type,
+    ) -> MemoryLoc {
+        MemoryLoc {
+            addr: builder.ins().stack_addr(ptr_ty, stack_slot, 0),
+            offset,
+        }
+    }
+
+    fn with_offset(self, offset: u32) -> MemoryLoc {
+        MemoryLoc {
+            addr: self.addr,
+            offset: self.offset + offset,
+        }
+    }
+
+    /// This converts the address + offset into a single address if needed
+    fn into_value(self, builder: &mut FunctionBuilder) -> Value {
+        if self.offset > 0 {
+            builder.ins().iadd_imm(self.addr, self.offset as i64)
+        } else {
+            self.addr
+        }
+    }
+
+    /// Does a simple store of a memmove if necessary
+    ///
+    /// By using this function, you promise that the bytes of val can fit inside
+    /// the given MemoryLoc.
+    ///
+    /// You also promise that the alignment of val matches the alignment of the
+    /// the given MemoryLoc.
+    fn write(
+        self,
+        val: Option<Value>,
+        ty: Intern<Ty>,
+        module: &mut dyn Module,
+        builder: &mut FunctionBuilder,
+    ) {
+        let Some(val) = val else {
+            return;
+        };
+
+        if ty.is_aggregate() {
+            let dest = self.into_value(builder);
+
+            builder.emit_small_memory_copy(
+                module.target_config(),
+                dest,
+                val,
+                // this has to be stride for some reason, it can't be size
+                ty.stride() as u64,
+                ty.align() as u8,
+                ty.align() as u8,
+                true,
+                MemFlags::trusted(),
+            );
+        } else {
+            builder
+                .ins()
+                .store(MemFlags::trusted(), val, self.addr, self.offset as i32);
+        }
+    }
+}
+
+trait UnwrapOrAlloca {
+    fn unwrap_or_alloca(
+        self,
+        builder: &mut FunctionBuilder,
+        ptr_ty: types::Type,
+        size: u32,
+    ) -> MemoryLoc;
+}
+
+impl UnwrapOrAlloca for Option<MemoryLoc> {
+    fn unwrap_or_alloca(
+        self,
+        builder: &mut FunctionBuilder,
+        ptr_ty: types::Type,
+        size: u32,
+    ) -> MemoryLoc {
+        match self {
+            Some(mem) => mem,
+            None => {
+                let stack_slot = builder.create_sized_stack_slot(StackSlotData {
+                    kind: StackSlotKind::ExplicitSlot,
+                    size,
+                });
+
+                let addr = builder.ins().stack_addr(ptr_ty, stack_slot, 0);
+
+                MemoryLoc { addr, offset: 0 }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cast_into_memory(
     meta_tys: &mut MetaTyData,
+    module: &mut dyn Module,
     builder: &mut FunctionBuilder,
     ptr_ty: types::Type,
     val: Option<Value>,
     cast_from: Intern<Ty>,
     cast_to: Intern<Ty>,
+    memory: Option<MemoryLoc>,
 ) -> Option<Value> {
     if cast_from.is_functionally_equivalent_to(&cast_to, true) {
-        return val;
+        match memory {
+            Some(memory) => {
+                assert_eq!(cast_from.align(), cast_to.align());
+
+                memory.write(val, cast_to, module, builder);
+
+                return Some(memory.into_value(builder));
+            }
+            None => return val,
+        }
     }
 
     let cast_from = cast_from.remove_distinct();
@@ -1056,19 +1178,21 @@ fn cast(
         (Ty::Array { size, .. }, Ty::Slice { .. }) => {
             let slice_size = cast_to.size();
 
-            let slice_stack_slot = builder.create_sized_stack_slot(StackSlotData {
-                kind: StackSlotKind::ExplicitSlot,
-                size: slice_size,
-            });
+            let memory = memory.unwrap_or_alloca(builder, ptr_ty, slice_size);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
-            builder.ins().stack_store(len, slice_stack_slot, 0);
-
             builder
                 .ins()
-                .stack_store(val?, slice_stack_slot, ptr_ty.bytes() as i32);
+                .store(MemFlags::trusted(), len, memory.addr, memory.offset as i32);
 
-            return Some(builder.ins().stack_addr(ptr_ty, slice_stack_slot, 0));
+            builder.ins().store(
+                MemFlags::trusted(),
+                val?,
+                memory.addr,
+                (memory.offset + ptr_ty.bytes()) as i32,
+            );
+
+            return Some(memory.into_value(builder));
         }
         (Ty::Slice { .. }, Ty::Array { .. }) => {
             // todo: do a runtime check that the lengths match
@@ -1077,14 +1201,12 @@ fn cast(
                 ptr_ty,
                 MemFlags::trusted(),
                 val?,
+                // the second field (after usize len) is the addr of the array
                 ptr_ty.bytes() as i32,
             ));
         }
         _ if cast_to.is_any_struct() => {
-            let any_stack_slot = builder.create_sized_stack_slot(StackSlotData {
-                kind: StackSlotKind::ExplicitSlot,
-                size: cast_to.size(),
-            });
+            let any_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
 
             let struct_layout = cast_to.struct_layout().unwrap();
 
@@ -1094,7 +1216,7 @@ fn cast(
                         if let Some(val) = val {
                             let offset = struct_layout.offsets()[idx] as i32;
 
-                            let val = if cast_from.is_aggregate() {
+                            let ptr = if cast_from.is_aggregate() {
                                 val
                             } else {
                                 let tmp_stack_slot =
@@ -1108,7 +1230,12 @@ fn cast(
                                 builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
                             };
 
-                            builder.ins().stack_store(val, any_stack_slot, offset);
+                            builder.ins().store(
+                                MemFlags::trusted(),
+                                ptr,
+                                any_mem.addr,
+                                any_mem.offset as i32 + offset,
+                            );
                         }
                     }
                     Ty::Type => {
@@ -1117,25 +1244,189 @@ fn cast(
                         let id = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
                         let id = builder.ins().iconst(types::I32, id);
 
-                        builder.ins().stack_store(id, any_stack_slot, offset);
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            id,
+                            any_mem.addr,
+                            any_mem.offset as i32 + offset,
+                        );
                     }
                     _ => {}
                 }
             }
 
-            return Some(builder.ins().stack_addr(ptr_ty, any_stack_slot, 0));
+            return Some(any_mem.into_value(builder));
         }
-        _ if cast_from.is_any_struct() => {
-            unreachable!("an `Any` struct shouldn't be castable to anything other than itself")
+        (Ty::Struct { .. }, Ty::Struct { .. }) => {
+            return cast_struct_to_struct(
+                meta_tys, module, builder, ptr_ty, val, cast_from, cast_to, memory,
+            );
+        }
+        (Ty::Array { .. }, Ty::Array { .. }) => {
+            return cast_array_to_array(
+                meta_tys, module, builder, ptr_ty, val, cast_from, cast_to, memory,
+            );
         }
         _ => {}
     }
 
-    match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
+    // it's a simple cast
+
+    let val = match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
         (FinalTy::Number(cast_from), FinalTy::Number(cast_to)) => {
             Some(cast_num(builder, val?, cast_from, cast_to))
         }
         _ => val,
+    };
+
+    if let Some(memory) = memory {
+        memory.write(val, cast_to, module, builder);
+    }
+
+    val
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cast_struct_to_struct(
+    meta_tys: &mut MetaTyData,
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    ptr_ty: types::Type,
+    val: Option<Value>,
+    cast_from: Intern<Ty>,
+    cast_to: Intern<Ty>,
+    memory: Option<MemoryLoc>,
+) -> Option<Value> {
+    assert!(cast_from.is_struct());
+    assert!(cast_to.is_struct());
+
+    let from_members = cast_from.as_struct().unwrap();
+    let to_members = cast_to.as_struct().unwrap();
+
+    assert_eq!(from_members.len(), to_members.len());
+
+    if from_members
+        .iter()
+        .zip(to_members.iter())
+        .all(|((from_name, from_ty), (to_name, to_ty))| {
+            from_name == to_name && from_ty.is_functionally_equivalent_to(to_ty, true)
+        })
+    {
+        val
+    } else {
+        let val = val?;
+
+        // this is specifically for anonymous struct casting, although this code
+        // might also be used to regular struct casting
+        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
+
+        let from_layout = cast_from.struct_layout().unwrap();
+        let to_layout = cast_to.struct_layout().unwrap();
+
+        let to_members: FxHashMap<_, _> = to_members
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, ty))| (*name, (idx, *ty)))
+            .collect();
+
+        for (from_idx, (name, from_ty)) in from_members.iter().enumerate() {
+            let (to_idx, to_ty) = to_members[name];
+
+            let from_offset = from_layout.offsets()[from_idx];
+            let to_offset = to_layout.offsets()[to_idx];
+
+            let dest = result_mem.with_offset(to_offset);
+
+            let src = if from_ty.is_aggregate() {
+                Some(builder.ins().iadd_imm(val, from_offset as i64))
+            } else {
+                from_ty.get_final_ty().into_real_type().map(|from_ty| {
+                    builder
+                        .ins()
+                        .load(from_ty, MemFlags::trusted(), val, from_offset as i32)
+                })
+            };
+
+            cast_into_memory(
+                meta_tys,
+                module,
+                builder,
+                ptr_ty,
+                src,
+                *from_ty,
+                to_ty,
+                Some(dest),
+            );
+        }
+
+        Some(result_mem.into_value(builder))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cast_array_to_array(
+    meta_tys: &mut MetaTyData,
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    ptr_ty: types::Type,
+    val: Option<Value>,
+    cast_from: Intern<Ty>,
+    cast_to: Intern<Ty>,
+    memory: Option<MemoryLoc>,
+) -> Option<Value> {
+    assert!(cast_from.is_array());
+    assert!(cast_to.is_array());
+
+    let (from_len, from_sub_ty) = cast_from.as_array().unwrap();
+    let (to_len, to_sub_ty) = cast_to.as_array().unwrap();
+
+    assert_eq!(from_len, to_len);
+
+    let from_sub_stride = from_sub_ty.stride();
+    let to_sub_stride = to_sub_ty.stride();
+
+    if from_sub_ty.is_functionally_equivalent_to(&to_sub_ty, false) {
+        val
+    } else {
+        let val = val?;
+
+        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
+
+        for idx in 0..to_len as u32 {
+            let from_offset = from_sub_stride * idx;
+            let to_offset = to_sub_stride * idx;
+
+            let src = if from_sub_ty.is_aggregate() {
+                Some(builder.ins().iadd_imm(val, from_offset as i64))
+            } else {
+                from_sub_ty
+                    .get_final_ty()
+                    .into_real_type()
+                    .map(|from_sub_ty| {
+                        builder.ins().load(
+                            from_sub_ty,
+                            MemFlags::trusted(),
+                            val,
+                            from_offset as i32,
+                        )
+                    })
+            };
+
+            let dest = result_mem.with_offset(to_offset);
+
+            cast_into_memory(
+                meta_tys,
+                module,
+                builder,
+                ptr_ty,
+                src,
+                from_sub_ty,
+                to_sub_ty,
+                Some(dest),
+            );
+        }
+
+        Some(result_mem.into_value(builder))
     }
 }
 

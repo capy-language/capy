@@ -152,6 +152,7 @@ pub fn eval_comptime_blocks<'a>(
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),
+        i128_id_gen: UIDGenerator::default(),
         comptime_results: results,
         comptime_data: FxHashMap::default(),
         ptr_ty: match target_pointer_bit_width {

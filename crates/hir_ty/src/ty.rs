@@ -1,5 +1,6 @@
 use hir::{PrimitiveTy, UnaryOp};
 use internment::Intern;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum Ty {
@@ -18,6 +19,7 @@ pub enum Ty {
     String,
     Char,
     Array {
+        anonymous: bool,
         size: u64,
         sub_ty: Intern<Ty>,
     },
@@ -42,6 +44,8 @@ pub enum Ty {
         return_ty: Intern<Ty>,
     },
     Struct {
+        // if anonymous is set to `true`, `uid` is useless
+        anonymous: bool,
         fqn: Option<hir::Fqn>,
         uid: u32,
         members: Vec<(hir::Name, Intern<Ty>)>,
@@ -131,7 +135,7 @@ impl Ty {
     /// If self is an array, this returns the length and sub type
     pub fn as_array(&self) -> Option<(u64, Intern<Ty>)> {
         match self {
-            Ty::Array { size, sub_ty } => Some((*size, *sub_ty)),
+            Ty::Array { size, sub_ty, .. } => Some((*size, *sub_ty)),
             Ty::Distinct { sub_ty, .. } => sub_ty.as_array(),
             _ => None,
         }
@@ -229,7 +233,7 @@ impl Ty {
             Ty::Void => true,
             Ty::File(_) => true,
             Ty::NoEval => true,
-            Ty::Array { size, sub_ty } => *size == 0 || sub_ty.is_zero_sized(),
+            Ty::Array { size, sub_ty, .. } => *size == 0 || sub_ty.is_zero_sized(),
             Ty::Struct { members, .. } => {
                 members.is_empty() || members.iter().all(|(_, ty)| ty.is_zero_sized())
             }
@@ -271,24 +275,25 @@ impl Ty {
         }
     }
 
-    /// A true equality check
     pub fn is_equal_to(&self, other: &Self) -> bool {
-        if self == other {
-            return true;
-        }
-
         match (self, other) {
             (
                 Ty::Array {
+                    anonymous: first_anon,
                     size: first_size,
                     sub_ty: first_sub_ty,
                 },
                 Ty::Array {
+                    anonymous: second_anon,
                     size: second_size,
                     sub_ty: second_sub_ty,
                     ..
                 },
-            ) => first_size == second_size && first_sub_ty.is_equal_to(second_sub_ty),
+            ) => {
+                first_anon == second_anon
+                    && first_size == second_size
+                    && first_sub_ty.is_equal_to(second_sub_ty)
+            }
             (
                 Ty::Pointer {
                     mutable: first_mutable,
@@ -317,28 +322,65 @@ impl Ty {
                         .zip(second_params.iter())
                         .all(|(first_param, second_param)| first_param.is_equal_to(second_param))
             }
-            _ => false,
+            (
+                Ty::Struct {
+                    anonymous: true,
+                    members: first_members,
+                    ..
+                },
+                Ty::Struct {
+                    anonymous: true,
+                    members: second_members,
+                    ..
+                },
+            ) => {
+                first_members.len() == second_members.len()
+                    && first_members.iter().zip(second_members.iter()).all(
+                        |((first_name, first_ty), (second_name, second_ty))| {
+                            first_name == second_name && first_ty.is_equal_to(second_ty)
+                        },
+                    )
+            }
+            (
+                Ty::Struct {
+                    anonymous: false,
+                    uid: first_uid,
+                    ..
+                },
+                Ty::Struct {
+                    anonymous: false,
+                    uid: second_uid,
+                    ..
+                },
+            ) => first_uid == second_uid,
+            _ => self == other,
         }
     }
 
     /// an equality check that ignores distinct types.
     /// All other types must be exactly equal (i32 == i32, i32 != i64)
     ///
-    /// if `two_way` is false, distincts cannot be made non-distinct
+    /// if `two_way` is false, distincts cannot be made non-distinct.
+    ///
+    /// This function must guarentee that if A is functionally equivalent to B,
+    /// then the bytes that make up A are also valid bytes for B
     pub fn is_functionally_equivalent_to(&self, other: &Self, two_way: bool) -> bool {
         match (self, other) {
             (
                 Ty::Array {
+                    anonymous: first_anon,
                     size: first_size,
                     sub_ty: first_sub_ty,
                 },
                 Ty::Array {
+                    anonymous: second_anon,
                     size: second_size,
                     sub_ty: second_sub_ty,
                     ..
                 },
             ) => {
-                first_size == second_size
+                first_anon == second_anon
+                    && first_size == second_size
                     && first_sub_ty.is_functionally_equivalent_to(second_sub_ty, two_way)
             }
             (
@@ -373,6 +415,24 @@ impl Ty {
             ) => {
                 // println!("  {:?} as {:?}", other, resolved_arena[distinct]);
                 other.is_functionally_equivalent_to(distinct_inner, two_way)
+            }
+            (
+                Ty::Struct {
+                    members: first_members,
+                    ..
+                },
+                Ty::Struct {
+                    members: second_members,
+                    ..
+                },
+            ) => {
+                first_members.len() == second_members.len()
+                    && first_members.iter().zip(second_members.iter()).all(
+                        |((first_name, first_ty), (second_name, second_ty))| {
+                            first_name == second_name
+                                && first_ty.is_functionally_equivalent_to(second_ty, two_way)
+                        },
+                    )
             }
             (first, second) => first.is_equal_to(second),
         }
@@ -415,7 +475,7 @@ impl Ty {
     ///
     /// diagram stolen from vlang docs bc i liked it
     pub(crate) fn max(&self, other: &Ty) -> Option<Ty> {
-        if self == other {
+        if self.is_equal_to(other) {
             return Some(self.clone());
         }
 
@@ -516,7 +576,7 @@ impl Ty {
     ///
     /// diagram stolen from vlang docs bc i liked it
     pub(crate) fn can_fit_into(&self, expected: &Ty) -> bool {
-        if self == expected {
+        if self.is_equal_to(expected) {
             return true;
         }
 
@@ -571,19 +631,99 @@ impl Ty {
             }
             (
                 Ty::Array {
-                    sub_ty: found_ty, ..
+                    anonymous,
+                    sub_ty: found_ty,
+                    ..
                 },
                 Ty::Slice {
                     sub_ty: expected_ty,
                 },
-            ) => found_ty.is_functionally_equivalent_to(expected_ty, false),
+            ) => {
+                (*anonymous && found_ty.is_weak_replaceable_by(expected_ty))
+                    || found_ty.is_functionally_equivalent_to(expected_ty, false)
+            }
+            (
+                Ty::Array {
+                    anonymous: true,
+                    size: found_size,
+                    sub_ty: found_ty,
+                },
+                Ty::Array {
+                    size: expected_size,
+                    sub_ty: expected_ty,
+                    ..
+                },
+            ) => {
+                found_size == expected_size
+                    && (found_ty.is_weak_replaceable_by(expected_ty)
+                        || found_ty.is_functionally_equivalent_to(expected_ty, false))
+            }
+            (
+                Ty::Array {
+                    size: found_size,
+                    sub_ty: found_ty,
+                    ..
+                },
+                Ty::Array {
+                    anonymous: expected_anon,
+                    size: expected_size,
+                    sub_ty: expected_ty,
+                },
+            ) => {
+                !expected_anon
+                    && found_size == expected_size
+                    && found_ty.is_functionally_equivalent_to(expected_ty, false)
+            }
             (_, expected) if expected.is_any_struct() => true,
             (
-                Ty::Struct { uid: found_uid, .. },
                 Ty::Struct {
-                    uid: expected_uid, ..
+                    anonymous: false,
+                    uid: found_uid,
+                    ..
+                },
+                Ty::Struct {
+                    anonymous: false,
+                    uid: expected_uid,
+                    ..
                 },
             ) => found_uid == expected_uid,
+            (
+                Ty::Struct {
+                    anonymous: true,
+                    members: found_members,
+                    ..
+                },
+                Ty::Struct {
+                    members: expected_members,
+                    ..
+                },
+            ) => {
+                if found_members.len() != expected_members.len() {
+                    return false;
+                }
+
+                let expected_members: FxHashMap<_, _> = expected_members.iter().copied().collect();
+
+                for (name, found_ty) in found_members {
+                    let Some(expected_ty) = expected_members.get(name) else {
+                        return false;
+                    };
+
+                    if !found_ty.can_fit_into(expected_ty) {
+                        return false;
+                    }
+                }
+
+                let found_members: FxHashMap<_, _> = found_members.iter().copied().collect();
+
+                for (name, _) in expected_members {
+                    if !found_members.contains_key(&name) {
+                        return false;
+                    }
+                }
+
+                true
+            }
             (
                 Ty::Distinct { uid: found_uid, .. },
                 Ty::Distinct {
@@ -598,38 +738,21 @@ impl Ty {
     /// This is used for the `as` operator to see whether something can be casted into something else
     ///
     /// This only allows primitives to be casted to each other, or types that are already equal.
-    pub(crate) fn primitive_castable(&self, primitive_ty: &Ty) -> bool {
-        match (self, primitive_ty) {
+    pub(crate) fn can_cast_to(&self, cast_into: &Ty) -> bool {
+        if self.can_fit_into(cast_into) {
+            return true;
+        }
+
+        match (self, cast_into) {
             (
                 Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
                 Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
             ) => true,
-            // todo: right now all the fields must be exactly equal,
-            // technically it would be possible to make it so that fields autocast
-            // but I'm lazy and that would require some changes in the codegen crate
-            (
-                Ty::Struct {
-                    members: found_fields,
-                    ..
-                },
-                Ty::Struct {
-                    members: expected_fields,
-                    ..
-                },
-            ) => {
-                found_fields.len() == expected_fields.len()
-                    && found_fields.iter().zip(expected_fields.iter()).all(
-                        |((found_name, found_ty), (expected_name, expected_ty))| {
-                            found_name == expected_name
-                                && found_ty.is_functionally_equivalent_to(expected_ty, true)
-                        },
-                    )
-            }
             (Ty::Distinct { sub_ty: from, .. }, Ty::Distinct { sub_ty: to, .. }) => {
-                from.primitive_castable(to)
+                from.can_cast_to(to)
             }
-            (Ty::Distinct { sub_ty: from, .. }, to) => from.primitive_castable(to),
-            (from, Ty::Distinct { sub_ty: to, .. }) => from.primitive_castable(to),
+            (Ty::Distinct { sub_ty: from, .. }, to) => from.can_cast_to(to),
+            (from, Ty::Distinct { sub_ty: to, .. }) => from.can_cast_to(to),
             (
                 Ty::Pointer {
                     mutable: found_mutable,
@@ -664,13 +787,57 @@ impl Ty {
                     || from.is_weak_replaceable_by(to)
             }
             (Ty::Array { sub_ty: from, .. }, Ty::Slice { sub_ty: to })
-            | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => {
-                from.is_functionally_equivalent_to(to, true)
+            | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => from.can_cast_to(to),
+            (
+                Ty::Array {
+                    size: found_size,
+                    sub_ty: found_ty,
+                    ..
+                },
+                Ty::Array {
+                    size: expected_size,
+                    sub_ty: expected_ty,
+                    ..
+                },
+            ) => found_size == expected_size && found_ty.can_cast_to(expected_ty),
+            (_, expected) if expected.is_any_struct() => true,
+            (
+                Ty::Struct {
+                    members: found_members,
+                    ..
+                },
+                Ty::Struct {
+                    members: expected_members,
+                    ..
+                },
+            ) => {
+                if found_members.len() != expected_members.len() {
+                    return false;
+                }
+
+                let expected_members: FxHashMap<_, _> = expected_members.iter().copied().collect();
+
+                for (name, found_ty) in found_members {
+                    let Some(expected_ty) = expected_members.get(name) else {
+                        return false;
+                    };
+
+                    if !found_ty.can_cast_to(expected_ty) {
+                        return false;
+                    }
+                }
+
+                let found_members: FxHashMap<_, _> = found_members.iter().copied().collect();
+
+                for (name, _) in expected_members {
+                    if !found_members.contains_key(&name) {
+                        return false;
+                    }
+                }
+
+                true
             }
-            _ => {
-                self.is_functionally_equivalent_to(primitive_ty, true)
-                    || primitive_ty.is_any_struct()
-            }
+            _ => self.is_functionally_equivalent_to(cast_into, true) || cast_into.is_any_struct(),
         }
     }
 
@@ -735,15 +902,19 @@ impl Ty {
             (Ty::Float(0), Ty::Float(bit_width)) => *bit_width != 0,
             (
                 Ty::Array {
+                    anonymous: first_anon,
                     size: found_size,
                     sub_ty: found_sub_ty,
                 },
                 Ty::Array {
+                    anonymous: second_anon,
                     size: expected_size,
                     sub_ty: expected_sub_ty,
                 },
             ) => {
-                found_size == expected_size && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
+                (*first_anon || !second_anon)
+                    && found_size == expected_size
+                    && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
             }
             (
                 Ty::Pointer {
@@ -760,25 +931,12 @@ impl Ty {
                     (true, _) | (false, false)
                 ) && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
             }
-            // Right now there are no weak structs, so having this doesn't make sense
-            // Maybe in the future if we have `.{}` syntax we can figure something out
-            // (
-            //     ResolvedTy::Struct {
-            //         fields: found_fields,
-            //         ..
-            //     },
-            //     ResolvedTy::Struct {
-            //         fields: expected_fields,
-            //         ..
-            //     },
-            // ) => {
-            //     self.can_fit_into(expected)
-            //         && found_fields.iter().zip(expected_fields.iter()).any(
-            //             |((_, found_ty), (_, expected_ty))| {
-            //                 found_ty.is_weak_type_replaceable_by(expected_ty)
-            //             },
-            //         )
-            // }
+            (
+                Ty::Struct {
+                    anonymous: true, ..
+                },
+                Ty::Struct { .. },
+            ) => !expected.is_any_struct() && self.can_fit_into(expected),
             (
                 Ty::Distinct { uid: found_uid, .. },
                 Ty::Distinct {

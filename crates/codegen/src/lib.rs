@@ -1085,12 +1085,15 @@ mod tests {
                 42
                 256
                 hello
-                { text = Hello, flag = false, array = [ 1, 2, 3 ] }
+                {}
                 i32
                 ^struct { text: str, flag: bool, array: [3] i16 }
                 struct { ty: type, data: ^any }
-                {}
+                [ 3, -1, 4, 1, 5, 9 ]
                 [ 4, 8, 15, 16, 23, 42 ]
+                [ 1, hello, true, 5.300 ]
+                { text = Hello, flag = false, array = [ 1, 2, 3 ] }
+                { hello = world, foo = { bar = { baz = { qux = 1.200 } } } }
                 
             "#]],
             0,
@@ -2032,6 +2035,185 @@ mod tests {
             true,
             expect![["
             { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.000, d = false, e = \0, f = {} }
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn i128_literals() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                main :: () {
+                    x: i128 = 1_234;
+
+                    core.println(x);
+                }
+            "#,
+            "main",
+            true,
+            expect![["
+            1234
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn anon_struct_reorder_fields() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                Foo :: struct {
+                    a: u128,
+                    b: str,
+                    c: f64,
+                };
+
+                main :: () {
+                    x: Foo = .{
+                        c = 1.0,
+                        a = 42,
+                        b = "haiiii >///<",
+                    };
+
+                    core.println(x);
+                }
+            "#,
+            "main",
+            true,
+            expect![["
+            { a = 42, b = haiiii >///<, c = 1.000 }
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn advanced_struct_cast() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                Foo :: struct {
+                    a: i32,
+                    b: f64,
+                    c: char,
+                    d: u128,
+                };
+
+                Bar :: struct {
+                    c: u8,
+                    d: f64,
+                    b: f32,
+                    a: i16,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo.{
+                        a = 5,
+                        b = 42.0,
+                        c = 'a',
+                        d = 256,
+                    };
+
+                    core.println(my_foo);
+
+                    my_bar : Bar = my_foo as Bar;
+
+                    core.println(my_bar);
+                };
+            "#,
+            "main",
+            true,
+            expect![["
+            { a = 5, b = 42.000, c = a, d = 256 }
+            { c = 97, d = 256.000, b = 42.000, a = 5 }
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn advanced_array_cast() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                main :: () {
+                    list : [3]u32 = .[1, 2, 3];
+
+                    core.print(core.type_of(list));
+                    core.print(" : ");
+                    core.println(list);
+
+                    list := list as [3]f64;
+
+                    core.print(core.type_of(list));
+                    core.print(" : ");
+                    core.println(list);
+                };
+            "#,
+            "main",
+            true,
+            expect![["
+            [3] u32 : [ 1, 2, 3 ]
+            [3] f64 : [ 1.000, 2.000, 3.000 ]
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn advanced_array_of_structs_cast() {
+        check_raw(
+            r#"
+                core :: mod "core";
+
+                Foo :: struct {
+                    a: i32,
+                    b: f64,
+                    c: char,
+                    d: u128,
+                };
+
+                Bar :: struct {
+                    c: u8,
+                    d: f64,
+                    b: f32,
+                    a: i16,
+                };
+
+                main :: () {
+                    my_foo : Foo = Foo.{
+                        a = 5,
+                        b = 42.0,
+                        c = 'a',
+                        d = 256,
+                    };
+
+                    foo_list := .[my_foo, my_foo, my_foo];
+
+                    core.println(foo_list);
+
+                    bar_list := foo_list as [3]Bar;
+
+                    core.println(bar_list);
+                };
+            "#,
+            "main",
+            true,
+            expect![["
+            [ { a = 5, b = 42.000, c = a, d = 256 }, { a = 5, b = 42.000, c = a, d = 256 }, { a = 5, b = 42.000, c = a, d = 256 } ]
+            [ { c = 97, d = 256.000, b = 42.000, a = 5 }, { c = 97, d = 256.000, b = 42.000, a = 5 }, { c = 97, d = 256.000, b = 42.000, a = 5 } ]
 
 "]],
             0,

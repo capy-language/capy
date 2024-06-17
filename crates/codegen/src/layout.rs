@@ -99,7 +99,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Float(bit_width) => *bit_width as u32 / 8,
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String => pointer_bit_width / 8,
-        Ty::Array { size, sub_ty } => {
+        Ty::Array { size, sub_ty, .. } => {
             calc_single(*sub_ty, pointer_bit_width);
             sub_ty.stride() * *size as u32
         }

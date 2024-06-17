@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::{
-    comptime::ComptimeBytes, ComptimeData, FunctionToCompile, MetaTyData, MetaTyInfoArrays,
-    MetaTyLayoutArrays,
+    comptime::{ComptimeBytes, IntBytes},
+    ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
 };
 
 struct UnfinishedComptimeErr;
@@ -65,6 +65,7 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) compiler_defined_functions: &'a mut FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) globals: &'a mut FxHashMap<hir::Fqn, DataId>,
     pub(crate) str_id_gen: &'a mut UIDGenerator,
+    pub(crate) i128_id_gen: &'a mut UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
     pub(crate) comptime_data: &'a mut FxHashMap<FQComptime, ComptimeData>,
 
@@ -435,6 +436,8 @@ impl FunctionCompiler<'_> {
         data: Box<[u8]>,
         align: u64,
     ) -> DataId {
+        // todo: if the data isn't mutable, combine globals with identical definitions
+
         let id = self
             .module
             .declare_data(
@@ -461,8 +464,19 @@ impl FunctionCompiler<'_> {
 
     fn create_global_str(&mut self, mut text: String) -> DataId {
         text.push('\0');
-        let name = format!(".str{}", self.str_id_gen.generate_unique_id());
+        let name = format!(".str_{}", self.str_id_gen.generate_unique_id());
         self.create_global_data(&name, false, text.into_bytes().into_boxed_slice(), 1)
+    }
+
+    fn create_global_i128(&mut self, num: u64) -> DataId {
+        let name = format!(".i128_{}", self.i128_id_gen.generate_unique_id());
+        self.create_global_data(
+            &name,
+            false,
+            num.into_bytes(self.module.isa().endianness(), 128)
+                .into_boxed_slice(),
+            1,
+        )
     }
 
     fn build_memcpy_ty(&mut self, src: Value, dest: Value, ty: Intern<Ty>, non_overlapping: bool) {
@@ -578,22 +592,21 @@ impl FunctionCompiler<'_> {
 
                 let value = self.world_bodies[self.file_name][local_def].value;
 
-                let size = ty.size();
-
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size,
+                    size: ty.size(),
                 });
 
-                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
 
                 if let Some(value) = value {
-                    self.store_expr_in_memory(value, ty, size, stack_addr, 0);
+                    self.store_expr_in_memory(value, ty, memory);
                 } else {
-                    self.store_default_in_memory(ty, stack_addr, 0);
+                    self.store_default_in_memory(ty, memory);
                 }
 
-                self.locals.insert(local_def, stack_addr);
+                self.locals
+                    .insert(local_def, memory.into_value(&mut self.builder));
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &self.world_bodies[self.file_name][assign];
@@ -696,14 +709,23 @@ impl FunctionCompiler<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn store_default_in_memory(&mut self, expected_ty: Intern<Ty>, addr: Value, offset: u32) {
+    fn store_default_in_memory(&mut self, expected_ty: Intern<Ty>, memory: MemoryLoc) {
         let value = match expected_ty.as_ref() {
             Ty::NotYetResolved | Ty::Unknown => unreachable!(),
             Ty::IInt(_) | Ty::UInt(_) => {
                 let number_ty = expected_ty.get_final_ty().into_number_type().unwrap();
                 match number_ty.bit_width() {
-                    128 => todo!(),
+                    128 => {
+                        let data = self.create_global_i128(0);
+
+                        let local_id = self.module.declare_data_in_func(data, self.builder.func);
+
+                        let addr = self.builder.ins().symbol_value(self.ptr_ty, local_id);
+
+                        self.builder
+                            .ins()
+                            .load(types::I128, MemFlags::trusted(), addr, 0)
+                    }
                     _ => self.builder.ins().iconst(number_ty.ty, 0),
                 }
             }
@@ -715,19 +737,19 @@ impl FunctionCompiler<'_> {
             Ty::Bool => self.builder.ins().iconst(types::I8, 0),
             Ty::String => unreachable!("str does not have a default value"),
             Ty::Char => self.builder.ins().iconst(types::I8, 0),
-            Ty::Array { size, sub_ty } => {
+            Ty::Array { size, sub_ty, .. } => {
                 let inner_stride = sub_ty.stride();
 
                 for idx in 0..*size {
                     let byte_offset = idx as u32 * inner_stride;
-                    self.store_default_in_memory(*sub_ty, addr, offset + byte_offset);
+                    self.store_default_in_memory(*sub_ty, memory.with_offset(byte_offset));
                 }
                 return;
             }
             Ty::Slice { .. } => unreachable!("slices do not have default values"),
             Ty::Pointer { .. } => unreachable!("pointers do not have default values"),
             Ty::Distinct { sub_ty, .. } => {
-                self.store_default_in_memory(*sub_ty, addr, offset);
+                self.store_default_in_memory(*sub_ty, memory);
                 return;
             }
             Ty::Type => unreachable!("types do not have default values"),
@@ -738,7 +760,10 @@ impl FunctionCompiler<'_> {
                 let struct_mem = expected_ty.struct_layout().unwrap();
 
                 for (idx, (_, ty)) in members.iter().enumerate() {
-                    self.store_default_in_memory(*ty, addr, offset + struct_mem.offsets()[idx]);
+                    self.store_default_in_memory(
+                        *ty,
+                        memory.with_offset(struct_mem.offsets()[idx]),
+                    );
                 }
                 return;
             }
@@ -747,104 +772,46 @@ impl FunctionCompiler<'_> {
             Ty::NoEval => return,
         };
 
-        self.builder
-            .ins()
-            .store(MemFlags::trusted(), value, addr, offset as i32);
+        self.builder.ins().store(
+            MemFlags::trusted(),
+            value,
+            memory.addr,
+            memory.offset as i32,
+        );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn store_expr_in_memory(
         &mut self,
         expr: Idx<hir::Expr>,
         expected_ty: Intern<Ty>,
-        // this is given separately so the stride can be given instead of the size
-        expr_size: u32,
-        addr: Value,
-        offset: u32,
+        memory: MemoryLoc,
     ) {
         let expr_ty = self.tys[self.file_name][expr];
 
-        // if the expression has to be casted in order to become the expected type, cast it before
-        // memcopying if neccessary.
+        // if the expression has to be casted in order to become the expected type, do that.
         // the one cast this applies to is `core.Any` casting.
         if !expr_ty.is_functionally_equivalent_to(&expected_ty, true) {
-            let value = self.compile_and_cast(expr, expected_ty).unwrap();
-
-            if expected_ty.is_aggregate() {
-                let offset = self.builder.ins().iconst(self.ptr_ty, offset as i64);
-                let actual_addr = self.builder.ins().iadd(addr, offset);
-
-                self.build_memcpy_size(value, actual_addr, expr_size as u64, false);
-            } else {
-                self.builder
-                    .ins()
-                    .store(MemFlags::trusted(), value, addr, offset as i32);
-            }
-
+            // todo: this could probably be made even more efficient
+            self.compile_and_cast_into_memory(expr, expected_ty, memory);
             return;
         }
 
         match &self.world_bodies[self.file_name][expr] {
-            hir::Expr::ArrayLiteral { items, .. } if expected_ty.is_array() => {
-                // fixed array
-                self.store_array_items(items.iter().copied(), addr, offset)
-            }
-            // todo: this should be unreachable now after the syntax changes
             hir::Expr::ArrayLiteral { items, .. } => {
-                // slice
-                let ty = self.tys[self.file_name][expr];
-
-                if ty.is_zero_sized() {
-                    return;
-                }
-
-                let Some(sub_ty) = ty.as_slice() else {
-                    return;
-                };
-                let array_size = sub_ty.stride() * items.len() as u32;
-
-                let array_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: array_size,
-                });
-
-                let array_addr = self.builder.ins().stack_addr(self.ptr_ty, array_slot, 0);
-
-                let len = items.len();
-
-                self.store_array_items(items.iter().copied(), array_addr, 0);
-
-                let size = self.builder.ins().iconst(self.ptr_ty, len as i64);
-                self.builder
-                    .ins()
-                    .store(MemFlags::trusted(), size, addr, offset as i32);
-
-                self.builder.ins().store(
-                    MemFlags::trusted(),
-                    array_addr,
-                    addr,
-                    (offset + self.ptr_ty.bytes()) as i32,
-                );
+                let (_, sub_ty) = expected_ty
+                    .as_array()
+                    .expect("array literals should have an array type");
+                // fixed array
+                self.store_array_items(items.iter().copied(), sub_ty, memory)
             }
             hir::Expr::StructLiteral {
                 members: member_values,
                 ..
-            } => self.store_struct_fields(expected_ty, member_values, addr, offset),
-            _ if expected_ty.is_aggregate() => {
-                let far_off_thing = self.compile_expr(expr).unwrap();
-
-                let offset = self.builder.ins().iconst(self.ptr_ty, offset as i64);
-
-                let actual_addr = self.builder.ins().iadd(addr, offset);
-
-                self.build_memcpy_size(far_off_thing, actual_addr, expr_size as u64, false);
-            }
+            } => self.store_struct_fields(expected_ty, member_values, memory),
             _ => {
-                if let Some(value) = self.compile_and_cast(expr, expected_ty) {
-                    self.builder
-                        .ins()
-                        .store(MemFlags::trusted(), value, addr, offset as i32);
-                }
+                let val = self.compile_expr(expr);
+
+                memory.write(val, expected_ty, self.module, &mut self.builder);
             }
         }
     }
@@ -853,8 +820,7 @@ impl FunctionCompiler<'_> {
         &mut self,
         struct_ty: Intern<Ty>,
         field_values: &[(Option<hir::NameWithRange>, Idx<hir::Expr>)],
-        addr: Value,
-        offset: u32,
+        memory: MemoryLoc,
     ) {
         assert!(struct_ty.is_struct());
 
@@ -871,32 +837,23 @@ impl FunctionCompiler<'_> {
             self.store_expr_in_memory(
                 *value,
                 field.1 .1,
-                field.1 .1.size(),
-                addr,
-                offset + struct_mem.offsets()[field.0],
+                memory.with_offset(struct_mem.offsets()[field.0]),
             );
         }
     }
 
     fn store_array_items(
         &mut self,
-        mut items: impl Iterator<Item = Idx<hir::Expr>>,
-        addr: Value,
-        offset: u32,
+        items: impl Iterator<Item = Idx<hir::Expr>>,
+        // this has to be given since the items may autocast into the actual sub type
+        sub_ty: Intern<Ty>,
+        memory: MemoryLoc,
     ) {
-        let Some(first) = items.next() else {
-            // the array has a length of zero
-            return;
-        };
-
-        // todo: this might break autocasting
-        let inner_ty = self.tys[self.file_name][first];
-        let inner_stride = inner_ty.stride();
-        self.store_expr_in_memory(first, inner_ty, inner_stride, addr, offset);
+        let stride = sub_ty.stride();
 
         for (idx, item) in items.enumerate() {
-            let byte_offset = (idx as u32 + 1) * inner_stride;
-            self.store_expr_in_memory(item, inner_ty, inner_stride, addr, offset + byte_offset)
+            let byte_offset = idx as u32 * stride;
+            self.store_expr_in_memory(item, sub_ty, memory.with_offset(byte_offset))
         }
     }
 
@@ -927,10 +884,23 @@ impl FunctionCompiler<'_> {
                         _ => unreachable!(),
                     }
                 } else {
-                    Some(match number_ty.bit_width() {
-                        128 => todo!(),
-                        _ => self.builder.ins().iconst(number_ty.ty, n as i64),
-                    })
+                    match number_ty.bit_width() {
+                        128 => {
+                            let data = self.create_global_i128(n);
+
+                            let local_id =
+                                self.module.declare_data_in_func(data, self.builder.func);
+
+                            let addr = self.builder.ins().symbol_value(self.ptr_ty, local_id);
+
+                            Some(
+                                self.builder
+                                    .ins()
+                                    .load(types::I128, MemFlags::trusted(), addr, 0),
+                            )
+                        }
+                        _ => Some(self.builder.ins().iconst(number_ty.ty, n as i64)),
+                    }
                 }
             }
             hir::Expr::FloatLiteral(f) => {
@@ -962,44 +932,18 @@ impl FunctionCompiler<'_> {
                     return None;
                 }
 
-                let array_size = if let Some(sub_ty) = ty.as_slice() {
-                    sub_ty.stride() * items.len() as u32
-                } else {
-                    ty.size()
-                };
+                let (_, sub_ty) = ty.as_array().expect("array literals must have array types");
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size: array_size,
+                    size: ty.size(),
                 });
 
-                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
 
-                let len = items.len();
+                self.store_array_items(items.iter().copied(), sub_ty, memory);
 
-                self.store_array_items(items.iter().copied(), stack_addr, 0);
-
-                if ty.is_slice() {
-                    let slice_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size: self.ptr_ty.bytes() * 2,
-                    });
-
-                    let size = self.builder.ins().iconst(self.ptr_ty, len as i64);
-                    self.builder.ins().stack_store(size, slice_slot, 0);
-
-                    self.builder.ins().stack_store(
-                        stack_addr,
-                        slice_slot,
-                        self.ptr_ty.bytes() as i32,
-                    );
-
-                    let slice_addr = self.builder.ins().stack_addr(self.ptr_ty, slice_slot, 0);
-
-                    Some(slice_addr)
-                } else {
-                    Some(stack_addr)
-                }
+                Some(memory.into_value(&mut self.builder))
             }
             hir::Expr::Index { source, index } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
@@ -1887,11 +1831,11 @@ impl FunctionCompiler<'_> {
                     size: ty.size(),
                 });
 
-                let stack_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
 
-                self.store_struct_fields(ty, &field_values, stack_addr, 0);
+                self.store_struct_fields(ty, &field_values, memory);
 
-                Some(stack_addr)
+                Some(memory.into_value(&mut self.builder))
             }
             hir::Expr::PrimitiveTy { .. } => None,
             hir::Expr::Distinct { .. } => None,
@@ -2022,9 +1966,10 @@ impl FunctionCompiler<'_> {
                     self.store_expr_in_memory(
                         self.world_bodies[self.file_name][comptime].body,
                         ty,
-                        ty.size(),
-                        value_ptr,
-                        0,
+                        MemoryLoc {
+                            addr: value_ptr,
+                            offset: 0,
+                        },
                     );
 
                     let true_val = self.builder.ins().iconst(types::I8, 1);
@@ -2099,6 +2044,36 @@ impl FunctionCompiler<'_> {
         self.cast(value, self.tys[self.file_name][expr], cast_to)
     }
 
+    fn compile_and_cast_into_memory(
+        &mut self,
+        expr: Idx<hir::Expr>,
+        cast_to: Intern<Ty>,
+        memory: MemoryLoc,
+    ) -> Option<Value> {
+        let value = self.compile_expr(expr);
+
+        self.cast_into_memory(value, self.tys[self.file_name][expr], cast_to, memory)
+    }
+
+    fn cast_into_memory(
+        &mut self,
+        val: Option<Value>,
+        cast_from: Intern<Ty>,
+        cast_to: Intern<Ty>,
+        memory: MemoryLoc,
+    ) -> Option<Value> {
+        super::cast_into_memory(
+            self.meta_tys,
+            self.module,
+            &mut self.builder,
+            self.ptr_ty,
+            val,
+            cast_from,
+            cast_to,
+            Some(memory),
+        )
+    }
+
     /// This takes an Option and returns an Option because a `()` might be automatically casted to
     /// a `core.Any`
     fn cast(
@@ -2107,13 +2082,15 @@ impl FunctionCompiler<'_> {
         cast_from: Intern<Ty>,
         cast_to: Intern<Ty>,
     ) -> Option<Value> {
-        super::cast(
+        super::cast_into_memory(
             self.meta_tys,
+            self.module,
             &mut self.builder,
             self.ptr_ty,
             val,
             cast_from,
             cast_to,
+            None,
         )
     }
 }
