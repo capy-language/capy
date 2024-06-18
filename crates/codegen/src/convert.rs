@@ -243,7 +243,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         },
         hir_ty::Ty::Array { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
-            let mask = ptr_ty.bytes() - 1;
+            let mask = 16 - 1;
             FinalTy::Pointer {
                 ty: ptr_ty,
                 aggr_pointee_size: Some((ty.stride() + mask) & !mask),
@@ -284,7 +284,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             for (_, ty) in members {
                 calc_single(*ty, ptr_ty);
             }
-            let mask = ptr_ty.bytes() - 1;
+            let mask = 16 - 1;
             FinalTy::Pointer {
                 ty: ptr_ty,
                 aggr_pointee_size: Some((ty.stride() + mask) & !mask),
