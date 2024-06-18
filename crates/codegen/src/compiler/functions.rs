@@ -126,7 +126,6 @@ impl FunctionCompiler<'_> {
 
             let param_ty = param_tys[old_idx as usize];
             if param_ty.is_aggregate() {
-                let size = param_ty.size();
                 // TODO: this most likely oveshoots the abi align on some architectures
                 const ABI_ALIGN_MASK: u32 = 8 - 1;
 
@@ -494,19 +493,6 @@ impl FunctionCompiler<'_> {
         )
     }
 
-    fn build_memcpy_size(&mut self, src: Value, dest: Value, size: u64, non_overlapping: bool) {
-        self.builder.emit_small_memory_copy(
-            self.module.target_config(),
-            dest,
-            src,
-            size,
-            1,
-            1,
-            non_overlapping,
-            MemFlags::trusted(),
-        )
-    }
-
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         super::get_func_id(
             self.module,
@@ -594,7 +580,6 @@ impl FunctionCompiler<'_> {
 
                 let value = self.world_bodies[self.file_name][local_def].value;
 
-                let size = ty.size();
                 // TODO: this most likely oveshoots the abi align on some architectures
                 const ABI_ALIGN_MASK: u32 = 8 - 1;
 
@@ -636,11 +621,7 @@ impl FunctionCompiler<'_> {
                 };
 
                 if value_ty.is_aggregate() {
-                    let size = value_ty.size();
-                    let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
-
-                    self.builder
-                        .call_memcpy(self.module.target_config(), source, value, size)
+                    self.build_memcpy_ty(value, source, *value_ty, false);
                 } else {
                     self.builder
                         .ins()
@@ -937,13 +918,6 @@ impl FunctionCompiler<'_> {
                 if ty.is_zero_sized() {
                     return None;
                 }
-
-                let array_size = if let Some(sub_ty) = ty.as_slice() {
-                    sub_ty.stride() * items.len() as u32
-                } else {
-                    ty.size()
-                };
-
 
                 let (_, sub_ty) = ty.as_array().expect("array literals must have array types");
                 // TODO: this most likely oveshoots the abi align on some architectures
