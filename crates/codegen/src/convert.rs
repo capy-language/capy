@@ -90,7 +90,6 @@ impl FinalTy {
                 ty,
                 aggr_pointee_size: Some(sz),
             } => {
-                dbg!(sz);
                 Some(AbiParam::special(
                     ty,
                     ArgumentPurpose::StructArgument(sz as u32),
