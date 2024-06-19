@@ -265,7 +265,7 @@ pub struct LocalDef {
 
 #[derive(Clone, Debug)]
 pub struct Assign {
-    pub source: Idx<Expr>,
+    pub dest: Idx<Expr>,
     pub value: Idx<Expr>,
     pub range: TextRange,
     pub ast: ast::Assign,
@@ -786,11 +786,11 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_assignment(&mut self, assign: ast::Assign) -> Stmt {
-        let source = self.lower_expr(assign.source(self.tree).unwrap().value(self.tree));
+        let dest = self.lower_expr(assign.source(self.tree).unwrap().value(self.tree));
         let value = self.lower_expr(assign.value(self.tree));
 
         let id = self.bodies.assigns.alloc(Assign {
-            source,
+            dest,
             value,
             range: assign.range(self.tree),
             ast: assign,
@@ -1860,7 +1860,7 @@ impl Iterator for Descendants<'_> {
                 }
                 Stmt::Assign(assign) => {
                     let assign = &self.bodies[assign];
-                    self.todo.push(Descendant::Expr(assign.source));
+                    self.todo.push(Descendant::Expr(assign.dest));
                     self.todo.push(Descendant::Expr(assign.value));
                 }
                 Stmt::Expr(expr) => self.todo.push(Descendant::Expr(expr)),
@@ -2562,7 +2562,7 @@ impl Bodies {
                 Stmt::Assign(local_set_id) => {
                     write_expr(
                         s,
-                        bodies[*local_set_id].source,
+                        bodies[*local_set_id].dest,
                         show_idx,
                         bodies,
                         mod_dir,

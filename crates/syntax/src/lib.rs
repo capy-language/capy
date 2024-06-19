@@ -36,6 +36,9 @@ capy_macros::define_token_enum! {
     TokenKind, stripped, "../../tokenizer.txt"
 }
 
+/// Represents a group of tokens or other nodes.
+///
+/// For example, StmtExpr might contain an IntLiteral which contains an Int token
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NodeKind {
     Root,

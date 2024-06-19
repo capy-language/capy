@@ -152,21 +152,21 @@ impl FunctionCompiler<'_> {
             }
         }
 
-        // let hir_body = self.bodies_map[&self.module_name].function_body(self.module_name.name);
+        if return_ty.is_aggregate() {
+            let return_addr = self.builder.use_var(dest_param.unwrap());
+            let return_mem = MemoryLoc {
+                addr: return_addr,
+                offset: 0,
+            };
 
-        match self.compile_and_cast(function_body, return_ty) {
-            Some(body) => {
-                if return_ty.is_aggregate() {
-                    let dest = self.builder.use_var(dest_param.unwrap());
-                    self.build_memcpy_ty(body, dest, return_ty, true);
+            self.compile_and_cast_into_memory(function_body, return_ty, return_mem);
 
-                    self.builder.ins().return_(&[dest])
-                } else {
-                    self.builder.ins().return_(&[body])
-                }
-            }
-            None => self.builder.ins().return_(&[]),
-        };
+            self.builder.ins().return_(&[return_addr]);
+        } else if let Some(val) = self.compile_and_cast(function_body, return_ty) {
+            self.builder.ins().return_(&[val]);
+        } else {
+            self.builder.ins().return_(&[]);
+        }
 
         if debug_print {
             println!("{}", self.builder.func);
@@ -479,6 +479,7 @@ impl FunctionCompiler<'_> {
         )
     }
 
+    #[allow(unused)]
     fn build_memcpy_ty(&mut self, src: Value, dest: Value, ty: Intern<Ty>, non_overlapping: bool) {
         self.builder.emit_small_memory_copy(
             self.module.target_config(),
@@ -487,19 +488,6 @@ impl FunctionCompiler<'_> {
             ty.stride() as u64,
             ty.align() as u8,
             ty.align() as u8,
-            non_overlapping,
-            MemFlags::trusted(),
-        )
-    }
-
-    fn build_memcpy_size(&mut self, src: Value, dest: Value, size: u64, non_overlapping: bool) {
-        self.builder.emit_small_memory_copy(
-            self.module.target_config(),
-            dest,
-            src,
-            size,
-            1,
-            1,
             non_overlapping,
             MemFlags::trusted(),
         )
@@ -600,7 +588,9 @@ impl FunctionCompiler<'_> {
                 let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
 
                 if let Some(value) = value {
-                    self.store_expr_in_memory(value, ty, memory);
+                    // the type of the value might not be the same as the type annotation of the
+                    // declaration
+                    self.compile_and_cast_into_memory(value, ty, memory);
                 } else {
                     self.store_default_in_memory(ty, memory);
                 }
@@ -611,35 +601,17 @@ impl FunctionCompiler<'_> {
             hir::Stmt::Assign(assign) => {
                 let assign_body = &self.world_bodies[self.file_name][assign];
 
-                let value_ty = &self.tys[self.file_name][assign_body.value];
-
-                let source =
-                    if let Some(val) = self.compile_expr_with_args(assign_body.source, true) {
-                        val
-                    } else {
-                        return;
-                    };
-
-                let source_ty = &self.tys[self.file_name][assign_body.source];
-
-                let value = if let Some(val) = self.compile_and_cast(assign_body.value, *source_ty)
-                {
-                    val
-                } else {
+                let Some(dest) = self.compile_expr_with_args(assign_body.dest, true) else {
                     return;
                 };
+                let dest = MemoryLoc {
+                    addr: dest,
+                    offset: 0,
+                };
 
-                if value_ty.is_aggregate() {
-                    let size = value_ty.size();
-                    let size = self.builder.ins().iconst(self.ptr_ty, size as i64);
+                let dest_ty = &self.tys[self.file_name][assign_body.dest];
 
-                    self.builder
-                        .call_memcpy(self.module.target_config(), source, value, size)
-                } else {
-                    self.builder
-                        .ins()
-                        .store(MemFlags::trusted(), value, source, 0);
-                }
+                self.compile_and_cast_into_memory(assign_body.value, *dest_ty, dest);
             }
             hir::Stmt::Break {
                 label: Some(label),
@@ -2050,6 +2022,14 @@ impl FunctionCompiler<'_> {
         cast_to: Intern<Ty>,
         memory: MemoryLoc,
     ) -> Option<Value> {
+        if self.tys[self.file_name][expr].is_functionally_equivalent_to(&cast_to, true) {
+            self.store_expr_in_memory(expr, cast_to, memory);
+
+            return Some(memory.into_value(&mut self.builder));
+        }
+
+        // todo: there should be a function similar to `store_expr_in_memory` that also casts along
+        // the way. this would remove an unnecessary memcpy
         let value = self.compile_expr(expr);
 
         self.cast_into_memory(value, self.tys[self.file_name][expr], cast_to, memory)

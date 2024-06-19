@@ -1,7 +1,11 @@
 #![no_main]
 
 extern crate ast;
+extern crate codegen;
+extern crate hir_ty;
 extern crate libfuzzer_sys;
+extern crate rustc_hash;
+extern crate target_lexicon;
 
 use std::path::Path;
 
@@ -27,11 +31,11 @@ fuzz_target!(|s: &str| {
     let root = ast::Root::cast(tree.root(), tree).unwrap();
     let _diagnostics = ast::validation::validate(root, tree);
 
-    let (index, _indexing_diagnostics) = hir::index(root, &tree, &mut interner);
+    let (index, _indexing_diagnostics) = hir::index(root, tree, &mut interner);
 
     let (bodies, _lowering_diagnostics) = hir::lower(
         root,
-        &tree,
+        tree,
         Path::new("main.capy"),
         &index,
         &mut uid_gen,
@@ -48,9 +52,9 @@ fuzz_target!(|s: &str| {
     let mut comptime_results = FxHashMap::default();
 
     let InferenceResult {
-        tys,
+        tys: _tys,
         diagnostics: _type_diagnostics,
-        any_were_unsafe_to_compile,
+        any_were_unsafe_to_compile: _any_unsafe,
     } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
         // todo: this might make the fuzzer a lot slower, would it be beneficial to make a separate
         // fuzzer for codegen stuff?

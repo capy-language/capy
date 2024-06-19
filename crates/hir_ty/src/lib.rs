@@ -343,6 +343,14 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     }),
             );
 
+        if self.to_infer.is_empty() {
+            return InferenceResult {
+                tys: self.tys,
+                diagnostics: self.diagnostics,
+                any_were_unsafe_to_compile: false,
+            };
+        }
+
         const DEBUG: bool = false;
 
         loop {
@@ -857,10 +865,10 @@ mod tests {
             Option<(TyDiagnosticHelpKind, std::ops::Range<u32>)>,
         ); N],
     ) {
-        check_with_entry(input, expect, expected_diagnostics, None)
+        check_impl(input, expect, expected_diagnostics, None)
     }
 
-    fn check_with_entry<const N: usize>(
+    fn check_impl<const N: usize>(
         input: &str,
         expect: Expect,
         expected_diagnostics: impl Fn(
@@ -1050,6 +1058,16 @@ mod tests {
                 panic!("errors but safe to compile");
             }
         }
+    }
+
+    #[test]
+    fn empty_file() {
+        check(
+            "",
+            expect![[r#"
+"#]],
+            |_| [],
+        )
     }
 
     #[test]
@@ -7330,7 +7348,7 @@ mod tests {
 
     #[test]
     fn entry_point_void() {
-        check_with_entry(
+        check_impl(
             r#"
                 start :: () {};
             "#,
@@ -7346,7 +7364,7 @@ mod tests {
 
     #[test]
     fn entry_point_int() {
-        check_with_entry(
+        check_impl(
             r#"
                 entry :: () -> i16 { 0 };
             "#,
@@ -7363,7 +7381,7 @@ mod tests {
 
     #[test]
     fn entry_point_uint() {
-        check_with_entry(
+        check_impl(
             r#"
                 main :: () -> usize { 0 };
             "#,
@@ -7380,7 +7398,7 @@ mod tests {
 
     #[test]
     fn entry_point_non_function() {
-        check_with_entry(
+        check_impl(
             r#"
                 main :: 5;
             "#,
@@ -7395,7 +7413,7 @@ mod tests {
 
     #[test]
     fn entry_point_bad_params_and_return() {
-        check_with_entry(
+        check_impl(
             r#"
                 foo :: (x: i32, y: bool) -> str {
                     "Hello!"

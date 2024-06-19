@@ -163,7 +163,7 @@ impl GlobalInferenceCtx<'_> {
                 hir::Stmt::Assign(assign) => {
                     let assign_body = &self.bodies[assign];
 
-                    self.reinfer_expr(assign_body.source);
+                    self.reinfer_expr(assign_body.dest);
                     self.reinfer_expr(assign_body.value);
                 }
                 hir::Stmt::Expr(expr) => {
@@ -1789,11 +1789,11 @@ impl GlobalInferenceCtx<'_> {
                         Stmt::Assign(assign) => {
                             let assign_body = &self.bodies[assign];
 
-                            let source_ty = self.tys[self.file][assign_body.source];
+                            let source_ty = self.tys[self.file][assign_body.dest];
                             let value_ty = self.tys[self.file][assign_body.value];
 
                             let help = self
-                                .get_mutability(assign_body.source, true, false)
+                                .get_mutability(assign_body.dest, true, false)
                                 .into_diagnostic();
 
                             if help.is_some() {
@@ -1801,17 +1801,17 @@ impl GlobalInferenceCtx<'_> {
                                     kind: TyDiagnosticKind::CannotMutate,
                                     file: self.file,
                                     // making expr the source isn't technically correct, but it works
-                                    expr: Some(assign_body.source),
+                                    expr: Some(assign_body.dest),
                                     range: assign_body.range,
                                     help,
                                 })
                             } else if source_ty.is_weak_replaceable_by(&value_ty) {
-                                self.replace_weak_tys(assign_body.source, source_ty);
+                                self.replace_weak_tys(assign_body.dest, source_ty);
                             } else if self.expect_match(value_ty, source_ty, assign_body.value) {
                                 self.replace_weak_tys(assign_body.value, source_ty);
                             }
 
-                            self.find_usages(&[assign_body.source, assign_body.value], stmt);
+                            self.find_usages(&[assign_body.dest, assign_body.value], stmt);
                         }
                         Stmt::Break { label: None, .. } => {}
                         Stmt::Break {

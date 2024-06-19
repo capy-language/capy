@@ -229,6 +229,9 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
     };
 
     quote! {
+        /// Represents a token in a Capy program.
+        ///
+        /// This enum might appear in different places under different names
         #derive
         pub enum #enum_name {
             #entries
