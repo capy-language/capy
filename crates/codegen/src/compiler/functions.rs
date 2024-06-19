@@ -126,15 +126,29 @@ impl FunctionCompiler<'_> {
 
             let param_ty = param_tys[old_idx as usize];
             if param_ty.is_aggregate() {
-                // TODO: this most likely oveshoots the abi align on some architectures
-                const ABI_ALIGN_MASK: u32 = 16 - 1;
-
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: (param_ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
-                });
-
-                let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                // TODO: make the borrow checker happy without inlining
+                let stack_slot_addr = {
+                    let size = param_ty.size();
+                    let align = param_ty.align();
+                    let abi_align = 16;
+                    if abi_align >= align {
+                        let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: (size + abi_align - 1) / abi_align * abi_align,
+                        });
+                        self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0)
+                    } else {
+                        let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                            kind: StackSlotKind::ExplicitSlot,
+                            size: (size + align) / abi_align * abi_align,
+                        });
+                        let base_ptr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                        let misalign_offset = self.builder.ins().urem_imm(base_ptr, align as i64);
+                        let realign_offset =
+                            self.builder.ins().irsub_imm(misalign_offset, align as i64);
+                        self.builder.ins().iadd(base_ptr, realign_offset)
+                    }
+                };
 
                 self.builder.emit_small_memory_copy(
                     self.module.target_config(),
@@ -493,6 +507,27 @@ impl FunctionCompiler<'_> {
         )
     }
 
+    // TODO: this is just copying rustc at the moment (https://github.com/rust-lang/rust/blob/11380368dc53d0b2fc3a627408818eff1973ce9a/compiler/rustc_codegen_cranelift/src/common.rs#L390)
+    fn create_stack_slot_addr(&mut self, size: u32, align: u32) -> MemoryLoc {
+        let abi_align = 16;
+        if abi_align >= align {
+            let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                size: (size + abi_align - 1) / abi_align * abi_align,
+            });
+            MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty)
+        } else {
+            let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                kind: StackSlotKind::ExplicitSlot,
+                size: (size + align) / abi_align * abi_align,
+            });
+            let base_ptr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+            let misalign_offset = self.builder.ins().urem_imm(base_ptr, align as i64);
+            let realign_offset = self.builder.ins().irsub_imm(misalign_offset, align as i64);
+            MemoryLoc::from_value(self.builder.ins().iadd(base_ptr, realign_offset))
+        }
+    }
+
     fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
         super::get_func_id(
             self.module,
@@ -580,15 +615,7 @@ impl FunctionCompiler<'_> {
 
                 let value = self.world_bodies[self.file_name][local_def].value;
 
-                // TODO: this most likely oveshoots the abi align on some architectures
-                const ABI_ALIGN_MASK: u32 = 16 - 1;
-
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: (ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
-                });
-
-                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
+                let memory = self.create_stack_slot_addr(ty.size(), ty.align());
 
                 if let Some(value) = value {
                     self.store_expr_in_memory(value, ty, memory);
@@ -920,14 +947,8 @@ impl FunctionCompiler<'_> {
                 }
 
                 let (_, sub_ty) = ty.as_array().expect("array literals must have array types");
-                // TODO: this most likely oveshoots the abi align on some architectures
-                const ABI_ALIGN_MASK: u32 = 16 - 1;
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: (ty.stride() + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
-                });
 
-                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
+                let memory = self.create_stack_slot_addr(ty.size(), ty.align());
 
                 self.store_array_items(items.iter().copied(), sub_ty, memory);
 
@@ -1048,31 +1069,18 @@ impl FunctionCompiler<'_> {
                     } else {
                         // even though the expression is void, we still need to get some
                         // result
-
-                        let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                            kind: StackSlotKind::ExplicitSlot,
-                            size: 0,
-                        });
-
-                        Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
+                        Some(self.builder.ins().null(self.ptr_ty))
                     }
                 } else {
                     let inner_size = self.tys[self.file_name][expr].size();
 
-                    // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
-                    // TODO: this most likely oveshoots the abi align on some architectures
-                    const ABI_ALIGN_MASK: u32 = 16 - 1;
-
-                    let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size: (inner_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
-                    });
+                    let stack_slot = self.create_stack_slot_addr(inner_size, 1);
 
                     let expr = self.compile_expr(expr).unwrap();
 
-                    self.builder.ins().stack_store(expr, stack_slot, 0);
+                    stack_slot.store(expr, &mut self.builder);
 
-                    Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
+                    Some(stack_slot.into_value(&mut self.builder))
                 }
             }
             hir::Expr::Deref { pointer } => {
@@ -1326,14 +1334,9 @@ impl FunctionCompiler<'_> {
 
                 let ret_addr = if return_ty.is_aggregate() {
                     let aggregate_size = return_ty.size();
-                    // TODO: this most likely oveshoots the abi align on some architectures
-                    const ABI_ALIGN_MASK: u32 = 16 - 1;
 
-                    let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size: (aggregate_size + ABI_ALIGN_MASK) & !ABI_ALIGN_MASK,
-                    });
-                    let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
+                    let stack_slot = self.create_stack_slot_addr(aggregate_size, return_ty.align());
+                    let stack_slot_addr = stack_slot.into_value(&mut self.builder);
 
                     arg_values.push(stack_slot_addr);
                     Some(stack_slot_addr)

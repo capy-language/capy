@@ -1075,6 +1075,14 @@ impl MemoryLoc {
         }
     }
 
+    /// This converts a value into a `MemoryLoc` with 0 offset
+    fn from_value(val: Value) -> Self {
+        Self {
+            addr: val,
+            offset: 0,
+        }
+    }
+
     /// Does a simple store of a memmove if necessary
     ///
     /// By using this function, you promise that the bytes of val can fit inside
@@ -1112,6 +1120,12 @@ impl MemoryLoc {
                 .ins()
                 .store(MemFlags::trusted(), val, self.addr, self.offset as i32);
         }
+    }
+
+    /// store the given `Value` to the given `MemoryLoc`
+    fn store(&self, val: Value, builder: &mut FunctionBuilder) {
+        let addr = self.into_value(builder);
+        builder.ins().store(MemFlags::trusted(), val, addr, 0);
     }
 }
 
