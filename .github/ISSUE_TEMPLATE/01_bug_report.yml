@@ -1,0 +1,54 @@
+name: Bug Report
+description: Create a report to help us fix a problem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report 🐛
+        
+        Capy is early in development, and we want to fix as many issues as possible 😁
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >
+        Please provide a clear description of what the bug is,
+        including what currently happens and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: Please list the steps for us reproduce the bug.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Provide any additional notes that might be helpful.
+  - type: dropdown
+    id: is-on-latest
+    attributes:
+      label: Does this happen on the latest commit?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+  - type: dropdown
+    id: targets
+    attributes:
+      label: What targets are you seeing the problem on?
+      multiple: true
+      options:
+        - macOS
+        - windows
+        - linux
+        - other
+    validations:
+      required: true

@@ -1,0 +1,32 @@
+name: Feature Request
+description: Suggest an idea for enhancing Capy
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a feature request 😄
+
+        We'd love to hear how we can improve the language!
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >
+        Please provide a clear description of your use case and the problem
+        this feature request is trying to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: >
+        Please provide a clear and concise description of what you want to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Provide any additional context or information that might be helpful.
