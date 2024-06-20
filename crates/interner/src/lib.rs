@@ -1,5 +1,7 @@
 use std::mem;
 
+use lasso::Spur;
+
 macro_rules! impl_interner {
     ($($keyword:ident => $text:expr,)*) => {
         impl Default for Interner {
@@ -64,7 +66,7 @@ impl Interner {
 
 impl Key {
     pub fn from_raw(raw: u32) -> Self {
-        unsafe { Self(mem::transmute(raw)) }
+        unsafe { Self(mem::transmute::<u32, Spur>(raw)) }
     }
 
     pub fn to_raw(self) -> u32 {

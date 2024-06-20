@@ -966,7 +966,10 @@ mod tests {
                 &interner,
                 &world_bodies,
                 // transmute to get past cyclic dependencies
-                unsafe { std::mem::transmute(tys) },
+                #[allow(clippy::missing_transmute_annotations)]
+                unsafe {
+                    std::mem::transmute(tys)
+                },
                 Triple::host().pointer_width().unwrap().bits(),
             );
 

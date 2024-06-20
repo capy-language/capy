@@ -1358,6 +1358,8 @@ mod tests {
     fn control_flow() {
         check_raw(
             r#"
+                core :: mod "core";
+
                 fib :: (n: i32) -> i32 {
                     if n <= 1 {
                         return n;
@@ -1375,7 +1377,10 @@ mod tests {
                             break loop {
                                 res := fib(x);
                                 if res > 1_000 {
-                                    printf("fib(%i) = %i\n", x, res);
+                                    core.print("fib(");
+                                    core.print(x);
+                                    core.print(") = ");
+                                    core.println(res);
                                     break x;
                                 }
                                 x = x + 1;
@@ -1393,10 +1398,9 @@ mod tests {
                 }
                 
                 puts :: (s: str) extern;
-                printf :: (s: str, n1: i32, n2: i32) -> i32 extern;
             "#,
             "main",
-            false,
+            true,
             expect![[r#"
                 before return
                 before break

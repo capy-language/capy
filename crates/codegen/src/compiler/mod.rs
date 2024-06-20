@@ -1120,7 +1120,7 @@ trait UnwrapOrAlloca {
         self,
         builder: &mut FunctionBuilder,
         ptr_ty: types::Type,
-        size: u32,
+        ty: Intern<Ty>,
     ) -> MemoryLoc;
 }
 
@@ -1129,14 +1129,15 @@ impl UnwrapOrAlloca for Option<MemoryLoc> {
         self,
         builder: &mut FunctionBuilder,
         ptr_ty: types::Type,
-        size: u32,
+        ty: Intern<Ty>,
     ) -> MemoryLoc {
         match self {
             Some(mem) => mem,
             None => {
                 let stack_slot = builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size,
+                    size: ty.size(),
+                    align_shift: ty.align() as u8,
                 });
 
                 let addr = builder.ins().stack_addr(ptr_ty, stack_slot, 0);
@@ -1176,9 +1177,7 @@ fn cast_into_memory(
 
     match (cast_from.as_ref(), cast_to.as_ref()) {
         (Ty::Array { size, .. }, Ty::Slice { .. }) => {
-            let slice_size = cast_to.size();
-
-            let memory = memory.unwrap_or_alloca(builder, ptr_ty, slice_size);
+            let memory = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
             builder
@@ -1206,7 +1205,7 @@ fn cast_into_memory(
             ));
         }
         _ if cast_to.is_any_struct() => {
-            let any_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
+            let any_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
 
             let struct_layout = cast_to.struct_layout().unwrap();
 
@@ -1223,6 +1222,7 @@ fn cast_into_memory(
                                     builder.create_sized_stack_slot(StackSlotData {
                                         kind: StackSlotKind::ExplicitSlot,
                                         size: cast_from.size(),
+                                        align_shift: cast_from.align() as u8,
                                     });
 
                                 builder.ins().stack_store(val, tmp_stack_slot, 0);
@@ -1318,7 +1318,7 @@ fn cast_struct_to_struct(
 
         // this is specifically for anonymous struct casting, although this code
         // might also be used to regular struct casting
-        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
+        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
 
         let from_layout = cast_from.struct_layout().unwrap();
         let to_layout = cast_to.struct_layout().unwrap();
@@ -1390,7 +1390,7 @@ fn cast_array_to_array(
     } else {
         let val = val?;
 
-        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to.size());
+        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
 
         for idx in 0..to_len as u32 {
             let from_offset = from_sub_stride * idx;

@@ -25,7 +25,7 @@ pub fn lex(text: &str) -> Tokens {
             LexerTokenKind::__InternalString => lex_string(lexer.slice(), start, handler),
             LexerTokenKind::__InternalComment => lex_comment(start, range.len(), handler),
             _ => {
-                let transmuted = unsafe { mem::transmute(kind) };
+                let transmuted = unsafe { mem::transmute::<LexerTokenKind, TokenKind>(kind) };
                 // we compare the debug names of the two values to ensure that no transmutation bugs occurred
                 debug_assert_eq!(format!("{:?}", kind), format!("{:?}", transmuted));
                 handler(transmuted, start)

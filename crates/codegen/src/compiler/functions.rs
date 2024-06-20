@@ -126,11 +126,10 @@ impl FunctionCompiler<'_> {
 
             let param_ty = param_tys[old_idx as usize];
             if param_ty.is_aggregate() {
-                let size = param_ty.size();
-
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
-                    size,
+                    size: param_ty.size(),
+                    align_shift: param_ty.align() as u8,
                 });
 
                 let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
@@ -583,6 +582,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
+                    align_shift: ty.align() as u8,
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
@@ -909,6 +909,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
+                    align_shift: ty.align() as u8,
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
@@ -1036,18 +1037,20 @@ impl FunctionCompiler<'_> {
                         let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                             kind: StackSlotKind::ExplicitSlot,
                             size: 0,
+                            align_shift: 1,
                         });
 
                         Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
                     }
                 } else {
-                    let inner_size = self.tys[self.file_name][expr].size();
+                    let inner_ty = self.tys[self.file_name][expr];
 
                     // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
 
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: inner_size,
+                        size: inner_ty.size(),
+                        align_shift: inner_ty.align() as u8,
                     });
 
                     let expr = self.compile_expr(expr).unwrap();
@@ -1307,11 +1310,10 @@ impl FunctionCompiler<'_> {
                     .collect::<Vec<_>>();
 
                 if return_ty.is_aggregate() {
-                    let aggregate_size = return_ty.size();
-
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: aggregate_size,
+                        size: return_ty.size(),
+                        align_shift: return_ty.align() as u8,
                     });
                     let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
 
@@ -1741,6 +1743,8 @@ impl FunctionCompiler<'_> {
                                 let ss = self.builder.create_sized_stack_slot(StackSlotData {
                                     kind: StackSlotKind::ExplicitSlot,
                                     size: self.ptr_ty.bytes(),
+                                    // todo: maybe do this better
+                                    align_shift: self.ptr_ty.bytes() as u8,
                                 });
 
                                 let len = self.builder.ins().iconst(self.ptr_ty, len as i64);
@@ -1801,6 +1805,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
+                    align_shift: ty.align() as u8,
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);

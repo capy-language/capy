@@ -234,7 +234,7 @@ pub fn eval_comptime_blocks<'a>(
     module.finalize_definitions().unwrap();
 
     fn run_comptime_float<T: ToBytes + Into<f64> + Copy>(code_ptr: *const u8) -> ComptimeResult {
-        let comptime = unsafe { mem::transmute::<_, fn() -> T>(code_ptr) };
+        let comptime = unsafe { mem::transmute::<*const u8, fn() -> T>(code_ptr) };
         let result = comptime();
 
         ComptimeResult::Float {
@@ -244,7 +244,7 @@ pub fn eval_comptime_blocks<'a>(
     }
 
     fn run_comptime_int<T: ToBytes + Into<u64> + Copy>(code_ptr: *const u8) -> ComptimeResult {
-        let comptime = unsafe { mem::transmute::<_, fn() -> T>(code_ptr) };
+        let comptime = unsafe { mem::transmute::<*const u8, fn() -> T>(code_ptr) };
         let result = comptime();
 
         ComptimeResult::Integer {
@@ -257,7 +257,7 @@ pub fn eval_comptime_blocks<'a>(
         let code_ptr = module.get_finalized_function(func_id);
 
         if is_type {
-            let comptime = unsafe { mem::transmute::<_, fn() -> u32>(code_ptr) };
+            let comptime = unsafe { mem::transmute::<*const u8, fn() -> u32>(code_ptr) };
             let ty = comptime();
 
             let ty = meta_tys.get(&ty).unwrap();
@@ -276,7 +276,8 @@ pub fn eval_comptime_blocks<'a>(
                     types::I32 => run_comptime_int::<u32>(code_ptr),
                     types::I64 => run_comptime_int::<u64>(code_ptr),
                     types::I128 => {
-                        let comptime = unsafe { mem::transmute::<_, fn() -> u128>(code_ptr) };
+                        let comptime =
+                            unsafe { mem::transmute::<*const u8, fn() -> u128>(code_ptr) };
                         let result = comptime();
 
                         ComptimeResult::Data(Box::new(result.to_ne_bytes()))
@@ -291,7 +292,8 @@ pub fn eval_comptime_blocks<'a>(
                     .expect("Invalid layout");
                 let raw = unsafe { std::alloc::alloc(layout) };
 
-                let comptime = unsafe { mem::transmute::<_, fn(*const u8) -> *const u8>(code_ptr) };
+                let comptime =
+                    unsafe { mem::transmute::<*const u8, fn(*const u8) -> *const u8>(code_ptr) };
 
                 comptime(raw);
 
@@ -304,7 +306,7 @@ pub fn eval_comptime_blocks<'a>(
                 results.insert(ctc, ComptimeResult::Data(bytes));
             }
             FinalTy::Void => {
-                let comptime = unsafe { mem::transmute::<_, fn()>(code_ptr) };
+                let comptime = unsafe { mem::transmute::<*const u8, fn()>(code_ptr) };
                 comptime();
                 results.insert(ctc, ComptimeResult::Void);
             }
