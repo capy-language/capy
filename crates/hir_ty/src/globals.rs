@@ -396,6 +396,13 @@ impl GlobalInferenceCtx<'_> {
                     if self.world_bodies.is_extern(fqn) {
                         ExprIsConst::Runtime
                     } else {
+                        let inferrable = Inferrable::Global(fqn);
+                        if !self.all_inferred.contains(&inferrable) {
+                            // this can only happen if there's been a cyclic error
+                            assert_eq!(*self.tys[fqn].0, Ty::NotYetResolved);
+                            return ExprIsConst::Unknown;
+                        }
+
                         to_check.push((file, self.world_bodies.body(fqn)));
                         ExprIsConst::Const
                     }
@@ -432,6 +439,13 @@ impl GlobalInferenceCtx<'_> {
                         } else if self.world_bodies.is_extern(fqn) {
                             ExprIsConst::Runtime
                         } else {
+                            let inferrable = Inferrable::Global(fqn);
+                            if !self.all_inferred.contains(&inferrable) {
+                                // this can only happen if there's been a cyclic error
+                                assert_eq!(*self.tys[fqn].0, Ty::NotYetResolved);
+                                return ExprIsConst::Unknown;
+                            }
+
                             to_check.push((*file, self.world_bodies.body(fqn)));
                             ExprIsConst::Const
                         }

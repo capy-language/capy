@@ -9739,4 +9739,51 @@ mod tests {
             },
         )
     }
+
+    #[test]
+    fn get_const_on_cyclic_globals() {
+        // check for https://github.com/capy-language/capy/issues/32
+        check(
+            r#"
+                foo :: 1;
+                ptr :: 2;
+                idx :: 5;
+                b   :: a;
+                old_gandalf :: struct {};
+                b.a = b.a + 1;
+            "#,
+            expect![[r#"
+                main::a : i32
+                main::b : <unknown>
+                main::foo : i32
+                main::idx : i32
+                main::old_gandalf : type
+                main::ptr : i32
+                0 : i32
+                1 : i32
+                2 : i32
+                3 : <unknown>
+                4 : type
+                5 : <unknown>
+                6 : <unknown>
+                7 : i32
+                8 : i32
+            "#]],
+            |i| {
+                [
+                    (
+                        TyDiagnosticKind::NotYetResolved {
+                            fqn: hir::Fqn {
+                                file: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("a")),
+                            },
+                        },
+                        102..103,
+                        None,
+                    ),
+                    (TyDiagnosticKind::GlobalNotConst, 169..176, None),
+                ]
+            },
+        )
+    }
 }
