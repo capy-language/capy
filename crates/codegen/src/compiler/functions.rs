@@ -31,13 +31,16 @@ use super::{
 
 struct UnfinishedComptimeErr;
 
-// represents a single block containing multiple defer statements
+/// represents a single block containing multiple defer statements
 #[derive(Debug, Clone)]
 pub(crate) struct DeferFrame {
     id: Option<ScopeId>,
     defers: Vec<Idx<hir::Expr>>,
 }
 
+/// Compiles a Capy function into a Cranelift function.
+///
+/// The main function to look at here is `compile_expr` or `compile_expr_with_args`
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) final_binary: bool,
 
@@ -100,6 +103,10 @@ impl FunctionCompiler<'_> {
 
         let mut dest_param = None;
 
+        // create a variable for each given parameter, and memcpy the parameter into the stack of
+        // this function if it was given "by value"
+        //
+        // this happens e.g. for structs and arrays
         for (idx, param) in self.signature.params.iter().enumerate() {
             let param_ty = param.value_type;
 
@@ -125,6 +132,7 @@ impl FunctionCompiler<'_> {
             };
 
             let param_ty = param_tys[old_idx as usize];
+            // memcpy if needed
             if param_ty.is_aggregate() {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -151,6 +159,9 @@ impl FunctionCompiler<'_> {
             }
         }
 
+        // if the return type is e.g. a struct or array, the caller of this function must allocate
+        // enough space for that return type in it's own stack. the caller then gives us an address
+        // to this space for us to put the return value
         if return_ty.is_aggregate() {
             let return_addr = self.builder.use_var(dest_param.unwrap());
             let return_mem = MemoryLoc {
@@ -158,10 +169,12 @@ impl FunctionCompiler<'_> {
                 offset: 0,
             };
 
+            // the function actually gets compiled here
             self.compile_and_cast_into_memory(function_body, return_ty, return_mem);
 
             self.builder.ins().return_(&[return_addr]);
         } else if let Some(val) = self.compile_and_cast(function_body, return_ty) {
+            // or just above
             self.builder.ins().return_(&[val]);
         } else {
             self.builder.ins().return_(&[]);

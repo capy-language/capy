@@ -429,6 +429,10 @@ Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on wind
 
 I know the cranelift documentation isn't the greatest, so if anyone wants to use this repo to see how I've implemented higher-level features such as arrays, structs, first class functions, etc. then it's all in [`crates/codegen`](./crates/codegen/).
 
+## Contributing
+
+Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how you can contribute. This file also explains how Capy's codebase actually works internally.
+
 ## License
 
 The Capy Programming Language is distributed under the terms of both the MIT license and the Apache License (Version 2.0).
