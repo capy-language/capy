@@ -176,7 +176,11 @@ pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> P
 #[cfg(test)]
 mod tests {
     use core::panic;
-    use std::{collections::HashMap, env, fs, path::Path};
+    use std::{
+        collections::HashMap,
+        env, fs,
+        path::{Path, MAIN_SEPARATOR},
+    };
 
     use ast::AstNode;
     use expect_test::{expect, Expect};
@@ -2276,14 +2280,25 @@ mod tests {
             "main",
             true,
             &["hello", "world!", "wow look at this arg", "foo=bar"],
-            expect![["
-            arg(0) = test-temp/73c274e
-            arg(1) = hello
-            arg(2) = world!
-            arg(3) = wow look at this arg
-            arg(4) = foo=bar
+            if MAIN_SEPARATOR == '\\' {
+                expect![["
+                arg(0) = test-temp\\73c274e
+                arg(1) = hello
+                arg(2) = world!
+                arg(3) = wow look at this arg
+                arg(4) = foo=bar
 
-"]],
+"]]
+            } else {
+                expect![["
+                arg(0) = test-temp/73c274e
+                arg(1) = hello
+                arg(2) = world!
+                arg(3) = wow look at this arg
+                arg(4) = foo=bar
+
+"]]
+            },
             0,
         )
     }
