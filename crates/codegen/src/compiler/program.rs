@@ -1,7 +1,8 @@
 //! This module is for building the final executable of a capy program
 
-use cranelift::prelude::{
-    AbiParam, EntityRef, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature, Variable,
+use cranelift::{
+    codegen::ir::MemFlags,
+    prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature},
 };
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use hir::FQComptime;
@@ -62,6 +63,7 @@ pub(crate) fn compile_program<'a>(
         data_desc: DataDescription::new(),
         functions_to_compile: VecDeque::from([entry_point_ftc]),
         meta_tys: MetaTyData::default(),
+        cmd_args_slice: None,
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -73,6 +75,7 @@ pub(crate) fn compile_program<'a>(
 
     compiler.finalize_tys();
     compiler.compile_queued();
+    compiler.compile_builtins();
 
     generate_main_function(compiler, entry_point)
 }
@@ -108,13 +111,23 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
     let arg_argc = builder.append_block_param(entry_block, compiler.ptr_ty);
     let arg_argv = builder.append_block_param(entry_block, compiler.ptr_ty);
 
-    let var_argc = Variable::new(0);
-    builder.declare_var(var_argc, compiler.ptr_ty);
-    builder.def_var(var_argc, arg_argc);
+    if let Some(cmd_args_slice) = compiler.cmd_args_slice {
+        let local_id = compiler
+            .module
+            .declare_data_in_func(cmd_args_slice, builder.func);
 
-    let var_argv = Variable::new(1);
-    builder.declare_var(var_argv, compiler.ptr_ty);
-    builder.def_var(var_argv, arg_argv);
+        let global_addr = builder.ins().symbol_value(compiler.ptr_ty, local_id);
+
+        builder
+            .ins()
+            .store(MemFlags::trusted(), arg_argc, global_addr, 0);
+        builder.ins().store(
+            MemFlags::trusted(),
+            arg_argv,
+            global_addr,
+            compiler.ptr_ty.bytes() as i32,
+        );
+    }
 
     let local_entry_point = compiler
         .module

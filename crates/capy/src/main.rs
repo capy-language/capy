@@ -2,8 +2,8 @@ mod git;
 mod source;
 
 use std::{
-    cell::RefCell, env, io, mem, panic::AssertUnwindSafe, path::PathBuf, process::exit, rc::Rc,
-    str::FromStr, time::Instant,
+    cell::RefCell, env, ffi::CString, io, mem, panic::AssertUnwindSafe, path::PathBuf,
+    process::exit, rc::Rc, str::FromStr, time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -66,10 +66,15 @@ enum BuildAction {
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
 
-        /// libraries to link against
-        /// this literally works by passing the args to gcc with "-l"
+        /// Libraries to link against
+        /// This literally works by passing the args to gcc with "-l"
         #[arg(long)]
         libs: Vec<String>,
+
+        /// This needs to be here due to the way the `get_build_config` macro works, but it's
+        /// skipped so that clap can still give an error if it's found
+        #[arg(skip)]
+        args: Vec<String>,
     },
     /// Takes in one or more .capy files, compiles them, and runs the compiled executable
     Run {
@@ -103,10 +108,16 @@ enum BuildAction {
         #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
         verbose: u8,
 
-        /// libraries to link against
-        /// this literally works by passing the args to gcc with "-l"
+        /// Libraries to link against
+        /// This literally works by passing the args to gcc with "-l"
         #[arg(long)]
         libs: Vec<String>,
+
+        /// A list of arguments to feed into the capy program.
+        /// These are accessable from the `args` global in `core`.
+        /// Like Cargo, this can be passed in by using `--`
+        #[arg(last = true)]
+        args: Vec<String>,
     },
 }
 
@@ -128,7 +139,7 @@ macro_rules! get_build_config {
 fn main() -> io::Result<()> {
     let config = CompilerConfig::parse();
 
-    let (file, entry_point, output, verbose, mod_dir, redownload_core, libs, config) = get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, redownload_core, libs);
+    let (file, entry_point, output, verbose, mod_dir, redownload_core, libs, args, config) = get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, redownload_core, libs, args);
 
     let file = env::current_dir()
         .unwrap()
@@ -153,6 +164,7 @@ fn main() -> io::Result<()> {
         config,
         verbose,
         &libs,
+        &args,
     )
 }
 
@@ -179,6 +191,7 @@ fn compile_file(
     config: CompilationConfig,
     verbose: u8,
     libs: &[String],
+    args: &[String],
 ) -> io::Result<()> {
     let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
     let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
@@ -496,11 +509,31 @@ fn compile_file(
             main_file.unwrap().to_string(&mod_dir, &interner),
             compilation_start.elapsed().as_secs_f32(),
         );
-        println!(
-            "{ansi_green}Running{ansi_reset}    `{}`\n",
+        print!(
+            "{ansi_green}Running{ansi_reset}    `{}",
             main_file.unwrap().to_string(&mod_dir, &interner)
         );
-        let status = jit_fn(0, 0);
+        for arg in args {
+            print!(" {arg}");
+        }
+        println!("`\n");
+
+        // convert `args` to a list of cstrings bc the jit_fn is a C main function
+        let args = ["capy-run-jit"]
+            .into_iter()
+            .chain(args.iter().map(|a| a.as_str()))
+            .map(|arg| match CString::new(arg.as_bytes()) {
+                Ok(cstr) => cstr,
+                Err(why) => {
+                    println!("error passing {:?} as an argument: {why}", arg);
+                    exit(1);
+                }
+            })
+            .collect_vec();
+        // do this separately so that the pointers don't dangle
+        let args = args.iter().map(|arg| arg.as_ptr()).collect_vec();
+
+        let status = jit_fn(args.len(), args.as_ptr());
         println!("\nProcess exited with {}", status);
 
         return Ok(());
@@ -523,7 +556,8 @@ fn compile_file(
         }
     };
 
-    let output_folder = env::current_dir().unwrap().join("out");
+    // let output_folder = env::current_dir().unwrap().join("out");
+    let output_folder = PathBuf::from("out");
 
     let _ = fs::create_dir(&output_folder);
 
@@ -560,8 +594,13 @@ fn compile_file(
         return Ok(());
     }
 
-    println!("{ansi_green}Running{ansi_reset}    `{}`\n", exec.display());
-    match std::process::Command::new(exec).status() {
+    print!("{ansi_green}Running{ansi_reset}    `{}", exec.display(),);
+    for arg in args {
+        print!(" {arg}");
+    }
+    println!("`\n");
+
+    match std::process::Command::new(exec).args(args).status() {
         Ok(status) => {
             println!("\nProcess exited with {}", status);
         }

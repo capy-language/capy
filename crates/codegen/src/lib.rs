@@ -16,6 +16,7 @@ use hir::FQComptime;
 use hir_ty::ComptimeResult;
 use interner::Interner;
 use rustc_hash::FxHashMap;
+use std::ffi::c_char;
 use std::io::Write;
 use std::mem;
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ pub fn compile_jit(
     world_bodies: &hir::WorldBodies,
     tys: &hir_ty::ProjectInference,
     comptime_results: &FxHashMap<FQComptime, ComptimeResult>,
-) -> fn(usize, usize) -> usize {
+) -> fn(usize, *const *const c_char) -> usize {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
@@ -74,7 +75,7 @@ pub fn compile_jit(
 
     let code_ptr = module.get_finalized_function(cmain);
 
-    unsafe { mem::transmute::<_, fn(usize, usize) -> usize>(code_ptr) }
+    unsafe { mem::transmute::<_, fn(usize, *const *const c_char) -> usize>(code_ptr) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -223,6 +224,8 @@ mod tests {
         let text = fs::read_to_string(&main_file).unwrap();
         modules.insert(main_file.to_string_lossy().to_string(), text);
 
+        let binary_name = main_file.file_stem().unwrap().to_string_lossy();
+
         check_impl(
             modules
                 .iter()
@@ -231,9 +234,10 @@ mod tests {
             &main_file.to_string_lossy(),
             entry_point,
             false,
+            &[],
+            &binary_name,
             stdout_expect,
             expected_status,
-            core::panic::Location::caller(),
         )
     }
 
@@ -245,7 +249,29 @@ mod tests {
         stdout_expect: Expect,
         expected_status: i32,
     ) {
+        check_raw_with_args(
+            input,
+            entry_point,
+            include_core,
+            &[],
+            stdout_expect,
+            expected_status,
+        )
+    }
+
+    #[track_caller]
+    fn check_raw_with_args(
+        input: &str,
+        entry_point: &str,
+        include_core: bool,
+        args: &[&str],
+        stdout_expect: Expect,
+        expected_status: i32,
+    ) {
         let modules = test_utils::split_multi_module_test_data(input);
+
+        let hash = sha256::digest(modules["main.capy"]);
+        let hash = &hash[..7];
 
         if include_core {
             let current_dir = env!("CARGO_MANIFEST_DIR");
@@ -283,9 +309,10 @@ mod tests {
                 &format!("{current_dir}{}main.capy", std::path::MAIN_SEPARATOR),
                 entry_point,
                 false,
+                args,
+                hash,
                 stdout_expect,
                 expected_status,
-                core::panic::Location::caller(),
             )
         } else {
             check_impl(
@@ -293,21 +320,24 @@ mod tests {
                 "main.capy",
                 entry_point,
                 true,
+                args,
+                hash,
                 stdout_expect,
                 expected_status,
-                core::panic::Location::caller(),
             )
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_impl(
         modules: FxHashMap<&str, &str>,
         main_file: &str,
         entry_point: &str,
         fake_file_system: bool,
+        args: &[&str],
+        binary_name: &str,
         stdout_expect: Expect,
         expected_status: i32,
-        caller: &'static std::panic::Location<'static>,
     ) {
         let mod_dir = if fake_file_system {
             std::path::PathBuf::new()
@@ -438,13 +468,11 @@ mod tests {
         )
         .unwrap();
 
-        let output_folder = env::current_dir().unwrap().join("test-temp");
+        let output_folder = PathBuf::from("test-temp");
 
         let _ = fs::create_dir(&output_folder);
 
-        let out_name = format!("test{}", caller.line());
-
-        let file = output_folder.join(format!("{}.o", out_name));
+        let file = output_folder.join(format!("{}.o", binary_name));
         fs::write(&file, bytes.as_slice()).unwrap_or_else(|why| {
             panic!("{}: {why}", file.display());
         });
@@ -452,6 +480,7 @@ mod tests {
         let exec = link_to_exec(&file, HOST, &[]);
 
         let output = std::process::Command::new(exec.clone())
+            .args(args)
             .output()
             .unwrap_or_else(|_| panic!("{} did not run successfully", exec.display()));
 
@@ -471,6 +500,8 @@ mod tests {
         stdout_expect.assert_eq(&stdout);
     }
 
+    /// since `trim_indent` is a private function in `expect_test`,
+    /// the function has been recreated here so that better debugging can be done
     fn trim_indent(mut text: &str) -> String {
         if text.starts_with('\n') {
             text = &text[1..];
@@ -2218,6 +2249,39 @@ mod tests {
             expect![["
             [ { a = 5, b = 42.000, c = a, d = 256 }, { a = 5, b = 42.000, c = a, d = 256 }, { a = 5, b = 42.000, c = a, d = 256 } ]
             [ { c = 97, d = 256.000, b = 42.000, a = 5 }, { c = 97, d = 256.000, b = 42.000, a = 5 }, { c = 97, d = 256.000, b = 42.000, a = 5 } ]
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn commandline_args() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+
+                main :: () {
+                    idx := 0;
+                    while idx < core.args.len {
+                        core.print("arg(");
+                        core.print(idx);
+                        core.print(") = ");
+                        core.println(core.args[idx]);
+
+                        idx = idx + 1;
+                    }
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+            arg(0) = test-temp/73c274e
+            arg(1) = hello
+            arg(2) = world!
+            arg(3) = wow look at this arg
+            arg(4) = foo=bar
 
 "]],
             0,
