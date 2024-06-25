@@ -1,6 +1,7 @@
 use cranelift::codegen::ir::{self, Type};
 use hir_ty::Ty;
 use internment::Intern;
+use tinyvec::{array_vec, ArrayVec};
 
 use crate::{convert::GetFinalTy, layout::GetLayoutInfo};
 
@@ -166,15 +167,19 @@ fn reg_component(cls: &[Class], i: &mut usize, size: usize) -> Option<ir::Type> 
     }
 }
 
-pub fn split_aggregate(aggr: Intern<Ty>, cls: &[Class]) -> (Type, Option<Type>) {
+pub fn split_aggregate(aggr: Intern<Ty>, cls: &[Class]) -> ArrayVec<[Type; 4]> {
     let mut i = 0;
     let lo = reg_component(cls, &mut i, aggr.size() as usize).unwrap();
     let off = i * 8;
+    let mut tys = array_vec!();
+    tys.push(lo);
     if aggr.size() as usize > off {
-        (lo, reg_component(cls, &mut i, aggr.size() as usize - off))
-    } else {
-        (lo, None)
+        if let Some(hi) = reg_component(cls, &mut i, aggr.size() as usize - off) {
+            tys.push(hi);
+        }
     }
+
+    tys
 }
 
 pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
@@ -182,7 +187,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
 
     let push_direct = |arg: Intern<Ty>, cls: &[_], to: &mut Vec<_>, idx: u16| {
         if arg.is_aggregate() {
-            to.push((PassMode::cast(split_aggregate(arg, cls), arg), idx));
+            to.push((PassMode::cast(split_aggregate(arg, &cls), arg), idx));
         } else {
             // if arg.size() < 4 {
             //     // TODO: sign extend appropiatly

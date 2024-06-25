@@ -12,6 +12,7 @@ use cranelift::{
 use hir_ty::Ty;
 use internment::Intern;
 use la_arena::Idx;
+use tinyvec::ArrayVec;
 
 use crate::{
     compiler::{functions::FunctionCompiler, MemoryLoc},
@@ -54,8 +55,7 @@ impl From<TargetFrontendConfig> for Abi {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PassMode {
     Cast {
-        lo: Type,
-        hi: Option<Type>,
+        tys: ArrayVec<[Type; 4]>,
         orig: Intern<Ty>,
     },
     Direct(Type),
@@ -64,8 +64,8 @@ pub enum PassMode {
 
 impl PassMode {
     #[inline]
-    pub fn cast((lo, hi): (Type, Option<Type>), orig: Intern<Ty>) -> Self {
-        Self::Cast { lo, hi, orig }
+    pub fn cast(tys: ArrayVec<[Type; 4]>, orig: Intern<Ty>) -> Self {
+        Self::Cast { tys, orig }
     }
     #[inline]
     pub fn direct(ty: Type) -> Self {
@@ -87,13 +87,7 @@ impl PassMode {
     #[inline]
     pub fn to_abiparam(&self, ptr_ty: Type) -> Vec<AbiParam> {
         match self {
-            PassMode::Cast { lo, hi, .. } => {
-                let mut params = vec![AbiParam::new(*lo)];
-                if let Some(hi) = hi {
-                    params.push(AbiParam::new(*hi));
-                }
-                params
-            }
+            PassMode::Cast { tys, .. } => tys.into_iter().copied().map(AbiParam::new).collect(),
             PassMode::Direct(ty) => vec![AbiParam::new(*ty)],
             PassMode::Indirect(Some(sz)) => vec![AbiParam::special(
                 ptr_ty,
@@ -142,18 +136,16 @@ impl FnAbi {
         for (pass, idx) in &self.args {
             let arg = args[*idx as usize];
             match pass {
-                PassMode::Cast { lo, hi, .. } => {
-                    let lo = func_cmplr
-                        .builder
-                        .ins()
-                        .load(*lo, MemFlags::trusted(), arg, 0);
-                    arg_list.push(lo);
-                    if let Some(hi) = *hi {
-                        let hi = func_cmplr
-                            .builder
-                            .ins()
-                            .load(hi, MemFlags::trusted(), arg, 8);
-                        arg_list.push(hi);
+                PassMode::Cast { tys, .. } => {
+                    let mut off = 0;
+                    for &ty in tys {
+                        let lo =
+                            func_cmplr
+                                .builder
+                                .ins()
+                                .load(ty, MemFlags::trusted(), arg, off as i32);
+                        arg_list.push(lo);
+                        off += ty.bytes();
                     }
                 }
                 _ => arg_list.push(arg),
@@ -194,17 +186,17 @@ impl FnAbi {
             return Some(ret_slot);
         }
         match self.ret? {
-            PassMode::Cast { hi, orig, .. } => {
+            PassMode::Cast { tys, orig } => {
                 let slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: orig.size(),
                     align_shift: orig.align().trailing_zeros() as u8,
                 });
-                let lo = func_cmplr.builder.inst_results(call)[0];
-                func_cmplr.builder.ins().stack_store(lo, slot, 0);
-                if let Some(_) = hi {
-                    let hi = func_cmplr.builder.inst_results(call)[1];
-                    func_cmplr.builder.ins().stack_store(hi, slot, 8);
+                let mut off = 0;
+                for (idx, ty) in tys.into_iter().enumerate() {
+                    let val = func_cmplr.builder.inst_results(call)[idx];
+                    func_cmplr.builder.ins().stack_store(val, slot, off as i32);
+                    off += ty.bytes();
                 }
 
                 Some(
@@ -249,19 +241,25 @@ impl FnAbi {
             let var = Variable::new(func_cmplr.var_id_gen.generate_unique_id() as usize);
             func_cmplr.params.insert(*idx as u64, var);
             let (val, val_ty) = match arg {
-                PassMode::Cast { hi, orig, .. } => {
+                PassMode::Cast { tys, orig, .. } => {
                     let stack_slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
                         size: orig.size(),
                         align_shift: orig.align().trailing_zeros() as u8,
                     });
-                    let val = func_cmplr.builder.block_params(entry_block)[param as usize];
-                    func_cmplr.builder.ins().stack_store(val, stack_slot, 0);
-                    if let Some(_) = hi {
-                        let val = func_cmplr.builder.block_params(entry_block)[1 + param as usize];
-                        func_cmplr.builder.ins().stack_store(val, stack_slot, 8);
+
+                    let mut off = 0;
+                    for (idx, ty) in tys.into_iter().enumerate() {
+                        let val =
+                            func_cmplr.builder.block_params(entry_block)[idx + param as usize];
+                        func_cmplr
+                            .builder
+                            .ins()
+                            .stack_store(val, stack_slot, off as i32);
+                        off += ty.bytes();
                         idx_off += 1;
                     }
+                    idx_off -= 1;
                     (
                         func_cmplr
                             .builder
@@ -328,7 +326,7 @@ impl FnAbi {
 
         if let Some(ret) = self.ret {
             match ret {
-                PassMode::Cast { lo, hi, orig } => {
+                PassMode::Cast { tys, orig } => {
                     let slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
                         size: orig.size() as u32,
@@ -336,9 +334,11 @@ impl FnAbi {
                     });
                     let tmp_mem = MemoryLoc::from_stack(slot, 0);
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
-                    let mut rets = vec![func_cmplr.builder.ins().stack_load(lo, slot, 0)];
-                    if let Some(rethi) = hi {
-                        rets.push(func_cmplr.builder.ins().stack_load(rethi, slot, 8));
+                    let mut rets = vec![];
+                    let mut off = 0;
+                    for (idx, ty) in tys.into_iter().enumerate() {
+                        rets.push(func_cmplr.builder.ins().stack_load(ty, slot, off as i32));
+                        off += ty.bytes();
                     }
 
                     func_cmplr.builder.ins().return_(&rets);

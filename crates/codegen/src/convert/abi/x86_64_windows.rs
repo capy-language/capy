@@ -1,6 +1,7 @@
 use cranelift::codegen::ir::Type;
 use hir_ty::Ty;
 use internment::Intern;
+use tinyvec::array_vec;
 
 use crate::{convert::GetFinalTy, layout::GetLayoutInfo};
 
@@ -13,12 +14,16 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
     if ty.is_zero_sized() {
         None
     } else if ty.is_aggregate() {
-        Some(match ty.size() {
+        match ty.size() {
             x if x < 8 && is_pow_of2(x) => {
-                PassMode::cast((Type::int_with_byte_size(x as u16).unwrap(), None), ty)
+                let x = x as u16;
+                Some(PassMode::cast(
+                    array_vec![Type::int_with_byte_size(x).unwrap()],
+                    ty,
+                ))
             }
-            _ => PassMode::indirect(),
-        })
+            _ => Some(PassMode::indirect()),
+        }
     } else if ty.size() > 8 {
         Some(PassMode::direct(
             ty.get_final_ty().into_real_type().unwrap(),
