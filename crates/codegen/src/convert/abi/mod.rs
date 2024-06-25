@@ -28,6 +28,7 @@ pub mod x86_64_windows;
 pub enum Abi {
     X64SysV,
     X64Windows,
+    AppleAarch64,
 }
 
 impl Abi {
@@ -36,6 +37,7 @@ impl Abi {
         match self {
             Abi::X64SysV => x86_64::fn_ty_to_abi(func_ty),
             Abi::X64Windows => x86_64_windows::fn_ty_to_abi(func_ty),
+            Abi::AppleAarch64 => aarch64::fn_ty_to_abi(func_ty),
             _ => todo!(),
         }
     }
@@ -46,7 +48,7 @@ impl From<TargetFrontendConfig> for Abi {
         match value.default_call_conv {
             CallConv::SystemV if value.pointer_width.bits() == 64 => Self::X64SysV,
             CallConv::WindowsFastcall => Abi::X64Windows,
-            CallConv::AppleAarch64 => todo!(),
+            CallConv::AppleAarch64 => Abi::AppleAarch64,
             x => todo!("calling convention {x:?}"),
         }
     }
@@ -336,7 +338,7 @@ impl FnAbi {
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
                     let mut rets = vec![];
                     let mut off = 0;
-                    for (idx, ty) in tys.into_iter().enumerate() {
+                    for  ty in tys {
                         rets.push(func_cmplr.builder.ins().stack_load(ty, slot, off as i32));
                         off += ty.bytes();
                     }
