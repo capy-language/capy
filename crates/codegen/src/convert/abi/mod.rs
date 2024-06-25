@@ -226,6 +226,7 @@ impl FnAbi {
         &self,
         func_cmplr: &mut FunctionCompiler,
         return_ty: Intern<Ty>,
+        args: &Vec<Intern<Ty>>,
         function_body: Idx<hir::Expr>,
     ) {
         // Create the entry block, to start emitting code in.
@@ -275,16 +276,18 @@ impl FnAbi {
                 ),
                 PassMode::Indirect(sz) => {
                     // TODO: handle structs not on the stack
-                    let sz = sz.unwrap();
+                    let sz = if let Some(sz) = sz {
+                        *sz
+                    } else {
+                        args[*idx as usize].stride() as usize
+                    };
                     let stack_slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
                         size: sz as u32,
                         align_shift: 3,
                     });
                     let ptr = func_cmplr.builder.block_params(entry_block)[param as usize];
-                    // be very explicit to cranelift what we are doing here
-                    // since there is no `emit_stack_memcpy`, do it ourselves
-                    // TODO: move this code to where it is actually needs
+
                     let mut off = 0;
                     macro_rules! mem_cpy_loop {
                         ($width:expr) => {
@@ -300,6 +303,10 @@ impl FnAbi {
                             }
                         };
                     }
+
+                    // be very explicit to cranelift what we are doing here
+                    // since there is no `emit_stack_memcpy`, do it ourselves
+
                     mem_cpy_loop!(8);
                     mem_cpy_loop!(4);
                     mem_cpy_loop!(2);

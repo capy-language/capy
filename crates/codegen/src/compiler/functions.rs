@@ -83,11 +83,11 @@ impl FunctionCompiler<'_> {
     pub(crate) fn finish(
         mut self,
         fn_abi: FnAbi,
-        return_ty: Intern<Ty>,
+        (args, return_ty): (&Vec<Intern<Ty>>, Intern<Ty>),
         function_body: Idx<hir::Expr>,
         debug_print: bool,
     ) {
-        fn_abi.build_fn(&mut self, return_ty, function_body);
+        fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
             println!("{}", self.builder.func);
@@ -1890,8 +1890,9 @@ impl FunctionCompiler<'_> {
 
         let (param_tys, return_ty) = self.tys[self.file_name][expr].as_function().unwrap();
 
-        let sig =
-            Into::<Abi>::into(self.module.target_config()).fn_to_target((&param_tys, return_ty)).to_cl(self.ptr_ty);
+        let sig = Into::<Abi>::into(self.module.target_config())
+            .fn_to_target((&param_tys, return_ty))
+            .to_cl(self.ptr_ty);
 
         let ftc = FunctionToCompile {
             file_name: self.file_name,

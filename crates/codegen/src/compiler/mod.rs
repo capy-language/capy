@@ -880,7 +880,7 @@ impl Compiler<'_> {
             println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
 
-        function_compiler.finish(fn_abi, return_ty, body, debug_print);
+        function_compiler.finish(fn_abi, (&param_tys, return_ty), body, debug_print);
 
         self.module
             .define_function(func_id, &mut self.ctx)
