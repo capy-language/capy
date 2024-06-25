@@ -1,5 +1,5 @@
 pub mod comptime;
-mod functions;
+pub mod functions;
 pub mod program;
 
 use cranelift::codegen::ir::StackSlot;
@@ -27,6 +27,7 @@ use crate::{
     FinalSignature, Verbosity,
 };
 
+use self::abi::Abi;
 use self::functions::FunctionCompiler;
 
 #[cfg(not(debug_assertions))]
@@ -204,6 +205,7 @@ pub(crate) struct Compiler<'a> {
     pub(crate) i128_id_gen: UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
     pub(crate) comptime_data: FxHashMap<FQComptime, ComptimeData>,
+    pub(crate) abi: Abi,
 }
 
 impl Compiler<'_> {
@@ -827,8 +829,8 @@ impl Compiler<'_> {
         param_tys: Vec<Intern<Ty>>,
         return_ty: Intern<Ty>,
     ) -> FuncId {
-        let (comp_sig, new_idx_to_old_idx) =
-            (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
+        let fn_abi = Abi::X64.fn_to_target((&param_tys, return_ty));
+        let comp_sig = fn_abi.to_cl(self.ptr_ty);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -878,7 +880,7 @@ impl Compiler<'_> {
             println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
 
-        function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx, debug_print);
+        function_compiler.finish(fn_abi, return_ty, body, debug_print);
 
         self.module
             .define_function(func_id, &mut self.ctx)
@@ -921,7 +923,9 @@ fn get_func_id(
         .expect("tried to compile non-function as function");
 
     if world_bodies.is_extern(fqn) {
-        let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
+        let comp_sig = Abi::X64
+            .fn_to_target((&param_tys, return_ty))
+            .to_cl(pointer_ty);
 
         let func_id = module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
@@ -1012,7 +1016,9 @@ fn get_func_id(
     }
 
     if is_extern {
-        let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
+        let comp_sig = Abi::X64
+            .fn_to_target((&param_tys, return_ty))
+            .to_cl(pointer_ty);
 
         let func_id = module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
@@ -1025,7 +1031,9 @@ fn get_func_id(
 
     functions_to_compile.push_back(ftc);
 
-    let (comp_sig, _) = (&param_tys, return_ty).to_final_signature(module, pointer_ty);
+    let comp_sig = Abi::X64
+        .fn_to_target((&param_tys, return_ty))
+        .to_cl(pointer_ty);
 
     let func_id = module
         .declare_function(
@@ -1041,20 +1049,28 @@ fn get_func_id(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MemoryLoc {
-    addr: Value,
+enum Location {
+    Stack(StackSlot),
+    Addr(Value),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryLoc {
+    addr: Location,
     offset: u32,
 }
 
 impl MemoryLoc {
-    fn from_stack(
-        stack_slot: StackSlot,
-        offset: u32,
-        builder: &mut FunctionBuilder,
-        ptr_ty: types::Type,
-    ) -> MemoryLoc {
+    pub fn from_stack(stack_slot: StackSlot, offset: u32) -> MemoryLoc {
         MemoryLoc {
-            addr: builder.ins().stack_addr(ptr_ty, stack_slot, 0),
+            addr: Location::Stack(stack_slot),
+            offset,
+        }
+    }
+
+    pub fn from_addr(addr: Value, offset: u32) -> MemoryLoc {
+        MemoryLoc {
+            addr: Location::Addr(addr),
             offset,
         }
     }
@@ -1067,12 +1083,32 @@ impl MemoryLoc {
     }
 
     /// This converts the address + offset into a single address if needed
-    fn into_value(self, builder: &mut FunctionBuilder) -> Value {
-        if self.offset > 0 {
-            builder.ins().iadd_imm(self.addr, self.offset as i64)
-        } else {
-            self.addr
+    fn into_value(self, builder: &mut FunctionBuilder, ptr_ty: types::Type) -> Value {
+        match self.addr {
+            Location::Stack(slot) => builder.ins().stack_addr(ptr_ty, slot, self.offset as i32),
+            Location::Addr(addr) => {
+                if self.offset > 0 {
+                    builder.ins().iadd_imm(addr, self.offset as i64)
+                } else {
+                    addr
+                }
+            }
         }
+    }
+
+    fn store(&self, builder: &mut FunctionBuilder, x: Value, offset: i32) {
+        match self.addr {
+            Location::Stack(slot) => {
+                builder
+                    .ins()
+                    .stack_store(x, slot, offset + self.offset as i32)
+            }
+            Location::Addr(addr) => {
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), x, addr, offset + self.offset as i32)
+            }
+        };
     }
 
     /// Does a simple store of a memmove if necessary
@@ -1094,23 +1130,57 @@ impl MemoryLoc {
         };
 
         if ty.is_aggregate() {
-            let dest = self.into_value(builder);
-
-            builder.emit_small_memory_copy(
-                module.target_config(),
-                dest,
-                val,
-                // this has to be stride for some reason, it can't be size
-                ty.stride() as u64,
-                ty.align() as u8,
-                ty.align() as u8,
-                true,
-                MemFlags::trusted(),
-            );
+            match self.addr {
+                Location::Addr(addr) => {
+                    let addr = builder.ins().iadd_imm(addr, self.offset as i64);
+                    builder.emit_small_memory_copy(
+                        module.target_config(),
+                        addr,
+                        val,
+                        // this has to be stride for some reason, it can't be size
+                        ty.stride() as u64,
+                        ty.align() as u8,
+                        ty.align() as u8,
+                        true,
+                        MemFlags::trusted(),
+                    )
+                }
+                Location::Stack(slot) => {
+                    // be very explicit to cranelift what we are doing here
+                    // since there is no `emit_stack_memcpy`, do it ourselves
+                    let mut off = 0;
+                    macro_rules! mem_cpy_loop {
+                        ($width:expr) => {
+                            while (off + $width) <= (ty.stride() as i32 / $width) * $width {
+                                let bytes = builder.ins().load(
+                                    cranelift::codegen::ir::Type::int_with_byte_size($width)
+                                        .unwrap(),
+                                    MemFlags::trusted(),
+                                    val,
+                                    off,
+                                );
+                                builder
+                                    .ins()
+                                    .stack_store(bytes, slot, off + self.offset as i32);
+                                off += $width;
+                            }
+                        };
+                    }
+                    mem_cpy_loop!(8);
+                    mem_cpy_loop!(4);
+                    mem_cpy_loop!(2);
+                    mem_cpy_loop!(1);
+                }
+            }
         } else {
-            builder
-                .ins()
-                .store(MemFlags::trusted(), val, self.addr, self.offset as i32);
+            match self.addr {
+                Location::Stack(slot) => builder.ins().stack_store(val, slot, self.offset as i32),
+                Location::Addr(addr) => {
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), val, addr, self.offset as i32)
+                }
+            };
         }
     }
 }
@@ -1140,9 +1210,7 @@ impl UnwrapOrAlloca for Option<MemoryLoc> {
                     align_shift: ty.align() as u8,
                 });
 
-                let addr = builder.ins().stack_addr(ptr_ty, stack_slot, 0);
-
-                MemoryLoc { addr, offset: 0 }
+                MemoryLoc::from_stack(stack_slot, 0)
             }
         }
     }
@@ -1166,7 +1234,7 @@ fn cast_into_memory(
 
                 memory.write(val, cast_to, module, builder);
 
-                return Some(memory.into_value(builder));
+                return Some(memory.into_value(builder, ptr_ty));
             }
             None => return val,
         }
@@ -1180,18 +1248,10 @@ fn cast_into_memory(
             let memory = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
-            builder
-                .ins()
-                .store(MemFlags::trusted(), len, memory.addr, memory.offset as i32);
+            memory.store(builder, len, 0 as i32);
+            memory.store(builder, val?, ptr_ty.bytes() as i32);
 
-            builder.ins().store(
-                MemFlags::trusted(),
-                val?,
-                memory.addr,
-                (memory.offset + ptr_ty.bytes()) as i32,
-            );
-
-            return Some(memory.into_value(builder));
+            return Some(memory.into_value(builder, ptr_ty));
         }
         (Ty::Slice { .. }, Ty::Array { .. }) => {
             // todo: do a runtime check that the lengths match
@@ -1230,12 +1290,7 @@ fn cast_into_memory(
                                 builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
                             };
 
-                            builder.ins().store(
-                                MemFlags::trusted(),
-                                ptr,
-                                any_mem.addr,
-                                any_mem.offset as i32 + offset,
-                            );
+                            any_mem.store(builder, ptr, offset);
                         }
                     }
                     Ty::Type => {
@@ -1244,18 +1299,13 @@ fn cast_into_memory(
                         let id = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
                         let id = builder.ins().iconst(types::I32, id);
 
-                        builder.ins().store(
-                            MemFlags::trusted(),
-                            id,
-                            any_mem.addr,
-                            any_mem.offset as i32 + offset,
-                        );
+                        any_mem.store(builder, id, offset);
                     }
                     _ => {}
                 }
             }
 
-            return Some(any_mem.into_value(builder));
+            return Some(any_mem.into_value(builder, ptr_ty));
         }
         (Ty::Struct { .. }, Ty::Struct { .. }) => {
             return cast_struct_to_struct(
@@ -1359,7 +1409,7 @@ fn cast_struct_to_struct(
             );
         }
 
-        Some(result_mem.into_value(builder))
+        Some(result_mem.into_value(builder, ptr_ty))
     }
 }
 
@@ -1426,7 +1476,7 @@ fn cast_array_to_array(
             );
         }
 
-        Some(result_mem.into_value(builder))
+        Some(result_mem.into_value(builder, ptr_ty))
     }
 }
 

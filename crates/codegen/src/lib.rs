@@ -1,6 +1,6 @@
 mod builtin;
 mod compiler;
-mod convert;
+pub(crate) mod convert;
 mod extend;
 mod layout;
 mod mangle;

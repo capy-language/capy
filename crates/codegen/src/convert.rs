@@ -1,3 +1,4 @@
+pub mod abi;
 use std::{cell::OnceCell, sync::Mutex};
 
 use cranelift::prelude::{types, AbiParam};
@@ -263,36 +264,16 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
 }
 
 pub(crate) trait ToFinalSignature {
-    fn to_final_signature(
-        &self,
-        module: &dyn Module,
-        pointer_ty: types::Type,
-    ) -> (FinalSignature, FxHashMap<u64, u64>);
+    fn to_final_signature(&self, module: &dyn Module, pointer_ty: types::Type) -> FinalSignature;
 }
 
 impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
-    fn to_final_signature(
-        &self,
-        module: &dyn Module,
-        pointer_ty: types::Type,
-    ) -> (FinalSignature, FxHashMap<u64, u64>) {
+    fn to_final_signature(&self, module: &dyn Module, pointer_ty: types::Type) -> FinalSignature {
         let (param_tys, return_ty) = self;
-
-        let mut real_ty_count = 0;
-
-        let mut new_idx_to_old_idx = FxHashMap::default();
 
         let mut param_types = param_tys
             .iter()
-            .enumerate()
-            .filter_map(|(idx, param_ty)| {
-                let param_ty = param_ty.get_final_ty().into_real_type().map(AbiParam::new);
-                if param_ty.is_some() {
-                    new_idx_to_old_idx.insert(real_ty_count, idx as u64);
-                    real_ty_count += 1;
-                }
-                param_ty
-            })
+            .filter_map(|param_ty| param_ty.get_final_ty().into_real_type().map(AbiParam::new))
             .collect::<Vec<_>>();
 
         if return_ty.is_aggregate() {
@@ -302,18 +283,16 @@ impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
             param_types.push(AbiParam::new(pointer_ty));
         }
 
-        (
-            FinalSignature {
-                params: param_types,
-                returns: return_ty
-                    .get_final_ty()
-                    .into_real_type()
-                    .map(|ty| vec![AbiParam::new(ty)])
-                    .unwrap_or_default(),
-                call_conv: module.target_config().default_call_conv,
-            },
-            new_idx_to_old_idx,
-        )
+        FinalSignature {
+            params: param_types,
+            returns: return_ty
+                .get_final_ty()
+                .into_real_type()
+                .map(|ty| vec![AbiParam::new(ty)])
+                .unwrap_or_default(),
+            // TODO: synchronyise the calling convention
+            call_conv: module.target_config().default_call_conv,
+        }
     }
 }
 

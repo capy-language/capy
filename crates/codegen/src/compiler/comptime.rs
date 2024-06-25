@@ -18,7 +18,7 @@ use std::{
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler::{MetaTyData, MetaTyInfoArrays},
+    compiler::{abi::Abi, MetaTyData, MetaTyInfoArrays},
     convert::{FinalTy, GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
@@ -162,6 +162,8 @@ pub fn eval_comptime_blocks<'a>(
             64 => types::I64,
             _ => unreachable!(),
         },
+        // TODO: get the correct api
+        abi: Abi::X64, 
     };
 
     compiler.finalize_tys();
