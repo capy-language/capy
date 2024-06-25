@@ -7,11 +7,16 @@ use crate::{convert::GetFinalTy, layout::GetLayoutInfo};
 use super::{FnAbi, PassMode};
 
 fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
+    fn is_pow_of2(n: u32) -> bool {
+        (n & n - 1) == 0
+    }
     if ty.is_zero_sized() {
         None
     } else if ty.is_aggregate() {
         Some(match ty.size() {
-            x if x < 8 => PassMode::cast((Type::int_with_byte_size(x as u16).unwrap(), None), ty),
+            x if x < 8 && is_pow_of2(x) => {
+                PassMode::cast((Type::int_with_byte_size(x as u16).unwrap(), None), ty)
+            }
             _ => PassMode::indirect(),
         })
     } else if ty.size() > 8 {
