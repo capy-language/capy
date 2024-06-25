@@ -831,7 +831,7 @@ impl Compiler<'_> {
         return_ty: Intern<Ty>,
     ) -> FuncId {
         let fn_abi = self.default_abi.fn_to_target((&param_tys, return_ty));
-        let comp_sig = fn_abi.to_cl(self.ptr_ty);
+        let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
         let func_id = self
             .module
             .declare_function(mangled_name, Linkage::Export, &comp_sig)
@@ -925,7 +925,7 @@ fn get_func_id(
     if world_bodies.is_extern(fqn) {
         let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
-            .to_cl(pointer_ty);
+            .to_cl(pointer_ty, module.target_config().default_call_conv);
 
         let func_id = module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
@@ -1018,7 +1018,7 @@ fn get_func_id(
     if is_extern {
         let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
-            .to_cl(pointer_ty);
+            .to_cl(pointer_ty, module.target_config().default_call_conv);
 
         let func_id = module
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
@@ -1033,7 +1033,7 @@ fn get_func_id(
 
     let comp_sig = Into::<Abi>::into(module.target_config())
         .fn_to_target((&param_tys, return_ty))
-        .to_cl(pointer_ty);
+        .to_cl(pointer_ty, module.target_config().default_call_conv);
 
     let func_id = module
         .declare_function(

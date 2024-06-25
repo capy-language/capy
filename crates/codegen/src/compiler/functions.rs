@@ -1253,7 +1253,7 @@ impl FunctionCompiler<'_> {
                         } else {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let comp_sig = fn_abi.to_cl(self.ptr_ty);
+                            let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1278,7 +1278,7 @@ impl FunctionCompiler<'_> {
                         _ => {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let comp_sig = fn_abi.to_cl(self.ptr_ty);
+                            let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1295,7 +1295,7 @@ impl FunctionCompiler<'_> {
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let comp_sig = fn_abi.to_cl(self.ptr_ty);
+                        let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
                         let sig_ref = self.builder.import_signature(comp_sig);
 
                         self.builder
@@ -1892,7 +1892,7 @@ impl FunctionCompiler<'_> {
 
         let sig = Into::<Abi>::into(self.module.target_config())
             .fn_to_target((&param_tys, return_ty))
-            .to_cl(self.ptr_ty);
+            .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
         let ftc = FunctionToCompile {
             file_name: self.file_name,

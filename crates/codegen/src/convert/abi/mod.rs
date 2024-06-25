@@ -113,9 +113,9 @@ impl FnAbi {
             ret: None,
         }
     }
-    pub fn to_cl(&self, ptr_ty: Type) -> Signature {
+    pub fn to_cl(&self, ptr_ty: Type, conv: CallConv) -> Signature {
         // TODO: actually use the correct calling convention here
-        let mut sig = Signature::new(CallConv::SystemV);
+        let mut sig = Signature::new(conv);
         if let Some(ret) = self.ret {
             if ret.is_indirect() {
                 sig.params
@@ -338,7 +338,7 @@ impl FnAbi {
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
                     let mut rets = vec![];
                     let mut off = 0;
-                    for  ty in tys {
+                    for ty in tys {
                         rets.push(func_cmplr.builder.ins().stack_load(ty, slot, off as i32));
                         off += ty.bytes();
                     }
