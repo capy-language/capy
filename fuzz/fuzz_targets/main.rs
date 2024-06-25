@@ -72,4 +72,7 @@ fuzz_target!(|s: &str| {
         comptime_results[&comptime].clone()
     })
     .finish(None, true);
+
+    // frontend finally finished!
+    // presumably you would use `codegen::compile_obj` now
 });

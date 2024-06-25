@@ -149,6 +149,7 @@ pub fn eval_comptime_blocks<'a>(
         module: &mut module,
         functions_to_compile: VecDeque::new(),
         meta_tys: MetaTyData::default(),
+        cmd_args_slice: None,
         functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
@@ -216,6 +217,7 @@ pub fn eval_comptime_blocks<'a>(
     compiler.meta_tys.info_arrays = Some(MetaTyInfoArrays::new(compiler.module));
 
     compiler.compile_queued();
+    compiler.compile_builtins();
 
     let meta_tys: FxHashMap<_, _> = compiler
         .meta_tys

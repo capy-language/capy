@@ -8,15 +8,23 @@ use crate::{compiler::FunctionToCompile, mangle::Mangle, FinalSignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinGlobal {
-    ArrayLayout,
-    DistinctLayout,
-    StructLayout,
+    /// type layout (size/align) arrays
+    ArrayLayouts,
+    DistinctLayouts,
+    StructLayouts,
+
+    /// a single slice for the size/align of usize
+    PointerLayout,
+
+    /// type info arrays
     ArrayInfo,
     SliceInfo,
     PointerInfo,
     DistinctInfo,
     StructInfo,
-    PointerLayout,
+
+    /// misc.
+    CommandlineArgs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,15 +84,16 @@ pub(crate) fn as_compiler_defined_global(
     let function_name = interner.lookup(fqn.name.0);
 
     Some(match (file_name.as_ref(), function_name) {
-        ("meta.capy", "array_layouts") => BuiltinGlobal::ArrayLayout,
-        ("meta.capy", "distinct_layouts") => BuiltinGlobal::DistinctLayout,
-        ("meta.capy", "struct_layouts") => BuiltinGlobal::StructLayout,
+        ("meta.capy", "array_layouts") => BuiltinGlobal::ArrayLayouts,
+        ("meta.capy", "distinct_layouts") => BuiltinGlobal::DistinctLayouts,
+        ("meta.capy", "struct_layouts") => BuiltinGlobal::StructLayouts,
+        ("meta.capy", "pointer_layout") => BuiltinGlobal::PointerLayout,
         ("meta.capy", "array_infos") => BuiltinGlobal::ArrayInfo,
         ("meta.capy", "slice_infos") => BuiltinGlobal::SliceInfo,
         ("meta.capy", "pointer_infos") => BuiltinGlobal::PointerInfo,
         ("meta.capy", "distinct_infos") => BuiltinGlobal::DistinctInfo,
         ("meta.capy", "struct_infos") => BuiltinGlobal::StructInfo,
-        ("meta.capy", "pointer_layout") => BuiltinGlobal::PointerLayout,
+        ("mod.capy", "args") => BuiltinGlobal::CommandlineArgs,
         _ => return None,
     })
 }

@@ -20,7 +20,7 @@ use crate::{
     builtin::{self, BuiltinFunction},
     convert::{GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
-    mangle::Mangle,
+    mangle::{self, Mangle},
 };
 
 use super::{
@@ -31,13 +31,16 @@ use super::{
 
 struct UnfinishedComptimeErr;
 
-// represents a single block containing multiple defer statements
+/// represents a single block containing multiple defer statements
 #[derive(Debug, Clone)]
 pub(crate) struct DeferFrame {
     id: Option<ScopeId>,
     defers: Vec<Idx<hir::Expr>>,
 }
 
+/// Compiles a Capy function into a Cranelift function.
+///
+/// The main function to look at here is `compile_expr` or `compile_expr_with_args`
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) final_binary: bool,
 
@@ -55,6 +58,7 @@ pub(crate) struct FunctionCompiler<'a> {
 
     pub(crate) functions_to_compile: &'a mut VecDeque<FunctionToCompile>,
     pub(crate) meta_tys: &'a mut MetaTyData,
+    pub(crate) cmd_args_slice: &'a mut Option<DataId>,
 
     pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
     pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
@@ -261,19 +265,19 @@ impl FunctionCompiler<'_> {
                 builtin::as_compiler_defined_global(fqn, self.mod_dir, self.interner)
             {
                 return Ok(match builtin {
-                    builtin::BuiltinGlobal::ArrayLayout => {
+                    builtin::BuiltinGlobal::ArrayLayouts => {
                         self.meta_tys
                             .layout_arrays
                             .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
                             .array_layout_slice
                     }
-                    builtin::BuiltinGlobal::DistinctLayout => {
+                    builtin::BuiltinGlobal::DistinctLayouts => {
                         self.meta_tys
                             .layout_arrays
                             .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
                             .distinct_layout_slice
                     }
-                    builtin::BuiltinGlobal::StructLayout => {
+                    builtin::BuiltinGlobal::StructLayouts => {
                         self.meta_tys
                             .layout_arrays
                             .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
@@ -314,6 +318,20 @@ impl FunctionCompiler<'_> {
                             .info_arrays
                             .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
                             .struct_info_slice
+                    }
+                    builtin::BuiltinGlobal::CommandlineArgs => {
+                        *self.cmd_args_slice.get_or_insert_with(|| {
+                            self.module
+                                .declare_data(
+                                    &mangle::mangle_internal("commandline_args"),
+                                    Linkage::Export,
+                                    // it must be writable since that's what happens in the c main
+                                    // function
+                                    true,
+                                    false,
+                                )
+                                .expect("error declaring data")
+                        })
                     }
                 });
             }

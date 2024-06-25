@@ -1,5 +1,34 @@
 use rustc_hash::FxHashMap;
 
+/// splits text into multiple modules
+///
+/// example:
+/// ```text
+/// #- main.capy
+/// foo :: import "foo.capy";
+///
+/// Foo :: foo.Foo;
+///
+/// fun :: () -> Foo {
+///     foo : Foo = 0;
+///
+///     foo
+/// }
+/// #- foo.capy
+/// Foo :: distinct i32;
+/// ```
+///
+/// this gets transformed into a map of
+/// ```text
+/// main.capy => "foo :: import   ..."
+/// foo.capy  => "Foo :: distinct ..."
+/// ```
+///
+/// alternatively, if there is no "#- " contained in the given input,
+/// the output will be a single map of
+/// ```text
+/// main.capy => {the entire input}
+/// ````
 pub fn split_multi_module_test_data(input: &str) -> FxHashMap<&str, &str> {
     const MARKER_COMMENT_START: &str = "#- ";
 

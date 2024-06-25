@@ -201,6 +201,7 @@ pub(crate) struct Compiler<'a> {
     pub(crate) compiler_defined_functions: FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) meta_tys: MetaTyData,
+    pub(crate) cmd_args_slice: Option<DataId>,
     pub(crate) str_id_gen: UIDGenerator,
     pub(crate) i128_id_gen: UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
@@ -209,17 +210,53 @@ pub(crate) struct Compiler<'a> {
     pub(crate) default_abi: Abi,
 }
 
+/// The order of functions to call is this:
+///
+/// ```text
+/// compiler.finalize_tys();
+/// compiler.compile_queued();
+/// compiler.compile_builtins();
+/// ```
 impl Compiler<'_> {
+    /// Should be called before `Compiler::compile_queued`.
+    ///
+    /// `finalize_tys` will calculate the final size, stride, alignment, and `FinalTy`
+    /// of every `Intern<Ty>` used in the Capy program.
     fn finalize_tys(&mut self) {
         layout::calc_layouts(self.tys.all_tys(), self.ptr_ty.bits());
         convert::calc_finals(self.tys.all_tys(), self.ptr_ty);
     }
 
+    /// This is the function that does the actual work.
+    ///
+    /// It iteratively compiles every used function into cranelift IR.
+    /// This only happens for functions/globals reached by the entry point.
     fn compile_queued(&mut self) {
         while let Some(ftc) = self.functions_to_compile.pop_front() {
             self.compile_ftc(ftc);
         }
+    }
 
+    /// This should be run *after* `Compiler::compile_queued`.
+    ///
+    /// `compile_queued` will mark certain builtin globals as "accessed".
+    /// This function then only populated those builtin globals with
+    /// their expected values
+    fn compile_builtins(&mut self) {
+        self.compile_meta_builtins();
+
+        if let Some(cmd_args_slice) = self.cmd_args_slice {
+            self.data_desc
+                .define_zeroinit(self.ptr_ty.bytes() as usize * 2);
+            self.data_desc.set_align(self.ptr_ty.bytes() as u64);
+            self.module
+                .define_data(cmd_args_slice, &self.data_desc)
+                .expect("error defining data");
+            self.data_desc.clear();
+        }
+    }
+
+    fn compile_meta_builtins(&mut self) {
         let mut array_count = 0;
         let mut slice_count = 0;
         let mut pointer_count = 0;
@@ -855,6 +892,7 @@ impl Compiler<'_> {
             data_description: &mut self.data_desc,
             functions_to_compile: &mut self.functions_to_compile,
             meta_tys: &mut self.meta_tys,
+            cmd_args_slice: &mut self.cmd_args_slice,
             local_functions: FxHashMap::default(),
             local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,

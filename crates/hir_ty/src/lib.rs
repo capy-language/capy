@@ -9789,4 +9789,30 @@ mod tests {
             },
         )
     }
+
+    #[test]
+    fn recursive_global() {
+        // check for https://github.com/capy-language/capy/issues/30
+        check(
+            r#"
+                a :: a;
+            "#,
+            expect![[r#"
+                main::a : <unknown>
+                0 : <unknown>
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::NotYetResolved {
+                        fqn: hir::Fqn {
+                            file: hir::FileName(i.intern("main.capy")),
+                            name: hir::Name(i.intern("a")),
+                        },
+                    },
+                    22..23,
+                    None,
+                )]
+            },
+        )
+    }
 }

@@ -12,6 +12,10 @@ meta :: import "meta.capy";
 string_builder :: import "structs/string_builder.capy";
 list :: import "structs/list.capy";
 
+// a builtin slice that gets populated with `argc` and `argv`
+// just before `main` gets called
+args : [] str : extern;
+
 // builtin
 len :: (slice: [] any) -> usize extern;
 
