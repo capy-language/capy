@@ -5,7 +5,7 @@ use cranelift::{
             AbiParam, ArgumentPurpose, Inst, InstBuilder, MemFlags, Signature, StackSlotData,
             StackSlotKind, Type, Value,
         },
-        isa::CallConv,
+        isa::{CallConv, TargetFrontendConfig},
     },
     frontend::{FunctionBuilder, Variable},
 };
@@ -20,16 +20,33 @@ use crate::{
 
 pub mod aarch64;
 pub mod x86_64;
+pub mod x86_64_windows;
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum Abi {
-    X64,
+    X64SysV,
+    X64Windows,
 }
 
 impl Abi {
     pub fn fn_to_target(&self, func_ty: (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
+        #[allow(unreachable_patterns)]
         match self {
-            Abi::X64 => x86_64::fn_ty_to_abi(func_ty),
+            Abi::X64SysV => x86_64::fn_ty_to_abi(func_ty),
+            Abi::X64Windows => x86_64_windows::fn_ty_to_abi(func_ty),
+            _ => todo!(),
+        }
+    }
+}
+
+impl From<TargetFrontendConfig> for Abi {
+    fn from(value: TargetFrontendConfig) -> Self {
+        match value.default_call_conv {
+            CallConv::SystemV if value.pointer_width.bits() == 64 => Self::X64SysV,
+            CallConv::WindowsFastcall => Abi::X64Windows,
+            CallConv::AppleAarch64 => todo!(),
+            x => todo!("calling convention {x:?}"),
         }
     }
 }
@@ -59,7 +76,7 @@ impl PassMode {
         Self::Indirect(Some(size))
     }
     #[inline]
-    pub fn indiret() -> Self {
+    pub fn indirect() -> Self {
         Self::Indirect(None)
     }
     #[inline]

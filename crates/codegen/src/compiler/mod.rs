@@ -205,7 +205,8 @@ pub(crate) struct Compiler<'a> {
     pub(crate) i128_id_gen: UIDGenerator,
     pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
     pub(crate) comptime_data: FxHashMap<FQComptime, ComptimeData>,
-    pub(crate) abi: Abi,
+
+    pub(crate) default_abi: Abi,
 }
 
 impl Compiler<'_> {
@@ -829,7 +830,7 @@ impl Compiler<'_> {
         param_tys: Vec<Intern<Ty>>,
         return_ty: Intern<Ty>,
     ) -> FuncId {
-        let fn_abi = Abi::X64.fn_to_target((&param_tys, return_ty));
+        let fn_abi = self.default_abi.fn_to_target((&param_tys, return_ty));
         let comp_sig = fn_abi.to_cl(self.ptr_ty);
         let func_id = self
             .module
@@ -846,7 +847,6 @@ impl Compiler<'_> {
             builder,
             file_name: module_name,
             mod_dir: self.mod_dir,
-            signature: comp_sig,
             interner: self.interner,
             world_bodies: self.world_bodies,
             tys: self.tys,
@@ -923,7 +923,7 @@ fn get_func_id(
         .expect("tried to compile non-function as function");
 
     if world_bodies.is_extern(fqn) {
-        let comp_sig = Abi::X64
+        let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
             .to_cl(pointer_ty);
 
@@ -1016,7 +1016,7 @@ fn get_func_id(
     }
 
     if is_extern {
-        let comp_sig = Abi::X64
+        let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
             .to_cl(pointer_ty);
 
@@ -1031,7 +1031,7 @@ fn get_func_id(
 
     functions_to_compile.push_back(ftc);
 
-    let comp_sig = Abi::X64
+    let comp_sig = Into::<Abi>::into(module.target_config())
         .fn_to_target((&param_tys, return_ty))
         .to_cl(pointer_ty);
 
@@ -1186,21 +1186,11 @@ impl MemoryLoc {
 }
 
 trait UnwrapOrAlloca {
-    fn unwrap_or_alloca(
-        self,
-        builder: &mut FunctionBuilder,
-        ptr_ty: types::Type,
-        ty: Intern<Ty>,
-    ) -> MemoryLoc;
+    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> MemoryLoc;
 }
 
 impl UnwrapOrAlloca for Option<MemoryLoc> {
-    fn unwrap_or_alloca(
-        self,
-        builder: &mut FunctionBuilder,
-        ptr_ty: types::Type,
-        ty: Intern<Ty>,
-    ) -> MemoryLoc {
+    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> MemoryLoc {
         match self {
             Some(mem) => mem,
             None => {
@@ -1245,7 +1235,7 @@ fn cast_into_memory(
 
     match (cast_from.as_ref(), cast_to.as_ref()) {
         (Ty::Array { size, .. }, Ty::Slice { .. }) => {
-            let memory = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
+            let memory = memory.unwrap_or_alloca(builder, cast_to);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
             memory.store(builder, len, 0 as i32);
@@ -1265,7 +1255,7 @@ fn cast_into_memory(
             ));
         }
         _ if cast_to.is_any_struct() => {
-            let any_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
+            let any_mem = memory.unwrap_or_alloca(builder, cast_to);
 
             let struct_layout = cast_to.struct_layout().unwrap();
 
@@ -1368,7 +1358,7 @@ fn cast_struct_to_struct(
 
         // this is specifically for anonymous struct casting, although this code
         // might also be used to regular struct casting
-        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
+        let result_mem = memory.unwrap_or_alloca(builder, cast_to);
 
         let from_layout = cast_from.struct_layout().unwrap();
         let to_layout = cast_to.struct_layout().unwrap();
@@ -1440,7 +1430,7 @@ fn cast_array_to_array(
     } else {
         let val = val?;
 
-        let result_mem = memory.unwrap_or_alloca(builder, ptr_ty, cast_to);
+        let result_mem = memory.unwrap_or_alloca(builder, cast_to);
 
         for idx in 0..to_len as u32 {
             let from_offset = from_sub_stride * idx;

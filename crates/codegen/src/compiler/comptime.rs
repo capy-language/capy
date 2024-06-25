@@ -18,7 +18,7 @@ use std::{
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler::{abi::Abi, MetaTyData, MetaTyInfoArrays},
+    compiler::{MetaTyData, MetaTyInfoArrays},
     convert::{FinalTy, GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
@@ -134,6 +134,7 @@ pub fn eval_comptime_blocks<'a>(
     let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
     let mut module = JITModule::new(builder);
+    let default_abi = module.target_config().into();
 
     let mut compiler = Compiler {
         final_binary: false,
@@ -162,8 +163,7 @@ pub fn eval_comptime_blocks<'a>(
             64 => types::I64,
             _ => unreachable!(),
         },
-        // TODO: get the correct api
-        abi: Abi::X64, 
+        default_abi
     };
 
     compiler.finalize_tys();

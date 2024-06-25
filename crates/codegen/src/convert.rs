@@ -1,13 +1,12 @@
 pub mod abi;
 use std::{cell::OnceCell, sync::Mutex};
 
-use cranelift::prelude::{types, AbiParam};
-use cranelift_module::Module;
+use cranelift::prelude::types;
 use hir_ty::Ty;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
-use crate::{compiler::MetaTyData, FinalSignature};
+use crate::compiler::MetaTyData;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FinalTy {
@@ -260,39 +259,6 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         let mut finals = unsafe { FINAL_TYS.lock() }.unwrap();
         let finals = finals.get_mut().unwrap();
         finals.finals.insert(ty, final_ty);
-    }
-}
-
-pub(crate) trait ToFinalSignature {
-    fn to_final_signature(&self, module: &dyn Module, pointer_ty: types::Type) -> FinalSignature;
-}
-
-impl ToFinalSignature for (&Vec<Intern<Ty>>, Intern<Ty>) {
-    fn to_final_signature(&self, module: &dyn Module, pointer_ty: types::Type) -> FinalSignature {
-        let (param_tys, return_ty) = self;
-
-        let mut param_types = param_tys
-            .iter()
-            .filter_map(|param_ty| param_ty.get_final_ty().into_real_type().map(AbiParam::new))
-            .collect::<Vec<_>>();
-
-        if return_ty.is_aggregate() {
-            // if the callee is expected to return an array,
-            // the caller function must supply a memory address
-            // to store it in
-            param_types.push(AbiParam::new(pointer_ty));
-        }
-
-        FinalSignature {
-            params: param_types,
-            returns: return_ty
-                .get_final_ty()
-                .into_real_type()
-                .map(|ty| vec![AbiParam::new(ty)])
-                .unwrap_or_default(),
-            // TODO: synchronyise the calling convention
-            call_conv: module.target_config().default_call_conv,
-        }
     }
 }
 

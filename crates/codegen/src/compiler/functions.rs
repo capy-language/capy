@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use cranelift::{
     codegen::ir::{Endianness, FuncRef},
     prelude::{
-        types, Block, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
-        StackSlotData, StackSlotKind, TrapCode, Value, Variable,
+        types, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
+        StackSlotKind, TrapCode, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -18,14 +18,13 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     builtin::{self, BuiltinFunction},
-    convert::{GetFinalTy, ToFinalSignature, ToTyId},
+    convert::{GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
-    FinalSignature,
 };
 
 use super::{
-    abi::{self, Abi, FnAbi},
+    abi::{Abi, FnAbi},
     comptime::{ComptimeBytes, IntBytes},
     ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
 };
@@ -43,7 +42,6 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) final_binary: bool,
 
     pub(crate) file_name: hir::FileName,
-    pub(crate) signature: FinalSignature,
 
     pub(crate) mod_dir: &'a std::path::Path,
     pub(crate) interner: &'a Interner,
@@ -1215,7 +1213,8 @@ impl FunctionCompiler<'_> {
                     .clone()
                     .as_function()
                     .unwrap();
-                let fn_abi = Abi::X64.fn_to_target((&param_tys, return_ty));
+                let fn_abi = Into::<Abi>::into(self.module.target_config())
+                    .fn_to_target((&param_tys, return_ty));
 
                 let arg_values = args
                     .iter()
@@ -1891,9 +1890,8 @@ impl FunctionCompiler<'_> {
 
         let (param_tys, return_ty) = self.tys[self.file_name][expr].as_function().unwrap();
 
-        let sig = abi::Abi::X64
-            .fn_to_target((&param_tys, return_ty))
-            .to_cl(self.ptr_ty);
+        let sig =
+            Into::<Abi>::into(self.module.target_config()).fn_to_target((&param_tys, return_ty)).to_cl(self.ptr_ty);
 
         let ftc = FunctionToCompile {
             file_name: self.file_name,

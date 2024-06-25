@@ -1,7 +1,4 @@
-use cranelift::codegen::{
-    ir::{self, AbiParam, ArgumentPurpose, Signature, Type},
-    isa::CallConv,
-};
+use cranelift::codegen::ir::{self, Type};
 use hir_ty::Ty;
 use internment::Intern;
 
@@ -216,7 +213,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
             sig.ret = Some(PassMode::indirect_by_val(ret.size() as usize));
         }
     }
-    for (mut idx, arg) in args.into_iter().enumerate() {
+    for (idx, arg) in args.into_iter().enumerate() {
         if arg.is_zero_sized() {
             continue;
         }
@@ -241,12 +238,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
                     // this lint is wrong in this situation, as they are read when performing
                     // the `checked_sub` above
                     let (_, _) = (int_regs, sse_regs);
-                    push_direct(
-                        *arg,
-                        &classes,
-                        &mut sig.args,
-                        idx.try_into().unwrap(),
-                    )
+                    push_direct(*arg, &classes, &mut sig.args, idx.try_into().unwrap())
                 }
                 _ => {
                     if arg.is_aggregate() {
