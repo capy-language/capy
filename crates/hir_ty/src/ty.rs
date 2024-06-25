@@ -257,6 +257,14 @@ impl Ty {
             _ => false,
         }
     }
+    
+    pub fn is_float(&self) -> bool {
+        match self {
+            Ty::Float(_) => true,
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_int(),
+            _ => false,
+        }
+    }
 
     /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
     pub fn is_unknown(&self) -> bool {
