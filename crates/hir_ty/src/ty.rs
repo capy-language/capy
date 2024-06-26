@@ -261,7 +261,7 @@ impl Ty {
     pub fn is_float(&self) -> bool {
         match self {
             Ty::Float(_) => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_int(),
+            Ty::Distinct { sub_ty, .. } => sub_ty.is_float(),
             _ => false,
         }
     }
