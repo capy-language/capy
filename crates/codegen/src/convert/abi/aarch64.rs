@@ -102,7 +102,7 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
                         Type::int_with_byte_size(16).unwrap(),
                         Type::int_with_byte_size(16).unwrap(),
                     ],
-                    (arg.size() + 7) as usize / 16,
+                    (arg.size() + 15) as usize / 16,
                 ),
                 arg,
             ))
