@@ -44,6 +44,11 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
     if ret.is_zero_sized() {
         return None;
     }
+    if !ret.is_aggregate() {
+        return Some(PassMode::direct(
+            ret.get_final_ty().into_real_type().unwrap(),
+        ));
+    }
     if let Some(hfa) = is_hfa(ret) {
         Some(hfa)
     } else if ret.size() <= 16 {
@@ -66,6 +71,11 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
 fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
     if arg.is_zero_sized() {
         return None;
+    }
+    if !arg.is_aggregate() {
+        return Some(PassMode::direct(
+            arg.get_final_ty().into_real_type().unwrap(),
+        ));
     }
     if let Some(hfa) = is_hfa(arg) {
         Some(hfa)
