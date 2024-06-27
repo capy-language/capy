@@ -1,6 +1,6 @@
 // TODO: other kinds of aarch64 abis then apple
 
-use cranelift_codegen::ir::types::{I128, I16, I32, I64, I8};
+use cranelift::prelude::types::{I128, I16, I32, I64, I8};
 use hir_ty::Ty;
 use internment::Intern;
 use tinyvec::ArrayVec;
