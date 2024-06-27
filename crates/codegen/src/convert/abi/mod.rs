@@ -87,13 +87,13 @@ impl PassMode {
     }
     // TODO: small vector optimization
     #[inline]
-    pub fn to_abiparam(&self, ptr_ty: Type) -> Vec<AbiParam> {
+    pub fn to_abiparam(self, ptr_ty: Type) -> Vec<AbiParam> {
         match self {
-            PassMode::Cast { tys, .. } => tys.into_iter().copied().map(AbiParam::new).collect(),
-            PassMode::Direct(ty) => vec![AbiParam::new(*ty)],
+            PassMode::Cast { tys, .. } => tys.into_iter().map(AbiParam::new).collect(),
+            PassMode::Direct(ty) => vec![AbiParam::new(ty)],
             PassMode::Indirect(Some(sz)) => vec![AbiParam::special(
                 ptr_ty,
-                ArgumentPurpose::StructArgument(*sz as u32),
+                ArgumentPurpose::StructArgument(sz as u32),
             )],
             PassMode::Indirect(None) => vec![AbiParam::new(ptr_ty)],
         }
@@ -232,13 +232,12 @@ impl FnAbi {
 
         func_cmplr.builder.switch_to_block(entry_block);
         func_cmplr.builder.seal_block(entry_block);
-        let mut ret = 0;
-        if let Some(PassMode::Indirect(_)) = self.ret {
-            ret += 1
-        }
         let mut idx_off = 0;
+        if let Some(PassMode::Indirect(_)) = self.ret {
+            idx_off += 1
+        }
         for (arg, idx) in &self.args {
-            let param = ret + *idx + idx_off;
+            let param = *idx + idx_off;
 
             let var = Variable::new(func_cmplr.var_id_gen.generate_unique_id() as usize);
             func_cmplr.params.insert(*idx as u64, var);
@@ -275,7 +274,6 @@ impl FnAbi {
                     *ty,
                 ),
                 PassMode::Indirect(sz) => {
-                    // TODO: handle structs not on the stack
                     let sz = if let Some(sz) = sz {
                         *sz
                     } else {

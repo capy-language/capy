@@ -24,7 +24,7 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
             }
             _ => Some(PassMode::indirect()),
         }
-    } else if ty.size() < 8 {
+    } else if ty.size() <= 8 {
         Some(PassMode::direct(
             ty.get_final_ty().into_real_type().unwrap(),
         ))
