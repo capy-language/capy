@@ -52,10 +52,23 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
     if let Some(hfa) = is_hfa(ret) {
         Some(hfa)
     } else if ret.size() <= 16 {
-        Some(PassMode::cast(
-            ArrayVec::from_array_len([I64, I64, I64, I64], (ret.size() + 7) as usize / 8),
-            ret,
-        ))
+        // TODO: eight byte align the stack instead
+        let eight_bytes = ret.stride() / 8;
+        let mut tys = ArrayVec::from_array_len([I64, I64, I64, I64], eight_bytes as usize);
+        let four_bytes = (ret.stride() - eight_bytes * 8) / 4;
+        if four_bytes == 1 {
+            tys.push(I32)
+        }
+        let two_bytes = (ret.stride() - eight_bytes * 8 - four_bytes * 4) / 2;
+        if two_bytes == 1 {
+            tys.push(I16)
+        }
+        let one_bytes = ret.stride() - eight_bytes * 8 - four_bytes * 4 - two_bytes * 2;
+        if one_bytes == 1 {
+            tys.push(I8)
+        }
+        Some(PassMode::cast(tys, ret))
+
     } else {
         Some(PassMode::indirect())
     }
