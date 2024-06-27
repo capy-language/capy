@@ -137,6 +137,7 @@ impl FnAbi {
 
         for (pass, idx) in &self.args {
             let arg = args[*idx as usize];
+            let arg_type = func_cmplr.builder.func.dfg.value_type(arg);
             match pass {
                 PassMode::Cast { tys, .. } => {
                     let mut off = 0;
@@ -149,6 +150,24 @@ impl FnAbi {
                         arg_list.push(lo);
                         off += ty.bytes();
                     }
+                }
+                // FIXME: this is a hack that won't work for `ptr_width` sized scalars passed on the stack
+                PassMode::Indirect(sz)
+                    if (arg_type.is_float() || arg_type.is_int())
+                        && !(arg_type.bits() == func_cmplr.ptr_ty.bits()) =>
+                {
+                    let sz = sz.unwrap_or(arg_type.bytes() as usize);
+                    let slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: sz as u32,
+                        align_shift: sz.trailing_zeros() as u8,
+                    });
+                    func_cmplr.builder.ins().stack_store(arg, slot, 0);
+                    let arg = func_cmplr
+                        .builder
+                        .ins()
+                        .stack_addr(func_cmplr.ptr_ty, slot, 0);
+                    arg_list.push(arg);
                 }
                 _ => arg_list.push(arg),
             }
