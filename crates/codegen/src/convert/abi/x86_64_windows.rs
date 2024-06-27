@@ -15,7 +15,7 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
         None
     } else if ty.is_aggregate() {
         match ty.size() {
-            x if x < 8 && is_pow_of2(x) => {
+            x if x <= 8 && is_pow_of2(x) => {
                 let x = x as u16;
                 Some(PassMode::cast(
                     array_vec![Type::int_with_byte_size(x).unwrap()],
@@ -24,7 +24,7 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
             }
             _ => Some(PassMode::indirect()),
         }
-    } else if ty.size() > 8 {
+    } else if ty.size() < 8 {
         Some(PassMode::direct(
             ty.get_final_ty().into_real_type().unwrap(),
         ))
