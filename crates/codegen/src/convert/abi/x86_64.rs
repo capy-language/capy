@@ -182,7 +182,7 @@ pub fn split_aggregate(aggr: Intern<Ty>, cls: &[Class]) -> ArrayVec<[Type; 4]> {
     tys
 }
 
-pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
 
     let push_direct = |arg: Intern<Ty>, cls: &[_], to: &mut Vec<_>, idx: u16| {

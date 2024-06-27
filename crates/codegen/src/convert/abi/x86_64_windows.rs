@@ -34,7 +34,7 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
     // TODO: vector types
 }
 
-pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = ty_to_passmode(ret);
 

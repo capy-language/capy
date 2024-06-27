@@ -1,6 +1,6 @@
 // TODO: other kinds of aarch64 abis then apple
 
-use cranelift::codegen::ir::Type;
+use cranelift_codegen::ir::types::{I128, I16, I32, I64, I8};
 use hir_ty::Ty;
 use internment::Intern;
 use tinyvec::ArrayVec;
@@ -53,15 +53,7 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
         Some(hfa)
     } else if ret.size() <= 16 {
         Some(PassMode::cast(
-            ArrayVec::from_array_len(
-                [
-                    Type::int_with_byte_size(8).unwrap(),
-                    Type::int_with_byte_size(8).unwrap(),
-                    Type::int_with_byte_size(8).unwrap(),
-                    Type::int_with_byte_size(8).unwrap(),
-                ],
-                (ret.size() + 7) as usize / 8,
-            ),
+            ArrayVec::from_array_len([I64, I64, I64, I64], (ret.size() + 7) as usize / 8),
             ret,
         ))
     } else {
@@ -81,29 +73,25 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
         Some(hfa)
     } else if arg.size() <= 16 {
         if arg.align() != 128 {
-            Some(PassMode::cast(
-                ArrayVec::from_array_len(
-                    [
-                        Type::int_with_byte_size(8).unwrap(),
-                        Type::int_with_byte_size(8).unwrap(),
-                        Type::int_with_byte_size(8).unwrap(),
-                        Type::int_with_byte_size(8).unwrap(),
-                    ],
-                    (arg.size() + 7) as usize / 8,
-                ),
-                arg,
-            ))
+            // TODO: eight byte align the stack instead
+            let eight_bytes = arg.stride() / 8;
+            let mut tys = ArrayVec::from_array_len([I64, I64, I64, I64], eight_bytes as usize);
+            let four_bytes = (arg.stride() - eight_bytes * 8) / 4;
+            if four_bytes == 1 {
+                tys.push(I32)
+            }
+            let two_bytes = (arg.stride() - eight_bytes * 8 - four_bytes * 4) / 2;
+            if two_bytes == 1 {
+                tys.push(I16)
+            }
+            let one_bytes = arg.stride() - eight_bytes * 8 - four_bytes * 4 - two_bytes * 2;
+            if one_bytes == 1 {
+                tys.push(I8)
+            }
+            Some(PassMode::cast(tys, arg))
         } else {
             Some(PassMode::cast(
-                ArrayVec::from_array_len(
-                    [
-                        Type::int_with_byte_size(16).unwrap(),
-                        Type::int_with_byte_size(16).unwrap(),
-                        Type::int_with_byte_size(16).unwrap(),
-                        Type::int_with_byte_size(16).unwrap(),
-                    ],
-                    (arg.size() + 15) as usize / 16,
-                ),
+                ArrayVec::from_array_len([I128, I128, I128, I128], (arg.size() + 15) as usize / 16),
                 arg,
             ))
         }
@@ -112,7 +100,7 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
     }
 }
 
-pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = classify_ret(ret);
 

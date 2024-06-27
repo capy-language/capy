@@ -32,7 +32,7 @@ pub enum Abi {
 }
 
 impl Abi {
-    pub fn fn_to_target(&self, func_ty: (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
+    pub fn fn_to_target(&self, func_ty: (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
         #[allow(unreachable_patterns)]
         match self {
             Abi::X64SysV => x86_64::fn_ty_to_abi(func_ty),
@@ -239,7 +239,7 @@ impl FnAbi {
         &self,
         func_cmplr: &mut FunctionCompiler,
         return_ty: Intern<Ty>,
-        args: &Vec<Intern<Ty>>,
+        args: &[Intern<Ty>],
         function_body: Idx<hir::Expr>,
     ) {
         // Create the entry block, to start emitting code in.
