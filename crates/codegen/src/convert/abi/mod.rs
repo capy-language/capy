@@ -331,7 +331,7 @@ impl FnAbi {
                 PassMode::Cast { tys, orig } => {
                     let slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
-                        size: orig.size() as u32,
+                        size: orig.size(),
                         align_shift: orig.align().trailing_zeros() as u8,
                     });
                     let tmp_mem = MemoryLoc::from_stack(slot, 0);
@@ -353,7 +353,7 @@ impl FnAbi {
                     }
                 }
                 PassMode::Indirect(_) => {
-                    let ret_addr = func_cmplr.builder.block_params(entry_block)[0 as usize];
+                    let ret_addr = func_cmplr.builder.block_params(entry_block)[0_usize];
                     let tmp_mem = MemoryLoc::from_addr(ret_addr, 0);
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
                     func_cmplr.builder.ins().return_(&[]);

@@ -1276,7 +1276,7 @@ fn cast_into_memory(
             let memory = memory.unwrap_or_alloca(builder, cast_to);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
-            memory.store(builder, len, 0 as i32);
+            memory.store(builder, len, 0_i32);
             memory.store(builder, val?, ptr_ty.bytes() as i32);
 
             return Some(memory.into_value(builder, ptr_ty));

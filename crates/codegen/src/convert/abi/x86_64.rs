@@ -91,7 +91,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                     .struct_layout()
                     .unwrap()
                     .offsets()
-                    .into_iter()
+                    .iter()
                     .enumerate()
                 {
                     classify_eight_byte(members[field].1, classes, offset + field_off as usize)
@@ -187,7 +187,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
 
     let push_direct = |arg: Intern<Ty>, cls: &[_], to: &mut Vec<_>, idx: u16| {
         if arg.is_aggregate() {
-            to.push((PassMode::cast(split_aggregate(arg, &cls), arg), idx));
+            to.push((PassMode::cast(split_aggregate(arg, cls), arg), idx));
         } else {
             // if arg.size() < 4 {
             //     // TODO: sign extend appropiatly
@@ -218,7 +218,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
             sig.ret = Some(PassMode::indirect_by_val(ret.size() as usize));
         }
     }
-    for (idx, arg) in args.into_iter().enumerate() {
+    for (idx, arg) in args.iter().enumerate() {
         if arg.is_zero_sized() {
             continue;
         }

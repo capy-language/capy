@@ -9,7 +9,7 @@ use super::{FnAbi, PassMode};
 
 fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
     fn is_pow_of2(n: u32) -> bool {
-        (n & n - 1) == 0
+        (n & (n - 1)) == 0
     }
     if ty.is_zero_sized() {
         None
@@ -38,7 +38,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = ty_to_passmode(ret);
 
-    for (idx, arg) in args.into_iter().enumerate() {
+    for (idx, arg) in args.iter().enumerate() {
         if let Some(arg) = ty_to_passmode(*arg) {
             sig.args.push((arg, idx as u16))
         }

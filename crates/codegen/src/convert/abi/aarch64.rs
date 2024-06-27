@@ -55,7 +55,7 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
                     Type::int_with_byte_size(8).unwrap(),
                     Type::int_with_byte_size(8).unwrap(),
                 ],
-                ret.size() as usize / 8,
+                (ret.size() + 7) as usize / 8,
             ),
             ret,
         ))
@@ -79,7 +79,7 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
                         Type::int_with_byte_size(8).unwrap(),
                         Type::int_with_byte_size(8).unwrap(),
                     ],
-                    arg.size() as usize / 8,
+                    (arg.size() + 7) as usize / 8,
                 ),
                 arg,
             ))
@@ -92,7 +92,7 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
                         Type::int_with_byte_size(16).unwrap(),
                         Type::int_with_byte_size(16).unwrap(),
                     ],
-                    arg.size() as usize / 16,
+                    (arg.size() + 7) as usize / 16,
                 ),
                 arg,
             ))
@@ -106,7 +106,7 @@ pub fn fn_ty_to_abi((args, ret): (&Vec<Intern<Ty>>, Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = classify_ret(ret);
 
-    for (idx, arg) in args.into_iter().enumerate() {
+    for (idx, arg) in args.iter().enumerate() {
         if let Some(arg) = classify_arg(*arg) {
             sig.args.push((arg, idx as u16))
         }
