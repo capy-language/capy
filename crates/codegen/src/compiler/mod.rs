@@ -833,7 +833,7 @@ impl Compiler<'_> {
         builder.seal_all_blocks();
         builder.finalize();
 
-        if self.verbosity == Verbosity::AllFunctions {
+        if matches!(self.verbosity, Verbosity::AllFunctions { .. }) {
             println!(
                 "{} \x1B[90m{}\x1B[0m:\n{}",
                 unmangled_name, mangled_name, self.ctx.func
@@ -908,15 +908,23 @@ impl Compiler<'_> {
             defer_stack: Vec::new(),
         };
 
-        let debug_print = self.verbosity == Verbosity::AllFunctions
-            || (self.verbosity == Verbosity::LocalFunctions
-                && !module_name.is_mod(self.mod_dir, self.interner));
+        let is_mod = module_name.is_mod(self.mod_dir, self.interner);
 
-        if debug_print {
+        if self.verbosity.should_show(is_mod) {
             println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
 
-        function_compiler.finish(param_tys, return_ty, body, new_idx_to_old_idx, debug_print);
+        function_compiler.finish(
+            param_tys,
+            return_ty,
+            body,
+            new_idx_to_old_idx,
+            self.verbosity.should_show(is_mod),
+        );
+
+        if self.verbosity.include_disasm(is_mod) {
+            self.ctx.want_disasm = true;
+        }
 
         self.module
             .define_function(func_id, &mut self.ctx)
@@ -929,6 +937,24 @@ impl Compiler<'_> {
                 }
                 std::process::exit(1);
             });
+
+        let compiled = self.ctx.compiled_code().unwrap();
+
+        if self.verbosity.include_disasm(is_mod) {
+            print!("asm = \n{}", compiled.vcode.as_ref().unwrap());
+            println!(
+                "({} instructions, {} bytes of machine code)",
+                compiled
+                    .vcode
+                    .as_ref()
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.ends_with(':'))
+                    .count(),
+                compiled.code_buffer().len(),
+            );
+            println!("stack frame size = {} bytes\n", compiled.frame_size);
+        }
 
         self.module.clear_context(&mut self.ctx);
 
@@ -1175,7 +1201,7 @@ impl UnwrapOrAlloca for Option<MemoryLoc> {
                 let stack_slot = builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
-                    align_shift: ty.align() as u8,
+                    align_shift: ty.align_shift(),
                 });
 
                 let addr = builder.ins().stack_addr(ptr_ty, stack_slot, 0);
@@ -1260,7 +1286,7 @@ fn cast_into_memory(
                                     builder.create_sized_stack_slot(StackSlotData {
                                         kind: StackSlotKind::ExplicitSlot,
                                         size: cast_from.size(),
-                                        align_shift: cast_from.align() as u8,
+                                        align_shift: cast_from.align_shift(),
                                     });
 
                                 builder.ins().stack_store(val, tmp_stack_slot, 0);

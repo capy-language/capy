@@ -151,7 +151,7 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
     builder.seal_all_blocks();
     builder.finalize();
 
-    if compiler.verbosity == Verbosity::AllFunctions {
+    if matches!(compiler.verbosity, Verbosity::AllFunctions { .. }) {
         println!("main \x1B[90mmain\x1B[0m:\n{}", compiler.ctx.func);
     }
 

@@ -18,6 +18,7 @@ pub(crate) trait GetLayoutInfo {
     fn size(&self) -> u32;
     fn align(&self) -> u32;
     fn stride(&self) -> u32;
+    fn align_shift(&self) -> u8;
     fn struct_layout(&self) -> Option<StructLayout>;
 }
 
@@ -29,6 +30,17 @@ impl GetLayoutInfo for Intern<Ty> {
 
     fn align(&self) -> u32 {
         unsafe { LAYOUTS.lock() }.unwrap().get().unwrap().alignments[self]
+    }
+
+    /// The amount of left shifts needed to get the right alignment.
+    /// This is needed for cranelift.
+    ///
+    /// `1 << align_shift == align`
+    fn align_shift(&self) -> u8 {
+        let align = unsafe { LAYOUTS.lock() }.unwrap().get().unwrap().alignments[self];
+        assert!(align.is_power_of_two());
+        // trailing_zeros(n) == log2(n) if and only if n is a power of two
+        align.trailing_zeros() as u8
     }
 
     fn stride(&self) -> u32 {

@@ -23,11 +23,29 @@ use std::path::PathBuf;
 use std::process::{exit, Command};
 use target_lexicon::{OperatingSystem, Triple};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
     None,
-    LocalFunctions,
-    AllFunctions,
+    LocalFunctions { include_disasm: bool },
+    AllFunctions { include_disasm: bool },
+}
+
+impl Verbosity {
+    pub fn should_show(self, is_mod: bool) -> bool {
+        match self {
+            Verbosity::None => false,
+            Verbosity::LocalFunctions { .. } => !is_mod,
+            Verbosity::AllFunctions { .. } => true,
+        }
+    }
+
+    pub fn include_disasm(self, is_mod: bool) -> bool {
+        match self {
+            Verbosity::None => false,
+            Verbosity::LocalFunctions { include_disasm } => !is_mod && include_disasm,
+            Verbosity::AllFunctions { include_disasm } => include_disasm,
+        }
+    }
 }
 
 pub(crate) type FinalSignature = cranelift::prelude::Signature;
@@ -425,7 +443,9 @@ mod tests {
         let InferenceResult { tys, .. } =
             InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
                 eval_comptime_blocks(
-                    Verbosity::LocalFunctions,
+                    Verbosity::AllFunctions {
+                        include_disasm: true,
+                    },
                     vec![comptime],
                     &mut comptime_results,
                     Path::new(""),
@@ -444,7 +464,9 @@ mod tests {
 
         // evaluate any comptimes that haven't been ran yet
         eval_comptime_blocks(
-            Verbosity::AllFunctions,
+            Verbosity::AllFunctions {
+                include_disasm: true,
+            },
             world_bodies.find_comptimes(),
             &mut comptime_results,
             &mod_dir,
@@ -457,7 +479,9 @@ mod tests {
         println!("actual program:");
 
         let bytes = compile_obj(
-            Verbosity::AllFunctions,
+            Verbosity::AllFunctions {
+                include_disasm: true,
+            },
             entry_point,
             if fake_file_system {
                 Path::new("")

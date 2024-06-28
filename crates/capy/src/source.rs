@@ -9,10 +9,13 @@ use parser::Parse;
 use rustc_hash::FxHashSet;
 use uid_gen::UIDGenerator;
 
+use crate::VerboseScope;
+
 pub(crate) struct SourceFile {
     pub(crate) file_name: PathBuf,
     pub(crate) contents: String,
     pub(crate) module: FileName,
+    is_mod: bool,
     parse: Parse,
     root: Root,
     diagnostics: Vec<Diagnostic>,
@@ -21,7 +24,9 @@ pub(crate) struct SourceFile {
     world_index: Rc<RefCell<hir::WorldIndex>>,
     world_bodies: Rc<RefCell<hir::WorldBodies>>,
     index: hir::Index,
-    verbose: u8,
+    verbose_hir: VerboseScope,
+    /// the types don't actually get printed here
+    verbose_types: VerboseScope,
 }
 
 impl SourceFile {
@@ -34,18 +39,20 @@ impl SourceFile {
         world_index: Rc<RefCell<hir::WorldIndex>>,
         world_bodies: Rc<RefCell<hir::WorldBodies>>,
         mod_dir: &std::path::Path,
-        verbose: u8,
+        verbose_hir: VerboseScope,
+        verbose_ast: VerboseScope,
+        verbose_types: VerboseScope,
     ) -> SourceFile {
         let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
 
         let is_mod = module.is_mod(mod_dir, &interner.borrow());
 
-        if (!is_mod && verbose >= 1) || (is_mod && verbose >= 3) {
+        if verbose_hir.should_show(is_mod) || verbose_ast.should_show(is_mod) {
             println!("=== {} ===\n", file_name.display());
         }
 
         let parse = parser::parse_source_file(&lexer::lex(&contents), &contents);
-        if verbose >= 4 {
+        if verbose_ast.should_show(is_mod) {
             println!("{:?}\n", parse);
         }
 
@@ -60,6 +67,7 @@ impl SourceFile {
             file_name,
             contents,
             module,
+            is_mod,
             parse,
             root,
             diagnostics: Vec::new(),
@@ -68,7 +76,8 @@ impl SourceFile {
             world_bodies,
             index,
             world_index,
-            verbose,
+            verbose_hir,
+            verbose_types,
         };
 
         res.diagnostics.extend(
@@ -112,11 +121,14 @@ impl SourceFile {
             .borrow_mut()
             .add_file(self.module, self.index.clone());
 
-        if (!self.module.is_mod(mod_dir, &self.interner.borrow()) && self.verbose >= 1)
-            || self.verbose >= 3
-        {
+        if self.verbose_hir.should_show(self.is_mod) {
             let interner = self.interner.borrow();
-            let debug = bodies.debug(self.module, mod_dir, &interner, self.verbose >= 2);
+            let debug = bodies.debug(
+                self.module,
+                mod_dir,
+                &interner,
+                self.verbose_types.should_show(self.is_mod),
+            );
             if !debug.is_empty() {
                 println!("{}", debug);
             }
