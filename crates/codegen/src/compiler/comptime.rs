@@ -164,7 +164,7 @@ pub fn eval_comptime_blocks<'a>(
             64 => types::I64,
             _ => unreachable!(),
         },
-        default_abi
+        default_abi,
     };
 
     compiler.finalize_tys();
@@ -308,7 +308,7 @@ pub fn eval_comptime_blocks<'a>(
                 unsafe {
                     core::arch::asm!(
                         "mov x8, {raw}",
-                        "brl {fun}",
+                        "blr {fun}",
                         //x8 = out("x8") _,
                         raw = in(reg) raw,
                         fun = in(reg) code_ptr,
