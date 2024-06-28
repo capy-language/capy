@@ -1169,8 +1169,10 @@ impl MemoryLoc {
 
         if ty.is_aggregate() {
             match self.addr {
-                Location::Addr(addr) => {
-                    let addr = builder.ins().iadd_imm(addr, self.offset as i64);
+                Location::Addr(mut addr) => {
+                    if self.offset != 0 {
+                        addr = builder.ins().iadd_imm(addr, self.offset as i64);
+                    }
                     builder.emit_small_memory_copy(
                         module.target_config(),
                         addr,

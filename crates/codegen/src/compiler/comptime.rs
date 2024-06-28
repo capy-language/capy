@@ -295,12 +295,26 @@ pub fn eval_comptime_blocks<'a>(
                 let layout = Layout::from_size_align(size as usize, std::mem::align_of::<u8>())
                     .expect("Invalid layout");
                 let raw = unsafe { std::alloc::alloc(layout) };
+                // FIXME: this is a very ugly hack that isn't really sound
+                //        introduce a way to construct comptime functions instead
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    let comptime =
+                        unsafe { mem::transmute::<*const u8, fn(*mut u8) -> *mut u8>(code_ptr) };
 
-                let comptime =
-                    unsafe { mem::transmute::<*const u8, fn(*const u8) -> *const u8>(code_ptr) };
-
-                comptime(raw);
-
+                    comptime(raw);
+                }
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    core::arch::asm!(
+                        "mov x8, {raw}",
+                        "brl {fun}",
+                        //x8 = out("x8") _,
+                        raw = in(reg) raw,
+                        fun = in(reg) code_ptr,
+                        clobber_abi("C")
+                    );
+                }
                 let bytes = unsafe {
                     let slice = std::ptr::slice_from_raw_parts(raw, size as usize) as *mut [u8];
 
