@@ -1271,7 +1271,8 @@ impl FunctionCompiler<'_> {
                         } else {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
+                            let comp_sig = fn_abi
+                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1296,7 +1297,8 @@ impl FunctionCompiler<'_> {
                         _ => {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
+                            let comp_sig = fn_abi
+                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1313,7 +1315,8 @@ impl FunctionCompiler<'_> {
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
+                        let comp_sig = fn_abi
+                            .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
                         let sig_ref = self.builder.import_signature(comp_sig);
 
                         self.builder

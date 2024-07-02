@@ -20,12 +20,17 @@ use crate::{
 };
 
 pub mod aarch64;
+pub mod simplified;
 pub mod x86_64;
 pub mod x86_64_windows;
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum Abi {
+    /// A cross-platform abi that is only used for the compiling comptime blocks.
+    /// This alows the compiler to interface with these blocks simply without having
+    /// to do something different for each platform.
+    Simplified,
     X64SysV,
     X64Windows,
     AppleAarch64,
@@ -35,6 +40,7 @@ impl Abi {
     pub fn fn_to_target(&self, func_ty: (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
         #[allow(unreachable_patterns)]
         match self {
+            Abi::Simplified => simplified::fn_ty_to_abi(func_ty),
             Abi::X64SysV => x86_64::fn_ty_to_abi(func_ty),
             Abi::X64Windows => x86_64_windows::fn_ty_to_abi(func_ty),
             Abi::AppleAarch64 => aarch64::fn_ty_to_abi(func_ty),
@@ -104,6 +110,7 @@ impl PassMode {
 pub struct FnAbi {
     args: Vec<(PassMode, u16)>,
     ret: Option<PassMode>,
+    simple_ret: bool,
 }
 
 impl FnAbi {
@@ -111,15 +118,22 @@ impl FnAbi {
         Self {
             args: vec![],
             ret: None,
+            simple_ret: false,
         }
     }
+
     pub fn to_cl(&self, ptr_ty: Type, conv: CallConv) -> Signature {
         // TODO: actually use the correct calling convention here
         let mut sig = Signature::new(conv);
         if let Some(ret) = self.ret {
             if ret.is_indirect() {
-                sig.params
-                    .push(AbiParam::special(ptr_ty, ArgumentPurpose::StructReturn))
+                let purpose = if self.simple_ret {
+                    ArgumentPurpose::Normal
+                } else {
+                    ArgumentPurpose::StructReturn
+                };
+
+                sig.params.push(AbiParam::special(ptr_ty, purpose))
             } else {
                 sig.returns.append(&mut ret.to_abiparam(ptr_ty));
             }

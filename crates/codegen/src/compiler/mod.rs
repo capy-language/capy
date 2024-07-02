@@ -867,7 +867,29 @@ impl Compiler<'_> {
         param_tys: Vec<Intern<Ty>>,
         return_ty: Intern<Ty>,
     ) -> FuncId {
-        let fn_abi = self.default_abi.fn_to_target((&param_tys, return_ty));
+        self.compile_real_function_with_abi(
+            unmangled_name,
+            mangled_name,
+            module_name,
+            body,
+            param_tys,
+            return_ty,
+            self.default_abi,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_real_function_with_abi(
+        &mut self,
+        unmangled_name: &str,
+        mangled_name: &str,
+        module_name: hir::FileName,
+        body: Idx<hir::Expr>,
+        param_tys: Vec<Intern<Ty>>,
+        return_ty: Intern<Ty>,
+        abi: Abi,
+    ) -> FuncId {
+        let fn_abi = abi.fn_to_target((&param_tys, return_ty));
         let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
         let func_id = self
             .module
