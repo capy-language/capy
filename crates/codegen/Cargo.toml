@@ -21,6 +21,7 @@ internment = "0.8.3"
 uid_gen = { path = "../uid_gen" }
 num-traits = "0.2.16"
 glob = "0.3.1"
+tinyvec = { version = "1.6.1", features = ["tinyvec_macros"] }
 
 [dev-dependencies]
 ast = { path = "../ast" }

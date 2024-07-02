@@ -18,7 +18,7 @@ use std::{
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler::{MetaTyData, MetaTyInfoArrays},
+    compiler::{abi::Abi, MetaTyData, MetaTyInfoArrays},
     convert::{FinalTy, GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
@@ -134,6 +134,7 @@ pub fn eval_comptime_blocks<'a>(
     let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
     let mut module = JITModule::new(builder);
+    let default_abi = module.target_config().into();
 
     let mut compiler = Compiler {
         final_binary: false,
@@ -163,6 +164,7 @@ pub fn eval_comptime_blocks<'a>(
             64 => types::I64,
             _ => unreachable!(),
         },
+        default_abi,
     };
 
     compiler.finalize_tys();
@@ -179,7 +181,7 @@ pub fn eval_comptime_blocks<'a>(
         let hir::Comptime { body } = compiler.world_bodies[ctc.file][ctc.comptime];
         let return_ty = tys[ctc.file][body];
 
-        let func_id = compiler.compile_real_function(
+        let func_id = compiler.compile_real_function_with_abi(
             &format!(
                 "{}.comptime#{}",
                 ctc.file.to_string(compiler.mod_dir, compiler.interner),
@@ -190,6 +192,7 @@ pub fn eval_comptime_blocks<'a>(
             ctc.expr,
             vec![],
             return_ty,
+            Abi::Simplified,
         );
 
         let extra: Vec<_> = compiler
@@ -202,13 +205,7 @@ pub fn eval_comptime_blocks<'a>(
         already_done.extend(extra.clone());
         to_eval.extend(extra);
 
-        comptime_funcs.push((
-            ctc,
-            func_id,
-            return_ty.get_final_ty(),
-            return_ty.size(),
-            *return_ty == hir_ty::Ty::Type,
-        ));
+        comptime_funcs.push((ctc, func_id, return_ty));
     }
 
     // Initializing this will force the compiler to create type info data
@@ -255,10 +252,10 @@ pub fn eval_comptime_blocks<'a>(
         }
     }
 
-    while let Some((ctc, func_id, return_ty, size, is_type)) = comptime_funcs.pop() {
+    while let Some((ctc, func_id, return_ty)) = comptime_funcs.pop() {
         let code_ptr = module.get_finalized_function(func_id);
 
-        if is_type {
+        if *return_ty == hir_ty::Ty::Type {
             let comptime = unsafe { mem::transmute::<*const u8, fn() -> u32>(code_ptr) };
             let ty = comptime();
 
@@ -268,7 +265,7 @@ pub fn eval_comptime_blocks<'a>(
             continue;
         }
 
-        match return_ty {
+        match return_ty.get_final_ty() {
             FinalTy::Number(number_ty) => {
                 let result = match number_ty.ty {
                     types::F32 => run_comptime_float::<f32>(code_ptr),
@@ -290,17 +287,19 @@ pub fn eval_comptime_blocks<'a>(
                 results.insert(ctc, result);
             }
             FinalTy::Pointer(_) => {
-                let layout = Layout::from_size_align(size as usize, std::mem::align_of::<u8>())
-                    .expect("Invalid layout");
+                let layout =
+                    Layout::from_size_align(return_ty.size() as usize, return_ty.align() as usize)
+                        .expect("Invalid layout");
                 let raw = unsafe { std::alloc::alloc(layout) };
 
                 let comptime =
-                    unsafe { mem::transmute::<*const u8, fn(*const u8) -> *const u8>(code_ptr) };
+                    unsafe { mem::transmute::<*const u8, fn(*mut u8) -> *mut u8>(code_ptr) };
 
                 comptime(raw);
 
                 let bytes = unsafe {
-                    let slice = std::ptr::slice_from_raw_parts(raw, size as usize) as *mut [u8];
+                    let slice = std::ptr::slice_from_raw_parts(raw, return_ty.size() as usize)
+                        as *mut [u8];
 
                     Box::from_raw(slice)
                 };

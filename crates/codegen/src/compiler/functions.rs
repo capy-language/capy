@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use cranelift::{
     codegen::ir::{Endianness, FuncRef},
     prelude::{
-        types, Block, EntityRef, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
-        StackSlotData, StackSlotKind, TrapCode, Value, Variable,
+        types, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
+        StackSlotKind, TrapCode, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
@@ -18,13 +18,13 @@ use uid_gen::UIDGenerator;
 
 use crate::{
     builtin::{self, BuiltinFunction},
-    convert::{GetFinalTy, ToFinalSignature, ToTyId},
+    convert::{GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::{self, Mangle},
-    FinalSignature,
 };
 
 use super::{
+    abi::{Abi, FnAbi},
     comptime::{ComptimeBytes, IntBytes},
     ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
 };
@@ -45,7 +45,6 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) final_binary: bool,
 
     pub(crate) file_name: hir::FileName,
-    pub(crate) signature: FinalSignature,
 
     pub(crate) mod_dir: &'a std::path::Path,
     pub(crate) interner: &'a Interner,
@@ -87,105 +86,18 @@ pub(crate) struct FunctionCompiler<'a> {
 impl FunctionCompiler<'_> {
     pub(crate) fn finish(
         mut self,
-        param_tys: Vec<Intern<Ty>>,
-        return_ty: Intern<Ty>,
+        fn_abi: FnAbi,
+        (args, return_ty): (&Vec<Intern<Ty>>, Intern<Ty>),
         function_body: Idx<hir::Expr>,
-        new_idx_to_old_idx: FxHashMap<u64, u64>,
         debug_print: bool,
     ) {
-        // Create the entry block, to start emitting code in.
-        let entry_block = self.builder.create_block();
 
-        self.builder
-            .append_block_params_for_function_params(entry_block);
-
-        self.builder.switch_to_block(entry_block);
-        self.builder.seal_block(entry_block);
-
-        let mut dest_param = None;
-
-        // create a variable for each given parameter, and memcpy the parameter into the stack of
-        // this function if it was given "by value"
-        //
-        // this happens e.g. for structs and arrays
-        for (idx, param) in self.signature.params.iter().enumerate() {
-            let param_ty = param.value_type;
-
-            let var = Variable::new(self.var_id_gen.generate_unique_id() as usize);
-
-            if new_idx_to_old_idx.contains_key(&(idx as u64)) {
-                self.params.insert(new_idx_to_old_idx[&(idx as u64)], var);
-            } else {
-                let old_dest_param = dest_param.replace(var);
-                assert!(old_dest_param.is_none());
-            }
-
-            self.builder.declare_var(var, param_ty);
-
-            let value = self.builder.block_params(entry_block)[idx];
-
-            let old_idx = match new_idx_to_old_idx.get(&(idx as u64)) {
-                Some(old_idx) => *old_idx,
-                None => {
-                    self.builder.def_var(var, value);
-                    continue;
-                }
-            };
-
-            let param_ty = param_tys[old_idx as usize];
-            // memcpy if needed
-            if param_ty.is_aggregate() {
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: param_ty.size(),
-                    align_shift: param_ty.align_shift(),
-                });
-
-                let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
-
-                self.builder.emit_small_memory_copy(
-                    self.module.target_config(),
-                    stack_slot_addr,
-                    value,
-                    param_ty.stride() as u64,
-                    param_ty.align() as u8,
-                    param_ty.align() as u8,
-                    true,
-                    MemFlags::trusted(),
-                );
-
-                self.builder.def_var(var, stack_slot_addr);
-            } else {
-                self.builder.def_var(var, value);
-            }
-        }
-
-        // if the return type is e.g. a struct or array, the caller of this function must allocate
-        // enough space for that return type in it's own stack. the caller then gives us an address
-        // to this space for us to put the return value
-        if return_ty.is_aggregate() {
-            let return_addr = self.builder.use_var(dest_param.unwrap());
-            let return_mem = MemoryLoc {
-                addr: return_addr,
-                offset: 0,
-            };
-
-            // the function actually gets compiled here
-            self.compile_and_cast_into_memory(function_body, return_ty, return_mem);
-
-            self.builder.ins().return_(&[return_addr]);
-        } else if let Some(val) = self.compile_and_cast(function_body, return_ty) {
-            // or just above
-            self.builder.ins().return_(&[val]);
-        } else {
-            self.builder.ins().return_(&[]);
-        }
+        fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
             print!("{}", self.builder.func);
         }
 
-        self.builder.seal_all_blocks();
         self.builder.finalize();
     }
 
@@ -613,7 +525,7 @@ impl FunctionCompiler<'_> {
                     align_shift: ty.align_shift(),
                 });
 
-                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
+                let memory = MemoryLoc::from_stack(stack_slot, 0);
 
                 if let Some(value) = value {
                     // the type of the value might not be the same as the type annotation of the
@@ -624,7 +536,7 @@ impl FunctionCompiler<'_> {
                 }
 
                 self.locals
-                    .insert(local_def, memory.into_value(&mut self.builder));
+                    .insert(local_def, memory.into_value(&mut self.builder, self.ptr_ty));
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &self.world_bodies[self.file_name][assign];
@@ -632,10 +544,7 @@ impl FunctionCompiler<'_> {
                 let Some(dest) = self.compile_expr_with_args(assign_body.dest, true) else {
                     return;
                 };
-                let dest = MemoryLoc {
-                    addr: dest,
-                    offset: 0,
-                };
+                let dest = MemoryLoc::from_addr(dest, 0);
 
                 let dest_ty = &self.tys[self.file_name][assign_body.dest];
 
@@ -772,12 +681,7 @@ impl FunctionCompiler<'_> {
             Ty::NoEval => return,
         };
 
-        self.builder.ins().store(
-            MemFlags::trusted(),
-            value,
-            memory.addr,
-            memory.offset as i32,
-        );
+        memory.store(&mut self.builder, value, 0);
     }
 
     fn store_expr_in_memory(
@@ -940,11 +844,11 @@ impl FunctionCompiler<'_> {
                     align_shift: ty.align_shift(),
                 });
 
-                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
+                let memory = MemoryLoc::from_stack(stack_slot, 0);
 
                 self.store_array_items(items.iter().copied(), sub_ty, memory);
 
-                Some(memory.into_value(&mut self.builder))
+                Some(memory.into_value(&mut self.builder, self.ptr_ty))
             }
             hir::Expr::Index { source, index } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
@@ -1328,25 +1232,20 @@ impl FunctionCompiler<'_> {
                     .clone()
                     .as_function()
                     .unwrap();
+                let fn_abi = Into::<Abi>::into(self.module.target_config())
+                    .fn_to_target((&param_tys, return_ty));
 
-                let mut arg_values = args
+                let arg_values = args
                     .iter()
                     .zip(param_tys.iter())
                     .filter_map(|(arg_expr, expected_ty)| {
                         self.compile_and_cast(*arg_expr, *expected_ty)
                     })
                     .collect::<Vec<_>>();
+                let mut arg_values = fn_abi.get_arg_list(arg_values, self);
 
-                if return_ty.is_aggregate() {
-                    let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                        kind: StackSlotKind::ExplicitSlot,
-                        size: return_ty.size(),
-                        align_shift: return_ty.align_shift(),
-                    });
-                    let stack_slot_addr = self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0);
-
-                    arg_values.push(stack_slot_addr);
-                }
+                let ret_mem =
+                    fn_abi.ret_addr(&mut arg_values, &mut self.builder, return_ty, self.ptr_ty);
 
                 let call = match self.world_bodies[self.file_name][callee] {
                     hir::Expr::LocalGlobal(name) => {
@@ -1373,8 +1272,8 @@ impl FunctionCompiler<'_> {
                         } else {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let (comp_sig, _) = (&param_tys, return_ty)
-                                .to_final_signature(self.module, self.ptr_ty);
+                            let comp_sig = fn_abi
+                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1399,8 +1298,8 @@ impl FunctionCompiler<'_> {
                         _ => {
                             let callee = self.compile_expr(callee).unwrap();
 
-                            let (comp_sig, _) = (&param_tys, return_ty)
-                                .to_final_signature(self.module, self.ptr_ty);
+                            let comp_sig = fn_abi
+                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
                             let sig_ref = self.builder.import_signature(comp_sig);
 
@@ -1417,9 +1316,8 @@ impl FunctionCompiler<'_> {
                     _ => {
                         let callee = self.compile_expr(callee).unwrap();
 
-                        let (comp_sig, _) =
-                            (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
-
+                        let comp_sig = fn_abi
+                            .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
                         let sig_ref = self.builder.import_signature(comp_sig);
 
                         self.builder
@@ -1431,7 +1329,7 @@ impl FunctionCompiler<'_> {
                 if return_ty.is_zero_sized() {
                     None
                 } else {
-                    Some(self.builder.inst_results(call)[0])
+                    fn_abi.handle_ret(call, self, ret_mem)
                 }
             }
             hir::Expr::Paren(Some(expr)) => self.compile_expr_with_args(expr, no_load),
@@ -1836,11 +1734,11 @@ impl FunctionCompiler<'_> {
                     align_shift: ty.align_shift(),
                 });
 
-                let memory = MemoryLoc::from_stack(stack_slot, 0, &mut self.builder, self.ptr_ty);
+                let memory = MemoryLoc::from_stack(stack_slot, 0);
 
                 self.store_struct_fields(ty, &field_values, memory);
 
-                Some(memory.into_value(&mut self.builder))
+                Some(memory.into_value(&mut self.builder, self.ptr_ty))
             }
             hir::Expr::PrimitiveTy { .. } => None,
             hir::Expr::Distinct { .. } => None,
@@ -1971,10 +1869,7 @@ impl FunctionCompiler<'_> {
                     self.store_expr_in_memory(
                         self.world_bodies[self.file_name][comptime].body,
                         ty,
-                        MemoryLoc {
-                            addr: value_ptr,
-                            offset: 0,
-                        },
+                        MemoryLoc::from_addr(value_ptr, 0),
                     );
 
                     let true_val = self.builder.ins().iconst(types::I8, 1);
@@ -2017,7 +1912,9 @@ impl FunctionCompiler<'_> {
 
         let (param_tys, return_ty) = self.tys[self.file_name][expr].as_function().unwrap();
 
-        let (sig, _) = (&param_tys, return_ty).to_final_signature(self.module, self.ptr_ty);
+        let sig = Into::<Abi>::into(self.module.target_config())
+            .fn_to_target((&param_tys, return_ty))
+            .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
         let ftc = FunctionToCompile {
             file_name: self.file_name,
@@ -2043,13 +1940,13 @@ impl FunctionCompiler<'_> {
         local_func
     }
 
-    fn compile_and_cast(&mut self, expr: Idx<hir::Expr>, cast_to: Intern<Ty>) -> Option<Value> {
+    pub fn compile_and_cast(&mut self, expr: Idx<hir::Expr>, cast_to: Intern<Ty>) -> Option<Value> {
         let value = self.compile_expr(expr);
 
         self.cast(value, self.tys[self.file_name][expr], cast_to)
     }
 
-    fn compile_and_cast_into_memory(
+    pub fn compile_and_cast_into_memory(
         &mut self,
         expr: Idx<hir::Expr>,
         cast_to: Intern<Ty>,
@@ -2058,7 +1955,7 @@ impl FunctionCompiler<'_> {
         if self.tys[self.file_name][expr].is_functionally_equivalent_to(&cast_to, true) {
             self.store_expr_in_memory(expr, cast_to, memory);
 
-            return Some(memory.into_value(&mut self.builder));
+            return Some(memory.into_value(&mut self.builder, self.ptr_ty));
         }
 
         // todo: there should be a function similar to `store_expr_in_memory` that also casts along

@@ -14,7 +14,7 @@ use uid_gen::UIDGenerator;
 
 use crate::Verbosity;
 
-use super::{cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
+use super::{ cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
@@ -49,6 +49,8 @@ pub(crate) fn compile_program<'a>(
         }
     };
 
+    let default_abi = module.target_config().into();
+
     let mut compiler = Compiler {
         final_binary: true,
         verbosity,
@@ -71,6 +73,7 @@ pub(crate) fn compile_program<'a>(
         i128_id_gen: UIDGenerator::default(),
         comptime_results,
         comptime_data: FxHashMap::default(),
+        default_abi,
     };
 
     compiler.finalize_tys();
