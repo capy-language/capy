@@ -91,10 +91,11 @@ impl FunctionCompiler<'_> {
         function_body: Idx<hir::Expr>,
         debug_print: bool,
     ) {
+
         fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
-            println!("{}", self.builder.func);
+            print!("{}", self.builder.func);
         }
 
         self.builder.finalize();
@@ -521,7 +522,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
-                    align_shift: ty.align() as u8,
+                    align_shift: ty.align_shift(),
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0);
@@ -840,7 +841,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
-                    align_shift: ty.align() as u8,
+                    align_shift: ty.align_shift(),
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0);
@@ -968,7 +969,7 @@ impl FunctionCompiler<'_> {
                         let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                             kind: StackSlotKind::ExplicitSlot,
                             size: 0,
-                            align_shift: 1,
+                            align_shift: 0, // 1 << 0 == 1
                         });
 
                         Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
@@ -981,7 +982,7 @@ impl FunctionCompiler<'_> {
                     let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,
                         size: inner_ty.size(),
-                        align_shift: inner_ty.align() as u8,
+                        align_shift: inner_ty.align_shift(),
                     });
 
                     let expr = self.compile_expr(expr).unwrap();
@@ -1669,7 +1670,7 @@ impl FunctionCompiler<'_> {
                                     kind: StackSlotKind::ExplicitSlot,
                                     size: self.ptr_ty.bytes(),
                                     // todo: maybe do this better
-                                    align_shift: self.ptr_ty.bytes() as u8,
+                                    align_shift: self.ptr_ty.bytes().trailing_zeros() as u8,
                                 });
 
                                 let len = self.builder.ins().iconst(self.ptr_ty, len as i64);
@@ -1730,7 +1731,7 @@ impl FunctionCompiler<'_> {
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
                     size: ty.size(),
-                    align_shift: ty.align() as u8,
+                    align_shift: ty.align_shift(),
                 });
 
                 let memory = MemoryLoc::from_stack(stack_slot, 0);

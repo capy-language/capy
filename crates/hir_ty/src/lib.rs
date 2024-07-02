@@ -959,7 +959,9 @@ mod tests {
             any_were_unsafe_to_compile,
         } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
             codegen::eval_comptime_blocks(
-                Verbosity::LocalFunctions,
+                Verbosity::AllFunctions {
+                    include_disasm: true,
+                },
                 vec![comptime],
                 &mut comptime_results,
                 Path::new(""),

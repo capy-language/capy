@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use codegen::Verbosity;
+use enum_display::EnumDisplay;
 use hir::{FQComptime, WorldBodies, WorldIndex};
 use hir_ty::{ComptimeResult, InferenceResult};
 use interner::Interner;
@@ -22,20 +22,128 @@ use uid_gen::UIDGenerator;
 
 use crate::source::SourceFile;
 
+macro_rules! create_build_action {
+    (
+        $name:ident:
+        both { $($both_field:tt)+ }
+        #[$build_attr:meta]
+        build_only { $($build_field:tt)+ }
+        #[$run_attr:meta]
+        run_only { $($run_field:tt)+ }
+        final_config_struct = $final_config_struct:ident
+        compile_mode_enum = $compile_mode_enum:ident
+        build_specific_struct = $build_specific_struct:ident
+        run_specific_struct = $run_specific_struct:ident
+    ) => {
+        #[derive(Debug, Subcommand)]
+        enum $name {
+            #[$build_attr]
+            Build {
+                $($both_field)+
+                $($build_field)+
+            },
+            #[$run_attr]
+            Run {
+                $($both_field)+
+                $($run_field)+
+            }
+        }
+
+        impl $name {
+            fn into_final_config(self) -> $final_config_struct {
+                create_build_action!(
+                    @into_match
+                    both {
+                        $($both_field)+
+                    }
+                    build_only {
+                        $($build_field)+
+                    }
+                    run_only {
+                        $($run_field)+
+                    }
+                    self => $final_config_struct ($compile_mode_enum: $build_specific_struct, $run_specific_struct)
+                )
+            }
+        }
+
+        create_build_action!(@make_struct $final_config_struct {
+            $($both_field)+
+            specific: $compile_mode_enum,
+        });
+
+        create_build_action!(@make_struct $build_specific_struct {
+            $($build_field)+,
+        });
+
+        create_build_action!(@make_struct $run_specific_struct {
+            $($run_field)+,
+        });
+
+        #[derive(Debug)]
+        enum $compile_mode_enum {
+            Build($build_specific_struct),
+            Run($run_specific_struct),
+        }
+    };
+    (@make_struct $name:ident { } -> ($($result:tt)*) ) => (
+        #[derive(Debug)]
+        struct $name {
+            $($result)*
+        }
+    );
+    (@make_struct $name:ident { $param:ident : $type:ty, $($rest:tt)* } -> ($($result:tt)*) ) => (
+        create_build_action!(@make_struct $name { $($rest)* } -> (
+            $($result)*
+            $param : $type,
+        ));
+    );
+    (@make_struct $name:ident { $( $(#[$_:meta])* $param:ident : $type:ty ),* $(,)* } ) => (
+        create_build_action!(@make_struct $name { $($param : $type,)* } -> ());
+    );
+    (
+        @into_match
+        both { $( $(#[$_attr1:meta])* $both_param:ident : $_type1:ty ),* $(,)* }
+        build_only { $( $(#[$_attr2:meta])* $build_param:ident : $_type2:ty ),* $(,)* }
+        run_only { $( $(#[$_attr3:meta])* $run_param:ident : $_type3:ty ),* $(,)* }
+        $value:expr => $into_struct:ident ($config_enum:ident: $build_only_struct:ident, $run_only_struct:ident)
+    ) => (
+        match $value {
+            Self::Build {
+                $($both_param,)+
+                $($build_param,)+
+            } => $into_struct {
+                $($both_param,)+
+                specific: $config_enum::Build($build_only_struct {
+                    $($build_param,)+
+                })
+            },
+            Self::Run {
+                $($both_param,)+
+                $($run_param,)+
+            } => $into_struct {
+                $($both_param,)+
+                specific: $config_enum::Run($run_only_struct {
+                    $($run_param,)+
+                })
+            }
+        }
+    )
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "Capy Programming Language")]
 #[command(author = "NotAFlyingGoose <notaflyinggoose@gmail.com>")]
 #[command(version)]
 #[command(about = "A Cool Programming Language", long_about = None)]
-struct CompilerConfig {
+struct CLIConfig {
     #[command(subcommand)]
-    action: BuildAction,
+    action: CLIAction,
 }
 
-#[derive(Debug, Subcommand)]
-enum BuildAction {
-    /// Takes in one or more .capy files and compiles them
-    Build {
+create_build_action! {
+    CLIAction:
+    both {
         /// The file to compile
         #[arg(required = true)]
         file: String,
@@ -44,135 +152,172 @@ enum BuildAction {
         #[arg(long, default_value = "main")]
         entry_point: String,
 
+        /// The final executable name. This doesn't need a file extension
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// The directory to search for modules.
+        /// If this folder does not contain `core` it will be downloaded
+        #[arg(long)]
+        mod_dir: Option<String>,
+
+        /// Whether or not to redownload the `core` module from the GitHub.
+        /// WARNING: This will wipe the entire `core` folder.
+        #[arg(long)]
+        redownload_core: bool,
+
+        /// Shows the generated AST (Abstract Syntax Tree).
+        #[arg(long, default_value_t)]
+        verbose_ast: VerboseScope,
+
+        /// Shows the generated HIR for every global.
+        #[arg(long, default_value_t)]
+        verbose_hir: VerboseScope,
+
+        /// Shows type information for each HIR expression in the program.
+        #[arg(long, default_value_t)]
+        verbose_types: VerboseScope,
+
+        /// Shows the generated Cranelift IR (or assembly) of comptime blocks.
+        #[arg(long, default_value_t)]
+        verbose_comptime: VerboseCodegenScope,
+
+        /// Shows the generated Cranelift IR (or assembly) of the final binary.
+        #[arg(long, default_value_t)]
+        verbose_binary: VerboseCodegenScope,
+
+        /// Shows all available advanced compiler information.
+        #[arg(long)]
+        verbose_all: bool,
+
+        /// Libraries to link against.
+        /// This literally works by passing the args to gcc with "-l"
+        #[arg(long)]
+        libs: Vec<String>,
+    }
+    /// Takes in one or more .capy files and compiles them
+    build_only {
         /// The target to compile for. If supplied, no linking will be done
         #[arg(long)]
         target: Option<String>,
-
-        /// The final executable name. This doesn't need a file extension
-        #[arg(short, long)]
-        output: Option<String>,
-
-        /// The directory to search for modules.
-        /// If this folder does not contain `core` it will be downloaded
-        #[arg(long)]
-        mod_dir: Option<String>,
-
-        /// Whether or not to redownload the `core` module from the GitHub.
-        /// WARNING: This will wipe the entire `core` folder.
-        #[arg(long)]
-        redownload_core: bool,
-
-        /// Whether or not to show advanced compiler information
-        #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
-        verbose: u8,
-
-        /// Libraries to link against
-        /// This literally works by passing the args to gcc with "-l"
-        #[arg(long)]
-        libs: Vec<String>,
-
-        /// This needs to be here due to the way the `get_build_config` macro works, but it's
-        /// skipped so that clap can still give an error if it's found
-        #[arg(skip)]
-        args: Vec<String>,
-    },
+    }
     /// Takes in one or more .capy files, compiles them, and runs the compiled executable
-    Run {
-        /// The files to compile and run
-        #[arg(required = true)]
-        file: String,
-
-        /// The entry point function of the program
-        #[arg(long, default_value = "main")]
-        entry_point: String,
-
-        /// Whether or not to run by JIT instead of by compilation to an executable file
+    run_only {
+        /// Whether or not to run by JIT instead of by building and running an executable
         #[arg(long)]
         jit: bool,
-
-        /// The final executable name. This doesn't need a file extension
-        #[arg(short, long)]
-        output: Option<String>,
-
-        /// The directory to search for modules.
-        /// If this folder does not contain `core` it will be downloaded
-        #[arg(long)]
-        mod_dir: Option<String>,
-
-        /// Whether or not to redownload the `core` module from the GitHub.
-        /// WARNING: This will wipe the entire `core` folder.
-        #[arg(long)]
-        redownload_core: bool,
-
-        /// Whether or not to show advanced compiler information
-        #[arg(short, long, default_value_t = 0, action = clap::ArgAction::Count)]
-        verbose: u8,
-
-        /// Libraries to link against
-        /// This literally works by passing the args to gcc with "-l"
-        #[arg(long)]
-        libs: Vec<String>,
 
         /// A list of arguments to feed into the capy program.
         /// These are accessable from the `args` global in `core`.
         /// Like Cargo, this can be passed in by using `--`
-        #[arg(last = true)]
+        #[arg(last = true, verbatim_doc_comment)]
         args: Vec<String>,
-    },
+    }
+    final_config_struct = FinalConfig
+    compile_mode_enum = CompileMode
+    build_specific_struct = BuildSpecific
+    run_specific_struct = RunSpecific
 }
 
-macro_rules! get_build_config {
-    (
-        $action:expr => $($property:ident),+
-    ) => {
-        match $action {
-            BuildAction::Build {
-                $($property,)+ target
-            } => ($($property,)+ CompilationConfig::Compile(target)),
-            BuildAction::Run {
-                $($property,)+ jit
-            } => ($($property,)+ if jit { CompilationConfig::Jit } else { CompilationConfig::Run })
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Default, EnumDisplay)]
+#[clap(rename_all = "kebab_case")]
+#[enum_display(case = "Kebab")]
+pub(crate) enum VerboseCodegenScope {
+    #[default]
+    None,
+    Local,
+    LocalAsm,
+    All,
+    AllAsm,
+}
+
+impl VerboseCodegenScope {
+    fn into_verbosity(self) -> codegen::Verbosity {
+        match self {
+            VerboseCodegenScope::None => codegen::Verbosity::None,
+            VerboseCodegenScope::Local => codegen::Verbosity::LocalFunctions {
+                include_disasm: false,
+            },
+            VerboseCodegenScope::LocalAsm => codegen::Verbosity::LocalFunctions {
+                include_disasm: true,
+            },
+            VerboseCodegenScope::All => codegen::Verbosity::AllFunctions {
+                include_disasm: false,
+            },
+            VerboseCodegenScope::AllAsm => codegen::Verbosity::AllFunctions {
+                include_disasm: true,
+            },
         }
-    };
+    }
+
+    fn is_none(self) -> bool {
+        self == Self::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, EnumDisplay)]
+#[clap(rename_all = "kebab_case")]
+#[enum_display(case = "Kebab")]
+pub(crate) enum VerboseScope {
+    #[default]
+    None,
+    Local,
+    All,
+}
+
+impl VerboseScope {
+    fn should_show(self, is_mod: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::Local => !is_mod,
+            Self::All => true,
+        }
+    }
+
+    fn is_none(self) -> bool {
+        self == Self::None
+    }
+}
+
+impl FinalConfig {
+    fn should_run(&self) -> bool {
+        matches!(self.specific, CompileMode::Run(_))
+    }
+
+    fn should_jit(&self) -> bool {
+        matches!(
+            self.specific,
+            CompileMode::Run(RunSpecific { jit: true, .. })
+        )
+    }
+
+    fn target(&self) -> Triple {
+        match &self.specific {
+            CompileMode::Build(BuildSpecific {
+                target: Some(target),
+                ..
+            }) => Triple::from_str(target).unwrap_or_else(|msg| {
+                println!("invalid target: {}", msg);
+                exit(1);
+            }),
+            CompileMode::Build(BuildSpecific { target: None, .. }) | CompileMode::Run(_) => {
+                Triple::host()
+            }
+        }
+    }
+
+    fn args(&self) -> &[String] {
+        match &self.specific {
+            CompileMode::Run(RunSpecific { args, .. }) => args,
+            CompileMode::Build(_) => &[],
+        }
+    }
 }
 
 fn main() -> io::Result<()> {
-    let config = CompilerConfig::parse();
+    let config = CLIConfig::parse();
 
-    let (file, entry_point, output, verbose, mod_dir, redownload_core, libs, args, config) = get_build_config!(config.action => file, entry_point, output, verbose, mod_dir, redownload_core, libs, args);
-
-    let file = env::current_dir()
-        .unwrap()
-        .join(file.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR))
-        .clean();
-
-    let contents = match fs::read_to_string(&file) {
-        Ok(contents) => contents,
-        Err(why) => {
-            println!("{}: {}", file.display(), why);
-            exit(1)
-        }
-    };
-
-    compile_file(
-        file,
-        contents,
-        entry_point,
-        output,
-        mod_dir,
-        redownload_core,
-        config,
-        verbose,
-        &libs,
-        &args,
-    )
-}
-
-#[derive(Clone, PartialEq)]
-enum CompilationConfig {
-    Compile(Option<String>),
-    Run,
-    Jit,
+    compile_file(config.action.into_final_config())
 }
 
 const ANSI_RED: &str = "\x1B[1;91m";
@@ -181,18 +326,42 @@ const ANSI_WHITE: &str = "\x1B[1;97m";
 const ANSI_RESET: &str = "\x1B[0m";
 
 #[allow(clippy::too_many_arguments)]
-fn compile_file(
-    file_name: PathBuf,
-    file_contents: String,
-    entry_point: String,
-    output: Option<String>,
-    mod_dir: Option<String>,
-    redownload_core: bool,
-    config: CompilationConfig,
-    verbose: u8,
-    libs: &[String],
-    args: &[String],
-) -> io::Result<()> {
+fn compile_file(mut config: FinalConfig) -> io::Result<()> {
+    if config.verbose_all {
+        if config.verbose_ast.is_none() {
+            config.verbose_ast = VerboseScope::All;
+        }
+        if config.verbose_hir.is_none() {
+            config.verbose_hir = VerboseScope::All;
+        }
+        if config.verbose_types.is_none() {
+            config.verbose_types = VerboseScope::All;
+        }
+        if config.verbose_comptime.is_none() {
+            config.verbose_comptime = VerboseCodegenScope::AllAsm;
+        }
+        if config.verbose_binary.is_none() {
+            config.verbose_binary = VerboseCodegenScope::AllAsm;
+        }
+    }
+
+    let file_name = env::current_dir()
+        .unwrap()
+        .join(
+            config
+                .file
+                .replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR),
+        )
+        .clean();
+
+    let file_contents = match fs::read_to_string(&file_name) {
+        Ok(contents) => contents,
+        Err(why) => {
+            println!("{}: {}", file_name.display(), why);
+            exit(1)
+        }
+    };
+
     let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
     let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
         (ANSI_RED, ANSI_GREEN, ANSI_WHITE, ANSI_RESET)
@@ -200,7 +369,7 @@ fn compile_file(
         ("", "", "", "")
     };
 
-    let mod_dir = if let Some(mod_dir) = mod_dir {
+    let mod_dir = if let Some(mod_dir) = &config.mod_dir {
         env::current_dir().unwrap().join(mod_dir).clean()
     } else if let Some(mod_dir) = AppDirs::new(Some("capy"), false) {
         mod_dir.data_dir.join("modules")
@@ -214,7 +383,7 @@ fn compile_file(
 
     let core_dir = mod_dir.join("core");
 
-    if redownload_core && core_dir.exists() {
+    if config.redownload_core && core_dir.exists() {
         std::fs::remove_dir_all(&core_dir)
             .unwrap_or_else(|why| panic!("couldn't detele `{}`: {}", core_dir.display(), why));
     }
@@ -229,7 +398,8 @@ fn compile_file(
         git::download_core(&mod_dir);
     }
 
-    if output
+    if config
+        .output
         .as_ref()
         .map(|o| o.contains(['/', '\\']))
         .unwrap_or(false)
@@ -243,17 +413,7 @@ fn compile_file(
         exit(1)
     }
 
-    let target = match &config {
-        CompilationConfig::Compile(target) => target.as_deref(),
-        _ => None,
-    }
-    .map(|target| {
-        Triple::from_str(target).unwrap_or_else(|msg| {
-            println!("invalid target: {}", msg);
-            exit(1);
-        })
-    })
-    .unwrap_or_else(Triple::host);
+    let target = config.target();
 
     println!("{ansi_green}Compiling{ansi_reset}  ...");
     let compilation_start = Instant::now();
@@ -263,7 +423,7 @@ fn compile_file(
     let world_bodies = Rc::new(RefCell::new(WorldBodies::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
 
-    let entry_point_name = hir::Name(interner.borrow_mut().intern(&entry_point));
+    let entry_point_name = hir::Name(interner.borrow_mut().intern(&config.entry_point));
 
     let mut line_indexes = FxHashMap::default();
     let mut source_files = FxHashMap::default();
@@ -278,7 +438,9 @@ fn compile_file(
         world_index.clone(),
         world_bodies.clone(),
         &mod_dir,
-        verbose,
+        config.verbose_hir,
+        config.verbose_ast,
+        config.verbose_types,
     );
 
     line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
@@ -315,7 +477,9 @@ fn compile_file(
                 world_index.clone(),
                 world_bodies.clone(),
                 &mod_dir,
-                verbose,
+                config.verbose_hir,
+                config.verbose_ast,
+                config.verbose_types,
             );
 
             line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
@@ -339,6 +503,8 @@ fn compile_file(
         name: entry_point_name,
     });
 
+    let comptime_verbosity = config.verbose_comptime.into_verbosity();
+
     let mut comptime_results = FxHashMap::<FQComptime, ComptimeResult>::default();
 
     let InferenceResult {
@@ -360,7 +526,8 @@ fn compile_file(
             let interner: &Interner = &interner;
             let world_bodies: &hir::WorldBodies = &world_bodies;
 
-            if verbose >= 4 {
+            let is_mod = comptime.file.is_mod(&mod_dir, interner);
+            if comptime_verbosity.should_show(is_mod) {
                 println!("comptime JIT:\n");
             }
 
@@ -368,11 +535,7 @@ fn compile_file(
             // i *think* it should be fine.
             std::panic::catch_unwind(AssertUnwindSafe(|| {
                 codegen::eval_comptime_blocks(
-                    if verbose >= 4 {
-                        Verbosity::AllFunctions
-                    } else {
-                        Verbosity::None
-                    },
+                    comptime_verbosity,
                     vec![comptime],
                     &mut comptime_results,
                     &mod_dir,
@@ -392,10 +555,15 @@ fn compile_file(
             comptime_results[&comptime].clone()
         },
     )
-    .finish(entry_point, verbose >= 3);
+    .finish(entry_point, !config.verbose_types.is_none());
 
-    if verbose >= 2 {
-        let debug = tys.debug(&mod_dir, &interner.borrow(), verbose >= 3, true);
+    if !config.verbose_types.is_none() {
+        let debug = tys.debug(
+            &mod_dir,
+            &interner.borrow(),
+            config.verbose_types == VerboseScope::All,
+            true,
+        );
         println!("=== types ===\n");
         println!("{}", debug);
 
@@ -437,11 +605,7 @@ fn compile_file(
 
     // evaluate any comptimes that haven't been ran yet
     codegen::eval_comptime_blocks(
-        if verbose >= 4 {
-            Verbosity::AllFunctions
-        } else {
-            Verbosity::None
-        },
+        comptime_verbosity,
         world_bodies.borrow().find_comptimes(),
         &mut comptime_results,
         &mod_dir,
@@ -481,21 +645,15 @@ fn compile_file(
 
     let interner = interner.borrow();
 
-    if verbose >= 4 {
+    let final_verbosity = config.verbose_binary.into_verbosity();
+
+    if final_verbosity != codegen::Verbosity::None {
         println!("\nactual program:\n");
     }
 
-    let comp_verbosity = if verbose >= 4 {
-        Verbosity::AllFunctions
-    } else if verbose >= 1 {
-        Verbosity::LocalFunctions
-    } else {
-        Verbosity::None
-    };
-
-    if config == CompilationConfig::Jit {
+    if config.should_jit() {
         let jit_fn = codegen::compile_jit(
-            comp_verbosity,
+            final_verbosity,
             entry_point.unwrap(),
             &mod_dir,
             &interner,
@@ -513,6 +671,7 @@ fn compile_file(
             "{ansi_green}Running{ansi_reset}    `{}",
             main_file.unwrap().to_string(&mod_dir, &interner)
         );
+        let args = config.args();
         for arg in args {
             print!(" {arg}");
         }
@@ -540,7 +699,7 @@ fn compile_file(
     }
 
     let bytes = match codegen::compile_obj(
-        comp_verbosity,
+        final_verbosity,
         entry_point.unwrap(),
         &mod_dir,
         &interner,
@@ -561,7 +720,7 @@ fn compile_file(
 
     let _ = fs::create_dir(&output_folder);
 
-    let output = output.unwrap_or_else(|| {
+    let output = config.output.clone().unwrap_or_else(|| {
         let main_file = std::path::PathBuf::from(interner.lookup(main_file.unwrap().0));
         main_file.file_stem().unwrap().to_string_lossy().to_string()
     });
@@ -572,7 +731,7 @@ fn compile_file(
         exit(1);
     });
 
-    if let CompilationConfig::Compile(Some(target)) = config {
+    if target != Triple::host() {
         println!(
             "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
             object_file.display(),
@@ -582,7 +741,7 @@ fn compile_file(
         return Ok(());
     }
 
-    let exec = codegen::link_to_exec(&object_file, target, libs);
+    let exec = codegen::link_to_exec(&object_file, target, &config.libs);
     println!(
         "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
         output,
@@ -590,11 +749,13 @@ fn compile_file(
         compilation_start.elapsed().as_secs_f32(),
     );
 
-    if matches!(config, CompilationConfig::Compile(_)) {
+    if !config.should_run() {
         return Ok(());
     }
 
     print!("{ansi_green}Running{ansi_reset}    `{}", exec.display(),);
+
+    let args = config.args();
     for arg in args {
         print!(" {arg}");
     }
