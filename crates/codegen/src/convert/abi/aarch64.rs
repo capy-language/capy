@@ -53,7 +53,7 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
         Some(hfa)
     } else if ret.size() <= 16 {
         Some(PassMode::cast(
-            ArrayVec::from_array_len([I64, I64, I64, I64], (ret.size() + 8) as usize / 8),
+            ArrayVec::from_array_len([I64, I64, I64, I64], (ret.size() + 7) as usize / 8),
             ret,
         ))
     } else {
@@ -74,7 +74,7 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
     } else if arg.size() <= 16 {
         if arg.align() != 128 {
             Some(PassMode::cast(
-                ArrayVec::from_array_len([I64, I64, I64, I64], (arg.size() + 8) as usize / 8),
+                ArrayVec::from_array_len([I64, I64, I64, I64], (arg.size() + 7) as usize / 8),
                 arg,
             ))
         } else {
