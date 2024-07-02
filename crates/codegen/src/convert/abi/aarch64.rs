@@ -52,23 +52,10 @@ fn classify_ret(ret: Intern<Ty>) -> Option<PassMode> {
     if let Some(hfa) = is_hfa(ret) {
         Some(hfa)
     } else if ret.size() <= 16 {
-        // TODO: eight byte align the stack instead
-        let eight_bytes = ret.stride() / 8;
-        let mut tys = ArrayVec::from_array_len([I64, I64, I64, I64], eight_bytes as usize);
-        let four_bytes = (ret.stride() - eight_bytes * 8) / 4;
-        if four_bytes == 1 {
-            tys.push(I32)
-        }
-        let two_bytes = (ret.stride() - eight_bytes * 8 - four_bytes * 4) / 2;
-        if two_bytes == 1 {
-            tys.push(I16)
-        }
-        let one_bytes = ret.stride() - eight_bytes * 8 - four_bytes * 4 - two_bytes * 2;
-        if one_bytes == 1 {
-            tys.push(I8)
-        }
-        Some(PassMode::cast(tys, ret))
-
+        Some(PassMode::cast(
+            ArrayVec::from_array_len([I64, I64, I64, I64], (ret.size() + 8) as usize / 8),
+            ret,
+        ))
     } else {
         Some(PassMode::indirect())
     }
@@ -86,22 +73,10 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
         Some(hfa)
     } else if arg.size() <= 16 {
         if arg.align() != 128 {
-            // TODO: eight byte align the stack instead
-            let eight_bytes = arg.stride() / 8;
-            let mut tys = ArrayVec::from_array_len([I64, I64, I64, I64], eight_bytes as usize);
-            let four_bytes = (arg.stride() - eight_bytes * 8) / 4;
-            if four_bytes == 1 {
-                tys.push(I32)
-            }
-            let two_bytes = (arg.stride() - eight_bytes * 8 - four_bytes * 4) / 2;
-            if two_bytes == 1 {
-                tys.push(I16)
-            }
-            let one_bytes = arg.stride() - eight_bytes * 8 - four_bytes * 4 - two_bytes * 2;
-            if one_bytes == 1 {
-                tys.push(I8)
-            }
-            Some(PassMode::cast(tys, arg))
+            Some(PassMode::cast(
+                ArrayVec::from_array_len([I64, I64, I64, I64], (arg.size() + 8) as usize / 8),
+                arg,
+            ))
         } else {
             Some(PassMode::cast(
                 ArrayVec::from_array_len([I128, I128, I128, I128], (arg.size() + 15) as usize / 16),
