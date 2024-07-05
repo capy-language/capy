@@ -229,13 +229,21 @@ pub enum TyDiagnosticHelpKind {
     FoundToBeImmutable,
     ImmutableBinding,
     ImmutableRef,
-    ImmutableParam { assignment: bool },
+    ImmutableParam {
+        assignment: bool,
+    },
     ImmutableGlobal,
+    /// This should ONLY be used for assignment.
+    /// e.g. `{^x} = 5`
     NotMutatingRefThroughDeref,
-    IfReturnsTypeHere { found: Intern<Ty> },
+    IfReturnsTypeHere {
+        found: Intern<Ty>,
+    },
     MutableVariable,
     TailExprReturnsHere,
-    BreakHere { break_ty: Intern<Ty> },
+    BreakHere {
+        break_ty: Intern<Ty>,
+    },
 }
 
 // todo: I want to make this more expansive. `Data` should be removed and

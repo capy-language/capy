@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 
 use cranelift::{
-    codegen::ir::{Endianness, FuncRef},
+    codegen::{
+        entity::EntityRef,
+        ir::{Endianness, FuncRef, StackSlot},
+    },
     prelude::{
         types, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
         StackSlotKind, TrapCode, Value, Variable,
@@ -27,6 +30,7 @@ use super::{
     abi::{Abi, FnAbi},
     comptime::{ComptimeBytes, IntBytes},
     ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
+    UnwrapOrAlloca,
 };
 
 struct UnfinishedComptimeErr;
@@ -36,6 +40,26 @@ struct UnfinishedComptimeErr;
 pub(crate) struct DeferFrame {
     id: Option<ScopeId>,
     defers: Vec<Idx<hir::Expr>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CompiledLocal {
+    Stack(StackSlot),
+    Reg(Variable),
+}
+
+impl CompiledLocal {
+    fn into_value(self, func_cmplr: &mut FunctionCompiler) -> Value {
+        match self {
+            CompiledLocal::Stack(slot) => {
+                func_cmplr
+                    .builder
+                    .ins()
+                    .stack_addr(func_cmplr.ptr_ty, slot, 0)
+            }
+            CompiledLocal::Reg(var) => func_cmplr.builder.use_var(var),
+        }
+    }
 }
 
 /// Compiles a Capy function into a Cranelift function.
@@ -74,7 +98,7 @@ pub(crate) struct FunctionCompiler<'a> {
 
     // variables
     pub(crate) var_id_gen: UIDGenerator,
-    pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
+    pub(crate) locals: FxHashMap<Idx<LocalDef>, CompiledLocal>,
     pub(crate) params: FxHashMap<u64, Variable>,
 
     // for control flow (breaks and continues)
@@ -91,7 +115,6 @@ impl FunctionCompiler<'_> {
         function_body: Idx<hir::Expr>,
         debug_print: bool,
     ) {
-
         fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
@@ -517,36 +540,97 @@ impl FunctionCompiler<'_> {
             hir::Stmt::LocalDef(local_def) => {
                 let ty = self.tys[self.file_name][local_def];
 
-                let value = self.world_bodies[self.file_name][local_def].value;
+                let local_body = &self.world_bodies[self.file_name][local_def];
 
-                let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
-                    kind: StackSlotKind::ExplicitSlot,
-                    size: ty.size(),
-                    align_shift: ty.align_shift(),
-                });
+                // we have to do `is_zero_sized` because otherwise the variable will never be
+                // stored.
+                let compiled = if local_body.aliased || ty.is_aggregate() || ty.is_zero_sized() {
+                    let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: ty.size(),
+                        align_shift: ty.align_shift(),
+                    });
 
-                let memory = MemoryLoc::from_stack(stack_slot, 0);
+                    let memory = MemoryLoc::from_stack(stack_slot, 0);
 
-                if let Some(value) = value {
-                    // the type of the value might not be the same as the type annotation of the
-                    // declaration
-                    self.compile_and_cast_into_memory(value, ty, memory);
+                    if let Some(value) = local_body.value {
+                        // the type of the value might not be the same as the type annotation of the
+                        // declaration
+                        self.compile_and_cast_into_memory(value, ty, memory);
+                    } else {
+                        self.store_default_in_memory(ty, Some(memory));
+                    }
+
+                    CompiledLocal::Stack(stack_slot)
                 } else {
-                    self.store_default_in_memory(ty, memory);
-                }
+                    let final_type = ty
+                        .get_final_ty()
+                        .into_real_type()
+                        .expect("the type should be sized");
 
-                self.locals
-                    .insert(local_def, memory.into_value(&mut self.builder, self.ptr_ty));
+                    let var = Variable::new(self.var_id_gen.generate_unique_id() as usize);
+
+                    let val = if let Some(value) = local_body.value {
+                        // the type of the value might not be the same as the type annotation of the
+                        // declaration
+                        self.compile_and_cast(value, ty)
+                    } else {
+                        self.store_default_in_memory(ty, None)
+                    };
+
+                    self.builder.declare_var(var, final_type);
+                    self.builder.def_var(
+                        var,
+                        val.expect("the final type was real, so the value should be too"),
+                    );
+
+                    CompiledLocal::Reg(var)
+                };
+
+                self.locals.insert(local_def, compiled);
             }
             hir::Stmt::Assign(assign) => {
                 let assign_body = &self.world_bodies[self.file_name][assign];
 
-                let Some(dest) = self.compile_expr_with_args(assign_body.dest, true) else {
-                    return;
-                };
-                let dest = MemoryLoc::from_addr(dest, 0);
-
                 let dest_ty = &self.tys[self.file_name][assign_body.dest];
+                if dest_ty.is_zero_sized() {
+                    // in case the value actually mutates anything
+                    self.compile_expr(assign_body.value);
+                    return;
+                }
+
+                fn get_local(
+                    cmplr: &FunctionCompiler<'_>,
+                    expr: Idx<hir::Expr>,
+                ) -> Option<Idx<LocalDef>> {
+                    match &cmplr.world_bodies[cmplr.file_name][expr] {
+                        hir::Expr::Paren(expr) => get_local(cmplr, (*expr)?),
+                        hir::Expr::Local(local) => Some(*local),
+                        _ => None,
+                    }
+                }
+
+                let dest = if let Some(local) = get_local(self, assign_body.dest) {
+                    let local_body = self.locals[&local];
+
+                    match local_body {
+                        CompiledLocal::Stack(stack) => MemoryLoc::from_stack(stack, 0),
+                        CompiledLocal::Reg(var) => {
+                            let value = self
+                                .compile_and_cast(assign_body.value, *dest_ty)
+                                .expect("should've been caught by `is_zero_sized`");
+
+                            self.builder.def_var(var, value);
+                            return;
+                        }
+                    }
+                } else {
+                    MemoryLoc::from_addr(
+                        self.compile_expr_with_args(assign_body.dest, true)
+                            .expect("should've been caught by `is_zero_sized`"),
+                        0,
+                    )
+                };
 
                 self.compile_and_cast_into_memory(assign_body.value, *dest_ty, dest);
             }
@@ -618,7 +702,12 @@ impl FunctionCompiler<'_> {
         }
     }
 
-    fn store_default_in_memory(&mut self, expected_ty: Intern<Ty>, memory: MemoryLoc) {
+    /// returns None if the expected_ty was `None`, or the memory was `Some(_)`
+    fn store_default_in_memory(
+        &mut self,
+        expected_ty: Intern<Ty>,
+        memory: Option<MemoryLoc>,
+    ) -> Option<Value> {
         let value = match expected_ty.as_ref() {
             Ty::NotYetResolved | Ty::Unknown => unreachable!(),
             Ty::IInt(_) | Ty::UInt(_) => {
@@ -647,41 +736,50 @@ impl FunctionCompiler<'_> {
             Ty::String => unreachable!("str does not have a default value"),
             Ty::Char => self.builder.ins().iconst(types::I8, 0),
             Ty::Array { size, sub_ty, .. } => {
+                let memory = memory.unwrap_or_alloca(&mut self.builder, expected_ty);
+
                 let inner_stride = sub_ty.stride();
 
                 for idx in 0..*size {
                     let byte_offset = idx as u32 * inner_stride;
-                    self.store_default_in_memory(*sub_ty, memory.with_offset(byte_offset));
+                    self.store_default_in_memory(*sub_ty, Some(memory.with_offset(byte_offset)));
                 }
-                return;
+
+                return Some(memory.into_value(&mut self.builder, self.ptr_ty));
             }
             Ty::Slice { .. } => unreachable!("slices do not have default values"),
             Ty::Pointer { .. } => unreachable!("pointers do not have default values"),
             Ty::Distinct { sub_ty, .. } => {
-                self.store_default_in_memory(*sub_ty, memory);
-                return;
+                return self.store_default_in_memory(*sub_ty, memory);
             }
             Ty::Type => unreachable!("types do not have default values"),
             Ty::Any => unreachable!("any does not have a default value"),
             Ty::File(_) => unreachable!("files do not have default values"),
             Ty::Function { .. } => unreachable!("functions do not have default values"),
             Ty::Struct { members, .. } => {
+                let memory = memory.unwrap_or_alloca(&mut self.builder, expected_ty);
+
                 let struct_mem = expected_ty.struct_layout().unwrap();
 
                 for (idx, (_, ty)) in members.iter().enumerate() {
                     self.store_default_in_memory(
                         *ty,
-                        memory.with_offset(struct_mem.offsets()[idx]),
+                        Some(memory.with_offset(struct_mem.offsets()[idx])),
                     );
                 }
-                return;
+
+                return Some(memory.into_value(&mut self.builder, self.ptr_ty));
             }
             // void is just a no-op
-            Ty::Void => return,
-            Ty::NoEval => return,
+            Ty::Void => return None,
+            Ty::NoEval => return None,
         };
 
-        memory.store(&mut self.builder, value, 0);
+        if let Some(memory) = memory {
+            memory.store(&mut self.builder, value, 0);
+        }
+
+        Some(value)
     }
 
     fn store_expr_in_memory(
@@ -863,7 +961,7 @@ impl FunctionCompiler<'_> {
                     source_ty = sub_ty;
                     required_derefs += 1;
                 }
-                debug_assert!(source_ty.is_array() || source_ty.is_slice());
+                assert!(source_ty.is_array() || source_ty.is_slice());
 
                 for _ in 1..required_derefs {
                     source = self
@@ -1385,7 +1483,7 @@ impl FunctionCompiler<'_> {
                 let value = (!no_eval)
                     .then(|| {
                         tail_expr.and_then(|tail_expr| {
-                            let value = self.compile_expr_with_args(tail_expr, no_load);
+                            let value = self.compile_expr(tail_expr);
                             if scope_id.is_none()
                                 && *self.tys[self.file_name][tail_expr] == Ty::NoEval
                             {
@@ -1400,14 +1498,17 @@ impl FunctionCompiler<'_> {
                     if let Some(value) = value {
                         self.builder.ins().jump(exit_block, &[value]);
                     } else if !expr_ty.is_void() && scope_id.is_some() {
-                        // we know this block reaches it's end (it's !noeval)
+                        // we know this block reaches `exit_block` (it's !noeval)
                         //
-                        // we also know it doesn't have a tail expression (because `value` was None)
+                        // we know someone breaks to the end of this block (the scope id is Some)
                         //
-                        // we also know it has a non-void type (no implicit tail expression)
+                        // we know it doesn't have a tail expression (`value` was None)
+                        //
+                        // and we also know it has a non-void type (which means no implicit void expression)
                         //
                         // since it doesn't have a tail expression, the type checker has already
-                        // confirmed that it *must* always reach a break to it's own end.
+                        // confirmed that it must *always* reach a break to it's own end,
+                        // since the omission of a tail expression is only allowed if this is true.
                         //
                         // this break has to be somewhere deep in an grandchild block. we know it
                         // exists, and we know that this exact point is unreachable because of that
@@ -1415,12 +1516,11 @@ impl FunctionCompiler<'_> {
                         //
                         // therefore it's safe to trap *here*, at the end of the `body_block`
                         //
-                        // but we can't trap in the `exit_block`, since the `exit_block` *is*
-                        // reachable.
+                        // but we can't trap in the `exit_block`, since the `exit_block` *is* reachable.
                         //
                         // the reason we need to trap is because cranelift forces us to end all blocks with
                         // a "final" instruction (a jump or trap). we can't exactly jump to the exit
-                        // because we don't have a value with which to jump (and remember the exit
+                        // because we don't have a value with which to jump (and remember that the exit
                         // is expecting something non-void). so since it's safe to trap, we just trap.
                         self.builder.ins().trap(TrapCode::UnreachableCodeReached);
                     } else {
@@ -1431,7 +1531,7 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(exit_block);
                 self.builder.seal_block(exit_block);
 
-                // unwind our defers
+                // remove our defers from the stack
 
                 let defer_frame = self.defer_stack.pop().expect("we just pushed this");
 
@@ -1581,18 +1681,27 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Local(local_def) => {
-                let ptr = *self.locals.get(&local_def)?;
+                let local = *self.locals.get(&local_def)?;
 
                 let ty = &self.tys[self.file_name][local_def];
 
-                if no_load || ty.is_aggregate() {
-                    Some(ptr)
-                } else {
-                    let ty = ty.get_final_ty();
+                match local {
+                    CompiledLocal::Stack(stack_slot) => {
+                        if no_load || ty.is_aggregate() {
+                            Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
+                        } else {
+                            let ty = ty.get_final_ty();
 
-                    // if it isn't a real type, this will just return None
-                    ty.into_real_type()
-                        .map(|ty| self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
+                            // if it isn't a real type, this will just return None
+                            ty.into_real_type()
+                                .map(|ty| self.builder.ins().stack_load(ty, stack_slot, 0))
+                        }
+                    }
+                    CompiledLocal::Reg(var) => {
+                        assert!(!no_load);
+
+                        Some(self.builder.use_var(var))
+                    }
                 }
             }
             hir::Expr::Param { idx, .. } => self

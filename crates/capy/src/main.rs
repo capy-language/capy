@@ -187,8 +187,8 @@ create_build_action! {
         verbose_binary: VerboseCodegenScope,
 
         /// Shows all available advanced compiler information.
-        #[arg(long)]
-        verbose_all: bool,
+        #[arg(long, default_value_t)]
+        verbose_all: VerboseCodegenScope,
 
         /// Libraries to link against.
         /// This literally works by passing the args to gcc with "-l"
@@ -247,6 +247,16 @@ impl VerboseCodegenScope {
             VerboseCodegenScope::AllAsm => codegen::Verbosity::AllFunctions {
                 include_disasm: true,
             },
+        }
+    }
+
+    fn into_regular_scope(self) -> VerboseScope {
+        match self {
+            VerboseCodegenScope::None => VerboseScope::None,
+            VerboseCodegenScope::Local => VerboseScope::Local,
+            VerboseCodegenScope::LocalAsm => VerboseScope::Local,
+            VerboseCodegenScope::All => VerboseScope::All,
+            VerboseCodegenScope::AllAsm => VerboseScope::All,
         }
     }
 
@@ -327,21 +337,23 @@ const ANSI_RESET: &str = "\x1B[0m";
 
 #[allow(clippy::too_many_arguments)]
 fn compile_file(mut config: FinalConfig) -> io::Result<()> {
-    if config.verbose_all {
+    if !config.verbose_all.is_none() {
+        let regular = config.verbose_all.into_regular_scope();
+
         if config.verbose_ast.is_none() {
-            config.verbose_ast = VerboseScope::All;
+            config.verbose_ast = regular;
         }
         if config.verbose_hir.is_none() {
-            config.verbose_hir = VerboseScope::All;
+            config.verbose_hir = regular;
         }
         if config.verbose_types.is_none() {
-            config.verbose_types = VerboseScope::All;
+            config.verbose_types = regular;
         }
         if config.verbose_comptime.is_none() {
-            config.verbose_comptime = VerboseCodegenScope::AllAsm;
+            config.verbose_comptime = config.verbose_all;
         }
         if config.verbose_binary.is_none() {
-            config.verbose_binary = VerboseCodegenScope::AllAsm;
+            config.verbose_binary = config.verbose_all;
         }
     }
 

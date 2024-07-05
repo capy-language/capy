@@ -35,8 +35,14 @@ impl ExprIsConst {
 }
 
 enum ExprMutability {
+    /// `Unknown` is similar to `Mutable`. It's returned if if the expression has an error which
+    /// prevents mutability from being determined. If you decide to return it, you must promise that
+    /// the `codegen` crate will never be reached.
+    Unknown,
     Mutable,
     ImmutableBinding(TextRange),
+    /// This should ONLY be used for assignment.
+    /// e.g. `{^x} = 5`
     NotMutatingRefThroughDeref(TextRange),
     ImmutableRef(TextRange),
     ImmutableParam(TextRange, bool),
@@ -71,7 +77,7 @@ impl ExprMutability {
                 kind: TyDiagnosticHelpKind::NotMutatingRefThroughDeref,
                 range,
             }),
-            _ => None,
+            ExprMutability::Mutable | ExprMutability::Unknown => None,
         }
     }
 }
@@ -472,11 +478,22 @@ impl GlobalInferenceCtx<'_> {
         ExprIsConst::Const
     }
 
-    /// `deref` allows certain expressions to be mutable
-    /// only if they are being mutated through a deref
-    fn get_mutability(&self, expr: Idx<Expr>, assignment: bool, deref: bool) -> ExprMutability {
+    fn get_mutability(&self, expr: Idx<Expr>, assignment: bool) -> ExprMutability {
+        self.get_mutability_with_args(expr, assignment, false)
+    }
+
+    /// `deref` allows certain expressions to be mutable only if they are being mutated through an
+    /// `{expr}^`.
+    /// `assignment` is really just for giving better errors. If it was removed it shouldn't cause
+    /// any difference in mutability.
+    fn get_mutability_with_args(
+        &self,
+        expr: Idx<Expr>,
+        assignment: bool,
+        deref: bool,
+    ) -> ExprMutability {
         match &self.bodies[expr] {
-            Expr::Missing => ExprMutability::Mutable,
+            Expr::Missing => ExprMutability::Unknown,
             Expr::ArrayLiteral { .. } => ExprMutability::Mutable,
             Expr::StructLiteral { .. } => ExprMutability::Mutable,
             Expr::Ref { mutable, .. } => match (*mutable, deref) {
@@ -486,8 +503,11 @@ impl GlobalInferenceCtx<'_> {
                 // ),
                 _ => ExprMutability::ImmutableRef(self.bodies.range_for_expr(expr)),
             },
-            Expr::Deref { pointer } => self.get_mutability(*pointer, assignment, true),
-            Expr::Index { source: array, .. } => self.get_mutability(
+            Expr::Deref { pointer } => {
+                // todo: if the inner expression isn't a pointer, return `Unknown`
+                self.get_mutability_with_args(*pointer, assignment, true)
+            }
+            Expr::Index { source: array, .. } => self.get_mutability_with_args(
                 *array,
                 assignment,
                 deref || self.tys[self.file][*array].is_pointer(),
@@ -495,14 +515,35 @@ impl GlobalInferenceCtx<'_> {
             Expr::Block {
                 tail_expr: Some(tail_expr),
                 ..
-            } => self.get_mutability(*tail_expr, assignment, deref),
+            } => {
+                // todo: add tests
+                let ty = self.tys[self.file][expr];
+
+                let range = self.bodies.range_for_expr(expr);
+
+                match ty.as_pointer() {
+                    Some((mutable, _)) if deref || assignment => {
+                        if mutable {
+                            if deref {
+                                // todo: get the minimum mutability of every `break` expression + the tail
+                                self.get_mutability_with_args(*tail_expr, assignment, deref)
+                            } else {
+                                assert!(assignment);
+                                ExprMutability::NotMutatingRefThroughDeref(range)
+                            }
+                        } else {
+                            ExprMutability::ImmutableRef(range)
+                        }
+                    }
+                    _ => ExprMutability::CannotMutate(range),
+                }
+            }
             Expr::Local(local_def) if deref => {
                 let local_def = &self.bodies[*local_def];
 
                 if let Some(value) = local_def.value {
-                    self.get_mutability(value, false, deref)
+                    self.get_mutability_with_args(value, false, deref)
                 } else {
-                    // todo: does this make sense?
                     ExprMutability::Mutable
                 }
             }
@@ -519,20 +560,18 @@ impl GlobalInferenceCtx<'_> {
                 let param_ty = self.param_tys[*idx as usize];
 
                 match param_ty.as_pointer() {
-                    Some((mutable, _)) if deref => {
+                    Some((mutable, _)) if deref || assignment => {
                         if mutable {
-                            ExprMutability::Mutable
+                            if deref {
+                                ExprMutability::Mutable
+                            } else {
+                                assert!(assignment);
+                                ExprMutability::NotMutatingRefThroughDeref(
+                                    self.bodies.range_for_expr(expr),
+                                )
+                            }
                         } else {
                             // todo: change this to be the range of the param's type
-                            ExprMutability::ImmutableRef(*range)
-                        }
-                    }
-                    Some((mutable, _)) if assignment => {
-                        if mutable {
-                            ExprMutability::NotMutatingRefThroughDeref(
-                                self.bodies.range_for_expr(expr),
-                            )
-                        } else {
                             ExprMutability::ImmutableRef(*range)
                         }
                     }
@@ -576,7 +615,7 @@ impl GlobalInferenceCtx<'_> {
                             ExprMutability::ImmutableRef(field.range)
                         }
                     }
-                    _ => self.get_mutability(
+                    _ => self.get_mutability_with_args(
                         *previous,
                         assignment,
                         deref || previous_ty.is_pointer(),
@@ -588,27 +627,25 @@ impl GlobalInferenceCtx<'_> {
                 let ty = self.tys[self.file][expr];
 
                 match ty.as_pointer() {
-                    Some((mutable, _)) if deref => {
+                    Some((mutable, _)) if deref || assignment => {
                         if mutable {
-                            ExprMutability::Mutable
+                            if deref {
+                                ExprMutability::Mutable
+                            } else {
+                                assert!(assignment);
+                                ExprMutability::NotMutatingRefThroughDeref(
+                                    self.bodies.range_for_expr(expr),
+                                )
+                            }
                         } else {
                             // todo: change this to be the range of the param's type
-                            ExprMutability::ImmutableRef(self.bodies.range_for_expr(expr))
-                        }
-                    }
-                    Some((mutable, _)) if assignment => {
-                        if mutable {
-                            ExprMutability::NotMutatingRefThroughDeref(
-                                self.bodies.range_for_expr(expr),
-                            )
-                        } else {
                             ExprMutability::ImmutableRef(self.bodies.range_for_expr(expr))
                         }
                     }
                     _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
                 }
             }
-            Expr::Paren(Some(expr)) => self.get_mutability(*expr, assignment, deref),
+            Expr::Paren(Some(expr)) => self.get_mutability_with_args(*expr, assignment, deref),
             _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
         }
     }
@@ -1090,8 +1127,7 @@ impl GlobalInferenceCtx<'_> {
                                 inner_ty
                             } else {
                                 if *mutable {
-                                    let help =
-                                        self.get_mutability(*inner, false, false).into_diagnostic();
+                                    let help = self.get_mutability(*inner, false).into_diagnostic();
 
                                     if help.is_some() {
                                         self.diagnostics.push(TyDiagnostic {
@@ -1807,7 +1843,7 @@ impl GlobalInferenceCtx<'_> {
                             let value_ty = self.tys[self.file][assign_body.value];
 
                             let help = self
-                                .get_mutability(assign_body.dest, true, false)
+                                .get_mutability(assign_body.dest, true)
                                 .into_diagnostic();
 
                             if help.is_some() {

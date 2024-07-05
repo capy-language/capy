@@ -1637,6 +1637,8 @@ mod tests {
     fn r#continue() {
         check_raw(
             r#"
+                core :: mod "core";
+                
                 main :: () {
                     i := 0;
                     loop {
@@ -1650,14 +1652,12 @@ mod tests {
                             continue;
                         }
                 
-                        printf("%i\n", i);
+                        core.println(i);
                     }
                 }
-                
-                printf :: (fmt: str, n: i32) extern;
             "#,
             "main",
-            false,
+            true,
             expect![[r#"
                 1
                 3

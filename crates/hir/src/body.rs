@@ -259,6 +259,8 @@ pub struct LocalDef {
     pub mutable: bool,
     pub ty: Option<Idx<Expr>>,
     pub value: Option<Idx<Expr>>,
+    /// this is set to true if the local is ever aliased by `^`
+    pub aliased: bool,
     pub ast: ast::Define,
     pub range: TextRange,
 }
@@ -773,6 +775,7 @@ impl<'a> Ctx<'a> {
             mutable: matches!(local_def, ast::Define::Variable(_)),
             ty,
             value,
+            aliased: false,
             ast: local_def,
             range: local_def.range(self.tree),
         });
@@ -867,6 +870,13 @@ impl<'a> Ctx<'a> {
 
     fn lower_ref_expr(&mut self, ref_expr: ast::RefExpr) -> Expr {
         let expr = self.lower_expr(ref_expr.expr(self.tree));
+
+        // this allows `codegen` to do optimizations on the local
+        if let Expr::Local(local) = self.bodies[expr] {
+            let local_body = &mut self.bodies.local_defs[local];
+
+            local_body.aliased = true;
+        }
 
         Expr::Ref {
             mutable: ref_expr.mutable(self.tree).is_some(),
@@ -2558,6 +2568,10 @@ impl Bodies {
                         write_expr(s, value, show_idx, bodies, mod_dir, interner, indentation);
                     }
                     s.push(';');
+
+                    if local_def.aliased {
+                        s.push_str(" (aliased)")
+                    }
                 }
                 Stmt::Assign(local_set_id) => {
                     write_expr(
@@ -4163,6 +4177,54 @@ mod tests {
                 main::bar :: () {
                     l0 := struct'0 {x: i32, y: str};
                     l1 := l0.{x = 42, y = 5};
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn simple_var_ref() {
+        check(
+            r#"
+                func :: () {
+                    foo := 5;
+
+                    bar := ^foo;
+                }
+            "#,
+            expect![[r#"
+                main::func :: () {
+                    l0 := 5; (aliased)
+                    l1 := ^l0;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn more_complex_var_ref() {
+        check(
+            r#"
+                func :: () {
+                    foo := 73;
+
+                    if true {
+                        defer {
+                            bar := ^mut foo;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::func :: () {
+                    l0 := 73; (aliased)
+                    if true {
+                        defer {
+                            l1 := ^mut l0;
+                        };
+                    }
                 };
             "#]],
             |_| [],

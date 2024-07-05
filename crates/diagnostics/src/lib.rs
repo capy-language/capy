@@ -685,11 +685,14 @@ fn ty_diagnostic_help_message(
         }
         hir_ty::TyDiagnosticHelpKind::ImmutableGlobal => "globals are immutable".to_string(),
         hir_ty::TyDiagnosticHelpKind::NotMutatingRefThroughDeref => {
-            "this is a reference, to mutate it's inner value add a `^` at the end to dereference it first"
+            "this is a reference. in order to assign to the inner value you must use `^=`"
                 .to_string()
         }
         hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {
-            format!("here, the `if` returns a {}", found.display(mod_dir, interner))
+            format!(
+                "here, the `if` returns a {}",
+                found.display(mod_dir, interner)
+            )
         }
         hir_ty::TyDiagnosticHelpKind::MutableVariable => {
             "`:=` bindings are immutable. consider changing it to `::`".to_string()
@@ -698,7 +701,10 @@ fn ty_diagnostic_help_message(
             "this is the actual value that is being returned".to_string()
         }
         hir_ty::TyDiagnosticHelpKind::BreakHere { break_ty } => {
-            format!("expected because this break returns a `{}`", break_ty.display(mod_dir, interner))
+            format!(
+                "expected because this break returns a `{}`",
+                break_ty.display(mod_dir, interner)
+            )
         }
     }
 }
