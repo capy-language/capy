@@ -46,11 +46,6 @@ main :: () {
     print_person_by_value(some_guy);
 }
 
-// While a struct is internally a pointer, a pointer to a struct doesn't actually get
-// compiled as a pointer to a pointer. The only machine code difference between the
-// following two functions is that print_person_by_value memcopies the struct into
-// it's stack before using it
-
 print_person_by_value :: (p: Person) {
     core.print(p.name);
     core.print(" is ");

@@ -2,6 +2,7 @@ pub mod comptime;
 pub mod functions;
 pub mod program;
 
+use core::panic;
 use cranelift::codegen::ir::StackSlot;
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
@@ -28,7 +29,7 @@ use crate::{
 };
 
 use self::abi::Abi;
-use self::functions::FunctionCompiler;
+use self::functions::{CompiledLocal, FunctionCompiler};
 
 #[cfg(not(debug_assertions))]
 use std::hint::unreachable_unchecked;
@@ -934,13 +935,16 @@ impl Compiler<'_> {
 
         let is_mod = module_name.is_mod(self.mod_dir, self.interner);
 
-        if self.verbosity.should_show(is_mod) {
+        let show_verbose = self.verbosity.should_show(is_mod);
+        let include_disasm = self.verbosity.include_disasm(is_mod);
+
+        if show_verbose {
             println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
 
-        function_compiler.finish(fn_abi, (&param_tys, return_ty), body, self.verbosity.should_show(is_mod));
+        function_compiler.finish(fn_abi, (&param_tys, return_ty), body, show_verbose);
 
-        if self.verbosity.include_disasm(is_mod) {
+        if include_disasm {
             self.ctx.want_disasm = true;
         }
 
@@ -971,7 +975,10 @@ impl Compiler<'_> {
                     .count(),
                 compiled.code_buffer().len(),
             );
-            println!("stack frame size = {} bytes\n", compiled.frame_size);
+            println!("stack frame size = {} bytes", compiled.frame_size);
+        }
+        if show_verbose {
+            println!();
         }
 
         self.module.clear_context(&mut self.ctx);
@@ -1128,47 +1135,265 @@ fn get_func_id(
     func_id
 }
 
+/// Represents either a raw value (42, true, "hello", etc.)
+/// or a location in memory (aggregates, references, etc.)
 #[derive(Debug, Clone, Copy)]
-enum Location {
-    Stack(StackSlot),
-    Addr(Value),
+pub(crate) enum ValueRef {
+    /// A raw value refers to a number, float, etc. and isn't an address
+    Raw(Value),
+    Memory {
+        loc: Location,
+        ty: Intern<Ty>,
+    },
+    // todo: add `Function`
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryLoc {
-    addr: Location,
-    offset: u32,
-}
-
-impl MemoryLoc {
-    pub fn from_stack(stack_slot: StackSlot, offset: u32) -> MemoryLoc {
-        MemoryLoc {
-            addr: Location::Stack(stack_slot),
-            offset,
+impl ValueRef {
+    pub(crate) fn from_stack(stack_slot: StackSlot, ty: Intern<Ty>) -> Self {
+        Self::Memory {
+            loc: Location::from_stack(stack_slot, 0),
+            ty,
         }
     }
 
-    pub fn from_addr(addr: Value, offset: u32) -> MemoryLoc {
-        MemoryLoc {
-            addr: Location::Addr(addr),
-            offset,
+    /// Only use this for types that are meant to be dereferenced.
+    ///
+    /// E.g. `^i32` but not for `str`
+    pub(crate) fn from_addr(addr: Value, ty: Intern<Ty>) -> Self {
+        Self::Memory {
+            loc: Location::from_addr(addr, 0),
+            ty,
         }
     }
 
-    fn with_offset(self, offset: u32) -> MemoryLoc {
-        MemoryLoc {
-            addr: self.addr,
-            offset: self.offset + offset,
+    pub(crate) fn from_local(
+        local: CompiledLocal,
+        ty: Intern<Ty>,
+        builder: &mut FunctionBuilder,
+    ) -> Self {
+        match local {
+            CompiledLocal::Stack(stack_slot) => Self::Memory {
+                loc: Location::from_stack(stack_slot, 0).freshen(),
+                ty,
+            },
+            CompiledLocal::Reg(var) => builder.use_var(var).to_value(ty),
+        }
+    }
+
+    /// This cannot be used with `ValueRef::Raw`
+    pub(crate) fn with_mem_offset(self, offset: u32, ty: Intern<Ty>) -> Self {
+        match self {
+            ValueRef::Raw(_) => {
+                panic!("A raw value can't be treated as an address")
+            }
+            ValueRef::Memory { loc, .. } => Self::Memory {
+                loc: loc.with_offset(offset),
+                ty,
+            },
+        }
+    }
+
+    pub(crate) fn freshen_mem(self) -> Self {
+        match self {
+            ValueRef::Raw(_) => panic!("freshen_mem cannot be called on raw values"),
+            ValueRef::Memory { loc, ty } => Self::Memory {
+                loc: loc.freshen(),
+                ty,
+            },
+        }
+    }
+
+    pub(crate) fn as_location(self) -> Option<Location> {
+        match self {
+            ValueRef::Raw(_) => None,
+            ValueRef::Memory { loc, .. } => Some(loc),
+        }
+    }
+}
+
+pub(crate) trait ValueRefToValue {
+    /// This will transform this from a reference into the concrete value being refered to.
+    /// It will read memory if needed to get the inner value.
+    ///
+    /// This can return `None` if the self is a `ValueRef::Memory` of a void field in a struct.
+    /// e.g.
+    ///
+    /// ```text
+    /// foo := .{
+    ///     a = (),
+    /// };
+    ///
+    /// foo.a;
+    /// ```
+    fn to_real_value(self, builder: &mut FunctionBuilder) -> Option<Value>;
+}
+
+impl ValueRefToValue for ValueRef {
+    fn to_real_value(self, builder: &mut FunctionBuilder) -> Option<Value> {
+        match self {
+            ValueRef::Raw(val) => Some(val),
+            ValueRef::Memory { loc, ty } => {
+                let final_ty = ty.get_final_ty();
+                if final_ty.is_pointer_type() {
+                    // this is to get the pointer type without having to add it as an extra
+                    // parameter
+                    assert!(final_ty.is_pointer_type());
+                    Some(loc.into_address(builder, final_ty.into_real_type().unwrap()))
+                } else {
+                    Some(loc.load(builder, final_ty.into_real_type()?))
+                }
+            }
+        }
+    }
+}
+
+impl ValueRefToValue for Option<ValueRef> {
+    fn to_real_value(self, builder: &mut FunctionBuilder) -> Option<Value> {
+        match self {
+            Some(val) => val.to_real_value(builder),
+            None => None,
+        }
+    }
+}
+
+pub(crate) trait ValueToValueRef: Sized {
+    type Output;
+
+    /// DO NOT USE UNLESS YOU KNOW THE VALUE IS RAW
+    ///
+    /// Converts a `Value` to a `ValueRef::Raw`.
+    fn to_raw_value(self) -> Self::Output;
+
+    /// DO NOT USE UNLESS YOU KNOW THE VALUE IS VALID MEMORY
+    ///
+    /// Converts a `Value` to a `ValueRef::Memory`
+    fn to_mem_value(self, ty: Intern<Ty>) -> Self::Output;
+
+    /// Converts a regular `Value` to a `ValueRef`.
+    ///
+    /// The value can become `ValueRef::Raw` if it has a simple type,
+    /// or `ValueRef::Memory` if the type is an aggregate or a pointer.
+    fn to_value(self, ty: Intern<Ty>) -> Self::Output {
+        if ty.is_aggregate() || ty.is_pointer() {
+            self.to_mem_value(ty)
+        } else {
+            self.to_raw_value()
+        }
+    }
+}
+
+impl ValueToValueRef for Value {
+    type Output = ValueRef;
+
+    fn to_raw_value(self) -> ValueRef {
+        ValueRef::Raw(self)
+    }
+
+    fn to_mem_value(self, ty: Intern<Ty>) -> ValueRef {
+        ValueRef::from_addr(self, ty)
+    }
+}
+
+/// Represents a location in memory.
+///
+/// A location is something that can be written to, dereferenced, etc.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Location {
+    Stack {
+        stack_slot: StackSlot,
+        offset: u32,
+        fresh: bool,
+    },
+    Addr {
+        addr: Value,
+        offset: u32,
+        fresh: bool,
+    },
+}
+
+impl Location {
+    pub fn from_stack(stack_slot: StackSlot, offset: u32) -> Location {
+        Location::Stack {
+            stack_slot,
+            offset,
+            fresh: false,
+        }
+    }
+
+    pub fn from_addr(addr: Value, offset: u32) -> Location {
+        Location::Addr {
+            addr,
+            offset,
+            fresh: false,
+        }
+    }
+
+    fn with_offset(self, offset: u32) -> Location {
+        match self {
+            Location::Stack {
+                stack_slot,
+                offset: old_offset,
+                ..
+            } => Location::from_stack(stack_slot, old_offset + offset),
+            Location::Addr {
+                addr,
+                offset: old_offset,
+                ..
+            } => Location::from_addr(addr, old_offset + offset),
+        }
+    }
+
+    fn is_fresh(self) -> bool {
+        match self {
+            Location::Stack { fresh, .. } => fresh,
+            Location::Addr { fresh, .. } => fresh,
+        }
+    }
+
+    /// Marks a given location as being "unfresh"
+    fn unfresh(self) -> Location {
+        match self {
+            Location::Stack {
+                stack_slot, offset, ..
+            } => Location::Stack {
+                stack_slot,
+                offset,
+                fresh: false,
+            },
+            Location::Addr { addr, offset, .. } => Location::Addr {
+                addr,
+                offset,
+                fresh: false,
+            },
+        }
+    }
+
+    fn freshen(self) -> Location {
+        match self {
+            Location::Stack {
+                stack_slot, offset, ..
+            } => Location::Stack {
+                stack_slot,
+                offset,
+                fresh: true,
+            },
+            Location::Addr { addr, offset, .. } => Location::Addr {
+                addr,
+                offset,
+                fresh: true,
+            },
         }
     }
 
     /// This converts the address + offset into a single address if needed
-    fn into_value(self, builder: &mut FunctionBuilder, ptr_ty: types::Type) -> Value {
-        match self.addr {
-            Location::Stack(slot) => builder.ins().stack_addr(ptr_ty, slot, self.offset as i32),
-            Location::Addr(addr) => {
-                if self.offset > 0 {
-                    builder.ins().iadd_imm(addr, self.offset as i64)
+    fn into_address(self, builder: &mut FunctionBuilder, ptr_ty: types::Type) -> Value {
+        match self {
+            Location::Stack {
+                stack_slot, offset, ..
+            } => builder.ins().stack_addr(ptr_ty, stack_slot, offset as i32),
+            Location::Addr { addr, offset, .. } => {
+                if offset > 0 {
+                    builder.ins().iadd_imm(addr, offset as i64)
                 } else {
                     addr
                 }
@@ -1176,22 +1401,39 @@ impl MemoryLoc {
         }
     }
 
-    fn store(&self, builder: &mut FunctionBuilder, x: Value, offset: i32) {
-        match self.addr {
-            Location::Stack(slot) => {
+    fn load(self, builder: &mut FunctionBuilder, real_ty: types::Type) -> Value {
+        match self {
+            Location::Stack {
+                stack_slot, offset, ..
+            } => builder.ins().stack_load(real_ty, stack_slot, offset as i32),
+            Location::Addr { addr, offset, .. } => {
                 builder
                     .ins()
-                    .stack_store(x, slot, offset + self.offset as i32)
+                    .load(real_ty, MemFlags::trusted(), addr, offset as i32)
             }
-            Location::Addr(addr) => {
-                builder
-                    .ins()
-                    .store(MemFlags::trusted(), x, addr, offset + self.offset as i32)
-            }
+        }
+    }
+
+    fn store(self, builder: &mut FunctionBuilder, x: Value, offset: i32) {
+        match self {
+            Location::Stack {
+                stack_slot,
+                offset: old_offset,
+                ..
+            } => builder
+                .ins()
+                .stack_store(x, stack_slot, old_offset as i32 + offset),
+            Location::Addr {
+                addr,
+                offset: old_offset,
+                ..
+            } => builder
+                .ins()
+                .store(MemFlags::trusted(), x, addr, old_offset as i32 + offset),
         };
     }
 
-    /// Does a simple store of a memmove if necessary
+    /// Does a simple store or a memmove if necessary
     ///
     /// By using this function, you promise that the bytes of val can fit inside
     /// the given MemoryLoc.
@@ -1200,20 +1442,22 @@ impl MemoryLoc {
     /// the given MemoryLoc.
     fn write(
         self,
-        val: Option<Value>,
+        val: Option<ValueRef>,
         ty: Intern<Ty>,
         module: &mut dyn Module,
         builder: &mut FunctionBuilder,
     ) {
-        let Some(val) = val else {
+        let Some(val) = val.to_real_value(builder) else {
             return;
         };
 
         if ty.is_aggregate() {
-            match self.addr {
-                Location::Addr(mut addr) => {
-                    if self.offset != 0 {
-                        addr = builder.ins().iadd_imm(addr, self.offset as i64);
+            match self {
+                Location::Addr {
+                    mut addr, offset, ..
+                } => {
+                    if offset != 0 {
+                        addr = builder.ins().iadd_imm(addr, offset as i64);
                     }
                     builder.emit_small_memory_copy(
                         module.target_config(),
@@ -1227,7 +1471,9 @@ impl MemoryLoc {
                         MemFlags::trusted(),
                     )
                 }
-                Location::Stack(slot) => {
+                Location::Stack {
+                    stack_slot, offset, ..
+                } => {
                     // be very explicit to cranelift what we are doing here
                     // since there is no `emit_stack_memcpy`, do it ourselves
                     let mut off = 0;
@@ -1243,7 +1489,7 @@ impl MemoryLoc {
                                 );
                                 builder
                                     .ins()
-                                    .stack_store(bytes, slot, off + self.offset as i32);
+                                    .stack_store(bytes, stack_slot, off + offset as i32);
                                 off += $width;
                             }
                         };
@@ -1255,24 +1501,33 @@ impl MemoryLoc {
                 }
             }
         } else {
-            match self.addr {
-                Location::Stack(slot) => builder.ins().stack_store(val, slot, self.offset as i32),
-                Location::Addr(addr) => {
+            match self {
+                Location::Stack {
+                    stack_slot, offset, ..
+                } => builder.ins().stack_store(val, stack_slot, offset as i32),
+                Location::Addr { addr, offset, .. } => {
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), val, addr, self.offset as i32)
+                        .store(MemFlags::trusted(), val, addr, offset as i32)
                 }
             };
         }
     }
+
+    /// Converts the given `Location` to a full `ValueRef`.
+    ///
+    /// The type tells the `ValueRef` how to load itself
+    fn to_mem_value(self, ty: Intern<Ty>) -> ValueRef {
+        ValueRef::Memory { loc: self, ty }
+    }
 }
 
 trait UnwrapOrAlloca {
-    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> MemoryLoc;
+    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> Location;
 }
 
-impl UnwrapOrAlloca for Option<MemoryLoc> {
-    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> MemoryLoc {
+impl UnwrapOrAlloca for Option<Location> {
+    fn unwrap_or_alloca(self, builder: &mut FunctionBuilder, ty: Intern<Ty>) -> Location {
         match self {
             Some(mem) => mem,
             None => {
@@ -1282,7 +1537,7 @@ impl UnwrapOrAlloca for Option<MemoryLoc> {
                     align_shift: ty.align_shift(),
                 });
 
-                MemoryLoc::from_stack(stack_slot, 0)
+                Location::from_stack(stack_slot, 0)
             }
         }
     }
@@ -1294,11 +1549,11 @@ fn cast_into_memory(
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
     ptr_ty: types::Type,
-    val: Option<Value>,
+    val: Option<ValueRef>,
     cast_from: Intern<Ty>,
     cast_to: Intern<Ty>,
-    memory: Option<MemoryLoc>,
-) -> Option<Value> {
+    memory: Option<Location>,
+) -> Option<ValueRef> {
     if cast_from.is_functionally_equivalent_to(&cast_to, true) {
         match memory {
             Some(memory) => {
@@ -1306,8 +1561,12 @@ fn cast_into_memory(
 
                 memory.write(val, cast_to, module, builder);
 
-                return Some(memory.into_value(builder, ptr_ty));
+                return Some(memory.to_mem_value(cast_to));
             }
+            // None if cast_to.is_aggregate() => match val {
+            //     Some(ValueRef::Raw(val)) => return Some(ValueRef::from_addr(val, cast_to)),
+            //     Some(ValueRef::Memory { .. }) | None => return val,
+            // },
             None => return val,
         }
     }
@@ -1321,20 +1580,35 @@ fn cast_into_memory(
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
             memory.store(builder, len, 0_i32);
-            memory.store(builder, val?, ptr_ty.bytes() as i32);
+            let addr = val.to_real_value(builder).expect("it's an array");
+            memory.store(builder, addr, ptr_ty.bytes() as i32);
 
-            return Some(memory.into_value(builder, ptr_ty));
+            return Some(memory.to_mem_value(cast_to));
         }
         (Ty::Slice { .. }, Ty::Array { .. }) => {
             // todo: do a runtime check that the lengths match
 
-            return Some(builder.ins().load(
-                ptr_ty,
-                MemFlags::trusted(),
-                val?,
-                // the second field (after usize len) is the addr of the array
-                ptr_ty.bytes() as i32,
-            ));
+            // todo: store the slice in memory
+
+            return Some(
+                val?.as_location()
+                    .unwrap()
+                    .with_offset(ptr_ty.bytes())
+                    .to_mem_value(cast_to),
+            );
+            // return Some(
+            //     builder
+            //         .ins()
+            //         .load(
+            //             ptr_ty,
+            //             MemFlags::trusted(),
+            //             val.into_real_value(builder, cast_from)
+            //                 .expect("it's a slice"),
+            //             // the second field (after usize len) is the addr of the array
+            //             ptr_ty.bytes() as i32,
+            //         )
+            //         .into(),
+            // );
         }
         _ if cast_to.is_any_struct() => {
             let any_mem = memory.unwrap_or_alloca(builder, cast_to);
@@ -1344,7 +1618,7 @@ fn cast_into_memory(
             for (idx, (_, ty)) in cast_to.as_struct().unwrap().into_iter().enumerate() {
                 match ty.as_ref() {
                     Ty::Pointer { .. } => {
-                        if let Some(val) = val {
+                        if let Some(val) = val.to_real_value(builder) {
                             let offset = struct_layout.offsets()[idx] as i32;
 
                             let ptr = if cast_from.is_aggregate() {
@@ -1377,7 +1651,7 @@ fn cast_into_memory(
                 }
             }
 
-            return Some(any_mem.into_value(builder, ptr_ty));
+            return Some(any_mem.to_mem_value(cast_to));
         }
         (Ty::Struct { .. }, Ty::Struct { .. }) => {
             return cast_struct_to_struct(
@@ -1395,8 +1669,9 @@ fn cast_into_memory(
     // it's a simple cast
 
     let val = match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
-        (FinalTy::Number(cast_from), FinalTy::Number(cast_to)) => {
-            Some(cast_num(builder, val?, cast_from, cast_to))
+        (FinalTy::Number(num_from), FinalTy::Number(num_to)) => {
+            let val = val.to_real_value(builder)?;
+            Some(cast_num(builder, val, num_from, num_to).to_raw_value())
         }
         _ => val,
     };
@@ -1414,11 +1689,11 @@ fn cast_struct_to_struct(
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
     ptr_ty: types::Type,
-    val: Option<Value>,
+    val: Option<ValueRef>,
     cast_from: Intern<Ty>,
     cast_to: Intern<Ty>,
-    memory: Option<MemoryLoc>,
-) -> Option<Value> {
+    memory: Option<Location>,
+) -> Option<ValueRef> {
     assert!(cast_from.is_struct());
     assert!(cast_to.is_struct());
 
@@ -1459,14 +1734,10 @@ fn cast_struct_to_struct(
 
             let dest = result_mem.with_offset(to_offset);
 
-            let src = if from_ty.is_aggregate() {
-                Some(builder.ins().iadd_imm(val, from_offset as i64))
+            let src = if from_ty.is_zero_sized() {
+                None
             } else {
-                from_ty.get_final_ty().into_real_type().map(|from_ty| {
-                    builder
-                        .ins()
-                        .load(from_ty, MemFlags::trusted(), val, from_offset as i32)
-                })
+                Some(val.with_mem_offset(from_offset, *from_ty))
             };
 
             cast_into_memory(
@@ -1481,7 +1752,7 @@ fn cast_struct_to_struct(
             );
         }
 
-        Some(result_mem.into_value(builder, ptr_ty))
+        Some(result_mem.to_mem_value(cast_to))
     }
 }
 
@@ -1491,11 +1762,11 @@ fn cast_array_to_array(
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
     ptr_ty: types::Type,
-    val: Option<Value>,
+    val: Option<ValueRef>,
     cast_from: Intern<Ty>,
     cast_to: Intern<Ty>,
-    memory: Option<MemoryLoc>,
-) -> Option<Value> {
+    memory: Option<Location>,
+) -> Option<ValueRef> {
     assert!(cast_from.is_array());
     assert!(cast_to.is_array());
 
@@ -1518,20 +1789,10 @@ fn cast_array_to_array(
             let from_offset = from_sub_stride * idx;
             let to_offset = to_sub_stride * idx;
 
-            let src = if from_sub_ty.is_aggregate() {
-                Some(builder.ins().iadd_imm(val, from_offset as i64))
+            let src = if from_sub_ty.is_zero_sized() {
+                None
             } else {
-                from_sub_ty
-                    .get_final_ty()
-                    .into_real_type()
-                    .map(|from_sub_ty| {
-                        builder.ins().load(
-                            from_sub_ty,
-                            MemFlags::trusted(),
-                            val,
-                            from_offset as i32,
-                        )
-                    })
+                Some(val.with_mem_offset(from_offset, from_sub_ty))
             };
 
             let dest = result_mem.with_offset(to_offset);
@@ -1548,7 +1809,7 @@ fn cast_array_to_array(
             );
         }
 
-        Some(result_mem.into_value(builder, ptr_ty))
+        Some(result_mem.to_mem_value(cast_to))
     }
 }
 

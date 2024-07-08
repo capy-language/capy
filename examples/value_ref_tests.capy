@@ -1,0 +1,91 @@
+
+core :: mod "core";
+libc :: core.libc;
+
+greeting :: "Hello, World!";
+
+main :: () {
+    // print("greeting = ");
+    // iprint(^greeting as ^any as ^usize^ as u64);
+    // print("\n");
+    //
+    // 333;
+    
+    x : core.Any = core.Any.{
+        ty = u32,
+        data = ^42 as ^u32,
+    };
+
+    222;
+
+    iprint(core.ptr.to_raw(x.data) as u64);
+    print("\n");
+    iprint(^x.data as ^any as ^usize^ as u64);
+    print("\n");
+
+    123;
+
+    print("x = ");
+    iprint(x.data as ^u32^);
+    print("\n");
+
+    456;
+
+    foo(x);
+
+    // x : u32 = 42;
+    // z : ^^^u32 = ^^^x;
+    //
+    // iprint(z^^^);
+    //
+    // x : u32 = 42;
+    // y : ^u32 = ^x;
+    // z : ^^u32 = ^y;
+    // w : ^^^u32 = ^z;
+    //
+    // iprint(w^^^);
+}
+
+foo :: (a: core.Any) {
+    data := a.data;
+
+    iprint(core.ptr.to_raw(data) as u64);
+    print("\n");
+    iprint(^data as ^any as ^usize^ as u64);
+    print("\n\n");
+
+    print("a = ");
+    iprint(a.data as ^u32^);
+    print("\n");
+}
+
+print :: (s: str) {
+    s := s as ^any as ^[1000] char;
+    idx := 0;
+    while idx < 100 {
+        ch := s[idx];
+        if ch == '\0' {
+            break;
+        }
+        libc.putchar(ch);
+        idx = idx + 1;
+    }
+}
+
+iprint :: (n: u64) {
+    n := n;
+    
+    if n < 0 {
+        // n = -n;
+        libc.putchar('-');
+    }
+
+    if n > 9 {
+        a := n / 10;
+
+        n = n - 10 * a;
+        iprint(a);
+    }
+    libc.putchar(('0' as u8 + n) as char);
+}
+

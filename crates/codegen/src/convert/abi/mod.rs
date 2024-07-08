@@ -15,7 +15,7 @@ use la_arena::Idx;
 use tinyvec::ArrayVec;
 
 use crate::{
-    compiler::{functions::FunctionCompiler, MemoryLoc},
+    compiler::{functions::FunctionCompiler, Location, ValueRef, ValueRefToValue, ValueToValueRef},
     layout::GetLayoutInfo,
 };
 
@@ -195,7 +195,7 @@ impl FnAbi {
         builder: &mut FunctionBuilder,
         return_ty: Intern<Ty>,
         ptr_ty: Type,
-    ) -> Option<Value> {
+    ) -> Option<ValueRef> {
         if let Some(PassMode::Indirect(_)) = self.ret {
             let stack_slot = builder.create_sized_stack_slot(StackSlotData {
                 kind: StackSlotKind::ExplicitSlot,
@@ -205,7 +205,7 @@ impl FnAbi {
             let stack_slot_addr = builder.ins().stack_addr(ptr_ty, stack_slot, 0);
 
             args.insert(0, stack_slot_addr);
-            Some(stack_slot_addr)
+            Some(ValueRef::from_stack(stack_slot, return_ty))
         } else {
             None
         }
@@ -215,8 +215,9 @@ impl FnAbi {
         &self,
         call: Inst,
         func_cmplr: &mut FunctionCompiler,
-        ret_slot: Option<Value>,
-    ) -> Option<Value> {
+        ret_slot: Option<ValueRef>,
+        ret_ty: Intern<Ty>,
+    ) -> Option<ValueRef> {
         if let Some(ret_slot) = ret_slot {
             return Some(ret_slot);
         }
@@ -234,16 +235,11 @@ impl FnAbi {
                     off += ty.bytes();
                 }
 
-                Some(
-                    func_cmplr
-                        .builder
-                        .ins()
-                        .stack_addr(func_cmplr.ptr_ty, slot, 0),
-                )
+                Some(ValueRef::from_stack(slot, orig))
             }
             PassMode::Direct(_) => {
                 let rets = func_cmplr.builder.inst_results(call);
-                Some(rets[0])
+                Some(rets[0].to_value(ret_ty))
             }
             PassMode::Indirect(_) => unreachable!("indirect return without stack address"),
         }
@@ -365,7 +361,7 @@ impl FnAbi {
                         size: orig.size(),
                         align_shift: orig.align().trailing_zeros() as u8,
                     });
-                    let tmp_mem = MemoryLoc::from_stack(slot, 0);
+                    let tmp_mem = Location::from_stack(slot, 0);
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
                     let mut rets = vec![];
                     let mut off = 0;
@@ -377,7 +373,10 @@ impl FnAbi {
                     func_cmplr.builder.ins().return_(&rets);
                 }
                 PassMode::Direct(_) => {
-                    if let Some(val) = func_cmplr.compile_and_cast(function_body, return_ty) {
+                    if let Some(val) = func_cmplr
+                        .compile_and_cast(function_body, return_ty)
+                        .to_real_value(&mut func_cmplr.builder)
+                    {
                         func_cmplr.builder.ins().return_(&[val]);
                     } else {
                         func_cmplr.builder.ins().return_(&[]);
@@ -385,7 +384,7 @@ impl FnAbi {
                 }
                 PassMode::Indirect(_) => {
                     let ret_addr = func_cmplr.builder.block_params(entry_block)[0_usize];
-                    let tmp_mem = MemoryLoc::from_addr(ret_addr, 0);
+                    let tmp_mem = Location::from_addr(ret_addr, 0);
                     func_cmplr.compile_and_cast_into_memory(function_body, return_ty, tmp_mem);
                     func_cmplr.builder.ins().return_(&[]);
                 }
