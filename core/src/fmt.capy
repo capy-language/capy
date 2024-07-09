@@ -23,13 +23,22 @@ i64_to_string :: (n: i64) -> StringBuilder {
 }
 
 u64_to_string :: (n: u64) -> StringBuilder {
-    str := string_builder.make_with_capacity(39);
-    
-    new_len := _write_i64_to_buf(n as i64, false, str.buf as ^mut any as ^mut u8, 0, 0);
+    n := n;
+    digits := core.math.lg_u64(n) + 1;
+    str := string_builder.make_with_capacity(digits);
+    str.len = digits;
 
-    str.len = new_len;
+    while digits > 0 {
+        remainder :: n % 10;
+        n         =  n / 10;
+        digits    =  digits - 1;
 
-    string_builder.shrink_to_fit(^mut str);
+        ptr.write(
+                  str.buf, 
+                  ('0' as u8 + remainder) as u8, 
+                  digits
+                );
+    }
 
     str
 }
