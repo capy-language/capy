@@ -182,7 +182,7 @@ There are two requirements which determine if a variable is *const*.
 
 Beyond type annotations, the size of an array is also expected to be *const*, and this value can be calculated using `comptime`.
 
-To see all the different types, you can look through [`core/meta.capy`](./core/meta.capy),
+To see all the different types, you can look through [`core/meta.capy`](./core/src/meta.capy),
 which contains reflection related code and documentation for all of Capy's types.
 
 ### Comptime
@@ -223,13 +223,15 @@ My_Type :: comptime {
 x : My_Type = 42;
 ```
 
-This is obviously not a very useful example. But as this feature continues to be fleshed out, this will become the basis of Capy's compile-time generic system.
+This obviously isn't the most useful example. Something more pragmatic but far too complex to fit in a readme might be an ORM that automatically downloads the latest schema and uses it to assemble its struct types.
+
+As this feature continues to be fleshed out, this will become the basis of Capy's compile-time generic system.
 
 ### Reflection
 
-Reflection is another powerful feature of Capy, and powers the language's runtime generic system.
+Reflection is another powerful feature of Capy, and powers the language's [runtime generic system](./core/src/structs/list.capy).
 
-All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting
+All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/src/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting
 these IDs and getting information such as the length of an array type,
 
 ```cpp
@@ -407,7 +409,7 @@ The [`examples`](./examples/) folder contains a lot more, and it gives a much be
 Currently, `gcc` must be installed for the compiler to work.
 It is used for linking to libc and producing a proper executable.
 
-If you want to use libc functions, define them with `extern` (look in [`core/libc.capy`](./core/libc.capy) for examples).
+If you want to use libc functions, define them with `extern` (look in [`core/libc.capy`](./core/src/libc.capy) for examples).
 Variadic functions do not work. You *could* try explicitly defining a function like `printf` to take 3 arguments,
 but this won't work for floats, which are passed into variadic functions differently depending on the calling convention.
 Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030), so that will be added in the future.

@@ -3,6 +3,10 @@ ptr :: core.ptr;
 libc :: core.libc;
 math :: core.math;
 
+// A dynamically allocated List type that is generic at runtime.
+//
+// This, and Runtime Generics in general, has been largely inspired by the blog post
+// [A Simple Yet Useful Version of Generics by Luna Razzaghipour](https://blog.xoria.org/simple-generics/)
 List :: struct {
     ty: type,
     buf: ^mut any,
