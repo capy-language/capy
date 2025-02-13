@@ -298,20 +298,19 @@ It's very similar to creating distincts. The only real difference is that enums 
 Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be a hassle.
 
 <details> 
-    <summary>Extra enum stuff!</summary>
-    
-    If you're doing FFI and you need to specify the discriminant you can do that with `|`
+<summary>Extra enum stuff!</summary>
+If you're doing FFI and you need to specify the discriminant you can do that with `|`
 
-    ```cpp
-    Error :: enum {
-        IO: i32     | 10, // i32 is the file handle
-        Caught_Fire | 20,
-        Exploded    | 30,
-        Buggy_Code  | 40,
-    }
-    ```
+```cpp
+Error :: enum {
+    IO: i32     | 10, // i32 is the file handle
+    Caught_Fire | 20,
+    Exploded    | 30,
+    Buggy_Code  | 40,
+}
+```
 
-    *See [`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) for more*
+*See [`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) for more*
 </details>
 
 With that, here are all the possible types data can have in Capy:
