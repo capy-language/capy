@@ -1,0 +1,30 @@
+switch foo in get_enum() {
+    Apples => {
+===
+Root@0..42
+  ExprStmt@0..42
+    SwitchExpr@0..42
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      Call@14..24
+        VarRef@14..22
+          Ident@14..22 "get_enum"
+        ArgList@22..24
+          LParen@22..23 "("
+          RParen@23..24 ")"
+      Whitespace@24..25 " "
+      LBrace@25..26 "{"
+      Whitespace@26..31 "\n    "
+      SwitchArm@31..42
+        Ident@31..37 "Apples"
+        Whitespace@37..38 " "
+        FatArrow@38..40 "=>"
+        Whitespace@40..41 " "
+        Block@41..42
+          LBrace@41..42 "{"
+error at 42: missing RBrace
+error at 42: missing RBrace

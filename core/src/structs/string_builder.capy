@@ -10,7 +10,7 @@ StringBuilder :: struct {
 };
 
 make :: () -> StringBuilder {
-    buf := ptr.mut_null() as ^mut char;
+    buf := (^mut char).(ptr.mut_null());
 
     StringBuilder.{
         buf = buf,
@@ -22,7 +22,7 @@ make :: () -> StringBuilder {
 make_with_capacity :: (cap: usize) -> StringBuilder {
     if cap == 0 { return make(); }
 
-    buf := libc.malloc(cap) as ^mut char;
+    buf := (^mut char).(libc.malloc(cap));
 
     if cap > 0 && ptr.is_null(buf) {
         core.panic_with("Error allocating the StringBuilder");
@@ -44,7 +44,7 @@ free :: (self: ^mut StringBuilder) {
 
 shrink_to_fit :: (self: ^mut StringBuilder) {
     if self.len != 0 && self.len < self.cap {
-        self.buf = libc.realloc(self.buf, self.len) as ^mut char;
+        self.buf = (^mut char).(libc.realloc(self.buf, self.len));
         self.cap = self.len;
 
         if self.cap > 0 && ptr.is_null(self.buf) {
@@ -61,7 +61,7 @@ _grow_by :: (self: ^mut StringBuilder, len: usize) {
 				new_cap
 				);
 
-        self.buf = libc.realloc(self.buf, new_cap) as ^mut char;
+        self.buf = (^mut char).(libc.realloc(self.buf, new_cap));
         self.cap = new_cap;
 
         if ptr.is_null(self.buf) {
@@ -73,7 +73,7 @@ _grow_by :: (self: ^mut StringBuilder, len: usize) {
 append_char :: (self: ^mut StringBuilder, ch: char) {
     _grow_by(self, 1);
 
-    ptr.write(self.buf, ch as u8, self.len);
+    ptr.write(self.buf, u8.(ch), self.len);
 
     self.len = self.len + 1;
 }
@@ -85,19 +85,19 @@ append_str :: (self: ^mut StringBuilder, s: str) {
 
     offset := ptr.mut_offset(self.buf, self.len);
 
-    libc.memcpy(offset, s as ^any, len);
+    libc.memcpy(offset, (^any).(s), len);
     
     self.len = self.len + len;
 }
 
 as_slice :: (self: ^mut StringBuilder) -> [] char {
-    ptr.slice_from_raw_parts(self.buf, self.len) as [] char
+    []char.(ptr.slice_from_raw_parts(self.buf, self.len))
 }
 
 print :: (self: ^StringBuilder) {
     idx := 0;
     while idx < self.len {
-        ch := ptr.read(self.buf, idx) as char;
+        ch := char.(ptr.read(self.buf, idx));
         libc.putchar(ch);
         idx = idx + 1;
     }

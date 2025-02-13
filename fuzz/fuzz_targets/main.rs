@@ -51,25 +51,32 @@ fuzz_target!(|s: &str| {
 
     let mut comptime_results = FxHashMap::default();
 
+    // type checking
     let InferenceResult {
         tys: _tys,
         diagnostics: _type_diagnostics,
         any_were_unsafe_to_compile: _any_unsafe,
     } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
-        // todo: this might make the fuzzer a lot slower, would it be beneficial to make a separate
-        // fuzzer for codegen stuff?
-        codegen::eval_comptime_blocks(
-            Verbosity::LocalFunctions,
-            vec![comptime],
-            &mut comptime_results,
-            Path::new(""),
-            &interner,
-            &world_bodies,
-            tys,
-            Triple::host().pointer_width().unwrap().bits(),
-        );
+        // sometimes comptime need to be evaluated in order to figure out the types.
+        // if we wanted to evaluate comptime blocks we could do:
 
-        comptime_results[&comptime].clone()
+        // codegen::eval_comptime_blocks(
+        //     Verbosity::LocalFunctions,
+        //     vec![comptime],
+        //     &mut comptime_results,
+        //     Path::new(""),
+        //     &interner,
+        //     &world_bodies,
+        //     tys,
+        //     Triple::host().pointer_width().unwrap().bits(),
+        // );
+        //
+        // comptime_results[&comptime].clone()
+
+        // but we're not gonna do that, because I think running randomly generated code on
+        // your computer is a bad idea
+
+        todo!("figure something out for this")
     })
     .finish(None, true);
 

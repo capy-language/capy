@@ -1,0 +1,20 @@
+switch foo in bar {
+===
+Root@0..19
+  ExprStmt@0..19
+    SwitchExpr@0..19
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..17
+        Ident@14..17 "bar"
+      Whitespace@17..18 " "
+      LBrace@18..19 "{"
+      SwitchArm@19..19
+error at 19: missing enum variant name
+error at 19: missing FatArrow
+error at 19: missing switch arm
+error at 19: missing RBrace

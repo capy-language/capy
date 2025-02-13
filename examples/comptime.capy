@@ -25,7 +25,7 @@ main :: () {
 
         idx := 0;
         while idx < array.len {
-            array[idx] = math.pow(2, idx as i32);
+            array[idx] = math.pow(2, i32.(idx));
             idx = idx + 1;
         }
 

@@ -94,6 +94,7 @@ impl WorldBodies {
 #[derive(Debug, Clone)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
+    switch_locals: Arena<SwitchLocal>,
     assigns: Arena<Assign>,
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
@@ -117,8 +118,8 @@ pub enum Expr {
     StringLiteral(String),
     CharLiteral(u8),
     Cast {
-        expr: Idx<Expr>,
         ty: Idx<Expr>,
+        expr: Idx<Expr>,
     },
     Ref {
         mutable: bool,
@@ -162,7 +163,14 @@ pub enum Expr {
         condition: Option<Idx<Expr>>,
         body: Idx<Expr>,
     },
+    Switch {
+        // todo: add label like While statements
+        variable_name: Option<NameWithRange>,
+        scrutinee: Idx<Expr>,
+        arms: Vec<SwitchArm>,
+    },
     Local(Idx<LocalDef>),
+    SwitchLocal(Idx<SwitchLocal>),
     LocalGlobal(NameWithRange),
     Param {
         idx: u32,
@@ -170,7 +178,8 @@ pub enum Expr {
     },
     Member {
         previous: Idx<Expr>,
-        field: NameWithRange,
+        /// the name of the member that is being accessed
+        name: NameWithRange,
     },
     Call {
         callee: Idx<Expr>,
@@ -187,13 +196,88 @@ pub enum Expr {
     },
     StructDecl {
         uid: u32,
-        members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
+        members: Vec<MemberDecl>,
     },
     StructLiteral {
         ty: Option<Idx<Expr>>,
-        members: Vec<(Option<NameWithRange>, Idx<Expr>)>,
+        members: Vec<MemberLiteral>,
+    },
+    EnumDecl {
+        uid: u32,
+        variants: Vec<VariantDecl>,
     },
     Import(FileName),
+}
+
+/// HIR representation of a member declaration
+///
+/// Member declarations are found in struct declarations.
+/// For example:
+/// ```text
+/// struct {
+///     foo: str
+///     baz: i32
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberDecl {
+    pub name: Option<NameWithRange>,
+    pub ty: Idx<Expr>,
+}
+
+/// HIR representation of a member literal
+///
+/// Member literals are found in struct literals.
+/// For example:
+/// ```text
+/// .{
+///     foo = "bar"
+///     baz = 42
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberLiteral {
+    pub name: Option<NameWithRange>,
+    pub value: Idx<Expr>,
+}
+
+/// HIR representation of a variant declaration
+///
+/// Variant declarations are found in enum declarations.
+/// For example:
+/// ```text
+/// enum {
+///     Foo,
+///     Bar: i32,
+///     Baz: str | 4
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariantDecl {
+    pub name: Option<NameWithRange>,
+    pub uid: u32,
+    // when `None`, the default type should be `void`
+    pub ty: Option<Idx<Expr>>,
+    // when `None`, the variant will be one plus the previous discriminant
+    pub discriminant: Option<Idx<Expr>>,
+}
+
+/// HIR representation of a switch arm
+///
+/// Switch arms are found in switch statements.
+/// For example:
+/// ```text
+/// switch foo in my_cool_awesome_cake_enum {
+///     Red_Velvet => {} // switch arm
+///     Chocolate => {} // switch arm
+///     Cheesecake => {} // switch arm
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwitchArm {
+    pub variant_name: Option<NameWithRange>,
+    pub body: Idx<Expr>,
+    pub switch_local: Option<Idx<SwitchLocal>>,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +338,12 @@ pub enum Stmt {
     },
 }
 
+#[derive(Clone, Copy)]
+enum Local {
+    Def(Idx<LocalDef>),
+    SwitchArm(Idx<SwitchLocal>),
+}
+
 #[derive(Clone)]
 pub struct LocalDef {
     pub mutable: bool,
@@ -263,7 +353,18 @@ pub struct LocalDef {
     pub range: TextRange,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
+pub struct SwitchLocal {
+    /// The scrutinee is included so that hir_ty can figure out the type of this local.
+    /// It has to be done in a weird way because hir_ty doesn't use recursion,
+    /// the locals are type checked before the whole switch expression itself.
+    /// I couldn't really figure out a better way to do this, although there might be one
+    pub scrutinee: Idx<Expr>,
+    pub variant_name: Option<NameWithRange>,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone)]
 pub struct Assign {
     pub dest: Idx<Expr>,
     pub value: Idx<Expr>,
@@ -408,7 +509,7 @@ struct Ctx<'a> {
     interner: &'a mut Interner,
     tree: &'a SyntaxTree,
     diagnostics: Vec<LoweringDiagnostic>,
-    scopes: Vec<FxHashMap<Key, Idx<LocalDef>>>,
+    scopes: Vec<FxHashMap<Key, Local>>,
     label_kinds: Vec<ScopeKind>,
     label_gen: UIDGenerator,
     params: FxHashMap<Key, (u32, ast::Param)>,
@@ -429,6 +530,7 @@ impl<'a> Ctx<'a> {
         Self {
             bodies: Bodies {
                 local_defs: Arena::new(),
+                switch_locals: Arena::new(),
                 assigns: Arena::new(),
                 stmts: Arena::new(),
                 exprs: Arena::new(),
@@ -779,7 +881,7 @@ impl<'a> Ctx<'a> {
 
         if let Some(ident) = local_def.name(self.tree) {
             let name = self.interner.intern(ident.text(self.tree));
-            self.insert_into_current_scope(name, id);
+            self.insert_into_current_scope(name, Local::Def(id));
         }
 
         Stmt::LocalDef(id)
@@ -812,7 +914,7 @@ impl<'a> Ctx<'a> {
         let id = self.bodies.exprs.alloc(expr);
         self.bodies.expr_ranges.insert(id, range);
 
-        if scope_id.map_or(false, |id| self.bodies.scope_usages.contains_key(&id)) {
+        if scope_id.is_some_and(|id| self.bodies.scope_usages.contains_key(&id)) {
             self.bodies.scope_decls.insert(scope_id.unwrap(), id);
         }
 
@@ -836,6 +938,7 @@ impl<'a> Ctx<'a> {
                     let res = self.lower_while(while_expr);
                     return (res.0, Some(res.1));
                 }
+                ast::Expr::Switch(switch_expr) => self.lower_switch(switch_expr),
                 ast::Expr::Call(call) => self.lower_call(call),
                 ast::Expr::IndexExpr(index_expr) => self.lower_index_expr(index_expr),
                 ast::Expr::VarRef(var_ref) => self.lower_var_ref(var_ref),
@@ -851,6 +954,7 @@ impl<'a> Ctx<'a> {
                 ast::Expr::Lambda(lambda) => self.lower_lambda(lambda, false),
                 ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
                 ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
+                ast::Expr::EnumDecl(enum_decl) => self.lower_enum_declaration(enum_decl),
                 ast::Expr::Import(import_expr) => self.lower_import(import_expr),
                 ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
             },
@@ -900,7 +1004,7 @@ impl<'a> Ctx<'a> {
 
                 let ty = self.lower_expr(member.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
-                (name, ty)
+                MemberDecl { name, ty }
             })
             .collect();
 
@@ -925,10 +1029,42 @@ impl<'a> Ctx<'a> {
 
             let value = self.lower_expr(member.value(self.tree));
 
-            members.push((name, value));
+            members.push(MemberLiteral { name, value });
         }
 
         Expr::StructLiteral { ty, members }
+    }
+
+    fn lower_enum_declaration(&mut self, enum_decl: ast::EnumDecl) -> Expr {
+        let variants = enum_decl
+            .variants(self.tree)
+            .map(|variant| {
+                let name = variant.name(self.tree).map(|ident| NameWithRange {
+                    name: Name(self.interner.intern(ident.text(self.tree))),
+                    range: ident.range(self.tree),
+                });
+
+                let ty = variant
+                    .ty(self.tree)
+                    .map(|ty| self.lower_expr(ty.expr(self.tree)));
+
+                let discriminant = variant
+                    .discriminant(self.tree)
+                    .map(|discriminant| self.lower_expr(discriminant.value(self.tree)));
+
+                VariantDecl {
+                    name,
+                    uid: self.uid_gen.generate_unique_id(),
+                    ty,
+                    discriminant,
+                }
+            })
+            .collect();
+
+        Expr::EnumDecl {
+            uid: self.uid_gen.generate_unique_id(),
+            variants,
+        }
     }
 
     fn lower_import(&mut self, import: ast::ImportExpr) -> Expr {
@@ -1233,6 +1369,59 @@ impl<'a> Ctx<'a> {
         (Expr::While { condition, body }, label_id)
     }
 
+    fn lower_switch(&mut self, switch_expr: ast::SwitchExpr) -> Expr {
+        let variable_name = switch_expr
+            .variable_name(self.tree)
+            .map(|name| NameWithRange {
+                name: Name(self.interner.intern(name.text(self.tree))),
+                range: name.range(self.tree),
+            });
+        let scrutinee = self.lower_expr(switch_expr.scrutinee(self.tree));
+
+        let arms = switch_expr
+            .arms(self.tree)
+            .map(|arm| {
+                let variant_name = arm.variant_name(self.tree).map(|name| NameWithRange {
+                    name: Name(self.interner.intern(name.text(self.tree))),
+                    range: name.range(self.tree),
+                });
+
+                let switch_local = if let Some(variable_name) = variable_name {
+                    let switch_local = self.bodies.switch_locals.alloc(SwitchLocal {
+                        scrutinee,
+                        variant_name,
+                        range: variant_name
+                            .map(|v| v.range)
+                            .unwrap_or(arm.range(self.tree)),
+                    });
+
+                    self.insert_into_current_scope(
+                        variable_name.name.0,
+                        Local::SwitchArm(switch_local),
+                    );
+
+                    Some(switch_local)
+                } else {
+                    None
+                };
+
+                let body = self.lower_expr(arm.body(self.tree));
+
+                SwitchArm {
+                    variant_name,
+                    body,
+                    switch_local,
+                }
+            })
+            .collect();
+
+        Expr::Switch {
+            variable_name,
+            scrutinee,
+            arms,
+        }
+    }
+
     fn lower_call(&mut self, call: ast::Call) -> Expr {
         let callee = self.lower_expr(call.callee(self.tree));
 
@@ -1275,7 +1464,7 @@ impl<'a> Ctx<'a> {
 
         Expr::Member {
             previous: self.lower_expr(previous),
-            field: NameWithRange {
+            name: NameWithRange {
                 name: Name(field_name),
                 range: field.range(self.tree),
             },
@@ -1289,9 +1478,10 @@ impl<'a> Ctx<'a> {
         };
         let ident_name = self.interner.intern(ident.text(self.tree));
 
-        // only have one ident as path
-        if let Some(def) = self.look_up_in_current_scope(ident_name) {
-            return Expr::Local(def);
+        match self.look_up_in_current_scope(ident_name) {
+            Some(Local::Def(local_def)) => return Expr::Local(local_def),
+            Some(Local::SwitchArm(local_arm_var)) => return Expr::SwitchLocal(local_arm_var),
+            None => {}
         }
 
         if let Some((idx, ast)) = self.look_up_param(ident_name) {
@@ -1547,12 +1737,12 @@ impl<'a> Ctx<'a> {
         Expr::CharLiteral(ch)
     }
 
-    fn insert_into_current_scope(&mut self, name: Key, value: Idx<LocalDef>) {
+    fn insert_into_current_scope(&mut self, name: Key, local: Local) {
         let last_scope = self.scopes.last_mut().unwrap();
-        last_scope.insert(name, value);
+        last_scope.insert(name, local);
     }
 
-    fn look_up_in_current_scope(&mut self, name: Key) -> Option<Idx<LocalDef>> {
+    fn look_up_in_current_scope(&mut self, name: Key) -> Option<Local> {
         for scope in self.scopes.iter().rev() {
             if let Some(def) = scope.get(&name) {
                 return Some(*def);
@@ -1759,6 +1949,24 @@ impl Iterator for Descendants<'_> {
                     }
                     DescentOpts::Types { .. } => {}
                 },
+                Expr::Switch {
+                    scrutinee, arms, ..
+                } => match self.opts {
+                    DescentOpts::Eval | DescentOpts::All { .. } => {
+                        self.todo.push(Descendant::Expr(scrutinee));
+                        for arm in arms {
+                            self.todo.push(Descendant::Expr(arm.body));
+                        }
+                    }
+                    DescentOpts::Reinfer => {
+                        // todo: maybe don't do this
+                        self.todo.push(Descendant::Expr(scrutinee));
+                        for arm in arms {
+                            self.todo.push(Descendant::Expr(arm.body));
+                        }
+                    }
+                    DescentOpts::Types { .. } => {}
+                },
                 Expr::Local(local_def) => {
                     if let DescentOpts::Types {
                         include_local_value,
@@ -1773,6 +1981,7 @@ impl Iterator for Descendants<'_> {
                         }
                     }
                 }
+                Expr::SwitchLocal(_) => {}
                 Expr::Param { .. } => {}
                 Expr::LocalGlobal(_) => {}
                 Expr::Call { callee, args } => {
@@ -1829,7 +2038,7 @@ impl Iterator for Descendants<'_> {
                         members
                             .into_iter()
                             .rev()
-                            .map(|(_, val)| Descendant::Expr(val)),
+                            .map(|MemberLiteral { value, .. }| Descendant::Expr(value)),
                     );
                 }
                 Expr::Distinct { ty, .. } => {
@@ -1840,8 +2049,31 @@ impl Iterator for Descendants<'_> {
                 Expr::PrimitiveTy(_) => {}
                 Expr::StructDecl { members, .. } => {
                     if include_types {
-                        self.todo
-                            .extend(members.into_iter().map(|(_, ty)| Descendant::Expr(ty)));
+                        self.todo.extend(
+                            members
+                                .into_iter()
+                                .map(|MemberDecl { ty, .. }| Descendant::Expr(ty)),
+                        );
+                    }
+                }
+                Expr::EnumDecl { variants, .. } => {
+                    if is_all {
+                        self.todo.extend(
+                            variants
+                                .into_iter()
+                                .flat_map(
+                                    |VariantDecl {
+                                         ty, discriminant, ..
+                                     }| { [ty, discriminant] },
+                                )
+                                .filter_map(|expr| expr.map(Descendant::Expr)),
+                        );
+                    } else if include_types {
+                        self.todo.extend(
+                            variants
+                                .into_iter()
+                                .filter_map(|VariantDecl { ty, .. }| ty.map(Descendant::Expr)),
+                        );
                     }
                 }
                 Expr::Import(_) => {}
@@ -1889,6 +2121,11 @@ impl Bodies {
     ///
     /// this allows safe reverse iteration without having to worry about children or siblings that
     /// haven't been evaluated yet.
+    ///
+    /// todo: sometimes the child of a node should be included even when the node itself isn't
+    /// included. For example, when doing `DescentOpts::Eval` we don't want to include types,
+    /// but we *should* include for example the size of arrays and the discriminants of enums,
+    /// even when the full array type or enum type itself isn't included.
     pub fn descendants<'a>(&'a self, expr: Idx<Expr>, opts: DescentOpts<'a>) -> Descendants<'a> {
         Descendants {
             bodies: self,
@@ -1958,6 +2195,7 @@ impl Bodies {
     fn shrink_to_fit(&mut self) {
         let Self {
             local_defs,
+            switch_locals,
             stmts,
             exprs,
             assigns,
@@ -1973,6 +2211,7 @@ impl Bodies {
         } = self;
 
         local_defs.shrink_to_fit();
+        switch_locals.shrink_to_fit();
         stmts.shrink_to_fit();
         exprs.shrink_to_fit();
         assigns.shrink_to_fit();
@@ -1992,6 +2231,14 @@ impl std::ops::Index<Idx<LocalDef>> for Bodies {
 
     fn index(&self, id: Idx<LocalDef>) -> &Self::Output {
         &self.local_defs[id]
+    }
+}
+
+impl std::ops::Index<Idx<SwitchLocal>> for Bodies {
+    type Output = SwitchLocal;
+
+    fn index(&self, id: Idx<SwitchLocal>) -> &Self::Output {
+        &self.switch_locals[id]
     }
 }
 
@@ -2129,12 +2376,11 @@ impl Bodies {
                     s.push(']');
                 }
 
-                Expr::Cast { expr, ty } => {
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
-
-                    s.push_str(" as ");
-
+                Expr::Cast { ty, expr } => {
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    s.push_str(".(");
+                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    s.push(')');
                 }
 
                 Expr::Ref { mutable, expr } => {
@@ -2354,7 +2600,58 @@ impl Bodies {
                     write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
                 }
 
+                Expr::Switch {
+                    variable_name,
+                    scrutinee,
+                    arms,
+                } => {
+                    s.push_str("switch ");
+                    if let Some(variable_name) = variable_name {
+                        s.push_str(interner.lookup(variable_name.name.0));
+                    } else {
+                        s.push('?');
+                    }
+                    s.push_str(" in ");
+                    write_expr(
+                        s,
+                        *scrutinee,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
+                    s.push_str(" {\n");
+
+                    indentation += 4;
+                    for arm in arms {
+                        s.push_str(&" ".repeat(indentation));
+                        if let Some(variant_name) = arm.variant_name {
+                            s.push_str(interner.lookup(variant_name.name.0));
+                        } else {
+                            s.push('?');
+                        }
+                        s.push_str(" => ");
+                        write_expr(
+                            s,
+                            arm.body,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
+                        s.push_str(",\n");
+                    }
+
+                    indentation -= 4;
+                    s.push_str(&" ".repeat(indentation));
+                    s.push('}');
+                }
+
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
+
+                Expr::SwitchLocal(id) => s.push_str(&format!("s{}", id.into_raw())),
 
                 Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
@@ -2375,7 +2672,9 @@ impl Bodies {
                 Expr::LocalGlobal(name) => s.push_str(interner.lookup(name.name.0)),
 
                 Expr::Member {
-                    previous, field, ..
+                    previous,
+                    name: field,
+                    ..
                 } => {
                     write_expr(
                         s,
@@ -2461,7 +2760,7 @@ impl Bodies {
 
                     s.push_str(".{");
 
-                    for (idx, (name, value)) in members.iter().enumerate() {
+                    for (idx, MemberLiteral { name, value }) in members.iter().enumerate() {
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
                             s.push_str(" = ");
@@ -2490,7 +2789,7 @@ impl Bodies {
                     s.push_str("struct'");
                     s.push_str(&uid.to_string());
                     s.push_str(" {");
-                    for (idx, (name, ty)) in members.iter().enumerate() {
+                    for (idx, MemberDecl { name, ty }) in members.iter().enumerate() {
                         if let Some(name) = name {
                             s.push_str(interner.lookup(name.name.0));
                         } else {
@@ -2499,6 +2798,49 @@ impl Bodies {
                         s.push_str(": ");
                         write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                         if idx != members.len() - 1 {
+                            s.push_str(", ");
+                        }
+                    }
+                    s.push('}');
+                }
+
+                Expr::EnumDecl { uid, variants } => {
+                    s.push_str("enum'");
+                    s.push_str(&uid.to_string());
+                    s.push_str(" {");
+                    for (
+                        idx,
+                        VariantDecl {
+                            name,
+                            uid,
+                            ty,
+                            discriminant,
+                        },
+                    ) in variants.iter().enumerate()
+                    {
+                        if let Some(name) = name {
+                            s.push_str(interner.lookup(name.name.0));
+                        } else {
+                            s.push('?');
+                        }
+                        s.push_str(&format!("'{uid}"));
+                        if let Some(ty) = ty {
+                            s.push_str(": ");
+                            write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                        }
+                        if let Some(discriminant) = discriminant {
+                            s.push_str(" | ");
+                            write_expr(
+                                s,
+                                *discriminant,
+                                show_idx,
+                                bodies,
+                                mod_dir,
+                                interner,
+                                indentation,
+                            );
+                        }
+                        if idx != variants.len() - 1 {
                             s.push_str(", ");
                         }
                     }
@@ -4163,6 +4505,33 @@ mod tests {
                 main::bar :: () {
                     l0 := struct'0 {x: i32, y: str};
                     l1 := l0.{x = 42, y = 5};
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn enums() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = 42;
+                    my_foo : Foo = my_qux;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = 42;
+                    l2 : l0 = l1;
                 };
             "#]],
             |_| [],

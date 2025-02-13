@@ -26,19 +26,22 @@ pub(super) fn parse_ty(
     recovery_set: TokenSet,
 ) -> Option<CompletedMarker> {
     let cm = parse_lhs(p, recovery_set, expected_syntax_name)?;
-    let cm = parse_post_operators(p, recovery_set, cm, true);
+    let cm = parse_post_operators(p, recovery_set, cm, true, true);
 
     let m = cm.precede(p);
     Some(m.complete(p, NodeKind::Ty))
 }
 
+// this is used so that certain postfix operators are applied after prefix operators.
+//
+// notably, this allows `^foo^` to be parsed as `(^foo)^`
 fn parse_expr_for_prefix(
     p: &mut Parser,
     recovery_set: TokenSet,
     expected_syntax_name: &'static str,
 ) -> Option<CompletedMarker> {
     let cm = parse_lhs(p, recovery_set, expected_syntax_name)?;
-    Some(parse_post_operators(p, recovery_set, cm, true))
+    Some(parse_post_operators(p, recovery_set, cm, true, false))
 }
 
 // bp stands for binding power
@@ -52,7 +55,7 @@ fn parse_expr_bp(
     let mut lhs = parse_lhs(p, recovery_set, expected_syntax_name)?;
 
     loop {
-        lhs = parse_post_operators(p, recovery_set, lhs, false);
+        lhs = parse_post_operators(p, recovery_set, lhs, false, false);
 
         let (left_bp, right_bp) = if p.at(TokenKind::DoublePipe) {
             (1, 2)
@@ -140,6 +143,8 @@ fn parse_lhs(
         parse_comptime(p)
     } else if p.at(TokenKind::Struct) {
         parse_struct_decl(p, recovery_set)
+    } else if p.at(TokenKind::Enum) {
+        parse_enum_decl(p, recovery_set)
     } else if p.at_set(PREFIX_TOKENS) {
         parse_prefix_expr(p, recovery_set)
     } else if p.at(TokenKind::If) {
@@ -149,12 +154,16 @@ fn parse_lhs(
         )
     } else if p.at_set(LOOP_TOKENS) {
         parse_loop(p, None, recovery_set)
+    } else if p.at(TokenKind::Switch) {
+        parse_switch(p, recovery_set)
     } else if p.at(TokenKind::LParen) {
         parse_lambda(p, recovery_set)
     } else if p.at(TokenKind::LBrack) {
         parse_array_decl(p, recovery_set)
     } else if p.at(TokenKind::LBrace) {
         parse_block(p, None, recovery_set)
+    } else if p.at(TokenKind::Dot) && p.at_ahead(1, TokenSet::new([TokenKind::LParen])) {
+        parse_cast(p, None, recovery_set)
     } else if p.at(TokenKind::Dot) && p.at_ahead(1, TokenSet::new([TokenKind::LBrack])) {
         parse_array_literal(p, None, recovery_set, None)
     } else if p.at(TokenKind::Dot) && p.at_ahead(1, TokenSet::new([TokenKind::LBrace])) {
@@ -186,12 +195,14 @@ fn parse_lhs(
     Some(cm)
 }
 
-// restrict rhs will not parse post `as` expressions or dereference expressions
+// `no_derefs` disallows `foo^` expressions
+// `no_dot_instantiation` disallows `foo.()`, `foo.{}`, and `foo.[]` expressions
 fn parse_post_operators(
     p: &mut Parser,
     recovery_set: TokenSet,
     cm: CompletedMarker,
-    restrict: bool,
+    no_derefs: bool,
+    no_dot_instantiation: bool,
 ) -> CompletedMarker {
     let mut cm = cm;
 
@@ -254,24 +265,47 @@ fn parse_post_operators(
 
                 cm = call.complete(p, NodeKind::Call);
             }
-            Some(TokenKind::Caret) if !restrict => {
+            Some(TokenKind::Caret) if !no_derefs => {
                 let deref = cm.precede(p);
                 p.bump();
                 cm = deref.complete(p, NodeKind::DerefExpr);
             }
-            Some(TokenKind::As) if !restrict => {
+            // this is included so that old syntax is still correctly parsed
+            // and an error can be reported
+            Some(TokenKind::As) if !no_derefs => {
                 let cast = cm.precede(p);
                 p.bump();
 
                 parse_ty(p, "cast type", recovery_set);
 
                 cm = cast.complete(p, NodeKind::CastExpr);
+
+                let end_token = p.token_idx.saturating_sub(1).max(cm.start_token_idx());
+
+                p.mark_old_error(
+                    NodeKind::CastExpr,
+                    cm.start_token_idx(),
+                    end_token,
+                    crate::ExpectedSyntax::Named("`.( )` cast syntax"),
+                );
             }
             Some(TokenKind::Dot) => {
-                if p.at_ahead(1, TokenSet::new([TokenKind::LBrace])) {
+                if p.at_ahead(1, TokenSet::new([TokenKind::LParen])) {
+                    if no_dot_instantiation {
+                        break;
+                    }
+                    let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
+                    cm = parse_cast(p, Some(ty_cm), recovery_set)
+                } else if p.at_ahead(1, TokenSet::new([TokenKind::LBrace])) {
+                    if no_dot_instantiation {
+                        break;
+                    }
                     let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
                     cm = parse_struct_literal(p, Some(ty_cm), recovery_set)
                 } else if p.at_ahead(1, TokenSet::new([TokenKind::LBrack])) {
+                    if no_dot_instantiation {
+                        break;
+                    }
                     let ty_cm = cm.precede(p).complete(p, NodeKind::Ty);
                     cm = parse_array_literal(p, Some(ty_cm), recovery_set, None)
                 } else {
@@ -506,8 +540,10 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         }
 
         let param_m = p.start();
-        let _guard = p.expected_syntax_name("parameter name");
-        p.expect(TokenKind::Ident);
+        {
+            let _guard = p.expected_syntax_name("parameter name");
+            p.expect(TokenKind::Ident);
+        }
 
         p.expect_with_no_skip(TokenKind::Colon);
 
@@ -575,6 +611,42 @@ fn parse_paren(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     p.expect_with_no_skip(TokenKind::RParen);
     m.complete(p, NodeKind::ParenExpr)
+}
+
+fn parse_cast(
+    p: &mut Parser,
+    previous_ty: Option<CompletedMarker>,
+    recovery_set: TokenSet,
+) -> CompletedMarker {
+    if let Some(previous_ty) = previous_ty {
+        assert_eq!(previous_ty.kind(), NodeKind::Ty);
+    } else {
+        let _guard = p.expected_syntax_name("type");
+        p.error_with_no_skip();
+    }
+
+    let at_dot = p.at(TokenKind::Dot);
+    let next_paren = p.at_ahead(1, TokenSet::new([TokenKind::LParen]));
+
+    assert!(at_dot && next_paren);
+
+    let m = previous_ty
+        .map(|ty| ty.precede(p))
+        .unwrap_or_else(|| p.start());
+
+    // we already asserted before, so this is safe
+    p.bump();
+    p.bump();
+
+    parse_expr_with_recovery_set(
+        p,
+        "cast value",
+        recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RParen])),
+    );
+
+    p.expect_with_recovery_set(TokenKind::RParen, recovery_set);
+
+    m.complete(p, NodeKind::CastExpr)
 }
 
 fn parse_struct_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
@@ -687,6 +759,65 @@ fn parse_struct_literal(
     m.complete(p, NodeKind::StructLiteral)
 }
 
+fn parse_enum_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    assert!(p.at(TokenKind::Enum));
+
+    let m = p.start();
+
+    p.bump();
+
+    if p.at(TokenKind::LBrace) {
+        p.bump();
+    } else {
+        let _guard = p.expected_syntax_name("enum body");
+        p.error_with_recovery_set(recovery_set);
+
+        return m.complete(p, NodeKind::EnumDecl);
+    }
+
+    loop {
+        if p.at(TokenKind::RBrace) {
+            break;
+        }
+
+        let variant_m = p.start();
+        let _guard = p.expected_syntax_name("variant name");
+        p.expect(TokenKind::Ident);
+
+        if p.at(TokenKind::Colon) {
+            p.bump();
+
+            parse_ty(
+                p,
+                "variant type",
+                recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RBrace])),
+            );
+        }
+
+        if p.at(TokenKind::Pipe) {
+            let discriminant_m = p.start();
+            p.bump();
+
+            parse_expr(p, "custom discriminant");
+
+            discriminant_m.complete(p, NodeKind::Discriminant);
+        }
+
+        variant_m.complete(p, NodeKind::VariantDecl);
+
+        if p.at_eof() || p.at_default_recovery_set() {
+            break;
+        }
+
+        if !p.at(TokenKind::RBrace) {
+            p.expect_with_no_skip(TokenKind::Comma);
+        }
+    }
+    p.expect(TokenKind::RBrace);
+
+    m.complete(p, NodeKind::EnumDecl)
+}
+
 /// `array_decl` is ONLY used by `parse_array_decl` to pass it's previously created marker.
 /// This allows the array literal to completely replace the array declaration.
 ///
@@ -774,7 +905,7 @@ fn parse_array_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         recovery_set.union(TokenSet::new([TokenKind::LBrace])),
     );
 
-    // someone is using the wrong syntax
+    // make sure someone isn't using the wrong syntax
     match ty {
         Some(ty) if !recovery_set.contains(TokenKind::LBrace) && p.at(TokenKind::LBrace) => {
             p.mark_old_error(
@@ -785,7 +916,19 @@ fn parse_array_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
             );
             parse_array_literal(p, Some(ty), recovery_set, Some(array))
         }
-        _ => array.complete(p, NodeKind::ArrayDecl),
+        _ => {
+            let array_decl = array.complete(p, NodeKind::ArrayDecl);
+
+            if !recovery_set.contains(TokenKind::LParen)
+                && p.at(TokenKind::Dot)
+                && p.at_ahead(1, TokenSet::new([TokenKind::LParen]))
+            {
+                let array_ty = array_decl.precede(p).complete(p, NodeKind::Ty);
+                parse_cast(p, Some(array_ty), recovery_set)
+            } else {
+                array_decl
+            }
+        }
     }
 }
 
@@ -866,6 +1009,71 @@ fn parse_loop(
     }
 
     m.complete(p, NodeKind::WhileExpr)
+}
+
+fn parse_switch(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    assert!(p.at(TokenKind::Switch));
+
+    let m = p.start();
+    p.bump();
+
+    if p.at(TokenKind::Ident)
+        && (p.at_ahead(1, TokenSet::new([TokenKind::In])) || p.at_eof_ahead(1))
+    {
+        // todo: pick better syntax name
+        let _guard = p.expected_syntax_name("switch parameter name");
+        p.expect(TokenKind::Ident);
+
+        p.expect_with_recovery_set(
+            TokenKind::In,
+            recovery_set.union(TokenSet::new([TokenKind::LBrace])),
+        );
+    }
+
+    // todo: pick better syntax name
+    parse_expr_with_recovery_set(
+        p,
+        "enum value",
+        recovery_set.union(TokenSet::new([TokenKind::LBrace])),
+    );
+
+    if p.at(TokenKind::LBrace) {
+        p.bump();
+
+        loop {
+            if p.at(TokenKind::RBrace) {
+                break;
+            }
+
+            let arm_m = p.start();
+            {
+                let _guard = p.expected_syntax_name("enum variant name");
+                p.expect(TokenKind::Ident);
+            }
+
+            p.expect_with_no_skip(TokenKind::FatArrow);
+
+            let at_lbrace = p.at(TokenKind::LBrace);
+            parse_expr_with_recovery_set(p, "switch arm", recovery_set);
+
+            arm_m.complete(p, NodeKind::SwitchArm);
+
+            if p.at_eof() || p.at_default_recovery_set() {
+                break;
+            }
+
+            if (at_lbrace && p.at(TokenKind::Comma)) || (!at_lbrace && !p.at(TokenKind::RBrace)) {
+                p.expect_with_no_skip(TokenKind::Comma);
+            }
+        }
+
+        p.expect_with_recovery_set(TokenKind::RBrace, recovery_set);
+    } else {
+        let _guard = p.expected_syntax_name("switch body");
+        p.error_with_recovery_set(recovery_set);
+    }
+
+    m.complete(p, NodeKind::SwitchExpr)
 }
 
 fn parse_comptime(p: &mut Parser) -> CompletedMarker {

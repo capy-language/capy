@@ -16,9 +16,9 @@ label_two :: (label1: str, val1: core.Any, label2: str, val2: core.Any) {
 get_user_input :: () -> i32 {
     buffer := char.['\0', '\0', '\0', '\0', '\0'];
 
-    core.libc.read(core.libc.stdin, ^mut buffer as ^mut any as ^mut u8, 2);
+    core.libc.read(core.libc.stdin, (^mut u8).((^mut any).(^mut buffer)), 2);
 
-    len := core.str_len(buffer as str) as isize;
+    len := isize.(core.str_len(str.(buffer)));
 
     idx := 0;
     while idx < buffer.len {
@@ -29,7 +29,7 @@ get_user_input :: () -> i32 {
     idx := 0;
 
     `main_loop while idx < buffer.len {
-        ch := buffer[idx as usize];
+        ch := buffer[usize.(idx)];
 
         digit := if ch == '0' {
             0

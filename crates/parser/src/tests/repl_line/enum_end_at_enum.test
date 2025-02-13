@@ -1,0 +1,7 @@
+enum
+===
+Root@0..4
+  ExprStmt@0..4
+    EnumDecl@0..4
+      Enum@0..4 "enum"
+error at 4: missing enum body

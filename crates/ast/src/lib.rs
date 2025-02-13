@@ -394,6 +394,7 @@ def_multi_node! {
     StringLiteral -> StringLiteral
     StructDecl -> StructDecl
     StructLiteral -> StructLiteral
+    EnumDecl -> EnumDecl
     ArrayDecl -> ArrayDecl
     ArrayLiteral -> ArrayLiteral
     IndexExpr -> IndexExpr
@@ -404,6 +405,7 @@ def_multi_node! {
     Block -> Block
     If -> IfExpr
     While -> WhileExpr
+    Switch -> SwitchExpr
     Distinct -> Distinct
     Lambda -> Lambda
     Import -> ImportExpr
@@ -431,11 +433,11 @@ impl BinaryExpr {
 def_ast_node!(CastExpr);
 
 impl CastExpr {
-    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
 
-    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
 }
@@ -532,6 +534,34 @@ impl WhileExpr {
     }
 }
 
+def_ast_node!(SwitchExpr);
+
+impl SwitchExpr {
+    pub fn variable_name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn scrutinee(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+
+    pub fn arms(self, tree: &SyntaxTree) -> impl Iterator<Item = SwitchArm> + '_ {
+        nodes(self, tree)
+    }
+}
+
+def_ast_node!(SwitchArm);
+
+impl SwitchArm {
+    pub fn variant_name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn body(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
 def_ast_node!(LabelDecl);
 
 impl LabelDecl {
@@ -595,6 +625,38 @@ impl MemberLiteral {
         token(self, tree)
     }
 
+    pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(EnumDecl);
+
+impl EnumDecl {
+    pub fn variants(self, tree: &SyntaxTree) -> impl Iterator<Item = VariantDecl> + '_ {
+        nodes(self, tree)
+    }
+}
+
+def_ast_node!(VariantDecl);
+
+impl VariantDecl {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+
+    pub fn discriminant(self, tree: &SyntaxTree) -> Option<Discriminant> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(Discriminant);
+
+impl Discriminant {
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
@@ -2235,6 +2297,61 @@ mod tests {
     }
 
     #[test]
+    fn enum_decl_get_variants() {
+        let (tree, root) = parse("enum { Ok, Hello | 1 + 2, Err: i32, Print: str | 42 };");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let enum_decl = match expr {
+            Some(Expr::EnumDecl(enum_decl)) => enum_decl,
+            _ => unreachable!(),
+        };
+
+        let mut variants = enum_decl.variants(&tree);
+
+        let variant = variants.next();
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().name(&tree).unwrap().text(&tree), "Ok");
+        assert_eq!(variant.unwrap().ty(&tree), None);
+        assert_eq!(variant.unwrap().discriminant(&tree), None);
+
+        let variant = variants.next();
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().name(&tree).unwrap().text(&tree), "Hello");
+        assert_eq!(variant.unwrap().ty(&tree), None);
+        assert!(matches!(
+            variant.unwrap().discriminant(&tree).unwrap().value(&tree),
+            Some(Expr::Binary { .. })
+        ));
+
+        let variant = variants.next();
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().name(&tree).unwrap().text(&tree), "Err");
+        assert_eq!(variant.unwrap().ty(&tree).unwrap().text(&tree), "i32");
+        assert_eq!(variant.unwrap().discriminant(&tree), None);
+
+        let variant = variants.next();
+        assert!(variant.is_some());
+        assert_eq!(variant.unwrap().name(&tree).unwrap().text(&tree), "Print");
+        assert_eq!(variant.unwrap().ty(&tree).unwrap().text(&tree), "str");
+        assert_eq!(
+            variant
+                .unwrap()
+                .discriminant(&tree)
+                .unwrap()
+                .value(&tree)
+                .unwrap()
+                .text(&tree),
+            "42"
+        );
+
+        assert!(variants.next().is_none());
+    }
+
+    #[test]
     fn anonymous_struct_literal() {
         let (tree, root) = parse(r#".{ a = true, b = 0.0, c = 'z' };"#);
         let statement = root.stmts(&tree).next().unwrap();
@@ -2331,5 +2448,69 @@ mod tests {
         };
 
         assert_eq!(binary.text(&tree), "2 + 2");
+    }
+
+    #[test]
+    fn cast() {
+        let (tree, root) = parse("u32.(4.2)");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let cast_expr = match expr {
+            Some(Expr::Cast(cast_expr)) => cast_expr,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            cast_expr
+                .ty(&tree)
+                .unwrap()
+                .expr(&tree)
+                .unwrap()
+                .text(&tree),
+            "u32"
+        );
+        assert_eq!(cast_expr.expr(&tree).unwrap().text(&tree), "4.2");
+    }
+
+    #[test]
+    fn switch() {
+        let (tree, root) =
+            parse("switch foo in bar { Cow => 5, Pig => \"hello\", Chicken => foo }");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let switch_expr = match expr {
+            Some(Expr::Switch(switch_expr)) => switch_expr,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(switch_expr.variable_name(&tree).unwrap().text(&tree), "foo");
+        assert_eq!(switch_expr.scrutinee(&tree).unwrap().text(&tree), "bar");
+
+        let mut switch_arms = switch_expr.arms(&tree);
+
+        let arm = switch_arms.next().unwrap();
+        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Cow");
+        assert_eq!(arm.body(&tree).unwrap().text(&tree), "5");
+        assert!(matches!(arm.body(&tree).unwrap(), Expr::IntLiteral(_)));
+
+        let arm = switch_arms.next().unwrap();
+        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Pig");
+        assert_eq!(arm.body(&tree).unwrap().text(&tree), "\"hello\"");
+        assert!(matches!(arm.body(&tree).unwrap(), Expr::StringLiteral(_)));
+
+        let arm = switch_arms.next().unwrap();
+        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Chicken");
+        assert_eq!(arm.body(&tree).unwrap().text(&tree), "foo");
+        assert!(matches!(arm.body(&tree).unwrap(), Expr::VarRef(_)));
+
+        assert!(switch_arms.next().is_none());
     }
 }

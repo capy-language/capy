@@ -1,0 +1,21 @@
+enum {
+    MyCoolVariant | 42
+}
+===
+Root@0..31
+  ExprStmt@0..31
+    EnumDecl@0..31
+      Enum@0..4 "enum"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      Whitespace@6..11 "\n    "
+      VariantDecl@11..29
+        Ident@11..24 "MyCoolVariant"
+        Whitespace@24..25 " "
+        Discriminant@25..29
+          Pipe@25..26 "|"
+          Whitespace@26..27 " "
+          IntLiteral@27..29
+            Int@27..29 "42"
+      Whitespace@29..30 "\n"
+      RBrace@30..31 "}"

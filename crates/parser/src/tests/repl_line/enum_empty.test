@@ -1,0 +1,10 @@
+enum {};
+===
+Root@0..8
+  ExprStmt@0..8
+    EnumDecl@0..7
+      Enum@0..4 "enum"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      RBrace@6..7 "}"
+    Semicolon@7..8 ";"

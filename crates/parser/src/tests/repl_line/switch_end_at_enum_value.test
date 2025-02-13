@@ -1,0 +1,14 @@
+switch foo in bar
+===
+Root@0..17
+  ExprStmt@0..17
+    SwitchExpr@0..17
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..17
+        Ident@14..17 "bar"
+error at 17: missing switch body

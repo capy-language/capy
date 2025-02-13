@@ -1,0 +1,11 @@
+switch foo
+===
+Root@0..10
+  ExprStmt@0..10
+    SwitchExpr@0..10
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+error at 10: missing In
+error at 10: missing enum value
+error at 10: missing switch body

@@ -2,8 +2,17 @@ mod git;
 mod source;
 
 use std::{
-    cell::RefCell, env, ffi::CString, io, mem, panic::AssertUnwindSafe, path::PathBuf,
-    process::exit, rc::Rc, str::FromStr, time::Instant,
+    cell::RefCell,
+    env,
+    ffi::CString,
+    io::{self, Write},
+    mem,
+    panic::AssertUnwindSafe,
+    path::PathBuf,
+    process::exit,
+    rc::Rc,
+    str::FromStr,
+    time::Instant,
 };
 
 use clap::{Parser, Subcommand};
@@ -135,7 +144,7 @@ macro_rules! create_build_action {
 #[command(name = "Capy Programming Language")]
 #[command(author = "NotAFlyingGoose <notaflyinggoose@gmail.com>")]
 #[command(version)]
-#[command(about = "A Cool Programming Language", long_about = None)]
+#[command(about = "A statically typed, compiled programming language, largely inspired by Jai, Odin, and Zig", long_about = None)]
 struct CLIConfig {
     #[command(subcommand)]
     action: CLIAction,
@@ -189,6 +198,10 @@ create_build_action! {
         /// Shows all available advanced compiler information.
         #[arg(long)]
         verbose_all: bool,
+
+        /// Will skip building the final executable binary and only output a .o file
+        #[arg(long)]
+        no_exec: bool,
 
         /// Libraries to link against.
         /// This literally works by passing the args to gcc with "-l"
@@ -731,7 +744,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         exit(1);
     });
 
-    if target != Triple::host() {
+    if target != Triple::host() || config.no_exec {
         println!(
             "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
             object_file.display(),
@@ -741,13 +754,36 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         return Ok(());
     }
 
-    let exec = codegen::link_to_exec(&object_file, target, &config.libs);
-    println!(
-        "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
-        output,
-        exec.display(),
-        compilation_start.elapsed().as_secs_f32(),
-    );
+    let exec = match codegen::link_to_exec(&object_file, target, &config.libs) {
+        Ok(exec) => {
+            println!(
+                "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
+                output,
+                exec.display(),
+                compilation_start.elapsed().as_secs_f32(),
+            );
+            exec
+        }
+        Err(codegen::LinkingErr::NoCommand) => {
+            println!("{ansi_red}error{ansi_white}: capy requires either `zig` or `gcc` in order to link to an executable. use --no-exec if you only want the .o file");
+            exit(1)
+        }
+        Err(codegen::LinkingErr::IO(why)) => {
+            println!("{ansi_red}error{ansi_white}: while trying to build the executable:\n{why}");
+            exit(1)
+        }
+        Err(codegen::LinkingErr::CmdFailed { cmd_name, output }) => {
+            println!("{cmd_name} stdout:");
+            std::io::stdout().write_all(&output.stdout).unwrap();
+            println!("{cmd_name} stderr:");
+            std::io::stdout().write_all(&output.stderr).unwrap();
+            println!(
+                "{ansi_red}error{ansi_white}: {cmd_name} failed! ({})",
+                output.status
+            );
+            exit(1)
+        }
+    };
 
     if !config.should_run() {
         return Ok(());

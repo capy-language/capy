@@ -1,0 +1,21 @@
+enum {
+    WhatsUp: i32,
+}
+===
+Root@0..26
+  ExprStmt@0..26
+    EnumDecl@0..26
+      Enum@0..4 "enum"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      Whitespace@6..11 "\n    "
+      VariantDecl@11..23
+        Ident@11..18 "WhatsUp"
+        Colon@18..19 ":"
+        Whitespace@19..20 " "
+        Ty@20..23
+          VarRef@20..23
+            Ident@20..23 "i32"
+      Comma@23..24 ","
+      Whitespace@24..25 "\n"
+      RBrace@25..26 "}"

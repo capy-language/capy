@@ -12,6 +12,8 @@ pub(crate) enum BuiltinGlobal {
     ArrayLayouts,
     DistinctLayouts,
     StructLayouts,
+    EnumLayouts,
+    VariantLayouts,
 
     /// a single slice for the size/align of usize
     PointerLayout,
@@ -22,6 +24,8 @@ pub(crate) enum BuiltinGlobal {
     PointerInfo,
     DistinctInfo,
     StructInfo,
+    EnumInfo,
+    VariantInfo,
 
     /// misc.
     CommandlineArgs,
@@ -70,7 +74,7 @@ pub(crate) fn as_compiler_defined_global(
     let is_core = fqn
         .file
         .get_mod_name(mod_dir, interner)
-        .map_or(false, |n| n == "core");
+        .is_some_and(|n| n == "core");
 
     if !is_core {
         return None;
@@ -87,12 +91,19 @@ pub(crate) fn as_compiler_defined_global(
         ("meta.capy", "array_layouts") => BuiltinGlobal::ArrayLayouts,
         ("meta.capy", "distinct_layouts") => BuiltinGlobal::DistinctLayouts,
         ("meta.capy", "struct_layouts") => BuiltinGlobal::StructLayouts,
+        ("meta.capy", "enum_layouts") => BuiltinGlobal::EnumLayouts,
+        ("meta.capy", "variant_layouts") => BuiltinGlobal::VariantLayouts,
+
         ("meta.capy", "pointer_layout") => BuiltinGlobal::PointerLayout,
+
         ("meta.capy", "array_infos") => BuiltinGlobal::ArrayInfo,
         ("meta.capy", "slice_infos") => BuiltinGlobal::SliceInfo,
         ("meta.capy", "pointer_infos") => BuiltinGlobal::PointerInfo,
         ("meta.capy", "distinct_infos") => BuiltinGlobal::DistinctInfo,
         ("meta.capy", "struct_infos") => BuiltinGlobal::StructInfo,
+        ("meta.capy", "enum_infos") => BuiltinGlobal::EnumInfo,
+        ("meta.capy", "variant_infos") => BuiltinGlobal::VariantInfo,
+
         ("mod.capy", "args") => BuiltinGlobal::CommandlineArgs,
         _ => return None,
     })
@@ -120,7 +131,7 @@ pub(crate) fn as_compiler_defined_func(
     let is_core = fqn
         .file
         .get_mod_name(mod_dir, interner)
-        .map_or(false, |n| n == "core");
+        .is_some_and(|n| n == "core");
 
     if !is_core {
         return None;

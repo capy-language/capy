@@ -1,0 +1,19 @@
+switch foo.calculate_enum() {}
+===
+Root@0..30
+  ExprStmt@0..30
+    SwitchExpr@0..30
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Call@7..27
+        Path@7..25
+          VarRef@7..10
+            Ident@7..10 "foo"
+          Dot@10..11 "."
+          Ident@11..25 "calculate_enum"
+        ArgList@25..27
+          LParen@25..26 "("
+          RParen@26..27 ")"
+      Whitespace@27..28 " "
+      LBrace@28..29 "{"
+      RBrace@29..30 "}"

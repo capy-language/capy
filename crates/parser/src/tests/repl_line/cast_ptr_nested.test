@@ -1,0 +1,40 @@
+^foo.(^bar.(^baz.(^qux)))
+// todo: maybe change this behavior
+===
+Root@0..61
+  ExprStmt@0..25
+    RefExpr@0..25
+      Caret@0..1 "^"
+      CastExpr@1..25
+        Ty@1..4
+          VarRef@1..4
+            Ident@1..4 "foo"
+        Dot@4..5 "."
+        LParen@5..6 "("
+        RefExpr@6..24
+          Caret@6..7 "^"
+          CastExpr@7..24
+            Ty@7..10
+              VarRef@7..10
+                Ident@7..10 "bar"
+            Dot@10..11 "."
+            LParen@11..12 "("
+            RefExpr@12..23
+              Caret@12..13 "^"
+              CastExpr@13..23
+                Ty@13..16
+                  VarRef@13..16
+                    Ident@13..16 "baz"
+                Dot@16..17 "."
+                LParen@17..18 "("
+                RefExpr@18..22
+                  Caret@18..19 "^"
+                  VarRef@19..22
+                    Ident@19..22 "qux"
+                RParen@22..23 ")"
+            RParen@23..24 ")"
+        RParen@24..25 ")"
+  Whitespace@25..26 "\n"
+  Comment@26..61
+    CommentLeader@26..28 "//"
+    CommentContents@28..61 " todo: maybe change this behavior"

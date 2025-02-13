@@ -1,0 +1,8 @@
+switch
+===
+Root@0..6
+  ExprStmt@0..6
+    SwitchExpr@0..6
+      Switch@0..6 "switch"
+error at 6: missing enum value
+error at 6: missing switch body

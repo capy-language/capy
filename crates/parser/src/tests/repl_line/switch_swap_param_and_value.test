@@ -1,0 +1,35 @@
+switch foo.get_enum() in bar {}
+// todo: maybe change this behavior
+===
+Root@0..67
+  ExprStmt@0..24
+    SwitchExpr@0..24
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Call@7..21
+        Path@7..19
+          VarRef@7..10
+            Ident@7..10 "foo"
+          Dot@10..11 "."
+          Ident@11..19 "get_enum"
+        ArgList@19..21
+          LParen@19..20 "("
+          RParen@20..21 ")"
+      Whitespace@21..22 " "
+      Error@22..24
+        In@22..24 "in"
+  Whitespace@24..25 " "
+  ExprStmt@25..31
+    StructLiteral@25..31
+      Ty@25..28
+        VarRef@25..28
+          Ident@25..28 "bar"
+      Whitespace@28..29 " "
+      LBrace@29..30 "{"
+      RBrace@30..31 "}"
+  Whitespace@31..32 "\n"
+  Comment@32..67
+    CommentLeader@32..34 "//"
+    CommentContents@34..67 " todo: maybe change this behavior"
+error at 22..24: expected switch body but found In
+error at 28: missing Dot

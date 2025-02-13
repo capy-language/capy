@@ -1,0 +1,10 @@
+enum{
+===
+Root@0..5
+  ExprStmt@0..5
+    EnumDecl@0..5
+      Enum@0..4 "enum"
+      LBrace@4..5 "{"
+      VariantDecl@5..5
+error at 5: missing variant name
+error at 5: missing RBrace

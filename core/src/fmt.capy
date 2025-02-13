@@ -13,7 +13,7 @@ i64_to_string :: (n: i64) -> StringBuilder {
     // idk man i'm just copying rust
     str := string_builder.make_with_capacity(39);
     
-    new_len := _write_i64_to_buf(n, true, str.buf as ^mut any as ^mut u8, 0, 0);
+    new_len := _write_i64_to_buf(n, true, (^mut u8).((^mut any).(str.buf)), 0, 0);
 
     str.len = new_len;
 
@@ -34,10 +34,10 @@ u64_to_string :: (n: u64) -> StringBuilder {
         digits    =  digits - 1;
 
         ptr.write(
-                  str.buf, 
-                  ('0' as u8 + remainder) as u8, 
-                  digits
-                );
+            str.buf,
+            u8.('0') + u8.(remainder),
+            digits
+        );
     }
 
     str
@@ -46,7 +46,7 @@ u64_to_string :: (n: u64) -> StringBuilder {
 f64_to_string :: (n: f64) -> StringBuilder {
     str := string_builder.make_with_capacity(39 * 2 + 1);
 
-    new_len := _write_f64_to_buf(n, str.buf as ^mut any as ^mut u8, 3);
+    new_len := _write_f64_to_buf(n, (^mut u8).((^mut any).(str.buf)), 3);
 
     str.len = new_len;
 
@@ -80,7 +80,7 @@ _write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, req
     }
 
     if n == 0 {
-        ptr.write(buf, '0' as u8, idx);
+        ptr.write(buf, u8.('0'), idx);
         idx = idx + 1;
     }
 
@@ -88,18 +88,18 @@ _write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, req
         remainder := n % 10;
         n = n / 10;
 
-        ptr.write(buf, ('0' as u8 + remainder) as u8, idx);
+        ptr.write(buf, u8.('0') + u8.(remainder), idx);
 
         idx = idx + 1;
     }
 
     while idx - buf_offset < required_digits {
-        ptr.write(buf, '0' as u8, idx);
+        ptr.write(buf, u8.('0'), idx);
         idx = idx + 1;
     }
 
     if is_neg {
-        ptr.write(buf, '-' as u8, idx);
+        ptr.write(buf, u8.('-'), idx);
         idx = idx + 1;
     }
 
@@ -110,37 +110,37 @@ _write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, req
 
 _write_f64_to_buf :: (n: f64, buf: ^mut u8, afterpoint: usize) -> usize {
     if math.is_NaN(n) {
-        ptr.write(buf, 'N' as u8, 0);
-        ptr.write(buf, 'a' as u8, 1);
-        ptr.write(buf, 'N' as u8, 2);
+        ptr.write(buf, u8.('N'), 0);
+        ptr.write(buf, u8.('a'), 1);
+        ptr.write(buf, u8.('N'), 2);
         return 3;
     } else if n == math.positive_inf {
-        ptr.write(buf, '+' as u8, 0);
-        ptr.write(buf, 'I' as u8, 1);
-        ptr.write(buf, 'n' as u8, 2);
-        ptr.write(buf, 'f' as u8, 3);
+        ptr.write(buf, u8.('+'), 0);
+        ptr.write(buf, u8.('I'), 1);
+        ptr.write(buf, u8.('n'), 2);
+        ptr.write(buf, u8.('f'), 3);
         return 4;
     } else if n == math.negative_inf {
-        ptr.write(buf, '-' as u8, 0);
-        ptr.write(buf, 'I' as u8, 1);
-        ptr.write(buf, 'n' as u8, 2);
-        ptr.write(buf, 'f' as u8, 3);
+        ptr.write(buf, u8.('-'), 0);
+        ptr.write(buf, u8.('I'), 1);
+        ptr.write(buf, u8.('n'), 2);
+        ptr.write(buf, u8.('f'), 3);
         return 4;
     }
 
-    ipart := n as i64;
+    ipart := i64.(n);
 
-    fpart := n - ipart as f64;
+    fpart := n - f64.(ipart);
 
     idx := _write_i64_to_buf(ipart, true, buf, 0, 0);
 
     if afterpoint != 0 {
-        ptr.write(buf, '.' as u8, idx);
+        ptr.write(buf, u8.('.'), idx);
 
-        fpart = fpart * math.pow(10, afterpoint as i32) as f64;
+        fpart = fpart * f64.(math.pow(10, i32.(afterpoint)));
 
         // add one for the period
-        idx = _write_i64_to_buf(fpart as i64, false, buf, idx + 1, afterpoint);
+        idx = _write_i64_to_buf(i64.(fpart), false, buf, idx + 1, afterpoint);
     }
 
     idx

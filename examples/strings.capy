@@ -1,7 +1,5 @@
 string_builder :: mod "core".string_builder;
 
-// This example basically shows off a `Vec<char>`
-// When I fully implement Generics, `Vec<_>` will be possible.
 main :: () {
     my_str := string_builder.make();
     defer string_builder.free(^my_str);
@@ -10,8 +8,8 @@ main :: () {
     string_builder.append_char(^mut my_str, 'e');
     string_builder.append_char(^mut my_str, 'l');
     string_builder.append_char(^mut my_str, 'l');
-    string_builder.append_char(^mut my_str, 111 as char); // o
-    string_builder.append_char(^mut my_str, 32 as char); // \s
+    string_builder.append_char(^mut my_str, char.(111)); // o
+    string_builder.append_char(^mut my_str, char.(32)); // \s
     string_builder.append_str(^mut my_str, "World");
     string_builder.append_char(^mut my_str, '!');
     string_builder.append_char(^mut my_str, '\n');

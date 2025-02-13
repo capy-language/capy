@@ -1,0 +1,80 @@
+
+core :: mod "core";
+
+Animal :: enum {
+    Dog: str,
+    Cat,
+    Fish: i32, // maybe this is the fish's age or something
+    Cow,
+    Chicken | 20,
+    Sheep: struct {
+        name: str,
+        wool_amount: f32,
+        fullness: f32,
+    },
+    Pig,
+};
+
+main :: () {
+    do_animal_stuff(Animal.Dog.("George"));
+    // todo: possibly make void variants easier to instantiate
+    do_animal_stuff(Animal.Cat.(()));
+    do_animal_stuff(Animal.Fish.(1000));
+    do_animal_stuff(Animal.Cow.(()));
+    do_animal_stuff(Animal.Chicken.(()));
+    do_animal_stuff(Animal.Sheep.{
+        name = "hello",
+        wool_amount = 1.0,
+        fullness = 0.5,
+    });
+    do_animal_stuff(Animal.Pig.(()));
+}
+
+do_animal_stuff :: (animal: Animal) {
+    num := animal_to_num(animal);
+
+    core.print("[");
+    core.print(num);
+    core.print("] ");
+
+    switch a in animal {
+        Cat => core.print("cat!"),
+        Dog => {
+            core.print("dog: ");
+            core.print(a);
+        },
+        Fish => {
+            core.print("it was a fish (age = ");
+            core.print(a);
+            core.print(")");
+        },
+        Cow => core.print("cow!!!"),
+        Chicken => core.print("chicken >>>"),
+        Pig => core.print("oink oink"),
+        Sheep => {
+            core.print("sheep: ");
+            core.print(a.name);
+            core.print(", wool: ");
+            core.print(a.wool_amount);
+            core.print(", fullness: ");
+            core.print(a.fullness);
+        },
+    }
+
+    core.println("");
+}
+
+animal_to_num :: (animal: Animal) -> u16 {
+    num := switch animal {
+        Cat => 100,
+        Dog => 200,
+        Fish => 300,
+        Cow => 400,
+        Chicken => 500,
+        Pig => 600,
+        Sheep => 700,
+    };
+
+    num
+}
+

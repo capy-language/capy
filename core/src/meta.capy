@@ -2,23 +2,20 @@
 core :: mod "core";
 
 // returns the underlying bit representation of the type id.
-// builtin
-meta_to_raw :: (ty: type) -> u32 extern;
+meta_to_raw :: (ty: type) -> u32 extern; // builtin
 
 Layout :: struct {
     size: usize,
     align: usize,
 };
 
-// builtin
-array_layouts : [] Layout : extern;
-// builtin
-distinct_layouts : [] Layout : extern;
-// builtin
-struct_layouts : [] Layout : extern;
+array_layouts : [] Layout : extern; // builtin
+distinct_layouts : [] Layout : extern; // builtin
+struct_layouts : [] Layout : extern; // builtin
+enum_layouts : [] Layout : extern; // builtin
+variant_layouts : [] Layout : extern; // builtin
 
-// builtin
-pointer_layout : Layout : extern;
+pointer_layout : Layout : extern; // builtin
 
 // The amount of space a type takes up in memory.
 //
@@ -58,23 +55,29 @@ size_of :: (ty: type) -> usize {
     // (they contain all relevant information as bit flags)
     if discriminant < 16 {
         // the first 5 bits in a simple type id are the size
-        (ty & 0b11111) as usize
+        usize.(ty & 0b11111)
     } else {
         // about 5 types have complex id's
         // (they contain only a discriminant and an index)
 
-        layouts := if discriminant == 16 {
+        layouts := if discriminant == struct_discriminant {
             struct_layouts
-        } else if discriminant == 17 {
+        } else if discriminant == distinct_discriminant {
             distinct_layouts
-        } else if discriminant == 18 {
+        } else if discriminant == enum_discriminant {
+            enum_layouts
+        } else if discriminant == variant_discriminant {
+            variant_layouts
+        } else if discriminant == array_discriminant {
             array_layouts
-        } else if discriminant == 19 {
-            // slice
+        } else if discriminant == slice_discriminant {
             return pointer_layout.size * 2;
         } else {
-            // it must be either a pointer, or a function
-            // either way, the size is the same
+            core.assert(
+                discriminant == pointer_discriminant ||
+                discriminant == function_discriminant
+            );
+            // the size is the same for both of these types
             return pointer_layout.size;
         };
 
@@ -117,7 +120,7 @@ size_of :: (ty: type) -> usize {
 // So when allocating space for arrays/buffers, allocate n * stride_of(T).
 stride_of :: (ty: type) -> usize {
     mask := align_of(ty) - 1;
-    {size_of(ty) + mask} &~ mask
+    (size_of(ty) + mask) &~ mask
 }
 
 // Most types must appear in addresses that are a multiple of a certain "alignment".
@@ -159,9 +162,9 @@ stride_of :: (ty: type) -> usize {
 //        |
 //        \  padding here
 //
-// As you can see, `b` now starts at address 2, which is a multiple of it's alignment (2).
+// As you can see, `b` now starts at address 2, which is a multiple of its alignment (2).
 //
-// The alignment of a struct is the largest alignment of all it's fields
+// The alignment of a struct is the largest alignment of all its fields
 //
 // struct {
 //     a: i64, // 8 bytes (align = 8)
@@ -181,20 +184,28 @@ align_of :: (ty: type) -> usize {
     // (they contain all relevant information as bit flags)
     if discriminant < 16 {
         // the second 4 bits in a simple type id are the alignment
-        ((ty >> 5) & 0b1111) as usize
+        usize.((ty >> 5) & 0b1111)
     } else {
         // about 5 types have complex id's
         // (they contain only a discriminant and an index)
 
-        layouts := if discriminant == 16 {
+        layouts := if discriminant == struct_discriminant {
             struct_layouts
-        } else if discriminant == 17 {
+        } else if discriminant == distinct_discriminant {
             distinct_layouts
-        } else if discriminant == 18 {
+        } else if discriminant == enum_discriminant {
+            enum_layouts
+        } else if discriminant == variant_discriminant {
+            variant_layouts
+        } else if discriminant == array_discriminant {
             array_layouts
         } else {
-            // it must be either a slice, pointer, or function
-            // either way, the align is the same
+            core.assert(
+                discriminant == slice_discriminant ||
+                discriminant == pointer_discriminant ||
+                discriminant == function_discriminant
+            );
+            // the align is the same for both of these types
             return pointer_layout.align;
         };
 
@@ -232,9 +243,9 @@ get_int_info :: (ty: type) -> Int_Info {
 
     Int_Info.{
         // the first five bits is the size in bytes
-        bit_width = ((raw & 0b11111) * 8) as u8,
+        bit_width = u8.((raw & 0b11111) * 8),
         // the ninth bit is the sign flag
-        signed = ((raw >> 9) & 1) as bool,
+        signed = bool.((raw >> 9) & 1),
     }
 }
 
@@ -262,7 +273,7 @@ get_float_info :: (ty: type) -> Float_Info {
 
     Float_Info.{
         // the first five bits is the size in bytes
-        bit_width = ((raw & 0b11111) * 8) as u8,
+        bit_width = u8.((raw & 0b11111) * 8),
     }
 }
 
@@ -298,7 +309,7 @@ is_char :: (ty: type) -> bool {
 
 array_discriminant : u32 : 18;
 
-array_infos : [] Array_Info : extern;
+array_infos : [] Array_Info : extern; // builtin
 
 Array_Info :: struct {
     len: usize,
@@ -331,7 +342,7 @@ get_array_info :: (ty: type) -> Array_Info {
 
 slice_discriminant : u32 : 19;
 
-slice_infos : [] Slice_Info : extern;
+slice_infos : [] Slice_Info : extern; // builtin
 
 Slice_Info :: struct {
     ty: type,
@@ -361,7 +372,7 @@ get_slice_info :: (ty: type) -> Slice_Info {
 
 pointer_discriminant : u32 : 20;
 
-pointer_infos : [] Pointer_Info : extern;
+pointer_infos : [] Pointer_Info : extern; // builtin
 
 Pointer_Info :: struct {
     ty: type,
@@ -389,14 +400,14 @@ get_pointer_info :: (ty: type) -> Pointer_Info {
 // `distinct bool`
 // ...
 //
-// The distinct, A unique type with the same underlying semantics of it's sub-type
+// The distinct, A unique type with the same underlying semantics of its sub-type
 
 distinct_discriminant : u32 : 17;
 
-distinct_infos : [] Distinct_Info : extern;
+distinct_infos : [] Distinct_Info : extern; // builtin
 
 Distinct_Info :: struct {
-    ty: type,
+    sub_ty: type,
 };
 
 is_distinct :: (ty: type) -> bool {
@@ -470,7 +481,7 @@ is_function :: (ty: type) -> bool {
 
 struct_discriminant : u32 : 16;
 
-struct_infos : [] Struct_Info : extern;
+struct_infos : [] Struct_Info : extern; // builtin
 
 Struct_Info :: struct {
     members: [] Member_Info,
@@ -508,4 +519,72 @@ void_discriminant : u32 : 1;
 
 is_void :: (ty: type) -> bool {
     meta_to_raw(ty) >> 26 == void_discriminant
+}
+
+// `enum { Foo, Bar }`
+// `enum { Number: i32, Text: str, Condition: bool }`
+// ...
+
+enum_discriminant : u32 : 22;
+
+enum_infos : [] Enum_Info : extern; // builtin
+
+Enum_Info :: struct {
+    variants: []type,
+    discriminant_offset: usize,
+};
+
+is_enum :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == enum_discriminant
+}
+
+get_enum_info :: (ty: type) -> Enum_Info {
+    raw := meta_to_raw(ty);
+
+    core.assert_with(
+        raw >> 26 == enum_discriminant,
+        "called `get_enum_info` on non-enum",
+    );
+
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
+
+    enum_infos[idx]
+}
+
+// `enum { Foo, Bar }`
+// `enum { Number: i32, Text: str, Condition: bool }`
+// ...
+// 
+// `Foo`, `Bar`, `Number`, etc. are actually their own unique types,
+// very similar to distinct types. They have the same underlying
+// semantics of their sub-type.
+//
+// Unlike a regular distinct type, enum variants also contain info about the discriminant
+
+variant_discriminant : u32 : 23;
+
+variant_infos : [] Variant_Info : extern; // builtin
+
+Variant_Info :: struct {
+    sub_ty: type,
+    discriminant: u32,
+};
+
+is_variant :: (ty: type) -> bool {
+    meta_to_raw(ty) >> 26 == variant_discriminant
+}
+
+get_variant_info :: (ty: type) -> Variant_Info {
+    raw := meta_to_raw(ty);
+
+    core.assert_with(
+        raw >> 26 == variant_discriminant,
+        "called `get_variant_info` on non-variant",
+    );
+
+    // removes the discriminant (6 bits)
+    idx := raw &~ (0b111111 << 26);
+
+    variant_infos[idx]
 }

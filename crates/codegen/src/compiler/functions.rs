@@ -2,13 +2,14 @@ use std::collections::VecDeque;
 
 use cranelift::{
     codegen::ir::{Endianness, FuncRef},
+    frontend::Switch,
     prelude::{
         types, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
         StackSlotKind, TrapCode, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use hir::{FQComptime, LocalDef, ScopeId};
+use hir::{FQComptime, LocalDef, ScopeId, SwitchLocal};
 use hir_ty::{ComptimeResult, Ty};
 use interner::Interner;
 use internment::Intern;
@@ -37,6 +38,9 @@ pub(crate) struct DeferFrame {
     id: Option<ScopeId>,
     defers: Vec<Idx<hir::Expr>>,
 }
+
+/// todo: should this be a different number?
+const TRAP_UNREACHABLE: TrapCode = TrapCode::unwrap_user(10);
 
 /// Compiles a Capy function into a Cranelift function.
 ///
@@ -75,6 +79,7 @@ pub(crate) struct FunctionCompiler<'a> {
     // variables
     pub(crate) var_id_gen: UIDGenerator,
     pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
+    pub(crate) switch_locals: FxHashMap<Idx<SwitchLocal>, Value>,
     pub(crate) params: FxHashMap<u64, Variable>,
 
     // for control flow (breaks and continues)
@@ -91,7 +96,6 @@ impl FunctionCompiler<'_> {
         function_body: Idx<hir::Expr>,
         debug_print: bool,
     ) {
-
         fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
@@ -229,7 +233,10 @@ impl FunctionCompiler<'_> {
 
                 return self.expr_to_const_data(file_name, self.world_bodies.body(fqn));
             }
-            hir::Expr::Member { previous, field } => {
+            hir::Expr::Member {
+                previous,
+                name: field,
+            } => {
                 if let Ty::File(file) = self.tys[file_name][previous].as_ref() {
                     let fqn = hir::Fqn {
                         file: *file,
@@ -284,6 +291,18 @@ impl FunctionCompiler<'_> {
                             .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
                             .struct_layout_slice
                     }
+                    builtin::BuiltinGlobal::EnumLayouts => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .enum_layout_slice
+                    }
+                    builtin::BuiltinGlobal::VariantLayouts => {
+                        self.meta_tys
+                            .layout_arrays
+                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                            .variant_layout_slice
+                    }
                     builtin::BuiltinGlobal::PointerLayout => {
                         self.meta_tys
                             .layout_arrays
@@ -319,6 +338,18 @@ impl FunctionCompiler<'_> {
                             .info_arrays
                             .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
                             .struct_info_slice
+                    }
+                    builtin::BuiltinGlobal::EnumInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .enum_info_slice
+                    }
+                    builtin::BuiltinGlobal::VariantInfo => {
+                        self.meta_tys
+                            .info_arrays
+                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                            .variant_info_slice
                     }
                     builtin::BuiltinGlobal::CommandlineArgs => {
                         *self.cmd_args_slice.get_or_insert_with(|| {
@@ -668,12 +699,17 @@ impl FunctionCompiler<'_> {
             Ty::Struct { members, .. } => {
                 let struct_mem = expected_ty.struct_layout().unwrap();
 
-                for (idx, (_, ty)) in members.iter().enumerate() {
+                for (idx, hir_ty::MemberTy { ty, .. }) in members.iter().enumerate() {
                     self.store_default_in_memory(
                         *ty,
                         memory.with_offset(struct_mem.offsets()[idx]),
                     );
                 }
+                return;
+            }
+            Ty::Enum { .. } => unreachable!("enums do not have default values"),
+            Ty::Variant { sub_ty, .. } => {
+                self.store_default_in_memory(*sub_ty, memory);
                 return;
             }
             // void is just a no-op
@@ -723,7 +759,7 @@ impl FunctionCompiler<'_> {
     fn store_struct_fields(
         &mut self,
         struct_ty: Intern<Ty>,
-        field_values: &[(Option<hir::NameWithRange>, Idx<hir::Expr>)],
+        field_values: &[hir::MemberLiteral],
         memory: MemoryLoc,
     ) {
         assert!(struct_ty.is_struct());
@@ -731,16 +767,16 @@ impl FunctionCompiler<'_> {
         let field_tys = struct_ty.as_struct().unwrap();
         let struct_mem = struct_ty.struct_layout().unwrap();
 
-        for (name, value) in field_values {
+        for hir::MemberLiteral { name, value } in field_values {
             let field = field_tys
                 .iter()
                 .enumerate()
-                .find(|(_, f)| f.0 == name.unwrap().name)
+                .find(|(_, defined_field)| defined_field.name == name.unwrap().name)
                 .unwrap();
 
             self.store_expr_in_memory(
                 *value,
-                field.1 .1,
+                field.1.ty,
                 memory.with_offset(struct_mem.offsets()[field.0]),
             );
         }
@@ -912,7 +948,7 @@ impl FunctionCompiler<'_> {
                 self.builder.set_cold_block(bad_index_block);
                 self.builder.seal_block(bad_index_block);
 
-                self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                self.builder.ins().trap(TRAP_UNREACHABLE);
 
                 self.builder.switch_to_block(good_index_block);
                 self.builder.seal_block(good_index_block);
@@ -1283,7 +1319,9 @@ impl FunctionCompiler<'_> {
                         }
                     }
                     hir::Expr::Member {
-                        previous, field, ..
+                        previous,
+                        name: field,
+                        ..
                     } => match &self.tys[self.file_name][previous].as_ref() {
                         Ty::File(file) => {
                             let fqn = hir::Fqn {
@@ -1422,7 +1460,7 @@ impl FunctionCompiler<'_> {
                         // a "final" instruction (a jump or trap). we can't exactly jump to the exit
                         // because we don't have a value with which to jump (and remember the exit
                         // is expecting something non-void). so since it's safe to trap, we just trap.
-                        self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                        self.builder.ins().trap(TRAP_UNREACHABLE);
                     } else {
                         self.builder.ins().jump(exit_block, &[]);
                     }
@@ -1482,7 +1520,7 @@ impl FunctionCompiler<'_> {
                 let body_value = self.compile_expr_with_args(body, no_load);
 
                 if *self.tys[self.file_name][body] == Ty::NoEval {
-                    self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                    self.builder.ins().trap(TRAP_UNREACHABLE);
                 } else {
                     match body_value {
                         Some(then_value) => {
@@ -1503,7 +1541,7 @@ impl FunctionCompiler<'_> {
                     let else_value = self.compile_expr_with_args(else_branch, no_load);
 
                     if *self.tys[self.file_name][else_branch] == Ty::NoEval {
-                        self.builder.ins().trap(TrapCode::UnreachableCodeReached);
+                        self.builder.ins().trap(TRAP_UNREACHABLE);
                     } else {
                         match else_value {
                             Some(then_value) => {
@@ -1580,10 +1618,123 @@ impl FunctionCompiler<'_> {
                     None
                 }
             }
+            hir::Expr::Switch {
+                scrutinee, arms, ..
+            } => {
+                let body_block = self.builder.create_block();
+                let fallback_block = self.builder.create_block();
+                let arm_blocks: FxHashMap<_, _> = arms
+                    .iter()
+                    .map(|arm| {
+                        (
+                            arm.variant_name
+                                .expect("if codegen is running, no names should be `None`")
+                                .name,
+                            (self.builder.create_block(), *arm),
+                        )
+                    })
+                    .collect();
+                let exit_block = self.builder.create_block();
+
+                let enum_ty = self.tys[self.file_name][scrutinee];
+                let Ty::Enum {
+                    variants: variant_tys,
+                    ..
+                } = enum_ty.as_ref()
+                else {
+                    unreachable!("the scrutinee should be an enum")
+                };
+                let enum_layout = enum_ty.enum_layout().unwrap();
+
+                let ty = self.tys[self.file_name][expr].get_final_ty();
+
+                if let Some(ty) = ty.into_real_type() {
+                    self.builder.append_block_param(exit_block, ty);
+                }
+
+                self.builder.ins().jump(body_block, &[]);
+                self.builder.seal_block(body_block);
+                self.builder.switch_to_block(body_block);
+
+                let scrutinee_val = self
+                    .compile_expr(scrutinee)
+                    .expect("enums are never zero sized");
+                let discrim_val = self.builder.ins().load(
+                    types::I8,
+                    MemFlags::trusted(),
+                    scrutinee_val,
+                    enum_layout.discriminant_offset() as i32,
+                );
+
+                let mut switch = Switch::new();
+                for variant_ty in variant_tys {
+                    let Ty::Variant {
+                        variant_name,
+                        discriminant,
+                        ..
+                    } = variant_ty.as_ref()
+                    else {
+                        unreachable!("all variants should be `Ty::Variant`")
+                    };
+                    let arm = arm_blocks[variant_name];
+
+                    if let Some(switch_local) = arm.1.switch_local {
+                        self.switch_locals.insert(switch_local, scrutinee_val);
+                    }
+
+                    // todo: maybe discriminant should also be u128
+                    switch.set_entry(*discriminant as u128, arm.0);
+                }
+                switch.emit(&mut self.builder, discrim_val, fallback_block);
+
+                {
+                    self.builder.switch_to_block(fallback_block);
+                    self.builder.seal_block(fallback_block);
+
+                    self.builder.ins().trap(TRAP_UNREACHABLE);
+                }
+
+                for (arm_block, arm) in arm_blocks.values() {
+                    self.builder.switch_to_block(*arm_block);
+                    self.builder.seal_block(*arm_block);
+
+                    let body_val = self.compile_expr(arm.body);
+
+                    if let Some(body_val) = body_val {
+                        self.builder.ins().jump(exit_block, &[body_val]);
+                    } else {
+                        self.builder.ins().jump(exit_block, &[]);
+                    }
+                }
+
+                self.builder.switch_to_block(exit_block);
+                self.builder.seal_block(exit_block);
+
+                if ty.into_real_type().is_some() {
+                    Some(self.builder.block_params(exit_block)[0])
+                } else {
+                    None
+                }
+            }
             hir::Expr::Local(local_def) => {
                 let ptr = *self.locals.get(&local_def)?;
 
                 let ty = &self.tys[self.file_name][local_def];
+
+                if no_load || ty.is_aggregate() {
+                    Some(ptr)
+                } else {
+                    let ty = ty.get_final_ty();
+
+                    // if it isn't a real type, this will just return None
+                    ty.into_real_type()
+                        .map(|ty| self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
+                }
+            }
+            hir::Expr::SwitchLocal(switch_local) => {
+                let ptr = *self.switch_locals.get(&switch_local)?;
+
+                let ty = &self.tys[self.file_name][switch_local];
 
                 if no_load || ty.is_aggregate() {
                     Some(ptr)
@@ -1611,9 +1762,7 @@ impl FunctionCompiler<'_> {
 
                 self.compile_global(fqn, no_load)
             }
-            hir::Expr::Member {
-                previous, field, ..
-            } => {
+            hir::Expr::Member { previous, name, .. } => {
                 if self.tys[self.file_name][expr].is_zero_sized() {
                     return None;
                 }
@@ -1623,7 +1772,7 @@ impl FunctionCompiler<'_> {
                     Ty::File(file) => {
                         let fqn = hir::Fqn {
                             file: *file,
-                            name: field.name,
+                            name: name.name,
                         };
 
                         self.compile_global(fqn, no_load)
@@ -1641,7 +1790,7 @@ impl FunctionCompiler<'_> {
 
                         if source_ty.is_slice() {
                             let slice = self.compile_expr(previous).unwrap();
-                            let addr = match self.interner.lookup(field.name.0) {
+                            let addr = match self.interner.lookup(name.name.0) {
                                 "len" => slice,
                                 "ptr" => self
                                     .builder
@@ -1687,7 +1836,7 @@ impl FunctionCompiler<'_> {
                         let field_idx = struct_fields
                             .iter()
                             .enumerate()
-                            .find(|(_, (name, _))| *name == field.name)
+                            .find(|(_, source_member)| source_member.name == name.name)
                             .map(|(idx, _)| idx)
                             .unwrap();
 
@@ -1743,6 +1892,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::PrimitiveTy { .. } => None,
             hir::Expr::Distinct { .. } => None,
             hir::Expr::StructDecl { .. } => None,
+            hir::Expr::EnumDecl { .. } => None,
             hir::Expr::Import(_) => None,
             hir::Expr::Comptime(comptime) => {
                 let ctc = FQComptime {

@@ -1,12 +1,12 @@
 Foo.{
     bar = "Fancy!",
     baz = 1200,
-    qux = true as u8,
+    qux = u8.(true),
 }
 ===
-Root@0..65
-  ExprStmt@0..65
-    StructLiteral@0..65
+Root@0..64
+  ExprStmt@0..64
+    StructLiteral@0..64
       Ty@0..3
         VarRef@0..3
           Ident@0..3 "Foo"
@@ -33,20 +33,20 @@ Root@0..65
           Int@36..40 "1200"
       Comma@40..41 ","
       Whitespace@41..46 "\n    "
-      MemberLiteral@46..62
+      MemberLiteral@46..61
         Ident@46..49 "qux"
         Whitespace@49..50 " "
         Equals@50..51 "="
         Whitespace@51..52 " "
-        CastExpr@52..62
-          BoolLiteral@52..56
-            Bool@52..56 "true"
-          Whitespace@56..57 " "
-          As@57..59 "as"
-          Whitespace@59..60 " "
-          Ty@60..62
-            VarRef@60..62
-              Ident@60..62 "u8"
-      Comma@62..63 ","
-      Whitespace@63..64 "\n"
-      RBrace@64..65 "}"
+        CastExpr@52..61
+          Ty@52..54
+            VarRef@52..54
+              Ident@52..54 "u8"
+          Dot@54..55 "."
+          LParen@55..56 "("
+          BoolLiteral@56..60
+            Bool@56..60 "true"
+          RParen@60..61 ")"
+      Comma@61..62 ","
+      Whitespace@62..63 "\n"
+      RBrace@63..64 "}"

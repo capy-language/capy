@@ -1,0 +1,51 @@
+switch foo in animal_enum {
+    Dog => {},
+    Cat => {},
+    Turtle => {},
+}
+===
+Root@0..77
+  ExprStmt@0..77
+    SwitchExpr@0..77
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..25
+        Ident@14..25 "animal_enum"
+      Whitespace@25..26 " "
+      LBrace@26..27 "{"
+      Whitespace@27..32 "\n    "
+      SwitchArm@32..41
+        Ident@32..35 "Dog"
+        Whitespace@35..36 " "
+        FatArrow@36..38 "=>"
+        Whitespace@38..39 " "
+        Block@39..41
+          LBrace@39..40 "{"
+          RBrace@40..41 "}"
+      Comma@41..42 ","
+      Whitespace@42..47 "\n    "
+      SwitchArm@47..56
+        Ident@47..50 "Cat"
+        Whitespace@50..51 " "
+        FatArrow@51..53 "=>"
+        Whitespace@53..54 " "
+        Block@54..56
+          LBrace@54..55 "{"
+          RBrace@55..56 "}"
+      Comma@56..57 ","
+      Whitespace@57..62 "\n    "
+      SwitchArm@62..74
+        Ident@62..68 "Turtle"
+        Whitespace@68..69 " "
+        FatArrow@69..71 "=>"
+        Whitespace@71..72 " "
+        Block@72..74
+          LBrace@72..73 "{"
+          RBrace@73..74 "}"
+      Comma@74..75 ","
+      Whitespace@75..76 "\n"
+      RBrace@76..77 "}"

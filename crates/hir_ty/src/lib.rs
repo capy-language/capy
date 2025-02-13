@@ -59,6 +59,7 @@ pub struct FileInference {
     /// the actual types of type expressions
     meta_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
     local_tys: ArenaMap<Idx<hir::LocalDef>, Intern<Ty>>,
+    switch_local_tys: ArenaMap<Idx<hir::SwitchLocal>, Intern<Ty>>,
 }
 
 impl FileInference {
@@ -89,6 +90,15 @@ impl std::ops::Index<Idx<hir::LocalDef>> for FileInference {
     #[track_caller]
     fn index(&self, local_def: Idx<hir::LocalDef>) -> &Self::Output {
         &self.local_tys[local_def]
+    }
+}
+
+impl std::ops::Index<Idx<hir::SwitchLocal>> for FileInference {
+    type Output = Intern<Ty>;
+
+    #[track_caller]
+    fn index(&self, switch_local: Idx<hir::SwitchLocal>) -> &Self::Output {
+        &self.switch_local_tys[switch_local]
     }
 }
 
@@ -180,6 +190,8 @@ pub enum TyDiagnosticKind {
     NotYetResolved {
         fqn: hir::Fqn,
     },
+    CantUseAsTy,
+    /// this is a more specific case of `CantUseAsTy` that shows more information
     ParamNotATy,
     LocalTyIsMutable,
     IntTooBigForType {
@@ -208,12 +220,13 @@ pub enum TyDiagnosticKind {
     EntryBadReturn,
     ArraySizeNotInt,
     ArraySizeNotConst,
-    ArraySizeMismatch {
-        found: u32,
-        expected: u32,
-    },
+    DiscriminantNotInt,
+    DiscriminantNotConst,
     ExternGlobalMissingTy,
     DeclTypeHasNoDefault {
+        ty: Intern<Ty>,
+    },
+    SwitchDoesNotCoverVariant {
         ty: Intern<Ty>,
     },
 }
@@ -330,18 +343,25 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             self.tys.files.insert(module, FileInference::default());
         }
 
-        self.to_infer
-            .extend(
-                self.world_index
-                    .get_all_files()
-                    .into_iter()
-                    .flat_map(|(file, index)| {
-                        index
-                            .definitions()
-                            .map(move |name| Inferrable::Global(hir::Fqn { file, name }))
-                            .sorted()
-                    }),
-            );
+        self.to_infer.extend(
+            self.world_index
+                .get_all_files()
+                .into_iter()
+                .flat_map(|(file, index)| {
+                    index
+                        .definitions()
+                        .map(move |name| Inferrable::Global(hir::Fqn { file, name }))
+                        .sorted()
+                }), // .inspect(|to_infer| {
+                    //     print!("{to_infer:?}");
+                    //     match to_infer {
+                    //         Inferrable::Global(fqn) => {
+                    //             println!(" {}", fqn.debug(self.interner))
+                    //         }
+                    //         Inferrable::Lambda(_) => {}
+                    //     }
+                    // }),
+        );
 
         if self.to_infer.is_empty() {
             return InferenceResult {
@@ -361,13 +381,20 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             let leaves = match self.to_infer.peek_all() {
                 Ok(leaves) => leaves.into_iter().cloned().collect_vec(),
                 Err(_) => {
-                    let cyclic = self
+                    let mut cyclic = self
                         .to_infer
                         .peek_all_cyclic()
                         .unwrap()
                         .into_iter()
                         .cloned()
                         .collect_vec();
+
+                    // todo: sometimes the order of what is evaluated can change the errors a lot
+                    // (see tests::get_const_on_cyclic_globals)
+                    // for now i'm gonna sort this list, but maybe a different solution would be
+                    // better
+
+                    cyclic.sort();
 
                     let nyr = Signature(Ty::NotYetResolved.into());
 
@@ -422,7 +449,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
 
                 let mut global_ctx = GlobalInferenceCtx {
                     file: fqn.file,
-                    current_inferring: Inferrable::Global(fqn),
+                    currently_inferring: Inferrable::Global(fqn),
                     world_index: self.world_index,
                     world_bodies: self.world_bodies,
                     bodies: &self.world_bodies[fqn.file],
@@ -441,7 +468,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                 let ty = self.world_bodies.ty(fqn);
 
                 if !global_ctx.is_safe_to_compile(body).unwrap()
-                    || ty.map_or(false, |ty| !global_ctx.is_safe_to_compile(ty).unwrap())
+                    || ty.is_some_and(|ty| !global_ctx.is_safe_to_compile(ty).unwrap())
                 {
                     println!(
                         "{} is unsafe to compile",
@@ -536,7 +563,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
     fn infer_fqn(&mut self, fqn: hir::Fqn) -> InferResult<()> {
         let mut global_ctx = GlobalInferenceCtx {
             file: fqn.file,
-            current_inferring: Inferrable::Global(fqn),
+            currently_inferring: Inferrable::Global(fqn),
             world_index: self.world_index,
             world_bodies: self.world_bodies,
             bodies: &self.world_bodies[fqn.file],
@@ -626,7 +653,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
 
         let mut global_ctx = GlobalInferenceCtx {
             file: fql.file,
-            current_inferring: Inferrable::Lambda(fql),
+            currently_inferring: Inferrable::Lambda(fql),
             world_index: self.world_index,
             world_bodies: self.world_bodies,
             bodies: &self.world_bodies[fql.file],
@@ -815,7 +842,7 @@ impl Ty {
                     format!("struct'{} {{", uid)
                 };
 
-                for (idx, (name, ty)) in members.iter().enumerate() {
+                for (idx, MemberTy { name, ty }) in members.iter().enumerate() {
                     res.push_str(interner.lookup(name.0));
                     res.push_str(": ");
 
@@ -827,6 +854,64 @@ impl Ty {
                 }
 
                 res.push('}');
+
+                res
+            }
+            Self::Enum { fqn: Some(fqn), .. } => fqn.to_string(mod_dir, interner),
+            Self::Enum {
+                fqn: None,
+                uid,
+                variants,
+            } => {
+                let mut res = format!("enum '{uid} {{");
+
+                for (idx, variant_ty) in variants.iter().enumerate() {
+                    let Ty::Variant {
+                        variant_name,
+                        sub_ty,
+                        discriminant,
+                        ..
+                    } = variant_ty.as_ref()
+                    else {
+                        unreachable!("the variants of an enum should be `Ty::Variant`")
+                    };
+
+                    res.push_str(interner.lookup(variant_name.0));
+
+                    if !sub_ty.is_void() {
+                        res.push_str(": ");
+                        res.push_str(&sub_ty.display(mod_dir, interner));
+                    }
+
+                    res.push_str(&format!(" | {discriminant}"));
+
+                    if idx != variants.len() - 1 {
+                        res.push_str(", ");
+                    }
+                }
+
+                res.push('}');
+
+                res
+            }
+            Self::Variant {
+                enum_fqn,
+                variant_name,
+                uid,
+                ..
+            } => {
+                let mut res = String::new();
+
+                if let Some(enum_fqn) = enum_fqn {
+                    res.push_str(&enum_fqn.to_string(mod_dir, interner));
+                }
+
+                res.push('.');
+                res.push_str(interner.lookup(variant_name.0));
+
+                if enum_fqn.is_none() {
+                    res.push_str(&format!("'{uid}"));
+                }
 
                 res
             }
@@ -1149,7 +1234,7 @@ mod tests {
                     foo : numbers.imaginary = 0;
 
                     my_magic := numbers.Magic_Struct.{
-                        mystical_field = 123 as numbers.imaginary,
+                        mystical_field = numbers.imaginary.(123),
                     };
 
                     my_magic.mystical_field
@@ -1323,8 +1408,8 @@ mod tests {
         check(
             r#"
                 calc :: () -> isize {
-                    num1 := 4 as i128;
-                    num2 := 8 as u16;
+                    num1 := i128.(4);
+                    num2 := u16.(8);
                     num1 + num2
                 };
             "#,
@@ -1351,7 +1436,7 @@ mod tests {
         check(
             r#"
                 calc :: () -> u128 {
-                    num1 := 4 as u16;
+                    num1 := u16.(4);
                     num1 + 8
                 };
             "#,
@@ -1410,7 +1495,7 @@ mod tests {
             r#"
                 check :: () -> bool {
                     num := 5;
-                    is_true := num as bool;
+                    is_true := bool.(num);
                     is_true
                 };
             "#,
@@ -1435,7 +1520,7 @@ mod tests {
             r#"
                 how_old :: () -> usize {
                     name := "Gandalf";
-                    age := name as usize;
+                    age := usize.(name);
                     age
                 };
             "#,
@@ -1456,7 +1541,7 @@ mod tests {
                         from: Ty::String.into(),
                         to: Ty::UInt(u8::MAX).into(),
                     },
-                    108..121,
+                    108..120,
                     None,
                 )]
             },
@@ -3183,7 +3268,7 @@ mod tests {
                 main :: () -> i32 {
                     i : something_far_away = ^1;
 
-                    {i as ^i32}^
+                    (^i32).(i)^
                 };
             "#,
             expect![[r#"
@@ -3193,7 +3278,6 @@ mod tests {
                 5 : i32
                 6 : main::something_far_away
                 7 : main::something_far_away
-                10 : ^i32
                 11 : ^i32
                 12 : i32
                 13 : i32
@@ -3216,7 +3300,7 @@ mod tests {
 
                     x : imaginary_far_away = ^i;
 
-                    {x as ^imaginary}^
+                    (^imaginary).(x)^
                 };
             "#,
             expect![[r#"
@@ -3229,7 +3313,6 @@ mod tests {
                 9 : main::imaginary
                 10 : main::imaginary_far_away
                 11 : main::imaginary_far_away
-                14 : ^main::imaginary
                 15 : ^main::imaginary
                 16 : main::imaginary
                 17 : main::imaginary
@@ -3403,10 +3486,10 @@ mod tests {
                     TyDiagnosticKind::NotYetResolved {
                         fqn: hir::Fqn {
                             file: hir::FileName(i.intern("main.capy")),
-                            name: hir::Name(i.intern("foo")),
+                            name: hir::Name(i.intern("bar")),
                         },
                     },
-                    71..74,
+                    33..36,
                     None,
                 )]
             },
@@ -3415,6 +3498,14 @@ mod tests {
 
     #[test]
     fn recursive_definitions_ty() {
+        // the reason these tests were changed:
+        //    tests::get_const_on_cyclic_globals
+        //    tests::recursive_definitions
+        //    tests::recursive_definitions_ty
+        // is because `topo` now uses rustc-hash = "2.1"
+        // and this changed the order in which things are evaluated.
+        // possibly topo should use something order-preserving instead of
+        // rustc-hash
         check(
             r#"
                 foo : i32 : comptime bar;
@@ -3424,20 +3515,20 @@ mod tests {
             expect![[r#"
                 main::bar : i32
                 main::foo : i32
-                1 : i32
-                2 : i32
-                4 : <unknown>
-                5 : <unknown>
+                1 : <unknown>
+                2 : <unknown>
+                4 : i32
+                5 : i32
             "#]],
             |i| {
                 [(
                     TyDiagnosticKind::NotYetResolved {
                         fqn: hir::Fqn {
                             file: hir::FileName(i.intern("main.capy")),
-                            name: hir::Name(i.intern("foo")),
+                            name: hir::Name(i.intern("bar")),
                         },
                     },
-                    81..84,
+                    38..41,
                     None,
                 )]
             },
@@ -5318,8 +5409,14 @@ mod tests {
                     }),
                     uid: 0,
                     members: vec![
-                        (hir::Name(i.intern("name")), Ty::String.into()),
-                        (hir::Name(i.intern("age")), Ty::IInt(32).into()),
+                        MemberTy {
+                            name: hir::Name(i.intern("name")),
+                            ty: Ty::String.into(),
+                        },
+                        MemberTy {
+                            name: hir::Name(i.intern("age")),
+                            ty: Ty::IInt(32).into(),
+                        },
                     ],
                 }
                 .into();
@@ -5432,8 +5529,14 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("name")), Ty::String.into()),
-                                (hir::Name(i.intern("age")), Ty::IInt(32).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("name")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("age")),
+                                    ty: Ty::IInt(32).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -5641,7 +5744,7 @@ mod tests {
 
                     real : i32 = 5;
 
-                    real as imaginary;
+                    imaginary.(real);
                 }
             "#,
             expect![[r#"
@@ -5708,8 +5811,14 @@ mod tests {
                             }),
                             uid: 1,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::IInt(8).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -5721,8 +5830,14 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::IInt(8).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -5754,7 +5869,7 @@ mod tests {
                         b = 2,
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -5797,7 +5912,7 @@ mod tests {
                         b = 2,
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -5840,7 +5955,7 @@ mod tests {
                         b = 2,
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -5883,7 +5998,7 @@ mod tests {
                         b = .[2, 3],
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -5917,16 +6032,19 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (
-                                    hir::Name(i.intern("b")),
-                                    Ty::Array {
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::Array {
                                         anonymous: false,
                                         size: 2,
                                         sub_ty: Ty::IInt(32).into(),
                                     }
                                     .into(),
-                                ),
+                                },
                             ],
                         }
                         .into(),
@@ -5938,21 +6056,24 @@ mod tests {
                             }),
                             uid: 1,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (
-                                    hir::Name(i.intern("b")),
-                                    Ty::Array {
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::Array {
                                         anonymous: false,
                                         size: 3,
                                         sub_ty: Ty::IInt(32).into(),
                                     }
                                     .into(),
-                                ),
+                                },
                             ],
                         }
                         .into(),
                     },
-                    420..433,
+                    420..432,
                     None,
                 )]
             },
@@ -5979,7 +6100,7 @@ mod tests {
                         b = 2,
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -6009,8 +6130,14 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::IInt(8).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -6022,13 +6149,19 @@ mod tests {
                             }),
                             uid: 1,
                             members: vec![
-                                (hir::Name(i.intern("x")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("y")), Ty::IInt(8).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("x")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("y")),
+                                    ty: Ty::IInt(8).into(),
+                                },
                             ],
                         }
                         .into(),
                     },
-                    406..419,
+                    406..418,
                     None,
                 )]
             },
@@ -6056,7 +6189,7 @@ mod tests {
                         b = 2,
                     };
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
                 };
             "#,
             expect![[r#"
@@ -6086,8 +6219,14 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::IInt(8).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -6099,14 +6238,23 @@ mod tests {
                             }),
                             uid: 1,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::IInt(32).into()),
-                                (hir::Name(i.intern("b")), Ty::IInt(8).into()),
-                                (hir::Name(i.intern("c")), Ty::String.into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::IInt(32).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::IInt(8).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("c")),
+                                    ty: Ty::String.into(),
+                                },
                             ],
                         }
                         .into(),
                     },
-                    434..447,
+                    434..446,
                     None,
                 )]
             },
@@ -6297,8 +6445,8 @@ mod tests {
                     foo : i32 = 5;
 
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = ptr as ^any;
-                    ptr : ^f32 = ptr as ^f32;
+                    ptr : ^any = (^any).(ptr);
+                    ptr : ^f32 = (^f32).(ptr);
 
                     foo : f32 = ptr^;
                 }
@@ -6309,13 +6457,13 @@ mod tests {
                 4 : i32
                 5 : ^i32
                 8 : ^i32
-                11 : ^any
-                14 : ^any
-                17 : ^f32
+                12 : ^any
+                15 : ^any
                 19 : ^f32
-                20 : f32
-                21 : void
-                22 : () -> void
+                21 : ^f32
+                22 : f32
+                23 : void
+                24 : () -> void
                 l0 : i32
                 l1 : ^i32
                 l2 : ^any
@@ -6333,9 +6481,9 @@ mod tests {
                 get_any :: () {
                     foo : [] i32 = i32.[100, 200];
 
-                    ptr : [] any = foo as [] any;
+                    ptr : [] any = []any.(foo);
 
-                    foo : [] f32 = ptr as [] f32;
+                    foo : [] f32 = []f32.(ptr);
 
                     first : f32 = foo[0];
                 }
@@ -6371,7 +6519,7 @@ mod tests {
                     foo : i32 = 5;
 
                     ptr : ^i32 = ^foo;
-                    ptr : ^f32 = ptr as ^f32;
+                    ptr : ^f32 = (^f32).(ptr);
 
                     foo : f32 = ptr^;
                 }
@@ -6382,11 +6530,11 @@ mod tests {
                 4 : i32
                 5 : ^i32
                 8 : ^i32
-                11 : ^f32
-                13 : ^f32
-                14 : f32
-                15 : void
-                16 : () -> void
+                12 : ^f32
+                14 : ^f32
+                15 : f32
+                16 : void
+                17 : () -> void
                 l0 : i32
                 l1 : ^i32
                 l2 : ^f32
@@ -6406,7 +6554,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    141..152,
+                    141..153,
                     None,
                 )]
             },
@@ -6420,7 +6568,7 @@ mod tests {
                 get_any :: () {
                     foo : [] i32 = i32.[100, 200];
 
-                    foo : [] f32 = foo as [] f32;
+                    foo : [] f32 = []f32.(foo);
                 }
             "#,
             expect![[r#"
@@ -6447,7 +6595,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    120..133,
+                    120..131,
                     None,
                 )]
             },
@@ -6462,7 +6610,7 @@ mod tests {
                     foo : i32 = 5;
 
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = ptr as ^any;
+                    ptr : ^any = (^any).(ptr);
 
                     foo : any = ptr^;
                 }
@@ -6473,17 +6621,17 @@ mod tests {
                 4 : i32
                 5 : ^i32
                 8 : ^i32
-                11 : ^any
-                13 : ^any
-                14 : <unknown>
-                15 : void
-                16 : () -> void
+                12 : ^any
+                14 : ^any
+                15 : <unknown>
+                16 : void
+                17 : () -> void
                 l0 : i32
                 l1 : ^i32
                 l2 : ^any
                 l3 : any
             "#]],
-            |_| [(TyDiagnosticKind::DerefAny, 187..191, None)],
+            |_| [(TyDiagnosticKind::DerefAny, 188..192, None)],
         );
     }
 
@@ -6495,7 +6643,7 @@ mod tests {
                     foo : [3] i32 = i32.[5, 10, 15];
 
                     ptr : [] i32 = foo;
-                    ptr : [] any = ptr as []any;
+                    ptr : [] any = []any.(ptr);
 
                     foo : any = ptr[0];
                 }
@@ -6520,7 +6668,7 @@ mod tests {
                 l2 : []any
                 l3 : any
             "#]],
-            |_| [(TyDiagnosticKind::IndexAny { size: None }, 209..215, None)],
+            |_| [(TyDiagnosticKind::IndexAny { size: None }, 208..214, None)],
         );
     }
 
@@ -6653,7 +6801,7 @@ mod tests {
             r#"
                 get_any :: () {
                     foo : [] i32 = i32.[5, 10, 15];
-                    ptr : [] any = foo as [] any;
+                    ptr : [] any = []any.(foo);
 
                     ptr : [] i32 = ptr;
                 }
@@ -6685,7 +6833,7 @@ mod tests {
                         }
                         .into(),
                     },
-                    171..174,
+                    169..172,
                     None,
                 )]
             },
@@ -6698,8 +6846,8 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := ^data as ^any;
-                    str := ptr as str;
+                    ptr := (^any).(^data);
+                    str := str.(ptr);
                 }
             "#,
             expect![[r#"
@@ -6710,11 +6858,11 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                9 : ^any
                 10 : ^any
-                12 : str
-                13 : void
-                14 : () -> void
+                11 : ^any
+                13 : str
+                14 : void
+                15 : () -> void
                 l0 : [3]char
                 l1 : ^any
                 l2 : str
@@ -6729,8 +6877,8 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := ^data as ^any as ^char;
-                    str := ptr as str;
+                    ptr := (^char).((^any).(^data));
+                    str := str.(ptr);
                 }
             "#,
             expect![[r#"
@@ -6741,12 +6889,12 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                9 : ^any
-                12 : ^char
-                13 : ^char
-                15 : str
-                16 : void
-                17 : () -> void
+                10 : ^any
+                14 : ^char
+                15 : ^char
+                17 : str
+                18 : void
+                19 : () -> void
                 l0 : [3]char
                 l1 : ^char
                 l2 : str
@@ -6761,8 +6909,8 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := ^data as ^any as ^u8;
-                    str := ptr as str;
+                    ptr := (^u8).((^any).(^data));
+                    str := str.(ptr);
                 }
             "#,
             expect![[r#"
@@ -6773,12 +6921,12 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                9 : ^any
-                12 : ^u8
-                13 : ^u8
-                15 : str
-                16 : void
-                17 : () -> void
+                10 : ^any
+                14 : ^u8
+                15 : ^u8
+                17 : str
+                18 : void
+                19 : () -> void
                 l0 : [3]char
                 l1 : ^u8
                 l2 : str
@@ -6793,7 +6941,7 @@ mod tests {
             r"
                 get_any :: () {
                     data := char.['H', 'i', '\0'];
-                    str := data as str;
+                    str := str.(data);
                 }
             ",
             expect![[r#"
@@ -6838,7 +6986,7 @@ mod tests {
             r"
                 foo :: () {
                     my_char := 'A';
-                    my_u8 := my_char as u8;
+                    my_u8 := u8.(my_char);
                 }
             ",
             expect![[r#"
@@ -7056,7 +7204,10 @@ mod tests {
                                         name: hir::Name(i.intern("Foo")),
                                     }),
                                     uid: 0,
-                                    members: vec![(hir::Name(i.intern("a")), Ty::IInt(32).into())],
+                                    members: vec![MemberTy {
+                                        name: hir::Name(i.intern("a")),
+                                        ty: Ty::IInt(32).into(),
+                                    }],
                                 }
                                 .into(),
                             }
@@ -7451,7 +7602,7 @@ mod tests {
 
                     arr : imaginary_vec3 = imaginary.[1, 2, 3];
 
-                    arr[0] as i32
+                    i32.(arr[0])
                 }
             "#,
             expect![[r#"
@@ -7463,7 +7614,7 @@ mod tests {
                 10 : {uint}
                 11 : {uint}
                 12 : {uint}
-                13 : distinct'1 [3]distinct'0 i32
+                13 : [3]distinct'0 i32
                 14 : distinct'1 [3]distinct'0 i32
                 15 : usize
                 16 : distinct'0 i32
@@ -7496,7 +7647,7 @@ mod tests {
                         imaginary_part = 42,
                     };
 
-                    my_complex.real_part as i32 + my_complex.imaginary_part as i32
+                    i32.(my_complex.real_part) + i32.(my_complex.imaginary_part)
                 }
             "#,
             expect![[r#"
@@ -7548,10 +7699,10 @@ mod tests {
                         // in the parameters and return type, we can't access `imaginary`
                         // from inside the body of this lambda
                         // this could be alleviated by adding a `type_of` builtin
-                        i32.[1, c.real_part * c.imaginary_part as i32, 3]
+                        i32.[1, c.real_part * i32.(c.imaginary_part), 3]
                     };
                 
-                    do_math(my_complex)[1] as i32
+                    i32.(do_math(my_complex)[1])
                 }
             "#,
             expect![[r#"
@@ -8334,16 +8485,16 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x : ^any = ^42 as ^i32;
+                    x : ^any = (^i32).(^42);
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
                 2 : i32
                 3 : ^i32
-                6 : ^i32
-                7 : void
-                8 : () -> void
+                7 : ^i32
+                8 : void
+                9 : () -> void
                 l0 : ^any
             "#]],
             |_| [],
@@ -8387,7 +8538,7 @@ mod tests {
                 foo :: () {
                     x : [] i32 = i32.[1, 2, 3];
                     
-                    y := x as [3] i32;
+                    y := [3]i32.(x);
                 }
             "#,
             expect![[r#"
@@ -8459,7 +8610,7 @@ mod tests {
                 foo :: () {
                     x := i32.[1, 2, 3];
                     
-                    y := x as [] i32;
+                    y := []i32.(x);
                 }
             "#,
             expect![[r#"
@@ -8675,7 +8826,7 @@ mod tests {
                 foo :: () {
                     x := 0;
                     accept_any(x);
-                    x as i16;
+                    i16.(x);
                 }
             "#,
             expect![[r#"
@@ -8721,8 +8872,20 @@ mod tests {
 
     #[test]
     fn array_literal_as_type() {
+        // pre 2/6/2025:
         // this is just to make sure that the compiler doens't show a diagnostic
         // like "expected `type` but found `<unknown>`"
+
+        // post 2/6/2025:
+        // due to the changes in `parser`,
+        // this is now parsed as:
+        // ```text
+        //  x : i32 = .[]
+        // ```
+        // which honestly makes more sense
+        //
+        // I added `int_literal_as_type` and `unknown_as_type` to try and check for the same thing
+        // this test was checking for
         check(
             r#"
                 foo :: () {
@@ -8731,26 +8894,74 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo : () -> void
-                1 : [0]i32
+                1 : [0]~void
                 2 : void
                 3 : () -> void
+                l0 : i32
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: Ty::IInt(32).into(),
+                        found: Ty::Array {
+                            anonymous: true,
+                            size: 0,
+                            sub_ty: Ty::Void.into(),
+                        }
+                        .into(),
+                    },
+                    56..59,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn int_literal_as_type() {
+        check(
+            r#"
+                foo :: () {
+                    x : 42;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : {uint}
+                1 : void
+                2 : () -> void
                 l0 : <unknown>
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
                         expected: Ty::Type.into(),
-                        found: Ty::Array {
-                            anonymous: false,
-                            size: 0,
-                            sub_ty: Ty::IInt(32).into(),
-                        }
-                        .into(),
+                        found: Ty::UInt(0).into(),
                     },
-                    53..59,
+                    53..55,
                     None,
                 )]
             },
+        )
+    }
+
+    #[test]
+    fn unknown_as_type() {
+        // this is just to make sure that the compiler doens't show a diagnostic
+        // like "expected `type` but found `<unknown>`"
+        check(
+            r#"
+                foo :: () {
+                    x : _;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                1 : void
+                2 : () -> void
+                l0 : <unknown>
+            "#]],
+            |_| [],
         )
     }
 
@@ -8910,8 +9121,14 @@ mod tests {
                                 fqn: None,
                                 uid: 0,
                                 members: vec![
-                                    (hir::Name(i.intern("foo")), Ty::String.into()),
-                                    (hir::Name(i.intern("bar")), Ty::UInt(8).into()),
+                                    MemberTy {
+                                        name: hir::Name(i.intern("foo")),
+                                        ty: Ty::String.into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("bar")),
+                                        ty: Ty::UInt(8).into(),
+                                    },
                                 ],
                             }
                             .into(),
@@ -9121,7 +9338,7 @@ mod tests {
                         a = 5,
                     };
 
-                    bar := foo as Foo_Type;
+                    bar := Foo_Type.(foo);
                 }
             "#,
             expect![[r#"
@@ -9156,11 +9373,11 @@ mod tests {
                 anon :: () {
                     c : f32 = 5.5;
 
-                    foo := .{
+                    foo := Foo_Type.(.{
                         b = "hello",
                         c = c,
                         a = 3.14,
-                    } as Foo_Type;
+                    });
                 }
             "#,
             expect![[r#"
@@ -9221,9 +9438,18 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
-                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(8).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("c")),
+                                    ty: Ty::Float(64).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9232,8 +9458,14 @@ mod tests {
                             fqn: None,
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(0).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9288,9 +9520,18 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
-                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(8).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("c")),
+                                    ty: Ty::Float(64).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9299,10 +9540,22 @@ mod tests {
                             fqn: None,
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
-                                (hir::Name(i.intern("c")), Ty::Float(0).into()),
-                                (hir::Name(i.intern("d")), Ty::Bool.into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(0).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("c")),
+                                    ty: Ty::Float(0).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("d")),
+                                    ty: Ty::Bool.into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9355,9 +9608,18 @@ mod tests {
                             }),
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(8).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
-                                (hir::Name(i.intern("c")), Ty::Float(64).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(8).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("c")),
+                                    ty: Ty::Float(64).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9366,9 +9628,18 @@ mod tests {
                             fqn: None,
                             uid: 0,
                             members: vec![
-                                (hir::Name(i.intern("a")), Ty::UInt(0).into()),
-                                (hir::Name(i.intern("b")), Ty::String.into()),
-                                (hir::Name(i.intern("last")), Ty::Float(0).into()),
+                                MemberTy {
+                                    name: hir::Name(i.intern("a")),
+                                    ty: Ty::UInt(0).into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("b")),
+                                    ty: Ty::String.into(),
+                                },
+                                MemberTy {
+                                    name: hir::Name(i.intern("last")),
+                                    ty: Ty::Float(0).into(),
+                                },
                             ],
                         }
                         .into(),
@@ -9427,7 +9698,7 @@ mod tests {
 
     #[test]
     fn anon_array_into_known_slice() {
-        // todo: this should actually replace the {uint} with u16
+        // TODO: this should actually replace the {uint} with u16
         check(
             r#"
                 anon :: () {
@@ -9453,7 +9724,7 @@ mod tests {
         check(
             r#"
                 anon :: () {
-                    foo := .[1, 2, 3] as [3]u128;
+                    foo := [3]u128.(.[1, 2, 3]);
                 }
             "#,
             expect![[r#"
@@ -9478,7 +9749,7 @@ mod tests {
         check(
             r#"
                 anon :: () {
-                    foo := .[1, 2, 3] as []i8;
+                    foo := []i8.(.[1, 2, 3]);
                 }
             "#,
             expect![[r#"
@@ -9608,7 +9879,7 @@ mod tests {
 
     #[test]
     fn anon_array_into_known_slice_by_inference() {
-        // todo: this should actually replace the {uint} with u128
+        // TODO: this should actually replace the {uint} with u128
         check(
             r#"
                 anon :: () {
@@ -9748,6 +10019,17 @@ mod tests {
     #[test]
     fn get_const_on_cyclic_globals() {
         // check for https://github.com/capy-language/capy/issues/32
+
+        // todo: if a is inferred before b, then you will get two GlobalNotConst errors
+        // but if b is inferred before a, then you will get one GlobalNotConst errors
+        //
+        // I personally like the second result more, but the errors should be consistent no matter
+        // which way it happens.
+        //
+        // Also there was a weird thing where while testing the example code here I would get a
+        // before b, but then while doing `cargo run -- run examples/test.capy` with the example
+        // code i would get b before a. I was only able to fix this by changing FxHashMap/Set in
+        // the `topo` crate to an IndexMap/Set
         check(
             r#"
                 foo :: 1;
@@ -9815,6 +10097,383 @@ mod tests {
                     None,
                 )]
             },
+        )
+    }
+
+    #[test]
+    fn empty_enum() {
+        check(
+            r#"
+                My_Awesome_Enum :: enum {
+                    Foo,
+                    Bar
+                };
+
+                main :: () {
+                    my_foo : My_Awesome_Enum.Foo = My_Awesome_Enum.Foo.(());
+                    my_bar : My_Awesome_Enum.Bar = My_Awesome_Enum.Bar.(());
+                }
+            "#,
+            expect![[r#"
+                main::My_Awesome_Enum : type
+                main::main : () -> void
+                0 : type
+                1 : type
+                3 : void
+                4 : type
+                6 : main::My_Awesome_Enum.Foo
+                7 : type
+                9 : void
+                10 : type
+                12 : main::My_Awesome_Enum.Bar
+                13 : void
+                14 : () -> void
+                l0 : main::My_Awesome_Enum.Foo
+                l1 : main::My_Awesome_Enum.Bar
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn typed_enum_with_discriminants() {
+        check(
+            r#"
+                My_Awesome_Enum :: enum {
+                    Foo,
+                    Bar: i32,
+                    Baz: str | 42,
+                    Qux: bool
+                };
+
+                main :: () {
+                    my_foo : My_Awesome_Enum.Foo = My_Awesome_Enum.Foo.(());
+                    my_bar : My_Awesome_Enum.Bar = My_Awesome_Enum.Bar.(5);
+                    my_baz : My_Awesome_Enum.Baz = My_Awesome_Enum.Baz.("hello");
+                    my_qux : My_Awesome_Enum.Qux = My_Awesome_Enum.Qux.(true);
+                }
+            "#,
+            expect![[r#"
+                main::My_Awesome_Enum : type
+                main::main : () -> void
+                2 : u8
+                4 : type
+                5 : type
+                7 : void
+                8 : type
+                10 : main::My_Awesome_Enum.Foo
+                11 : type
+                13 : {uint}
+                14 : type
+                16 : main::My_Awesome_Enum.Bar
+                17 : type
+                19 : str
+                20 : type
+                22 : main::My_Awesome_Enum.Baz
+                23 : type
+                25 : bool
+                26 : type
+                28 : main::My_Awesome_Enum.Qux
+                29 : void
+                30 : () -> void
+                l0 : main::My_Awesome_Enum.Foo
+                l1 : main::My_Awesome_Enum.Bar
+                l2 : main::My_Awesome_Enum.Baz
+                l3 : main::My_Awesome_Enum.Qux
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn weak_to_strong_u8_array_of_arrays() {
+        // check for https://github.com/capy-language/capy/issues/30
+        check(
+            r#"
+                main :: () {
+                    x : u8 = 1;
+                    y : u8 = 2;
+                    z : u8 = 3;
+
+                    arr : [3][3][3]u8 = .[
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                    ];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                1 : u8
+                3 : u8
+                5 : u8
+                6 : usize
+                7 : usize
+                8 : usize
+                13 : u8
+                14 : u8
+                15 : u8
+                16 : [3]u8
+                17 : u8
+                18 : u8
+                19 : u8
+                20 : [3]u8
+                21 : u8
+                22 : u8
+                23 : u8
+                24 : [3]u8
+                25 : [3][3]u8
+                26 : u8
+                27 : u8
+                28 : u8
+                29 : [3]u8
+                30 : u8
+                31 : u8
+                32 : u8
+                33 : [3]u8
+                34 : u8
+                35 : u8
+                36 : u8
+                37 : [3]u8
+                38 : [3][3]u8
+                39 : u8
+                40 : u8
+                41 : u8
+                42 : [3]u8
+                43 : u8
+                44 : u8
+                45 : u8
+                46 : [3]u8
+                47 : u8
+                48 : u8
+                49 : u8
+                50 : [3]u8
+                51 : [3][3]u8
+                52 : [3][3][3]u8
+                53 : void
+                54 : () -> void
+                l0 : u8
+                l1 : u8
+                l2 : u8
+                l3 : [3][3][3]u8
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn weak_to_strong_uint_array_of_arrays() {
+        // check for https://github.com/capy-language/capy/issues/30
+        check(
+            r#"
+                main :: () {
+                    x := 1;
+                    y := 2;
+                    z := 3;
+
+                    arr : [3][3][3]u8 = .[
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+                    ];
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : u8
+                1 : u8
+                2 : u8
+                3 : usize
+                4 : usize
+                5 : usize
+                10 : u8
+                11 : u8
+                12 : u8
+                13 : [3]u8
+                14 : u8
+                15 : u8
+                16 : u8
+                17 : [3]u8
+                18 : u8
+                19 : u8
+                20 : u8
+                21 : [3]u8
+                22 : [3][3]u8
+                23 : u8
+                24 : u8
+                25 : u8
+                26 : [3]u8
+                27 : u8
+                28 : u8
+                29 : u8
+                30 : [3]u8
+                31 : u8
+                32 : u8
+                33 : u8
+                34 : [3]u8
+                35 : [3][3]u8
+                36 : u8
+                37 : u8
+                38 : u8
+                39 : [3]u8
+                40 : u8
+                41 : u8
+                42 : u8
+                43 : [3]u8
+                44 : u8
+                45 : u8
+                46 : u8
+                47 : [3]u8
+                48 : [3][3]u8
+                49 : [3][3][3]u8
+                50 : void
+                51 : () -> void
+                l0 : u8
+                l1 : u8
+                l2 : u8
+                l3 : [3][3][3]u8
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn autocast_variant_to_enum_variable() {
+        check(
+            r#"
+                Animal :: enum {
+                    Dog: str,
+                    Fish: i32, // maybe this is the fish's age or something
+                };
+
+                main :: () {
+                    my_dog := Animal.Dog.("George");
+                    my_fish := Animal.Fish.(1000);
+
+                    animal_1 : Animal = my_dog;
+                    animal_2 : Animal = my_fish;
+                }
+            "#,
+            expect![[r#"
+                main::Animal : type
+                main::main : () -> void
+                2 : type
+                3 : str
+                4 : type
+                6 : main::Animal.Dog
+                7 : {uint}
+                8 : type
+                10 : main::Animal.Fish
+                12 : main::Animal.Dog
+                14 : main::Animal.Fish
+                15 : void
+                16 : () -> void
+                l0 : main::Animal.Dog
+                l1 : main::Animal.Fish
+                l2 : main::Animal
+                l3 : main::Animal
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn autocast_variant_to_enum_function() {
+        check(
+            r#"
+                Animal :: enum {
+                    Dog: str,
+                    Fish: i32, // maybe this is the fish's age or something
+                };
+
+                main :: () {
+                    my_dog := Animal.Dog.("George");
+                    my_fish := Animal.Fish.(1000);
+
+                    go_do_animal_stuff_idk(my_dog);
+                    go_do_animal_stuff_idk(my_fish);
+                }
+
+                go_do_animal_stuff_idk :: (animal: Animal) {
+                    // imagine the craziest code here
+                }
+            "#,
+            expect![[r#"
+                main::Animal : type
+                main::go_do_animal_stuff_idk : (main::Animal) -> void
+                main::main : () -> void
+                2 : type
+                3 : str
+                4 : type
+                6 : main::Animal.Dog
+                7 : {uint}
+                8 : type
+                10 : main::Animal.Fish
+                11 : (main::Animal) -> void
+                12 : main::Animal.Dog
+                13 : void
+                14 : (main::Animal) -> void
+                15 : main::Animal.Fish
+                16 : void
+                17 : void
+                18 : () -> void
+                20 : void
+                21 : (main::Animal) -> void
+                l0 : main::Animal.Dog
+                l1 : main::Animal.Fish
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn cast_variant_to_enum_function() {
+        check(
+            r#"
+                Animal :: enum {
+                    Dog: str,
+                    Fish: i32, // maybe this is the fish's age or something
+                };
+
+                main :: () {
+                    my_dog := Animal.Dog.("George");
+                    my_fish := Animal.Fish.(1000);
+
+                    go_do_animal_stuff_idk(Animal.(my_dog));
+                    go_do_animal_stuff_idk(Animal.(my_fish));
+                }
+
+                go_do_animal_stuff_idk :: (animal: Animal) {
+                    // imagine the craziest code here
+                }
+            "#,
+            expect![[r#"
+                main::Animal : type
+                main::go_do_animal_stuff_idk : (main::Animal) -> void
+                main::main : () -> void
+                2 : type
+                3 : str
+                4 : type
+                6 : main::Animal.Dog
+                7 : {uint}
+                8 : type
+                10 : main::Animal.Fish
+                11 : (main::Animal) -> void
+                12 : main::Animal.Dog
+                14 : main::Animal
+                15 : void
+                16 : (main::Animal) -> void
+                17 : main::Animal.Fish
+                19 : main::Animal
+                20 : void
+                21 : void
+                22 : () -> void
+                24 : void
+                25 : (main::Animal) -> void
+                l0 : main::Animal.Dog
+                l1 : main::Animal.Fish
+            "#]],
+            |_| [],
         )
     }
 }

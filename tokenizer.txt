@@ -8,10 +8,13 @@ If = 'if'
 Else = 'else'
 While = 'while'
 Loop = 'loop'
+Switch = 'switch'
+In = 'in'
 Distinct = 'distinct'
 Mut = 'mut'
 Extern = 'extern'
 Struct = 'struct'
+Enum = 'enum'
 Import = 'import'
 Mod = 'mod'
 Comptime = 'comptime'
@@ -54,6 +57,7 @@ Tilde = '~'
 Comma = ','
 Dot = '.'
 Arrow = '->'
+FatArrow = '=>'
 Caret = '^'
 Backtick = '`'
 LParen = '('
@@ -66,7 +70,7 @@ _CommentLeader
 _CommentContents
 Colon = ':'
 Semicolon = ';'
-Error = !
+Error
 // The string/char doesn't have to end on a quote, this results in better error messages
 // this will internally get replaced by _SingleQuote, _Escape, and _StringContents
 __InternalString = /"([^"\\\n]|\\.)*"?/

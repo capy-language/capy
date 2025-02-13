@@ -12,7 +12,7 @@ main :: () {
     // arrays may autocast to slices but going the opposite
     // direction requires an explicit cast
 
-    arr := slice as [6] i32; // slice => array
+    arr := [6]i32.(slice); // slice => array
 
     print_int_array(arr);
 }

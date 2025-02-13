@@ -8,13 +8,15 @@ use crate::event::Event;
 use super::Parser;
 
 pub(crate) struct Marker {
+    start_token_idx: usize,
     pos: usize,
     bomb: DropBomb,
 }
 
 impl Marker {
-    pub(crate) fn new(pos: usize) -> Self {
+    pub(crate) fn new(pos: usize, start_token_idx: usize) -> Self {
         Self {
+            start_token_idx,
             pos,
             bomb: DropBomb::new("Markers need to be completed"),
         }
@@ -28,6 +30,7 @@ impl Marker {
 
         CompletedMarker {
             kind,
+            start_token_idx: self.start_token_idx,
             pos: self.pos,
         }
     }
@@ -36,6 +39,7 @@ impl Marker {
 #[derive(Copy, Clone)]
 pub(crate) struct CompletedMarker {
     kind: NodeKind,
+    start_token_idx: usize,
     pos: usize,
 }
 
@@ -44,8 +48,12 @@ impl CompletedMarker {
         self.kind
     }
 
+    pub(crate) fn start_token_idx(&self) -> usize {
+        self.start_token_idx
+    }
+
     pub(crate) fn precede(self, p: &mut Parser) -> Marker {
         p.events.insert(self.pos, None);
-        Marker::new(self.pos)
+        Marker::new(self.pos, self.start_token_idx)
     }
 }

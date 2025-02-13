@@ -1,0 +1,16 @@
+enum {
+    Hello
+};
+===
+Root@0..19
+  ExprStmt@0..19
+    EnumDecl@0..18
+      Enum@0..4 "enum"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      Whitespace@6..11 "\n    "
+      VariantDecl@11..16
+        Ident@11..16 "Hello"
+      Whitespace@16..17 "\n"
+      RBrace@17..18 "}"
+    Semicolon@18..19 ";"

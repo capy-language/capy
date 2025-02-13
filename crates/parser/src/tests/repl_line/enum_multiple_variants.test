@@ -1,0 +1,148 @@
+enum {
+    Ok,
+    Err | 4,
+    Int: i32,
+    Float: f64 | 4 + 1,
+    Add: struct {
+        left: ^Expr,
+        right: ^Expr,
+    },
+    Print: struct {
+        val: Expr,
+        pretty_print: bool,
+    } | comptime 4 * 2,
+}
+===
+Root@0..226
+  ExprStmt@0..226
+    EnumDecl@0..226
+      Enum@0..4 "enum"
+      Whitespace@4..5 " "
+      LBrace@5..6 "{"
+      Whitespace@6..11 "\n    "
+      VariantDecl@11..13
+        Ident@11..13 "Ok"
+      Comma@13..14 ","
+      Whitespace@14..19 "\n    "
+      VariantDecl@19..26
+        Ident@19..22 "Err"
+        Whitespace@22..23 " "
+        Discriminant@23..26
+          Pipe@23..24 "|"
+          Whitespace@24..25 " "
+          IntLiteral@25..26
+            Int@25..26 "4"
+      Comma@26..27 ","
+      Whitespace@27..32 "\n    "
+      VariantDecl@32..40
+        Ident@32..35 "Int"
+        Colon@35..36 ":"
+        Whitespace@36..37 " "
+        Ty@37..40
+          VarRef@37..40
+            Ident@37..40 "i32"
+      Comma@40..41 ","
+      Whitespace@41..46 "\n    "
+      VariantDecl@46..64
+        Ident@46..51 "Float"
+        Colon@51..52 ":"
+        Whitespace@52..53 " "
+        Ty@53..56
+          VarRef@53..56
+            Ident@53..56 "f64"
+        Whitespace@56..57 " "
+        Discriminant@57..64
+          Pipe@57..58 "|"
+          Whitespace@58..59 " "
+          BinaryExpr@59..64
+            IntLiteral@59..60
+              Int@59..60 "4"
+            Whitespace@60..61 " "
+            Plus@61..62 "+"
+            Whitespace@62..63 " "
+            IntLiteral@63..64
+              Int@63..64 "1"
+      Comma@64..65 ","
+      Whitespace@65..70 "\n    "
+      VariantDecl@70..132
+        Ident@70..73 "Add"
+        Colon@73..74 ":"
+        Whitespace@74..75 " "
+        Ty@75..132
+          StructDecl@75..132
+            Struct@75..81 "struct"
+            Whitespace@81..82 " "
+            LBrace@82..83 "{"
+            Whitespace@83..92 "\n        "
+            MemberDecl@92..103
+              Ident@92..96 "left"
+              Colon@96..97 ":"
+              Whitespace@97..98 " "
+              Ty@98..103
+                RefExpr@98..103
+                  Caret@98..99 "^"
+                  VarRef@99..103
+                    Ident@99..103 "Expr"
+            Comma@103..104 ","
+            Whitespace@104..113 "\n        "
+            MemberDecl@113..125
+              Ident@113..118 "right"
+              Colon@118..119 ":"
+              Whitespace@119..120 " "
+              Ty@120..125
+                RefExpr@120..125
+                  Caret@120..121 "^"
+                  VarRef@121..125
+                    Ident@121..125 "Expr"
+            Comma@125..126 ","
+            Whitespace@126..131 "\n    "
+            RBrace@131..132 "}"
+      Comma@132..133 ","
+      Whitespace@133..138 "\n    "
+      VariantDecl@138..223
+        Ident@138..143 "Print"
+        Colon@143..144 ":"
+        Whitespace@144..145 " "
+        Ty@145..206
+          StructDecl@145..206
+            Struct@145..151 "struct"
+            Whitespace@151..152 " "
+            LBrace@152..153 "{"
+            Whitespace@153..162 "\n        "
+            MemberDecl@162..171
+              Ident@162..165 "val"
+              Colon@165..166 ":"
+              Whitespace@166..167 " "
+              Ty@167..171
+                VarRef@167..171
+                  Ident@167..171 "Expr"
+            Comma@171..172 ","
+            Whitespace@172..181 "\n        "
+            MemberDecl@181..199
+              Ident@181..193 "pretty_print"
+              Colon@193..194 ":"
+              Whitespace@194..195 " "
+              Ty@195..199
+                VarRef@195..199
+                  Ident@195..199 "bool"
+            Comma@199..200 ","
+            Whitespace@200..205 "\n    "
+            RBrace@205..206 "}"
+        Whitespace@206..207 " "
+        Discriminant@207..223
+          Pipe@207..208 "|"
+          Whitespace@208..209 " "
+          ComptimeExpr@209..223
+            Comptime@209..217 "comptime"
+            Whitespace@217..218 " "
+            BinaryExpr@218..223
+              IntLiteral@218..219
+                Int@218..219 "4"
+              Whitespace@219..220 " "
+              Asterisk@220..221 "*"
+              Whitespace@221..222 " "
+              IntLiteral@222..223
+                Int@222..223 "2"
+      Comma@223..224 ","
+      Whitespace@224..225 "\n"
+      RBrace@225..226 "}"

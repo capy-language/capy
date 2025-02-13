@@ -1,9 +1,9 @@
 // I was using `topological_sort::TopilogicalSort` but it didn't have all the features I needed so
 // I implemented it myself
 
-use std::{collections::hash_map::Entry, hash::Hash};
+use std::hash::Hash;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use indexmap::{map::Entry, IndexMap, IndexSet};
 
 #[derive(Debug)]
 pub struct CycleErr;
@@ -11,7 +11,7 @@ pub struct CycleErr;
 #[derive(Debug, Clone)]
 struct Dependencies<T> {
     num_children: usize,
-    parents: FxHashSet<T>,
+    parents: IndexSet<T>,
 }
 
 impl<T: Hash + Eq> Dependencies<T> {
@@ -25,13 +25,13 @@ impl<T: Hash + Eq> Dependencies<T> {
 
 #[derive(Debug, Clone)]
 pub struct TopoSort<T> {
-    top: FxHashMap<T, Dependencies<T>>,
+    top: IndexMap<T, Dependencies<T>>,
 }
 
 impl<T> Default for TopoSort<T> {
     fn default() -> Self {
         TopoSort {
-            top: FxHashMap::default(),
+            top: IndexMap::default(),
         }
     }
 }
@@ -133,12 +133,10 @@ impl<T: Hash + Eq + Clone> TopoSort<T> {
 
     /// Removes the first item with no open dependencies.
     pub fn pop(&mut self) -> Option<Result<T, CycleErr>> {
-        self.peek().map(|key| key.cloned()).map(|key| {
+        self.peek().map(|key| key.cloned()).inspect(|key| {
             if let Ok(key) = &key {
                 self.remove(key);
             }
-
-            key
         })
     }
 
@@ -146,12 +144,10 @@ impl<T: Hash + Eq + Clone> TopoSort<T> {
     pub fn pop_all(&mut self) -> Result<Vec<T>, CycleErr> {
         self.peek_all()
             .map(|keys| keys.into_iter().cloned().collect())
-            .map(|keys| {
-                for key in &keys {
+            .inspect(|keys| {
+                for key in keys {
                     self.remove(key);
                 }
-
-                keys
             })
     }
 
@@ -253,7 +249,8 @@ impl<T: Hash + Eq + Clone> TopoSort<T> {
 
     /// Removes a dependency from the list, returns true if the dependency existed
     pub fn remove(&mut self, child: &T) -> bool {
-        let result = self.top.remove(child);
+        // todo: maybe replace this with swap_remove
+        let result = self.top.shift_remove(child);
 
         if let Some(ref p) = result {
             for s in &p.parents {

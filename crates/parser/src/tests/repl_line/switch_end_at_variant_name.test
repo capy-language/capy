@@ -1,0 +1,22 @@
+switch foo in bar {
+    Cat
+===
+Root@0..27
+  ExprStmt@0..27
+    SwitchExpr@0..27
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..17
+        Ident@14..17 "bar"
+      Whitespace@17..18 " "
+      LBrace@18..19 "{"
+      Whitespace@19..24 "\n    "
+      SwitchArm@24..27
+        Ident@24..27 "Cat"
+error at 27: missing FatArrow
+error at 27: missing switch arm
+error at 27: missing RBrace

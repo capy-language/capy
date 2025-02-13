@@ -9,8 +9,8 @@ edition = "2021"
 ast = { path = "../ast" }
 la-arena = "0.3"
 interner = { path = "../interner" }
-rustc-hash = "1.1"
-smol_str = "0.2"
+rustc-hash = "2.1"
+smol_str = "0.3.2"
 syntax = { path = "../syntax" }
 text-size = "1.1"
 regex = "1.9.4"

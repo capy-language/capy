@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustc-hash = "1.1"
+indexmap = "2.7.1"
 
 [dev-dependencies]
-itertools = "0.13.0"
+itertools = "0.14.0"

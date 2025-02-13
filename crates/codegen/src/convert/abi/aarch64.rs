@@ -1,6 +1,6 @@
 // TODO: other kinds of aarch64 abis then apple
 
-use cranelift::prelude::types::{I128, I16, I32, I64, I8};
+use cranelift::prelude::types::{I128, I64};
 use hir_ty::Ty;
 use internment::Intern;
 use tinyvec::ArrayVec;
@@ -11,17 +11,17 @@ use super::{FnAbi, PassMode};
 
 /// "A Homogeneous Floating-point Aggregate (HFA) is a Homogeneous Aggregate with a Fundamental Data Type that is a Floating-Point type and at most four uniquely addressable members."
 pub fn is_hfa(ty: Intern<Ty>) -> Option<PassMode> {
-    if let Some(fields) = ty.as_struct() {
+    if let Some(members) = ty.as_struct() {
         let mut tys = ArrayVec::new();
-        let ty = fields[0].1;
-        if fields.len() > 4 {
+        let ty = members[0].ty;
+        if members.len() > 4 {
             None
         } else {
-            for (_, field_ty) in fields {
-                if field_ty != ty || !field_ty.is_float() {
+            for member in members {
+                if member.ty != ty || !member.ty.is_float() {
                     return None;
                 }
-                tys.push(field_ty.get_final_ty().into_real_type().unwrap());
+                tys.push(member.ty.get_final_ty().into_real_type().unwrap());
             }
             Some(PassMode::cast(tys, ty))
         }

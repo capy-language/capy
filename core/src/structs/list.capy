@@ -32,7 +32,7 @@ make_with_capacity :: (ty: type, cap: usize) -> List {
         core.panic_with("overflow when trying to allocate the backing array of a list");
     }
 
-    buf := libc.malloc(raw_cap) as ^mut char;
+    buf := (^mut char).(libc.malloc(raw_cap));
 
     if cap > 0 && ptr.is_null(buf) {
         core.panic_with("Error allocating the List");
@@ -130,7 +130,7 @@ _grow_by :: (list: ^mut List, len: usize) {
 	    core.panic_with("overflow when trying to grow list");
 	}
 	
-        list.buf = libc.realloc(list.buf, new_cap_raw) as ^mut char;
+        list.buf = (^mut char).(libc.realloc(list.buf, new_cap_raw));
         list.cap = new_cap;
     }
 }

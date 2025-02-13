@@ -1,0 +1,16 @@
+switch foo in some_enum {}
+===
+Root@0..26
+  ExprStmt@0..26
+    SwitchExpr@0..26
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..23
+        Ident@14..23 "some_enum"
+      Whitespace@23..24 " "
+      LBrace@24..25 "{"
+      RBrace@25..26 "}"

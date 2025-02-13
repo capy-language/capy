@@ -168,7 +168,7 @@ impl FnAbi {
                 // FIXME: this is a hack that won't work for `ptr_width` sized scalars passed on the stack
                 PassMode::Indirect(sz)
                     if (arg_type.is_float() || arg_type.is_int())
-                        && !(arg_type.bits() == func_cmplr.ptr_ty.bits()) =>
+                        && (arg_type.bits() != func_cmplr.ptr_ty.bits()) =>
                 {
                     let sz = sz.unwrap_or(arg_type.bytes() as usize);
                     let slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {

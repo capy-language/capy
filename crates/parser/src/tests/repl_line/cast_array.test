@@ -1,0 +1,20 @@
+[10]i32.(my_array)
+===
+Root@0..18
+  ExprStmt@0..18
+    CastExpr@0..18
+      Ty@0..7
+        ArrayDecl@0..7
+          ArraySize@0..4
+            LBrack@0..1 "["
+            IntLiteral@1..3
+              Int@1..3 "10"
+            RBrack@3..4 "]"
+          Ty@4..7
+            VarRef@4..7
+              Ident@4..7 "i32"
+      Dot@7..8 "."
+      LParen@8..9 "("
+      VarRef@9..17
+        Ident@9..17 "my_array"
+      RParen@17..18 ")"

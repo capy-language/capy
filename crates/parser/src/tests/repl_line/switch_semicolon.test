@@ -1,0 +1,25 @@
+{
+    switch foo {};
+    5
+}
+===
+Root@0..28
+  ExprStmt@0..28
+    Block@0..28
+      LBrace@0..1 "{"
+      Whitespace@1..6 "\n    "
+      ExprStmt@6..19
+        SwitchExpr@6..19
+          Switch@6..12 "switch"
+          Whitespace@12..13 " "
+          VarRef@13..16
+            Ident@13..16 "foo"
+          Whitespace@16..17 " "
+          LBrace@17..18 "{"
+          RBrace@18..19 "}"
+      Semicolon@19..20 ";"
+      Whitespace@20..25 "\n    "
+      IntLiteral@25..26
+        Int@25..26 "5"
+      Whitespace@26..27 "\n"
+      RBrace@27..28 "}"

@@ -1,0 +1,55 @@
+switch foo in animal_enum {
+    Dog => foo
+    Cat => "hello"
+    Turtle => 2 * 10
+}
+===
+Root@0..84
+  ExprStmt@0..84
+    SwitchExpr@0..84
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..25
+        Ident@14..25 "animal_enum"
+      Whitespace@25..26 " "
+      LBrace@26..27 "{"
+      Whitespace@27..32 "\n    "
+      SwitchArm@32..42
+        Ident@32..35 "Dog"
+        Whitespace@35..36 " "
+        FatArrow@36..38 "=>"
+        Whitespace@38..39 " "
+        VarRef@39..42
+          Ident@39..42 "foo"
+      Whitespace@42..47 "\n    "
+      SwitchArm@47..61
+        Ident@47..50 "Cat"
+        Whitespace@50..51 " "
+        FatArrow@51..53 "=>"
+        Whitespace@53..54 " "
+        StringLiteral@54..61
+          DoubleQuote@54..55 "\""
+          StringContents@55..60 "hello"
+          DoubleQuote@60..61 "\""
+      Whitespace@61..66 "\n    "
+      SwitchArm@66..82
+        Ident@66..72 "Turtle"
+        Whitespace@72..73 " "
+        FatArrow@73..75 "=>"
+        Whitespace@75..76 " "
+        BinaryExpr@76..82
+          IntLiteral@76..77
+            Int@76..77 "2"
+          Whitespace@77..78 " "
+          Asterisk@78..79 "*"
+          Whitespace@79..80 " "
+          IntLiteral@80..82
+            Int@80..82 "10"
+      Whitespace@82..83 "\n"
+      RBrace@83..84 "}"
+error at 42: missing Comma
+error at 61: missing Comma

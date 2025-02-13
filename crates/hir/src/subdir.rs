@@ -16,7 +16,7 @@ impl SubDir for Path {
 
         base.components()
             .filter(filter)
-            .all(|base| sub.next().map_or(false, |sub| sub == base))
+            .all(|base| sub.next().is_some_and(|sub| sub == base))
     }
 
     fn get_sub_dir_divergence(&self, base: &Self) -> Option<String> {

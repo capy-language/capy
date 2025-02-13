@@ -1,0 +1,12 @@
+switch foo {}
+===
+Root@0..13
+  ExprStmt@0..13
+    SwitchExpr@0..13
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      VarRef@7..10
+        Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      LBrace@11..12 "{"
+      RBrace@12..13 "}"

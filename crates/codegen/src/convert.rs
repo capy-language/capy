@@ -87,7 +87,7 @@ struct FinalTys {
     finals: FxHashMap<Intern<Ty>, FinalTy>,
 }
 
-static mut FINAL_TYS: Mutex<OnceCell<FinalTys>> = Mutex::new(OnceCell::new());
+static FINAL_TYS: Mutex<OnceCell<FinalTys>> = Mutex::new(OnceCell::new());
 
 pub(crate) trait GetFinalTy {
     fn get_final_ty(&self) -> FinalTy;
@@ -95,7 +95,7 @@ pub(crate) trait GetFinalTy {
 
 impl GetFinalTy for Intern<Ty> {
     fn get_final_ty(&self) -> FinalTy {
-        unsafe { FINAL_TYS.lock() }.unwrap().get().unwrap().finals[self]
+        FINAL_TYS.lock().unwrap().get().unwrap().finals[self]
     }
 }
 
@@ -112,7 +112,7 @@ pub(crate) fn calc_finals(tys: impl Iterator<Item = Intern<Ty>>, ptr_ty: types::
     };
 
     {
-        let layouts = unsafe { FINAL_TYS.lock() }.unwrap();
+        let layouts = FINAL_TYS.lock().unwrap();
         let layout = layouts.get_or_init(init);
         if layout.ptr_bit_width != ptr_ty.bits() {
             layouts.set(init()).unwrap();
@@ -124,7 +124,7 @@ pub(crate) fn calc_finals(tys: impl Iterator<Item = Intern<Ty>>, ptr_ty: types::
     }
 
     {
-        let mut finals = unsafe { FINAL_TYS.lock() }.unwrap();
+        let mut finals = FINAL_TYS.lock().unwrap();
         let finals = finals.get_mut().unwrap();
         finals.finals.shrink_to_fit();
     }
@@ -132,7 +132,7 @@ pub(crate) fn calc_finals(tys: impl Iterator<Item = Intern<Ty>>, ptr_ty: types::
 
 fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
     {
-        let finals = unsafe { FINAL_TYS.lock() }.unwrap();
+        let finals = FINAL_TYS.lock().unwrap();
         let finals = finals.get().unwrap();
         if finals.finals.contains_key(&ty) {
             return;
@@ -238,10 +238,20 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             FinalTy::Pointer(ptr_ty)
         }
         hir_ty::Ty::Struct { members, .. } => {
-            for (_, ty) in members {
-                calc_single(*ty, ptr_ty);
+            for member in members {
+                calc_single(member.ty, ptr_ty);
             }
             FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Enum { variants, .. } => {
+            for variant in variants {
+                calc_single(*variant, ptr_ty);
+            }
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Variant { sub_ty, .. } => {
+            calc_single(*sub_ty, ptr_ty);
+            sub_ty.get_final_ty()
         }
         hir_ty::Ty::Type => FinalTy::Number(NumberType {
             ty: types::I32,
@@ -256,7 +266,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
     };
 
     {
-        let mut finals = unsafe { FINAL_TYS.lock() }.unwrap();
+        let mut finals = FINAL_TYS.lock().unwrap();
         let finals = finals.get_mut().unwrap();
         finals.finals.insert(ty, final_ty);
     }
@@ -278,6 +288,8 @@ pub(crate) const ARRAY_DISCRIMINANT: u32 = 18;
 pub(crate) const SLICE_DISCRIMINANT: u32 = 19;
 pub(crate) const POINTER_DISCRIMINANT: u32 = 20;
 pub(crate) const FUNCTION_DISCRIMINANT: u32 = 21;
+pub(crate) const ENUM_DISCRIMINANT: u32 = 22;
+pub(crate) const VARIANT_DISCRIMINANT: u32 = 23;
 
 fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
     // the last 6 bits are reserved for the discriminant
@@ -440,13 +452,60 @@ impl ToTyId for Intern<Ty> {
                     .find(|(_, other_ty)| self.is_equal_to(other_ty))
                     .map(|(idx, _)| idx as u32)
                     .unwrap_or_else(|| {
-                        for (_, member) in members {
+                        for member in members {
                             // make sure to compile the sub type too
-                            member.to_type_id(meta_tys, pointer_ty);
+                            member.ty.to_type_id(meta_tys, pointer_ty);
                         }
 
                         meta_tys.tys_to_compile.push(self);
                         meta_tys.struct_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Enum { variants, .. } => {
+                let id = ENUM_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Enum { .. }))
+                    .enumerate()
+                    // `is_equal_to` takes care of the difference between anonymous structs and
+                    // strong structs
+                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        for variant in variants {
+                            // make sure to compile the sub type too
+                            variant.to_type_id(meta_tys, pointer_ty);
+                        }
+
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.enum_uid_gen.generate_unique_id()
+                    });
+
+                return id | list_id;
+            }
+            Ty::Variant { uid, sub_ty, .. } => {
+                let id = VARIANT_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter_map(|ty| match ty.as_ref() {
+                        Ty::Variant { uid, .. } => Some(*uid),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .find(|(_, other_uid)| other_uid == uid)
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap_or_else(|| {
+                        // make sure to compile the sub type too
+                        sub_ty.to_type_id(meta_tys, pointer_ty);
+
+                        meta_tys.tys_to_compile.push(self);
+                        meta_tys.variant_uid_gen.generate_unique_id()
                     });
 
                 return id | list_id;
@@ -571,6 +630,37 @@ impl ToTyId for Intern<Ty> {
                     .filter(|ty| matches!(ty.as_ref(), Ty::Struct { .. }))
                     .enumerate()
                     .find(|(_, other_ty)| self.is_equal_to(other_ty))
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
+
+                id | list_id
+            }
+            Ty::Enum { .. } => {
+                let id = ENUM_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter(|ty| matches!(ty.as_ref(), Ty::Enum { .. }))
+                    .enumerate()
+                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
+                    .map(|(idx, _)| idx as u32)
+                    .unwrap();
+
+                id | list_id
+            }
+            Ty::Variant { uid, .. } => {
+                let id = VARIANT_DISCRIMINANT << 26;
+
+                let list_id = meta_tys
+                    .tys_to_compile
+                    .iter()
+                    .filter_map(|ty| match ty.as_ref() {
+                        Ty::Variant { uid, .. } => Some(*uid),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .find(|(_, other_uid)| other_uid == uid)
                     .map(|(idx, _)| idx as u32)
                     .unwrap();
 

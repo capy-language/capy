@@ -15,12 +15,12 @@ mut_offset :: (ptr: ^mut any, offset: usize) -> ^mut any {
 }
 
 read :: (ptr: ^any, offset: usize) -> u8 {
-    plus_offset := const_offset(ptr, offset) as ^u8;
+    plus_offset := (^u8).(const_offset(ptr, offset));
     plus_offset^
 }
 
 write :: (ptr: ^mut any, byte: u8, offset: usize) {
-    plus_offset := mut_offset(ptr, offset) as ^mut u8;
+    plus_offset := (^mut u8).(mut_offset(ptr, offset));
     plus_offset^ = byte;
 }
 
@@ -56,5 +56,5 @@ slice_from_raw_parts :: (ptr: ^any, len: usize) -> [] any {
         ptr = ptr,
     };
 
-    (^raw as ^any as ^[]any)^
+    (^[]any).((^any).(^raw))^
 }

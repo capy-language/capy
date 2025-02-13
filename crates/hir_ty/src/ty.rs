@@ -1,6 +1,33 @@
+use std::sync::LazyLock;
+
 use hir::{PrimitiveTy, UnaryOp};
 use internment::Intern;
 use rustc_hash::FxHashMap;
+
+// Some commonly used types, defined in LazyLocks so that `.into()` is only called once
+
+/// i0 represents ANY signed integer type `{int}`
+pub static I0: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::IInt(0).into());
+pub static I32: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::IInt(32).into());
+
+/// u0 represents ANY unsigned integer type `{uint}`
+pub static U0: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::UInt(0).into());
+pub static U8: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::UInt(8).into());
+pub static U32: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::UInt(32).into());
+pub static USIZE: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::UInt(u8::MAX).into());
+
+/// f0 represents ANY float type `{float}`
+pub static F0: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Float(0).into());
+pub static F32: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Float(32).into());
+pub static F64: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Float(64).into());
+
+pub static BOOL: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Bool.into());
+pub static STRING: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::String.into());
+pub static CHAR: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Char.into());
+pub static META_TYPE: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Type.into());
+pub static ANY: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Any.into());
+pub static VOID: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::Void.into());
+pub static NO_EVAL: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::NoEval.into());
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum Ty {
@@ -38,24 +65,54 @@ pub enum Ty {
     Type,
     Any,
     File(hir::FileName),
-    // this is only ever used for functions defined locally
+    /// this is only ever used for functions defined locally
     Function {
         param_tys: Vec<Intern<Ty>>,
         return_ty: Intern<Ty>,
     },
     Struct {
-        // if anonymous is set to `true`, `uid` is useless
+        /// if anonymous is set to `true`, `uid` is useless
         anonymous: bool,
         fqn: Option<hir::Fqn>,
         uid: u32,
-        members: Vec<(hir::Name, Intern<Ty>)>,
+        members: Vec<MemberTy>,
+    },
+    Enum {
+        fqn: Option<hir::Fqn>,
+        uid: u32,
+        /// this is always an array of `Ty::Variant`s
+        variants: Vec<Intern<Ty>>,
+    },
+    /// An enum variant is very similar to a distinct type.
+    /// the main difference is more strict autocasting rules,
+    /// and more information in the type related to the enum
+    /// (like the enum's fqn and the discriminant)
+    Variant {
+        enum_fqn: Option<hir::Fqn>,
+        enum_uid: u32,
+        variant_name: hir::Name,
+        uid: u32,
+        sub_ty: Intern<Ty>,
+        discriminant: u64,
     },
     Void,
-    // only used for blocks that always break.
-    // kind of like a "noreturn" type.
-    // the block will never reach it's own end,
-    // but the blocks above it might reach theirs.
+    /// only used for blocks that always break.
+    /// kind of like a "noreturn" type.
+    /// the block will never reach it's own end,
+    /// but the blocks above it might reach theirs.
+    ///
+    /// I think there was a specific reason I didn't name it `noreturn`
+    /// but I can't remember atm.
     NoEval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MemberTy {
+    /// members without names are filtered out in hir_ty
+    /// because they don't matter for type checking.
+    /// we can't do anything with them
+    pub name: hir::Name,
+    pub ty: Intern<Ty>,
 }
 
 pub(crate) struct BinaryOutputTy {
@@ -96,146 +153,135 @@ impl Ty {
             Ty::Any => false,
             Ty::File(_) => false,
             Ty::Function { .. } => false,
-            Ty::Struct { members, .. } => members.iter().all(|(_, ty)| ty.has_default_value()),
+            Ty::Struct { members, .. } => members
+                .iter()
+                .all(|MemberTy { ty, .. }| ty.has_default_value()),
+            // todo: create an @(default) annotation that allows you to set a default variant
+            Ty::Enum { .. } => false,
+            Ty::Variant { sub_ty, .. } => sub_ty.has_default_value(),
             Ty::Void => true,
             Ty::NoEval => true,
         }
     }
 
+    /// Returns the "absolute" type.
+    /// If the type is distinct, it will return the true underlying type.
+    /// If `unwrap_variants` is true, then this function will also return the
+    /// underlying type of `Ty::Variant`s
+    pub fn absolute_ty(&self) -> &Self {
+        let mut curr_ty = self;
+
+        loop {
+            match curr_ty {
+                Ty::Variant { sub_ty, .. } => curr_ty = sub_ty.absolute_ty(),
+                Ty::Distinct { sub_ty, .. } => curr_ty = sub_ty.absolute_ty(),
+                _ => return curr_ty,
+            }
+        }
+    }
+
     /// If self is a struct, this returns the fields
-    pub fn as_struct(&self) -> Option<Vec<(hir::Name, Intern<Ty>)>> {
-        match self {
+    pub fn as_struct(&self) -> Option<Vec<MemberTy>> {
+        match self.absolute_ty() {
             Ty::Struct { members, .. } => Some(members.clone()),
-            Ty::Distinct { sub_ty, .. } => sub_ty.as_struct(),
             _ => None,
         }
     }
 
     /// If self is a function, this returns the parameters and return type
     pub fn as_function(&self) -> Option<(Vec<Intern<Ty>>, Intern<Ty>)> {
-        match self {
+        match self.absolute_ty() {
             Ty::Function {
                 param_tys: params,
                 return_ty,
             } => Some((params.clone(), *return_ty)),
-            Ty::Distinct { sub_ty, .. } => sub_ty.as_function(),
             _ => None,
         }
     }
 
     /// If self is a pointer, this returns the mutability and sub type
     pub fn as_pointer(&self) -> Option<(bool, Intern<Ty>)> {
-        match self {
+        match self.absolute_ty() {
             Ty::Pointer { mutable, sub_ty } => Some((*mutable, *sub_ty)),
-            Ty::Distinct { sub_ty, .. } => sub_ty.as_pointer(),
             _ => None,
         }
     }
 
     /// If self is an array, this returns the length and sub type
     pub fn as_array(&self) -> Option<(u64, Intern<Ty>)> {
-        match self {
+        match self.absolute_ty() {
             Ty::Array { size, sub_ty, .. } => Some((*size, *sub_ty)),
-            Ty::Distinct { sub_ty, .. } => sub_ty.as_array(),
             _ => None,
         }
     }
 
     /// If self is a slice, this returns the sub type
     pub fn as_slice(&self) -> Option<Intern<Ty>> {
-        match self {
+        match self.absolute_ty() {
             Ty::Slice { sub_ty } => Some(*sub_ty),
-            Ty::Distinct { sub_ty, .. } => sub_ty.as_slice(),
             _ => None,
         }
     }
 
     pub fn is_any_type(&self) -> bool {
-        match self {
-            Ty::Any => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_any_type(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Any)
     }
 
     pub fn is_aggregate(&self) -> bool {
-        match self {
-            Ty::Struct { .. } => true,
-            Ty::Array { .. } => true,
-            Ty::Slice { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_aggregate(),
-            _ => false,
-        }
+        matches!(
+            self.absolute_ty(),
+            Ty::Struct { .. } | Ty::Enum { .. } | Ty::Array { .. } | Ty::Slice { .. }
+        )
     }
 
     pub fn is_array(&self) -> bool {
-        match self {
-            Ty::Array { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_array(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Array { .. })
     }
 
     pub fn is_slice(&self) -> bool {
-        match self {
-            Ty::Slice { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_slice(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Slice { .. })
     }
 
     pub fn is_pointer(&self) -> bool {
-        match self {
-            Ty::Pointer { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_pointer(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Pointer { .. })
     }
 
     pub fn is_function(&self) -> bool {
-        match self {
-            Ty::Function { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_function(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Function { .. })
     }
 
     pub fn is_struct(&self) -> bool {
-        match self {
-            Ty::Struct { .. } => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_struct(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Struct { .. })
     }
 
     /// Returns `true` if the struct contains only a `^any` and a `type`
     pub fn is_any_struct(&self) -> bool {
-        match self {
+        match self.absolute_ty() {
             Ty::Struct { members, .. } => {
                 if members.len() != 2 {
                     return false;
                 }
 
                 matches!(
-                    (members[0].1.as_ref(), members[1].1.as_ref()),
+                    (members[0].ty.as_ref(), members[1].ty.as_ref()),
                     (Ty::Pointer { sub_ty, .. }, Ty::Type) | (Ty::Type, Ty::Pointer { sub_ty, mutable: false })
-                        if matches!(sub_ty.as_ref(), Ty::Any))
+                        if **sub_ty == Ty::Any
+                )
             }
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_any_struct(),
             _ => false,
         }
     }
 
     /// returns true if the type is zero-sized
     pub fn is_zero_sized(&self) -> bool {
-        match self {
+        match self.absolute_ty() {
             Ty::NotYetResolved | Ty::Unknown => true,
             Ty::Void => true,
             Ty::File(_) => true,
             Ty::NoEval => true,
             Ty::Array { size, sub_ty, .. } => *size == 0 || sub_ty.is_zero_sized(),
             Ty::Struct { members, .. } => {
-                members.is_empty() || members.iter().all(|(_, ty)| ty.is_zero_sized())
+                members.is_empty() || members.iter().all(|MemberTy { ty, .. }| ty.is_zero_sized())
             }
             Ty::Distinct { sub_ty: ty, .. } => ty.is_zero_sized(),
             _ => false,
@@ -243,37 +289,26 @@ impl Ty {
     }
 
     pub fn is_void(&self) -> bool {
-        match self {
-            Ty::Void => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_void(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Void)
     }
 
     pub fn is_int(&self) -> bool {
-        match self {
-            Ty::IInt(_) | Ty::UInt(_) => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_int(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::IInt(_) | Ty::UInt(_))
     }
-    
+
     pub fn is_float(&self) -> bool {
-        match self {
-            Ty::Float(_) => true,
-            Ty::Distinct { sub_ty, .. } => sub_ty.is_float(),
-            _ => false,
-        }
+        matches!(self.absolute_ty(), Ty::Float(_))
     }
 
     /// returns true if the type is unknown, or contains unknown, or is an unknown array, etc.
     pub fn is_unknown(&self) -> bool {
+        // todo: make this iterative like `Ty::absolute_ty()`
         match self {
             Ty::NotYetResolved => true,
             Ty::Unknown => true,
             Ty::Pointer { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Array { sub_ty, .. } => sub_ty.is_unknown(),
-            Ty::Struct { members, .. } => members.iter().any(|(_, ty)| ty.is_unknown()),
+            Ty::Struct { members, .. } => members.iter().any(|MemberTy { ty, .. }| ty.is_unknown()),
             Ty::Distinct { sub_ty, .. } => sub_ty.is_unknown(),
             Ty::Function {
                 param_tys,
@@ -283,6 +318,9 @@ impl Ty {
         }
     }
 
+    /// I wrote this so that anonymous structs with different uid's but identical fields are considered equal
+    ///
+    /// Returns true if the bytes of one type would perfectly fit into the bytes of another type
     pub fn is_equal_to(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -343,11 +381,12 @@ impl Ty {
                 },
             ) => {
                 first_members.len() == second_members.len()
-                    && first_members.iter().zip(second_members.iter()).all(
-                        |((first_name, first_ty), (second_name, second_ty))| {
-                            first_name == second_name && first_ty.is_equal_to(second_ty)
-                        },
-                    )
+                    && first_members
+                        .iter()
+                        .zip(second_members.iter())
+                        .all(|(first, second)| {
+                            first.name == second.name && first.ty.is_equal_to(&second.ty)
+                        })
             }
             (
                 Ty::Struct {
@@ -361,6 +400,8 @@ impl Ty {
                     ..
                 },
             ) => first_uid == second_uid,
+            (Ty::Enum { uid: first, .. }, Ty::Enum { uid: second, .. }) => first == second,
+            (Ty::Variant { uid: first, .. }, Ty::Variant { uid: second, .. }) => first == second,
             _ => self == other,
         }
     }
@@ -435,12 +476,13 @@ impl Ty {
                 },
             ) => {
                 first_members.len() == second_members.len()
-                    && first_members.iter().zip(second_members.iter()).all(
-                        |((first_name, first_ty), (second_name, second_ty))| {
-                            first_name == second_name
-                                && first_ty.is_functionally_equivalent_to(second_ty, two_way)
-                        },
-                    )
+                    && first_members
+                        .iter()
+                        .zip(second_members.iter())
+                        .all(|(first, second)| {
+                            first.name == second.name
+                                && first.ty.is_functionally_equivalent_to(&second.ty, two_way)
+                        })
             }
             (first, second) => first.is_equal_to(second),
         }
@@ -710,9 +752,12 @@ impl Ty {
                     return false;
                 }
 
-                let expected_members: FxHashMap<_, _> = expected_members.iter().copied().collect();
+                let expected_members: FxHashMap<_, _> = expected_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
 
-                for (name, found_ty) in found_members {
+                for MemberTy { name, ty: found_ty } in found_members {
                     let Some(expected_ty) = expected_members.get(name) else {
                         return false;
                     };
@@ -722,7 +767,10 @@ impl Ty {
                     }
                 }
 
-                let found_members: FxHashMap<_, _> = found_members.iter().copied().collect();
+                let found_members: FxHashMap<_, _> = found_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
 
                 for (name, _) in expected_members {
                     if !found_members.contains_key(&name) {
@@ -739,6 +787,13 @@ impl Ty {
                 },
             ) => found_uid == expected_uid,
             (found, Ty::Distinct { sub_ty: ty, .. }) => found.can_fit_into(ty),
+            (
+                Ty::Variant { uid: found_uid, .. },
+                Ty::Variant {
+                    uid: expected_uid, ..
+                },
+            ) => found_uid == expected_uid,
+            (Ty::Variant { enum_uid, .. }, Ty::Enum { uid, .. }) => enum_uid == uid,
             (found, expected) => found.is_functionally_equivalent_to(expected, false),
         }
     }
@@ -756,11 +811,22 @@ impl Ty {
                 Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
                 Ty::Bool | Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Char,
             ) => true,
+
+            // distincts
             (Ty::Distinct { sub_ty: from, .. }, Ty::Distinct { sub_ty: to, .. }) => {
                 from.can_cast_to(to)
             }
             (Ty::Distinct { sub_ty: from, .. }, to) => from.can_cast_to(to),
             (from, Ty::Distinct { sub_ty: to, .. }) => from.can_cast_to(to),
+
+            // variants
+            (Ty::Variant { sub_ty: from, .. }, Ty::Variant { sub_ty: to, .. }) => {
+                from.can_cast_to(to)
+            }
+            (Ty::Variant { sub_ty: from, .. }, to) => from.can_cast_to(to),
+            (from, Ty::Variant { sub_ty: to, .. }) => from.can_cast_to(to),
+
+            // pointers
             (
                 Ty::Pointer {
                     mutable: found_mutable,
@@ -823,9 +889,12 @@ impl Ty {
                     return false;
                 }
 
-                let expected_members: FxHashMap<_, _> = expected_members.iter().copied().collect();
+                let expected_members: FxHashMap<_, _> = expected_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
 
-                for (name, found_ty) in found_members {
+                for MemberTy { name, ty: found_ty } in found_members {
                     let Some(expected_ty) = expected_members.get(name) else {
                         return false;
                     };
@@ -835,7 +904,10 @@ impl Ty {
                     }
                 }
 
-                let found_members: FxHashMap<_, _> = found_members.iter().copied().collect();
+                let found_members: FxHashMap<_, _> = found_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
 
                 for (name, _) in expected_members {
                     if !found_members.contains_key(&name) {
@@ -910,19 +982,19 @@ impl Ty {
             (Ty::Float(0), Ty::Float(bit_width)) => *bit_width != 0,
             (
                 Ty::Array {
-                    anonymous: first_anon,
+                    anonymous: true,
                     size: found_size,
                     sub_ty: found_sub_ty,
                 },
                 Ty::Array {
-                    anonymous: second_anon,
+                    anonymous: false,
                     size: expected_size,
                     sub_ty: expected_sub_ty,
                 },
             ) => {
-                (*first_anon || !second_anon)
-                    && found_size == expected_size
-                    && found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
+                found_size == expected_size
+                    && (found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
+                        || found_sub_ty.is_equal_to(expected_sub_ty))
             }
             (
                 Ty::Pointer {
@@ -958,15 +1030,22 @@ impl Ty {
 }
 
 pub trait InternTyExt {
-    fn remove_distinct(self) -> Intern<Ty>;
+    fn absolute_intern_ty(self, unwrap_variants: bool) -> Intern<Ty>;
 }
 
 impl InternTyExt for Intern<Ty> {
-    #[inline]
-    fn remove_distinct(self) -> Intern<Ty> {
-        match self.as_ref() {
-            Ty::Distinct { sub_ty, .. } => sub_ty.remove_distinct(),
-            _ => self,
+    /// The same as `Ty::absolute_ty` except that it returns `Intern<Ty>`
+    fn absolute_intern_ty(self, unwrap_variants: bool) -> Intern<Ty> {
+        let mut curr_ty = self;
+
+        loop {
+            match curr_ty.as_ref() {
+                Ty::Variant { sub_ty, .. } if unwrap_variants => {
+                    curr_ty = sub_ty.absolute_intern_ty(unwrap_variants)
+                }
+                Ty::Distinct { sub_ty, .. } => curr_ty = sub_ty.absolute_intern_ty(unwrap_variants),
+                _ => return curr_ty,
+            }
         }
     }
 }

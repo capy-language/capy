@@ -1,5 +1,6 @@
 core :: mod "core";
 
+// with big nested arrays like this, it might be clearer to use `.[]` syntax instead like in `make_array`
 global :: ([3][3] i8).[
         ([3] i8).[ i8.[105, 115, 125], i8.[105, 115, 125], i8.[105, 115, 125] ],
         ([3] i8).[ i8.[105, 115, 125], i8.[105, 115, 125], i8.[105, 115, 125] ],
@@ -7,10 +8,10 @@ global :: ([3][3] i8).[
 ];
 
 make_array :: (x: i8, y: i8, z: i8) -> [3][3][3] i8 {
-    ([3][3] i8).[
-        ([3] i8).[ i8.[x, y, z], i8.[x, y, z], i8.[x, y, z] ],
-        ([3] i8).[ i8.[x, y, z], i8.[x, y, z], i8.[x, y, z] ],
-        ([3] i8).[ i8.[x, y, z], i8.[x, y, z], i8.[x, y, z] ],
+    .[
+        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
+        .[ .[x, y, z], .[x, y, z], .[x, y, z] ],
     ]
 }
 

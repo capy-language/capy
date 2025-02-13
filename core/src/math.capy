@@ -101,7 +101,7 @@ log2_u64 :: (n: u64) -> u64 {
     if n == 0 { return 0; }
     while n != 1 {
         n = n >> 1;
-        i = i + 1 as u64;
+        i = u64.(i + 1);
     }
     i
 }
@@ -125,5 +125,5 @@ lg_u64 :: (n: u64) -> u64 {
     if n == 0 { return 0; }
 
     t :: (((log2_u64(n) + 1) * 1233) >> 12);
-    t - (n < pows_of_10[t]) as u64
+    t - u64.(n < pows_of_10[t])
 }

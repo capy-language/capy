@@ -17,10 +17,9 @@ use hir_ty::ComptimeResult;
 use interner::Interner;
 use rustc_hash::FxHashMap;
 use std::ffi::c_char;
-use std::io::Write;
 use std::mem;
-use std::path::PathBuf;
-use std::process::{exit, Command};
+use std::path::{Path, PathBuf};
+use std::process::{exit, Command, Output};
 use target_lexicon::{OperatingSystem, Triple};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,15 +107,15 @@ pub fn compile_obj(
     target: Triple,
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
-    // flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    flag_builder.set("is_pic", "true").unwrap();
+    flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    flag_builder.set("is_pic", "false").unwrap();
 
     let isa_builder = isa::lookup(target).unwrap_or_else(|msg| {
         println!("invalid target: {}", msg);
         exit(1);
     });
     let isa = isa_builder
-        .finish(settings::Flags::new(flag_builder))
+        .finish(settings::Flags::new(flag_builder.clone()))
         .unwrap();
 
     let builder = ObjectBuilder::new(
@@ -147,14 +146,74 @@ pub fn compile_obj(
     product.emit()
 }
 
-pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> PathBuf {
-    let exe_path = object_file
-        .parent()
-        .unwrap()
-        .join(object_file.file_stem().unwrap());
+#[derive(Debug)]
+pub enum LinkingErr {
+    NoCommand,
+    IO(std::io::Error),
+    CmdFailed {
+        cmd_name: &'static str,
+        output: Output,
+    },
+}
 
+/// Returns `None`
+pub fn link_to_exec(
+    object_file: &PathBuf,
+    target: Triple,
+    libs: &[String],
+) -> Result<PathBuf, LinkingErr> {
+    let mut file_name = object_file.file_stem().unwrap().to_os_string();
+
+    if target.operating_system == OperatingSystem::Windows {
+        file_name.push(".exe");
+    }
+
+    let exe_path = object_file.parent().unwrap().join(file_name);
+
+    if which::which("zig").is_ok() {
+        link_with_zig(object_file, libs, &exe_path)?;
+        Ok(exe_path)
+    } else if which::which("gcc").is_ok() {
+        link_with_gcc(object_file, target, libs, &exe_path)?;
+        Ok(exe_path)
+    } else {
+        Err(LinkingErr::NoCommand)
+    }
+}
+
+fn link_with_zig(
+    object_file: &PathBuf,
+    libs: &[String],
+    exe_path: &Path,
+) -> Result<(), LinkingErr> {
+    let zig = Command::new("zig")
+        .arg("build-exe")
+        .arg(object_file)
+        .args(libs)
+        .arg("--library")
+        .arg("C")
+        .arg(format!("-femit-bin={}", exe_path.display()))
+        .output()
+        .map_err(LinkingErr::IO)?;
+
+    if !zig.status.success() {
+        return Err(LinkingErr::CmdFailed {
+            cmd_name: "gcc",
+            output: zig,
+        });
+    }
+
+    Ok(())
+}
+
+fn link_with_gcc(
+    object_file: &PathBuf,
+    target: Triple,
+    libs: &[String],
+    exe_path: &Path,
+) -> Result<(), LinkingErr> {
     let linker_args: &[&str] = match target.operating_system {
-        OperatingSystem::Darwin => {
+        OperatingSystem::Darwin(_) => {
             // check if -ld_classic is supported
             let ld_v = Command::new("ld").arg("-v").output().unwrap();
             let stderr = String::from_utf8(ld_v.stderr).expect("`ld` should have given utf8");
@@ -170,35 +229,27 @@ pub fn link_to_exec(object_file: &PathBuf, target: Triple, libs: &[String]) -> P
 
     let gcc = Command::new("gcc")
         .arg("-o")
-        .arg(&exe_path)
+        .arg(exe_path)
         .args(linker_args)
         .args(libs.iter().map(|lib| "-l".to_string() + lib))
         .arg(object_file)
         .output()
-        .unwrap();
+        .map_err(LinkingErr::IO)?;
 
     if !gcc.status.success() {
-        println!("\ngcc failed!\n");
-
-        println!("stdout:\n");
-        std::io::stdout().write_all(&gcc.stdout).unwrap();
-        println!("\nstderr:\n");
-        std::io::stdout().write_all(&gcc.stderr).unwrap();
-
-        std::process::exit(1);
+        return Err(LinkingErr::CmdFailed {
+            cmd_name: "gcc",
+            output: gcc,
+        });
     }
 
-    exe_path
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use core::panic;
-    use std::{
-        collections::HashMap,
-        env, fs,
-        path::{Path, MAIN_SEPARATOR},
-    };
+    use std::{collections::HashMap, env, fs, path::Path};
 
     use ast::AstNode;
     use expect_test::{expect, Expect};
@@ -505,9 +556,9 @@ mod tests {
             panic!("{}: {why}", file.display());
         });
 
-        let exec = link_to_exec(&file, HOST, &[]);
+        let exec = link_to_exec(&file, HOST, &[]).unwrap();
 
-        let output = std::process::Command::new(exec.clone())
+        let output = std::process::Command::new(&exec)
             .args(args)
             .output()
             .unwrap_or_else(|_| panic!("{} did not run successfully", exec.display()));
@@ -651,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn array_of_arrays() {
+    fn arrays_of_arrays() {
         check_files(
             "../../examples/arrays_of_arrays.capy",
             &["../../examples/io.capy"],
@@ -959,27 +1010,32 @@ mod tests {
             expect![[r#"
                 Reflection!
                 
-                i32              (134218372) : size = 4, align = 4, stride = 4
-                i64              (134218504) : size = 8, align = 8, stride = 8
-                u64              (134217992) : size = 8, align = 8, stride = 8
-                i8               (134218273) : size = 1, align = 1, stride = 1
-                u128             (134218000) : size = 16, align = 8, stride = 16
-                usize            (134217992) : size = 8, align = 8, stride = 8
-                f32              (201326724) : size = 4, align = 4, stride = 4
-                void             (67108896) : size = 0, align = 1, stride = 0
-                any              (536870944) : size = 0, align = 1, stride = 0
-                str              (335544584) : size = 8, align = 8, stride = 8
-                char             (402653217) : size = 1, align = 1, stride = 1
-                type             (469762180) : size = 4, align = 4, stride = 4
-                Person           (1073741824) : size = 12, align = 8, stride = 16
-                Foo              (1073741825) : size = 1, align = 1, stride = 1
-                [6] Person       (1207959552) : size = 96, align = 8, stride = 96
-                [ ] Person       (1275068416) : size = 16, align = 8, stride = 16
-                 ^  Person       (1342177280) : size = 8, align = 8, stride = 8
-                distinct Person  (1140850688) : size = 12, align = 8, stride = 16
-                distinct Person  (1140850689) : size = 12, align = 8, stride = 16
-                ()       -> void (1409286144) : size = 8, align = 8, stride = 8
-                (x: i32) -> f32  (1409286145) : size = 8, align = 8, stride = 8
+                i32                (134218372) : size = 4, align = 4, stride = 4
+                i64                (134218504) : size = 8, align = 8, stride = 8
+                u64                (134217992) : size = 8, align = 8, stride = 8
+                i8                 (134218273) : size = 1, align = 1, stride = 1
+                u128               (134218000) : size = 16, align = 8, stride = 16
+                usize              (134217992) : size = 8, align = 8, stride = 8
+                f32                (201326724) : size = 4, align = 4, stride = 4
+                void               (67108896) : size = 0, align = 1, stride = 0
+                any                (536870944) : size = 0, align = 1, stride = 0
+                str                (335544584) : size = 8, align = 8, stride = 8
+                char               (402653217) : size = 1, align = 1, stride = 1
+                type               (469762180) : size = 4, align = 4, stride = 4
+                Person             (1073741824) : size = 12, align = 8, stride = 16
+                Foo                (1073741825) : size = 1, align = 1, stride = 1
+                [6] Person         (1207959552) : size = 96, align = 8, stride = 96
+                [ ] Person         (1275068416) : size = 16, align = 8, stride = 16
+                 ^  Person         (1342177280) : size = 8, align = 8, stride = 8
+                distinct Person    (1140850688) : size = 12, align = 8, stride = 16
+                Dessert            (1476395008) : size = 17, align = 8, stride = 24
+                Dessert.Brownie    (1543503876) : size = 0, align = 1, stride = 0
+                Dessert.Apple_Pie  (1543503874) : size = 16, align = 8, stride = 16
+                Dessert.Milkshake  (1543503879) : size = 1, align = 1, stride = 1
+                Farm_Animal        (1476395009) : size = 1, align = 1, stride = 1
+                Farm_Animal.Sheep  (1543503881) : size = 0, align = 1, stride = 0
+                ()       -> void   (1409286144) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32    (1409286145) : size = 8, align = 8, stride = 8
                 
                 i32 == i16 : false
                 i32 == u32 : false
@@ -994,6 +1050,12 @@ mod tests {
                 Person == distinct 'a Person : false
                 distinct 'a Person == distinct 'b Person : false
                 distinct 'b Person == distinct 'b Person : true
+                Dessert == Farm_Animal : false
+                Dessert == Dessert : true
+                Dessert.Apple_Pie == Dessert.Cheesecake : false
+                Dessert.Cheesecake == Dessert.Cheesecake : true
+                Farm_Animal.Cow == Dessert.Ice_Cream : false
+                Farm_Animal.Cow == Farm_Animal.Cow : true
                 () -> void == (x : i32) -> f32 : false
                 () -> void == () -> void : true
                 
@@ -1135,6 +1197,124 @@ mod tests {
                   offset = 0
                   ty =
                    BOOL
+
+                DISTINCT
+                ty =
+                 ENUM
+                 discriminant_offset = 0
+                 variants =
+                  VARIANT
+                  discriminant = 0
+                  ty =
+                   VOID
+                  VARIANT
+                  discriminant = 1
+                  ty =
+                   VOID
+                  VARIANT
+                  discriminant = 2
+                  ty =
+                   VOID
+                  VARIANT
+                  discriminant = 3
+                  ty =
+                   VOID
+
+                ENUM
+                discriminant_offset = 16
+                variants =
+                 VARIANT
+                 discriminant = 0
+                 ty =
+                  VOID
+                 VARIANT
+                 discriminant = 2
+                 ty =
+                  VOID
+                 VARIANT
+                 discriminant = 10
+                 ty =
+                  STRUCT
+                  members =
+                   name = warm
+                   offset = 0
+                   ty =
+                    BOOL
+                   name = crumble
+                   offset = 1
+                   ty =
+                    BOOL
+                   name = crust_thickness
+                   offset = 8
+                   ty =
+                    FLOAT
+                    bit_width = 64
+                 VARIANT
+                 discriminant = 11
+                 ty =
+                  FLOAT
+                  bit_width = 32
+                 VARIANT
+                 discriminant = 12
+                 ty =
+                  VOID
+                 VARIANT
+                 discriminant = 42
+                 ty =
+                  VOID
+                 VARIANT
+                 discriminant = 45
+                 ty =
+                  VOID
+                 VARIANT
+                 discriminant = 46
+                 ty =
+                  STRUCT
+                  members =
+                   name = malt
+                   offset = 0
+                   ty =
+                    BOOL
+
+                VARIANT
+                discriminant = 0
+                ty =
+                 VOID
+
+                VARIANT
+                discriminant = 10
+                ty =
+                 STRUCT
+                 members =
+                  name = warm
+                  offset = 0
+                  ty =
+                   BOOL
+                  name = crumble
+                  offset = 1
+                  ty =
+                   BOOL
+                  name = crust_thickness
+                  offset = 8
+                  ty =
+                   FLOAT
+                   bit_width = 64
+
+                VARIANT
+                discriminant = 11
+                ty =
+                 FLOAT
+                 bit_width = 32
+
+                VARIANT
+                discriminant = 46
+                ty =
+                 STRUCT
+                 members =
+                  name = malt
+                  offset = 0
+                  ty =
+                   BOOL
                 
                 123
                 [ 4, 8, 15, 16, 23, 42 ]
@@ -1144,7 +1324,7 @@ mod tests {
                 42
                 256
                 hello
-                {}
+                ()
                 i32
                 ^struct { text: str, flag: bool, array: [3] i16 }
                 struct { ty: type, data: ^any }
@@ -1153,6 +1333,16 @@ mod tests {
                 [ 1, hello, true, 5.300 ]
                 { text = Hello, flag = false, array = [ 1, 2, 3 ] }
                 { hello = world, foo = { bar = { baz = { qux = 1.200 } } } }
+                { warm = true, crumble = false, crust_thickness = 1.300 }
+                1089.500
+                ()
+                ()
+                { malt = true }
+                { warm = false, crumble = true, crust_thickness = 0.500 }
+                30.000
+                ()
+                ()
+                { malt = false }
                 
             "#]],
             0,
@@ -1181,7 +1371,7 @@ mod tests {
                 main :: () -> i32 {
                     f : f32 = 2.5;
 
-                    f as i32
+                    i32.(f)
                 }
             "#,
             "main",
@@ -1216,10 +1406,10 @@ mod tests {
                         // in the parameters and return type, we can't access `imaginary`
                         // from inside the body of this lambda
                         // this could be alleviated by adding a `type_of` builtin
-                        i32.[1, c.real_part * c.imaginary_part as i32, 3]
+                        i32.[1, c.real_part * i32.(c.imaginary_part), 3]
                     };
                 
-                    do_math(my_complex)[1] as i32
+                    i32.(do_math(my_complex)[1])
                 }
             "#,
             "main",
@@ -1500,7 +1690,7 @@ mod tests {
         check_raw(
             r#"
                 main :: () {
-                    print("~2147483647 =      ", ~{4294967295 as u32});
+                    print("~2147483647 =      ", ~u32.(4294967295));
                     print(" 5032 &  25 =     ", 5032 & 32);
                     print(" 5000 |  20 =   ", 5000 | 32);
                     print(" 5032 ~  36 =   ", 5032 ~ 36);
@@ -1511,7 +1701,7 @@ mod tests {
                 }
 
                 print :: (s: str, n: i64) {
-                    s := s as ^any as ^[1000] char;
+                    s := (^[1000]char).((^any).(s));
                     idx := 0;
                     while idx < 100 {
                         ch := s[idx];
@@ -1540,7 +1730,7 @@ mod tests {
                         n = n - 10 * a;
                         iprint(a);
                     }
-                    putchar({'0' as u8 + n} as char);
+                    putchar(char.(u8.('0') + n));
                 }
 
                 putchar :: (ch: char) extern;
@@ -1618,10 +1808,10 @@ mod tests {
                     y := ^x;
                     z := ^x;
                 
-                    y_raw := {^y as ^any as ^usize}^;
-                    z_raw := {^z as ^any as ^usize}^;
+                    y_raw := (^usize).((^any).(^y))^;
+                    z_raw := (^usize).((^any).(^z))^;
 
-                    {y_raw == z_raw} as i32
+                    i32.(y_raw == z_raw)
                 }
             "#,
             "main",
@@ -1881,7 +2071,7 @@ mod tests {
                 }
 
                 print :: (text: str) {
-                    text := text as [50] char;
+                    text := [50]char.(text);
 
                     i := 0;
                     loop {
@@ -1910,7 +2100,7 @@ mod tests {
                         n = n - 10 * a;
                         iprint(a);
                     }
-                    putchar({'0' as u8 + n} as char);
+                    putchar(char.(u8.('0') + n));
                 }
 
                 puts :: (text: str) extern;
@@ -1948,7 +2138,7 @@ mod tests {
                 };
 
                 Size : usize : comptime {
-                    ((12.0 * (3.0 / 2.0) - 6.0) / 2.0) as usize
+                    usize.((12.0 * (3.0 / 2.0) - 6.0) / 2.0)
                 };
 
                 main :: () -> i8 {
@@ -1975,7 +2165,7 @@ mod tests {
                 main :: () -> u8 {
                     red : RGB = u8.[150, 98, 123];
 
-                    components := red as []u8;
+                    components := []u8.(red);
 
                     components[1]
                 }
@@ -1996,9 +2186,9 @@ mod tests {
                 main :: () -> u32 {
                     x : u32 = 42;
 
-                    ptr := ^mut x as ^mut any;
+                    ptr := (^mut any).(^mut x);
 
-                    {ptr as ^mut u32} ^= 5;
+                    (^mut u32).(ptr) ^= 5;
 
                     x
                 }
@@ -2059,7 +2249,7 @@ mod tests {
                         n = n - 10 * a;
                         iprint(a);
                     }
-                    putchar({'0' as u8 + n} as char);
+                    putchar(char.(u8.('0') + n));
                 }
 
                 putchar :: (ch: char) extern;
@@ -2097,7 +2287,7 @@ mod tests {
             "main",
             true,
             expect![["
-            { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.000, d = false, e = \0, f = {} }
+            { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.000, d = false, e = \0, f = () }
 
 "]],
             0,
@@ -2188,7 +2378,7 @@ mod tests {
 
                     core.println(my_foo);
 
-                    my_bar : Bar = my_foo as Bar;
+                    my_bar : Bar = Bar.(my_foo);
 
                     core.println(my_bar);
                 };
@@ -2217,7 +2407,7 @@ mod tests {
                     core.print(" : ");
                     core.println(list);
 
-                    list := list as [3]f64;
+                    list := [3]f64.(list);
 
                     core.print(core.type_of(list));
                     core.print(" : ");
@@ -2267,7 +2457,7 @@ mod tests {
 
                     core.println(foo_list);
 
-                    bar_list := foo_list as [3]Bar;
+                    bar_list := [3]Bar.(foo_list);
 
                     core.println(bar_list);
                 };
@@ -2304,9 +2494,9 @@ mod tests {
             "main",
             true,
             &["hello", "world!", "wow look at this arg", "foo=bar"],
-            if MAIN_SEPARATOR == '\\' {
+            if cfg!(windows) {
                 expect![["
-                arg(0) = test-temp\\73c274e
+                arg(0) = test-temp\\73c274e.exe
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2323,6 +2513,103 @@ mod tests {
 
 "]]
             },
+            0,
+        )
+    }
+
+    #[test]
+    fn enum_variants() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+
+                Message :: enum {
+                    Quit,
+                    Move: struct { x: i32, y: i32 } | 5,
+                    Write: str,
+                    Change_Color: struct { r: i32, g: i32, b: i32 },
+                };
+
+                main :: () {
+                    msg_1 := Message.Quit.(());
+                    msg_2 := Message.Move.{
+                        x = 25,
+                        y = 100,
+                    };
+                    msg_3 := Message.Write.("the dark fire shall not avail you, flame of udun!");
+                    msg_4 := Message.Change_Color.{
+                        r = 39,
+                        g = 58,
+                        b = 93,
+                    };
+
+                    core.println(msg_1);
+                    core.println(msg_2);
+                    core.println(msg_3);
+                    core.println(msg_4);
+
+                    // to make sure variant structs can be accessed like normal
+                    core.println(msg_4.r + msg_2.y + msg_4.b);
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+                ()
+                { x = 25, y = 100 }
+                the dark fire shall not avail you, flame of udun!
+                { r = 39, g = 58, b = 93 }
+                232
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn cast_variant_to_enum() {
+        check_raw_with_args(
+            r#"
+                Animal :: enum {
+                    Dog: str,
+                    Fish: i32, // maybe this is the fish's age or something
+                };
+
+                main :: () {
+                    my_dog := Animal.Dog.("George");
+                    my_fish := Animal.Fish.(1000);
+
+                    animal_1 : Animal = my_dog;
+                    animal_2 : Animal = my_fish;
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn enums_and_switch_statements() {
+        check_files(
+            "../../examples/enums_and_switch_statements.capy",
+            &[],
+            "main",
+            expect![[r#"
+                [200] dog: George
+                [100] cat!
+                [300] it was a fish (age = 1000)
+                [400] cow!!!
+                [500] chicken >>>
+                [700] sheep: hello, wool: 1.000, fullness: 0.500
+                [600] oink oink
+                
+            "#]],
             0,
         )
     }

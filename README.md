@@ -44,77 +44,112 @@ capy run examples/hello_world.capy
 
 ### Basics
 
-Variables are declared with `name : type : value` or `name : type = value`.
-The first is immutable (can't be changed), and the second is mutable (can be changed).
+Variables are declared like this,
 
 ```cpp
-name : str : "Terry";
+my_cool_name: str = "Gandalf";
 
-age : i32 = 42;
-age = 43; // age can be changed
+// alternatively, the compiler can figure out the type for you
+
+my_cool_name := "Gandalf";
 ```
 
-The type can also be omitted.
+Variables can also be made *immutable*. This prevents them from being updated by other code.
+Once immutable variables are created, they never change. They can be created by using `::` instead of `:=`
 
 ```cpp
-name :: "Terry";
-age := 42;
+age: i32 : 42; // age will stay the same forever!
+
+// like before, you can let the compiler figure out the type for you
+
+age :: 42;
 ```
 
-Certain other languages have `const` definitions along with immutable variables. Capy combines these two together.
-An immutable variable does not *necessarily* need to be known at compile time, it can be a runtime store like any other.
-But there might be certain circumstances in which it must be const, which will be expanded on later.
+Certain other languages have `const` definitions AND immutable variables. Capy combines these two concepts together.
+They are both defined the same way.
 
-These bindings and variables can also shadow each other,
+Variables can also shadow each other.
+So later definitions will replace earlier definitions that have the same name,
 
 ```cpp
 foo := true;
+core.println(foo);  // will print "true"
+
 
 foo :: 5;
+core.println(foo);  // now, this will print "5"
+
 
 foo := "Hullo :3";
+core.println(foo);  // now, this will print "Hullo :3"
 ```
 
-The value can be omitted and a default/zero value will be supplied.
-
-Fixed arrays are declared as follows,
+The value of a variable can be omitted and a default/zero value will be supplied.
 
 ```cpp
-my_array : [6]i32 = i32.[4, 8, 15, 16, 23, 42];
+milk: f64;      // without a value, this defaults to 0.0
+letter: char;   // without a value, this defaults to '\0'
+number: i32;    // without a value, this defaults to 0
 
-my_array[2] = 10;
+// ...
+// etc.
 ```
 
-Slices are a type of pointer that can represent an array of any possible size.
+Arrays are created like this,
+
+```cpp
+the_numbers: [6]i32 = i32.[4, 8, 15, 16, 23, 42];  // although you'd usually omit the type `[6]i32`
+
+the_numbers[2] = 10;
+```
+
+But what happens if we want to change the size of `the_numbers`?
+Unfortunately since `the_numbers` has a type of `[6]i32`, we can't :(
+But there is a way around it. We can use slices!
+
+Slices are a type of reference that can hold an array of any possible size.
 They look very similar but lack a length within the square brackets.
 
 ```cpp
-my_slice : []i32 = i32.[1, 2, 3];
-my_slice : []i32 = i32.[4, 5, 6, 7, 8];
+the_numbers: []i32 = i32.[1, 2, 3];
+the_numbers: []i32 = i32.[4, 5, 6, 7, 8];
 
-my_slice[2] = 10;
+the_numbers[2] = 10;
 ```
 
-Arrays can be implicitly cast to slices, but casting a slice to an array must be done explicitly.
+As you can see above, arrays just automatically cast themselves into slices.
+But if we want to convert a slice back into a fixed array, we have to do cast it explicitly,
 
 ```cpp
-// start with an array
-my_array : [3]i32 = i32.[2, 4, 8];
+// start with a fixed array
+the_numbers: [3]i32 = i32.[2, 4, 8];
 
-// automatically turn it into a slice
-my_slice : []i32  = my_array;
+// automagically turn it into a slice
+my_slice: []i32 = the_numbers;
 
-// manually turn it back into an array
-my_array : [3]i32 = my_slice as [3]i32;
+// manually cast it back to an array
+my_array: [3]i32 = [3]i32.(my_slice);
 ```
 
-Pointers can be either mutable or immutable, similar to Rust.
+And as you can see above, casting is done with `type.(value)`
+
+```cpp
+age_int: i32 = 33;
+
+age_float := f32.(age_int); // casts age_int -> f32
+
+letter := char.(age_int);   // casts age_float -> char
+```
+
+In Capy, pointers can be mutable or immutable, just like Rust.
 
 ```cpp
 foo := 5;
-bar :: ^mut foo;
+bar := ^mut foo;
 
 bar^ = 10;
+
+core.println(foo);  // prints "10"
 ```
 
 Unlike Rust however, there are currently no borrow checking rules like "either one mutable reference or many const references".
@@ -123,7 +158,10 @@ Mutable pointers greatly improve the readability of code, and allow one to see a
 
 ### Types
 
-Types are first-class in Capy, which means structs are values that can be assigned to a variable like any other,
+
+Types are first-class in Capy. They can be put inside variables, passed to functions, printed, etc.
+
+Structs are declared by just assigning them to a variable,
 
 ```cpp
 Person :: struct {
@@ -151,7 +189,7 @@ y : i32 = 12;
 y = x; // ERROR! Imaginary != i32 :(
 ```
 
-You can alias a type by simply assigning it to a variable.
+If you don't use the `distinct` keyword, and simply assign a type to a variable, you've just created a type alias!
 
 ```cpp
 My_Int :: i32;
@@ -162,8 +200,8 @@ y : i32 = 12;
 y = x; // yay! My_Int == i32 :)
 ```
 
-It is important to note that in order to actually use `My_Int` as a type, it must be *const*, or, "known at compile-time."
-Otherwise, the compiler will throw an error as it's impossible to compile a variable (`x` in this case) whose type might change at runtime.
+It is important to note that in order to actually use a variable as a type, it must be *const*, or, "known at compile-time."
+Otherwise, the compiler will throw an error as it's impossible to compile a variable whose type might change at runtime,
 
 ```cpp
 My_Int := i32;
@@ -182,8 +220,123 @@ There are two requirements which determine if a variable is *const*.
 
 Beyond type annotations, the size of an array is also expected to be *const*, and this value can be calculated using `comptime`.
 
-To see all the different types, you can look through [`core/meta.capy`](./core/src/meta.capy),
-which contains reflection related code and documentation for all of Capy's types.
+Enums are an incredibly useful construct for dealing with varying state, and representing optional or error values.
+In Capy enums can be declared as follows,
+
+```cpp
+Dessert :: enum {
+    Ice_Cream,
+    Chocolate_Cake,
+    Apple_Pie,
+    Milkshake,
+};
+
+bobs_order  : Dessert = Dessert.Chocolate_Cake;
+johns_order : Dessert = Dessert.Ice_Cream;
+mikes_order : Dessert = Dessert.Milkshake;
+```
+
+Enums can also have additional data associated with each variant, and this data can be extracted using `switch` statements!
+
+```cpp
+Web_Event :: enum {
+    Page_Load,
+    Page_Unload,
+    Key_Press: char,
+    Paste: str,
+    Click: struct {
+        x: i64,
+        y: i64,
+    },
+};
+
+pressed : Web_Event = Web_Event.Key_Press.('x');
+pasted : Web_Event = Web_Event.Paste.("hi hi hi :)");
+clicked : Web_Event = Web_Event.Click.{
+    x = 20,
+    y = 80
+};
+
+switch e in clicked {
+    Page_Load => core.println("page loaded"),
+    Page_Unload => core.println("page loaded"),
+    Key_Press => {
+        // type_of(e) == char
+        core.print("pressed key: ");
+        core.println(e);
+    },
+    Paste => {
+        // type_of(e) == str
+        core.print("pasted: ");
+        core.println(e);
+    }
+    Click => {
+        // type_of(e) == struct { x: i64, y: i64 }
+        core.print("clicked at x=");
+        core.print(e.x);
+        core.print(", y=");
+        core.println(e.y);
+    }
+}
+```
+
+As you can see, switches accept a *parameter* (`e`, in this case), and the type of that parameter
+actually changes depending on the branch.
+
+One of the unique things about Capy's enums is that each variant of the enum is actually its own unique type.
+When you create the variants `Web_Event.Click`, `Web_Event.Paste`, `Dessert.Chocolate_Cake`, etc. inside an enum block
+you are actually creating entirely new types. You can reference and instantiate these types just like any other type.
+
+```cpp
+special_click_related_code :: (click_event: Web_Event.Click) {
+    core.println(click_event.x);
+}
+```
+
+It's very similar to creating distincts. The only real difference is that enums allow you to mix the different variants together.
+
+Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be a hassle.
+
+<details> 
+    <summary>Extra enum stuff!</summary>
+    
+    If you're doing FFI and you need to specify the discriminant you can do that with `|`
+
+    ```cpp
+    Error :: enum {
+        IO: i32     | 10, // i32 is the file handle
+        Caught_Fire | 20,
+        Exploded    | 30,
+        Buggy_Code  | 40,
+    }
+    ```
+
+    *See [`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) for more*
+</details>
+
+With that, here are all the possible types data can have in Capy:
+
+1. Signed integers          (`i8`, `i16`, `i32`, `i64`, `i128`, `isize`)
+2. Unsigned integers        (`u8`, `u16`, `u32`, `u64`, `u128`, `usize`)
+3. Floating-point numbers   (`f32`, `f64`)
+4. `bool`
+5. `str`
+6. `char`
+7. Fixed arrays (`[6]i32`, `[3]f32`, `[10]bool`, etc.)
+8. Slices       (`[]i32`, `[]f32`, `[]bool`, etc.)
+9. Pointers     (`^i32`, `^f32`, `^bool`, etc.)
+10. Distincts   (`distinct i32`, `distinct f32`, `distinct bool`, etc.)
+11. Structs     (`struct { a: i32, b: i32 }`, `struct { foo: str }`, etc.)
+12. Enums       (`enum { Foo: i32, Bar: str, Baz: bool }`, etc.)
+13. Variants    (each variant of an enum is a unique type, like distincts)
+14. Functions   (`() -> void`, `(x: i32) -> bool`, etc.)
+15. Files       (when you import a file, that file is actually its own type)
+16. `type`      (types are first-class and `i32` when used as a value has the type `type`)
+17. `any`       (used for opaque pointers, explained later)
+18. `void`
+
+You can also look through [`core/meta.capy`](./core/src/meta.capy),
+which contains [reflection](#Reflection) related code and documentation for all of Capy's types.
 
 ### Comptime
 
@@ -231,8 +384,7 @@ As this feature continues to be fleshed out, this will become the basis of Capy'
 
 Reflection is another powerful feature of Capy, and powers the language's [runtime generic system](./core/src/structs/list.capy).
 
-All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/src/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting
-these IDs and getting information such as the length of an array type,
+All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/src/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting these IDs and getting information such as the length of an array type,
 
 ```cpp
 array_type := [3]i32;
@@ -406,8 +558,8 @@ The [`examples`](./examples/) folder contains a lot more, and it gives a much be
 
 ## Limitations
 
-Currently, `gcc` must be installed for the compiler to work.
-It is used for linking to libc and producing a proper executable.
+Currently, either `zig` or `gcc` must be installed for the compiler to work.
+They are used for linking to libc and producing a proper executable.
 
 If you want to use libc functions, define them with `extern` (look in [`core/libc.capy`](./core/src/libc.capy) for examples).
 Variadic functions do not work. You *could* try explicitly defining a function like `printf` to take 3 arguments,
@@ -415,8 +567,7 @@ but this won't work for floats, which are passed into variadic functions differe
 Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030), so that will be added in the future.
 
 While the end goal is to make any code than can run outside of a `comptime` block be allowed to run within a `comptime` block,
-this is easier said than done. `printf` in particular cannot be run at compile-time.
-Especially as support for linked libaries increases, it'll be harder to keep this promise.
+this is easier said than done. `printf` in particular cannot be run at compile-time. Although things like this are being worked on.
 
 If you find any bugs in the compiler, please be sure to [make an issue](https://github.com/capy-language/capy/issues) about it and it'll be addressed as soon as possible.
 
@@ -425,15 +576,17 @@ If you find any bugs in the compiler, please be sure to [make an issue](https://
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), the structure of this entire codebase is largely based on [gingerbread](https://github.com/gingerbread-lang/gingerbread) and [eldiro](https://github.com/lunacookies/eldiro).
 Her help in teaching how programming languages really work is immeasurable and I'm very thankful.
 
-Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in finding bugs and testing the limits of the language. Due to her help the language has really expanded to new heights.
+Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in testing the limits of the language and optimizing the compiler. Due to her help the language has really expanded to new heights.
 
 Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and cranelift made all my dreams come true.
 
 I know the cranelift documentation isn't the greatest, so if anyone wants to use this repo to see how I've implemented higher-level features such as arrays, structs, first class functions, etc. then it's all in [`crates/codegen`](./crates/codegen/).
 
+This project was made by [NotAFlyingGoose](https://github.com/NotAFlyingGoose)
+
 ## Contributing
 
-Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how you can contribute. This file also explains how Capy's codebase actually works internally.
+Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how you can contribute. This file also explains how Capy's codebase internally works, so even if you don't plan on contributing it might be a good read.
 
 ## License
 

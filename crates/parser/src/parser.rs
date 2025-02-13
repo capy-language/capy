@@ -185,7 +185,7 @@ impl<'tokens> Parser<'tokens> {
         let pos = self.events.len();
         self.events.push(None);
 
-        Marker::new(pos)
+        Marker::new(pos, self.token_idx)
     }
 
     pub(crate) fn at(&mut self, kind: TokenKind) -> bool {
@@ -215,6 +215,24 @@ impl<'tokens> Parser<'tokens> {
         res
     }
 
+    pub(crate) fn at_eof_ahead(&mut self, offset: usize) -> bool {
+        let original_token_idx = self.token_idx;
+
+        for _ in 0..offset {
+            self.skip_trivia();
+            self.token_idx += 1;
+            if self.at_eof() {
+                self.token_idx = original_token_idx;
+                return true;
+            }
+        }
+        let res = self.at_eof();
+
+        self.token_idx = original_token_idx;
+
+        res
+    }
+
     pub(crate) fn at_eof(&mut self) -> bool {
         self.skip_trivia();
         self.token_idx >= self.tokens.len()
@@ -226,7 +244,7 @@ impl<'tokens> Parser<'tokens> {
 
     pub(crate) fn at_set(&mut self, set: TokenSet) -> bool {
         self.skip_trivia();
-        self.peek_raw().map_or(false, |kind| set.contains(kind))
+        self.peek_raw().is_some_and(|kind| set.contains(kind))
     }
 
     pub(crate) fn kind(&mut self) -> Option<TokenKind> {
@@ -296,7 +314,7 @@ impl<'tokens> Parser<'tokens> {
     }
 
     fn at_raw(&self, kind: TokenKind) -> bool {
-        self.peek_raw().map_or(false, |k| k == kind)
+        self.peek_raw().is_some_and(|k| k == kind)
     }
 
     fn peek_raw(&self) -> Option<TokenKind> {

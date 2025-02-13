@@ -21,15 +21,17 @@ pub fn lex(text: &str) -> Tokens {
         };
 
         match kind {
-            LexerTokenKind::__InternalChar => lex_char(lexer.slice(), start, handler),
-            LexerTokenKind::__InternalString => lex_string(lexer.slice(), start, handler),
-            LexerTokenKind::__InternalComment => lex_comment(start, range.len(), handler),
-            _ => {
+            Ok(LexerTokenKind::__InternalChar) => lex_char(lexer.slice(), start, handler),
+            Ok(LexerTokenKind::__InternalString) => lex_string(lexer.slice(), start, handler),
+            Ok(LexerTokenKind::__InternalComment) => lex_comment(start, range.len(), handler),
+            Ok(kind) => {
                 let transmuted = unsafe { mem::transmute::<LexerTokenKind, TokenKind>(kind) };
                 // we compare the debug names of the two values to ensure that no transmutation bugs occurred
                 debug_assert_eq!(format!("{:?}", kind), format!("{:?}", transmuted));
                 handler(transmuted, start)
             }
+            // todo: make sure this actually works as it did before
+            Err(_) => handler(TokenKind::Error, start),
         }
     }
 

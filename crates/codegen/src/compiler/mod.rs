@@ -1,6 +1,7 @@
 pub mod comptime;
 pub mod functions;
 pub mod program;
+mod ty_info;
 
 use cranelift::codegen::ir::StackSlot;
 use cranelift::codegen::{self, CodegenError};
@@ -19,7 +20,6 @@ use std::collections::VecDeque;
 use uid_gen::UIDGenerator;
 
 use crate::builtin::{as_compiler_defined_func, BuiltinFunction};
-use crate::extend::ExtendWithNumBytes;
 use crate::layout::{self, GetLayoutInfo};
 use crate::mangle::{self, Mangle};
 use crate::{
@@ -30,20 +30,6 @@ use crate::{
 use self::abi::Abi;
 use self::functions::FunctionCompiler;
 
-#[cfg(not(debug_assertions))]
-use std::hint::unreachable_unchecked;
-
-macro_rules! unreachable_opt_on_release {
-    () => {{
-        #[cfg(debug_assertions)]
-        panic!();
-        #[cfg(not(debug_assertions))]
-        unsafe {
-            unreachable_unchecked()
-        }
-    }};
-}
-
 #[derive(Default)]
 pub(crate) struct MetaTyData {
     pub(crate) tys_to_compile: Vec<Intern<Ty>>,
@@ -52,8 +38,10 @@ pub(crate) struct MetaTyData {
     pub(crate) slice_uid_gen: UIDGenerator,
     pub(crate) pointer_uid_gen: UIDGenerator,
     pub(crate) distinct_uid_gen: UIDGenerator,
+    pub(crate) variant_uid_gen: UIDGenerator,
     pub(crate) function_uid_gen: UIDGenerator,
     pub(crate) struct_uid_gen: UIDGenerator,
+    pub(crate) enum_uid_gen: UIDGenerator,
 
     pub(crate) layout_arrays: Option<MetaTyLayoutArrays>,
     pub(crate) info_arrays: Option<MetaTyInfoArrays>,
@@ -63,10 +51,15 @@ pub(crate) struct MetaTyLayoutArrays {
     pub(crate) array_layout_array: DataId,
     pub(crate) distinct_layout_array: DataId,
     pub(crate) struct_layout_array: DataId,
+    pub(crate) enum_layout_array: DataId,
+    pub(crate) variant_layout_array: DataId,
 
     pub(crate) array_layout_slice: DataId,
     pub(crate) distinct_layout_slice: DataId,
     pub(crate) struct_layout_slice: DataId,
+    pub(crate) enum_layout_slice: DataId,
+    pub(crate) variant_layout_slice: DataId,
+
     pub(crate) pointer_layout: DataId,
 }
 
@@ -90,6 +83,10 @@ impl MetaTyLayoutArrays {
             distinct_layout_slice: declare("distinct_layout_slice"),
             struct_layout_array: declare("struct_layout_array"),
             struct_layout_slice: declare("struct_layout_slice"),
+            enum_layout_array: declare("enum_layout_array"),
+            enum_layout_slice: declare("enum_layout_slice"),
+            variant_layout_array: declare("variant_layout_array"),
+            variant_layout_slice: declare("variant_layout_slice"),
             pointer_layout: declare("pointer_layout"),
         }
     }
@@ -102,6 +99,8 @@ pub(crate) struct MetaTyInfoArrays {
     pub(crate) pointer_info_array: DataId,
     pub(crate) distinct_info_array: DataId,
     pub(crate) struct_info_array: DataId,
+    pub(crate) enum_info_array: DataId,
+    pub(crate) variant_info_array: DataId,
 
     // the global slices available in "meta.capy"
     pub(crate) array_info_slice: DataId,
@@ -109,6 +108,8 @@ pub(crate) struct MetaTyInfoArrays {
     pub(crate) pointer_info_slice: DataId,
     pub(crate) distinct_info_slice: DataId,
     pub(crate) struct_info_slice: DataId,
+    pub(crate) enum_info_slice: DataId,
+    pub(crate) variant_info_slice: DataId,
 }
 
 impl MetaTyInfoArrays {
@@ -135,6 +136,10 @@ impl MetaTyInfoArrays {
             distinct_info_slice: declare("distinct_info_slice"),
             struct_info_array: declare("struct_info_array"),
             struct_info_slice: declare("struct_info_slice"),
+            enum_info_array: declare("enum_info_array"),
+            enum_info_slice: declare("enum_info_slice"),
+            variant_info_array: declare("variant_info_array"),
+            variant_info_slice: declare("variant_info_slice"),
         }
     }
 }
@@ -243,7 +248,7 @@ impl Compiler<'_> {
     /// This function then only populated those builtin globals with
     /// their expected values
     fn compile_builtins(&mut self) {
-        self.compile_meta_builtins();
+        ty_info::compile_meta_builtins(self);
 
         if let Some(cmd_args_slice) = self.cmd_args_slice {
             self.data_desc
@@ -253,484 +258,6 @@ impl Compiler<'_> {
                 .define_data(cmd_args_slice, &self.data_desc)
                 .expect("error defining data");
             self.data_desc.clear();
-        }
-    }
-
-    fn compile_meta_builtins(&mut self) {
-        let mut array_count = 0;
-        let mut slice_count = 0;
-        let mut pointer_count = 0;
-        let mut distinct_count = 0;
-        let mut struct_count = 0;
-
-        let mut array_mem_data = Vec::new();
-        let mut distinct_mem_data = Vec::new();
-        let mut struct_mem_data = Vec::new();
-
-        let mut array_info_data = Vec::new();
-        let mut slice_info_data = Vec::new();
-        let mut pointer_info_data = Vec::new();
-        let mut distinct_info_data = Vec::new();
-
-        let mut struct_infos_to_compile = Vec::new();
-
-        for ty in &self.meta_tys.tys_to_compile {
-            match ty.as_ref() {
-                Ty::Array { .. } => {
-                    array_count += 1;
-                }
-                Ty::Slice { .. } => {
-                    slice_count += 1;
-                }
-                Ty::Pointer { .. } => {
-                    pointer_count += 1;
-                }
-                Ty::Distinct { .. } => {
-                    distinct_count += 1;
-                }
-                Ty::Struct { .. } => {
-                    struct_count += 1;
-                }
-                _ => {}
-            }
-
-            'mem: {
-                if self.meta_tys.layout_arrays.is_some() {
-                    let data = match ty.as_ref() {
-                        Ty::Array { .. } => &mut array_mem_data,
-                        Ty::Distinct { .. } => &mut distinct_mem_data,
-                        Ty::Struct { .. } => &mut struct_mem_data,
-                        _ => break 'mem,
-                    };
-
-                    let size = ty.size();
-                    let align = ty.align();
-
-                    data.extend_with_num_bytes(
-                        size,
-                        self.ptr_ty.bits() as u8,
-                        self.module.isa().endianness(),
-                    );
-                    data.extend_with_num_bytes(
-                        align,
-                        self.ptr_ty.bits() as u8,
-                        self.module.isa().endianness(),
-                    );
-                }
-            }
-
-            if self.meta_tys.info_arrays.is_some() {
-                match ty.as_ref() {
-                    Ty::Array { size, sub_ty, .. } => {
-                        array_info_data.extend_with_num_bytes(
-                            (*size) as u32,
-                            self.ptr_ty.bits() as u8,
-                            self.module.isa().endianness(),
-                        );
-
-                        let padding = layout::padding_needed_for(
-                            array_info_data.len() as u32,
-                            (32 / 8).min(8),
-                        );
-                        array_info_data.extend(std::iter::repeat(0).take(padding as usize));
-
-                        array_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
-                            32,
-                            self.module.isa().endianness(),
-                        );
-
-                        let ptr_size = self.ptr_ty.bytes();
-                        let padding = layout::padding_needed_for(
-                            array_info_data.len() as u32,
-                            ptr_size.min(8),
-                        );
-                        array_info_data.extend(std::iter::repeat(0).take(padding as usize));
-                    }
-                    Ty::Slice { sub_ty } => {
-                        slice_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
-                            32,
-                            self.module.isa().endianness(),
-                        );
-                    }
-                    Ty::Pointer { sub_ty, .. } => {
-                        pointer_info_data.extend_with_num_bytes(
-                            sub_ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
-                            32,
-                            self.module.isa().endianness(),
-                        );
-                    }
-                    Ty::Distinct { sub_ty: ty, .. } => {
-                        distinct_info_data.extend_with_num_bytes(
-                            ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
-                            32,
-                            self.module.isa().endianness(),
-                        );
-                    }
-                    Ty::Struct { .. } => {
-                        struct_infos_to_compile.push(ty);
-                    }
-                    _ => continue,
-                }
-            }
-        }
-
-        fn define(
-            module: &mut dyn Module,
-            data_desc: &mut DataDescription,
-            info_array: DataId,
-            bytes: Vec<u8>,
-            align: u64,
-        ) {
-            data_desc.define(bytes.into_boxed_slice());
-            data_desc.set_align(align);
-            module
-                .define_data(info_array, data_desc)
-                .expect("error defining data");
-            data_desc.clear();
-        }
-
-        fn define_with_relocs(
-            module: &mut dyn Module,
-            data_desc: &mut DataDescription,
-            info_array: DataId,
-            bytes: Vec<u8>,
-            align: u64,
-            relocs: Vec<(u32, DataId)>,
-        ) {
-            data_desc.define(bytes.into_boxed_slice());
-            data_desc.set_align(align);
-
-            for (offset, id) in relocs {
-                let local = module.declare_data_in_data(id, data_desc);
-
-                data_desc.write_data_addr(offset, local, 0);
-            }
-
-            module
-                .define_data(info_array, data_desc)
-                .expect("error defining data");
-
-            data_desc.clear();
-        }
-
-        fn define_slice(
-            module: &mut dyn Module,
-            data_desc: &mut DataDescription,
-            info_array: DataId,
-            len: u32,
-            ptr: DataId,
-        ) {
-            let mut bytes = Vec::with_capacity(module.target_config().pointer_bytes() as usize);
-            bytes.extend_with_num_bytes(
-                len,
-                module.target_config().pointer_bits(),
-                module.isa().endianness(),
-            );
-            // zeroed-out pointer, this will be written over later
-            bytes
-                .extend(std::iter::repeat(0).take(module.target_config().pointer_bytes() as usize));
-
-            data_desc.define(bytes.into_boxed_slice());
-            data_desc.set_align(module.target_config().pointer_bytes().min(8) as u64);
-
-            let local = module.declare_data_in_data(ptr, data_desc);
-
-            data_desc.write_data_addr(module.target_config().pointer_bytes() as u32, local, 0);
-
-            module
-                .define_data(info_array, data_desc)
-                .expect("error defining data");
-
-            data_desc.clear();
-        }
-
-        let ptr_align = self.ptr_ty.bytes().min(8) as u64;
-        let meta_type_align = 4;
-
-        if let Some(mem_arrays) = &self.meta_tys.layout_arrays {
-            define(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.array_layout_array,
-                array_mem_data,
-                ptr_align,
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.distinct_layout_array,
-                distinct_mem_data,
-                ptr_align,
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.struct_layout_array,
-                struct_mem_data,
-                ptr_align,
-            );
-
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.array_layout_slice,
-                array_count,
-                mem_arrays.array_layout_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.distinct_layout_slice,
-                distinct_count,
-                mem_arrays.distinct_layout_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.struct_layout_slice,
-                struct_count,
-                mem_arrays.struct_layout_array,
-            );
-
-            // pointer layout
-
-            let mut pointer_layout_data = Vec::with_capacity(self.ptr_ty.bytes() as usize * 2);
-            pointer_layout_data.extend_with_num_bytes(
-                self.ptr_ty.bytes(),
-                self.ptr_ty.bits() as u8,
-                self.module.isa().endianness(),
-            );
-            pointer_layout_data.extend_with_num_bytes(
-                self.ptr_ty.bytes().min(8),
-                self.ptr_ty.bits() as u8,
-                self.module.isa().endianness(),
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                mem_arrays.pointer_layout,
-                pointer_layout_data,
-                ptr_align,
-            );
-        }
-        if let Some(info_arrays) = &self.meta_tys.info_arrays {
-            define(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.array_info_array,
-                array_info_data,
-                ptr_align.max(meta_type_align),
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.slice_info_array,
-                slice_info_data,
-                ptr_align, // the alignment of a slice is the alignment of a pointer
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.pointer_info_array,
-                pointer_info_data,
-                meta_type_align,
-            );
-            define(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.distinct_info_array,
-                distinct_info_data,
-                meta_type_align,
-            );
-
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.array_info_slice,
-                array_count,
-                info_arrays.array_info_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.slice_info_slice,
-                slice_count,
-                info_arrays.slice_info_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.pointer_info_slice,
-                pointer_count,
-                info_arrays.pointer_info_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.distinct_info_slice,
-                distinct_count,
-                info_arrays.distinct_info_array,
-            );
-            define_slice(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.struct_info_slice,
-                struct_count,
-                info_arrays.struct_info_array,
-            );
-
-            // now building the arrays of every struct member in the program
-
-            fn declare(module: &mut dyn Module, name: &str) -> DataId {
-                module
-                    .declare_data(name, Linkage::Local, true, false)
-                    .expect("error declaring data")
-            }
-
-            let mut member_array_starting_offsets = Vec::new();
-
-            let mut member_name_str_uid_gen = UIDGenerator::default();
-            let mut member_array_data = Vec::new();
-            let mut member_array_relocs = Vec::new();
-
-            for s in &struct_infos_to_compile {
-                let Ty::Struct { members, .. } = s.as_ref() else {
-                    unreachable_opt_on_release!();
-                };
-
-                let member_offsets = s.struct_layout().unwrap();
-                let member_offsets = member_offsets.offsets();
-
-                member_array_starting_offsets.push(member_array_data.len());
-
-                for (idx, (name, ty)) in members.iter().enumerate() {
-                    // padding for next usize (str)
-                    let padding = layout::padding_needed_for(
-                        member_array_data.len() as u32,
-                        self.ptr_ty.bytes().min(8),
-                    );
-                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
-
-                    // name field
-
-                    let name_offset = member_array_data.len();
-
-                    // zeroed-out str pointer, this will be written over later
-                    member_array_data
-                        .extend(std::iter::repeat(0).take(self.ptr_ty.bytes() as usize));
-
-                    let mut name_str_bytes = self.interner.lookup(name.0).as_bytes().to_vec();
-                    name_str_bytes.push(0);
-                    let name_str_id = declare(
-                        self.module,
-                        &format!(
-                            ".member_str{}",
-                            member_name_str_uid_gen.generate_unique_id()
-                        ),
-                    );
-                    define(
-                        self.module,
-                        &mut self.data_desc,
-                        name_str_id,
-                        name_str_bytes,
-                        1,
-                    );
-
-                    member_array_relocs.push((name_offset as u32, name_str_id));
-
-                    // padding for next u32 (type)
-
-                    let padding =
-                        layout::padding_needed_for(member_array_data.len() as u32, (32 / 8).min(8));
-                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
-
-                    // ty field
-
-                    member_array_data.extend_with_num_bytes(
-                        ty.to_previous_type_id(&self.meta_tys, self.ptr_ty),
-                        32,
-                        self.module.isa().endianness(),
-                    );
-
-                    // padding for next usize
-
-                    let padding = layout::padding_needed_for(
-                        member_array_data.len() as u32,
-                        self.ptr_ty.bytes().min(8),
-                    );
-                    member_array_data.extend(std::iter::repeat(0).take(padding as usize));
-
-                    // offset field
-
-                    member_array_data.extend_with_num_bytes(
-                        member_offsets[idx],
-                        self.ptr_ty.bits() as u8,
-                        self.module.isa().endianness(),
-                    );
-                }
-            }
-
-            // now that all the strings have been created, declare the member info array, and insert
-            // the relocations.
-
-            let member_array_id =
-                declare(self.module, &mangle::mangle_internal("struct_member_info"));
-
-            define_with_relocs(
-                self.module,
-                &mut self.data_desc,
-                member_array_id,
-                member_array_data,
-                meta_type_align.max(ptr_align),
-                member_array_relocs,
-            );
-
-            // now that all the members have been defined, we can assemble the actual struct info array
-
-            let member_array_local = self
-                .module
-                .declare_data_in_data(member_array_id, &mut self.data_desc);
-
-            let mut struct_array_data = Vec::new();
-
-            for (idx, s) in struct_infos_to_compile.iter().enumerate() {
-                let Ty::Struct { members, .. } = s.as_ref() else {
-                    unreachable_opt_on_release!();
-                };
-                let members_len = members.len();
-
-                struct_array_data.extend_with_num_bytes(
-                    members_len as u32,
-                    self.ptr_ty.bits() as u8,
-                    self.module.isa().endianness(),
-                );
-
-                let ptr_member_offset = struct_array_data.len();
-
-                struct_array_data.extend_with_num_bytes(
-                    0,
-                    self.ptr_ty.bits() as u8,
-                    self.module.isa().endianness(),
-                );
-
-                let member_array_starting_offset = member_array_starting_offsets[idx];
-
-                self.data_desc.write_data_addr(
-                    ptr_member_offset as u32,
-                    member_array_local,
-                    member_array_starting_offset as i64,
-                );
-            }
-
-            define(
-                self.module,
-                &mut self.data_desc,
-                info_arrays.struct_info_array,
-                struct_array_data,
-                ptr_align, // the alignment of a slice == the alignment of a single pointer
-            );
         }
     }
 
@@ -926,6 +453,7 @@ impl Compiler<'_> {
             comptime_data: &mut self.comptime_data,
             var_id_gen: UIDGenerator::default(),
             locals: FxHashMap::default(),
+            switch_locals: FxHashMap::default(),
             params: FxHashMap::default(),
             exits: FxHashMap::default(),
             continues: FxHashMap::default(),
@@ -938,7 +466,12 @@ impl Compiler<'_> {
             println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
         }
 
-        function_compiler.finish(fn_abi, (&param_tys, return_ty), body, self.verbosity.should_show(is_mod));
+        function_compiler.finish(
+            fn_abi,
+            (&param_tys, return_ty),
+            body,
+            self.verbosity.should_show(is_mod),
+        );
 
         if self.verbosity.include_disasm(is_mod) {
             self.ctx.want_disasm = true;
@@ -1040,7 +573,10 @@ fn get_func_id(
                 fqn,
             );
         }
-        hir::Expr::Member { previous, field } => {
+        hir::Expr::Member {
+            previous,
+            name: field,
+        } => {
             if let Ty::File(file) = tys[fqn.file][previous].as_ref() {
                 let fqn = hir::Fqn {
                     file: *file,
@@ -1312,8 +848,61 @@ fn cast_into_memory(
         }
     }
 
-    let cast_from = cast_from.remove_distinct();
-    let cast_to = cast_to.remove_distinct();
+    let mut cast_from = cast_from.absolute_intern_ty(false);
+    let cast_to = cast_to.absolute_intern_ty(true);
+
+    // first we check for variant -> enum
+    if let (
+        Ty::Variant {
+            enum_uid: from_enum_uid,
+            uid,
+            sub_ty,
+            discriminant,
+            ..
+        },
+        Ty::Enum {
+            uid: to_enum_uid,
+            variants,
+            ..
+        },
+    ) = (cast_from.as_ref(), cast_to.as_ref())
+    {
+        assert_eq!(from_enum_uid, to_enum_uid);
+
+        let enum_layout = cast_to.enum_layout().unwrap();
+
+        let found_sub_ty = variants
+            .iter()
+            .find_map(|v| {
+                let Ty::Variant {
+                    uid: variant_uid,
+                    sub_ty,
+                    ..
+                } = v.as_ref()
+                else {
+                    unreachable!("all variants should be `Ty::Variant`")
+                };
+                if variant_uid == uid {
+                    Some(sub_ty)
+                } else {
+                    None
+                }
+            })
+            .expect("variants can only be casted to their own enums");
+        assert_eq!(sub_ty, found_sub_ty);
+
+        let memory = memory.unwrap_or_alloca(builder, cast_to);
+
+        memory.write(val, *sub_ty, module, builder);
+
+        let discrim = builder.ins().iconst(ptr_ty, *discriminant as i64);
+        memory.store(builder, discrim, enum_layout.discriminant_offset() as i32);
+
+        return Some(memory.into_value(builder, ptr_ty));
+    }
+
+    // if it wasn't variant -> enum, we unwrap the variant fully and check for other casts
+    cast_from = cast_from.absolute_intern_ty(true);
 
     match (cast_from.as_ref(), cast_to.as_ref()) {
         (Ty::Array { size, .. }, Ty::Slice { .. }) => {
@@ -1341,7 +930,9 @@ fn cast_into_memory(
 
             let struct_layout = cast_to.struct_layout().unwrap();
 
-            for (idx, (_, ty)) in cast_to.as_struct().unwrap().into_iter().enumerate() {
+            for (idx, hir_ty::MemberTy { ty, .. }) in
+                cast_to.as_struct().unwrap().into_iter().enumerate()
+            {
                 match ty.as_ref() {
                     Ty::Pointer { .. } => {
                         if let Some(val) = val {
@@ -1430,8 +1021,8 @@ fn cast_struct_to_struct(
     if from_members
         .iter()
         .zip(to_members.iter())
-        .all(|((from_name, from_ty), (to_name, to_ty))| {
-            from_name == to_name && from_ty.is_functionally_equivalent_to(to_ty, true)
+        .all(|(from, to)| {
+            from.name == to.name && from.ty.is_functionally_equivalent_to(&to.ty, true)
         })
     {
         val
@@ -1448,11 +1039,18 @@ fn cast_struct_to_struct(
         let to_members: FxHashMap<_, _> = to_members
             .iter()
             .enumerate()
-            .map(|(idx, (name, ty))| (*name, (idx, *ty)))
+            .map(|(idx, member_ty)| (member_ty.name, (idx, member_ty.ty)))
             .collect();
 
-        for (from_idx, (name, from_ty)) in from_members.iter().enumerate() {
-            let (to_idx, to_ty) = to_members[name];
+        for (
+            from_idx,
+            hir_ty::MemberTy {
+                name: from_name,
+                ty: from_ty,
+            },
+        ) in from_members.iter().enumerate()
+        {
+            let (to_idx, to_ty) = to_members[from_name];
 
             let from_offset = from_layout.offsets()[from_idx];
             let to_offset = to_layout.offsets()[to_idx];

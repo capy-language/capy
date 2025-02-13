@@ -62,6 +62,8 @@ pub enum NodeKind {
     ElseBranch,
     WhileExpr,
     Condition,
+    SwitchExpr,
+    SwitchArm,
     LabelDecl,
     LabelRef,
     IntLiteral,
@@ -89,6 +91,9 @@ pub enum NodeKind {
     MemberDecl,    // `foo: i32`
     StructLiteral, // `My_Struct { foo: 123 }`
     MemberLiteral, // `foo: 123`
+    EnumDecl,
+    VariantDecl,
+    Discriminant,
     ImportExpr,
     Ty,
     Path,

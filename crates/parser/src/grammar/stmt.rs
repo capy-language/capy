@@ -108,7 +108,11 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
     } else {
         if !(matches!(
             expr_cm.kind(),
-            NodeKind::IfExpr | NodeKind::WhileExpr | NodeKind::ComptimeExpr | NodeKind::Block
+            NodeKind::IfExpr
+                | NodeKind::WhileExpr
+                | NodeKind::SwitchExpr
+                | NodeKind::ComptimeExpr
+                | NodeKind::Block
         ) || (repl && p.at_eof()))
         {
             p.expect_with_no_skip(TokenKind::Semicolon);
@@ -162,7 +166,7 @@ pub(crate) fn parse_decl(p: &mut Parser, top_level: bool) -> CompletedMarker {
     let value = expr::parse_expr(p, "value");
 
     let top_level_extern_lambda = top_level
-        && value.map_or(false, |value| value.kind() == NodeKind::Lambda)
+        && value.is_some_and(|value| value.kind() == NodeKind::Lambda)
         && p.previous_token_kind() != TokenKind::Extern;
 
     if !top_level_extern_lambda {

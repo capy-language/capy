@@ -13,6 +13,30 @@ Person :: struct {
     age: i32,
 };
 
+Dessert :: enum {
+    Ice_Cream,
+    Chocolate_Cake | 2,
+    Apple_Pie: struct {
+        warm: bool,
+        crumble: bool,
+        crust_thickness: f64,
+    }           | 10,
+    Cookie: f32, // cookie temperature or something
+    Brownie,
+    Cheesecake  | 42,
+    Pudding     | 45,
+    Milkshake: struct {
+        malt: bool,
+    }
+};
+
+Farm_Animal :: enum {
+    Cow,
+    Sheep,
+    Chicken,
+    Pig,
+};
+
 main :: () {
     core.println("Reflection!\n");
 
@@ -47,6 +71,12 @@ check_type_info :: () {
     print_info(Person);
     print_info(core.Any);
     print_info(distinct Foo);
+    print_info(distinct Farm_Animal);
+    print_info(Dessert);
+    print_info(Dessert.Ice_Cream);
+    print_info(Dessert.Apple_Pie);
+    print_info(Dessert.Cookie);
+    print_info(Dessert.Milkshake);
 }
 
 check_any :: () {
@@ -61,14 +91,14 @@ check_any :: () {
     // `core.Any` powers the `core.println` function, which does something
     // different depending on the type of the `core.Any` passed in.
 
-    core.println(core.Any.{ ty = u8, data = ^123 as ^u8 });
+    core.println(core.Any.{ ty = u8, data = (^u8).(^123) });
     core.println(core.Any.{ ty = [6]i32, data = ^i32.[ 4, 8, 15, 16, 23, 42 ] });
-    core.println(core.Any.{ ty = []i32, data = ^(i32.[ 1, 2, 3 ] as []i32) });
-    core.println(core.Any.{ ty = ^i32, data = ^^52 as ^^i32 });
+    core.println(core.Any.{ ty = []i32, data = ^[]i32.(i32.[ 1, 2, 3 ]) });
+    core.println(core.Any.{ ty = ^i32, data = (^^i32).(^^52) });
 
     // `core.Any` of `core.Any`
     
-    i := core.Any.{ ty = imaginary, data = ^42 as ^imaginary };
+    i := core.Any.{ ty = imaginary, data = (^imaginary).(^42) };
     core.println(i);
     core.println(core.Any.{ ty = core.Any, data = ^i });
 
@@ -85,7 +115,7 @@ check_any :: () {
 
     // printing arrays
     core.println(.[3, -1, 4, 1, 5, 9]);
-    core.println(.[4, 8, 15, 16, 23, 42] as []i32);
+    core.println([]i32.( .[4, 8, 15, 16, 23, 42] ));
     core.println(core.Any.[1, "hello", true, 5.3]);
 
     // printing structs
@@ -104,6 +134,32 @@ check_any :: () {
             }
         }
     });
+
+    // printing enums
+    core.println(Dessert.Apple_Pie.{
+        warm = true,
+        crumble = false,
+        crust_thickness = 1.3,
+    });
+    core.println(Dessert.Cookie.(1089.5));
+    core.println(Dessert.Brownie.(())); // todo: change how void variants are instantiated
+    core.println(Dessert.Cheesecake.(()));
+    core.println(Dessert.Milkshake.{
+        malt = true,
+    });
+    // since `Dessert.Apple_Pie` is its own type, this will make sure that the value
+    // is being stored in memory as an actual enum (Dessert), and not a struct (Dessert.Apple_Pie)
+    core.println(Dessert.(Dessert.Apple_Pie.{
+        warm = false,
+        crumble = true,
+        crust_thickness = 0.5,
+    }));
+    core.println(Dessert.(Dessert.Cookie.(30.0)));
+    core.println(Dessert.(Dessert.Brownie.(())));
+    core.println(Dessert.(Dessert.Cheesecake.(())));
+    core.println(Dessert.(Dessert.Milkshake.{
+        malt = false,
+    }));
 }
 
 check_equality :: () {
@@ -124,34 +180,47 @@ check_equality :: () {
     io.label("Person == distinct 'a Person : ", Person == d1Person);
     io.label("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
     io.label("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
+    
+    io.label("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
+    io.label("Dessert == Dessert : ", Dessert == Dessert);
+    io.label("Dessert.Apple_Pie == Dessert.Cheesecake : ", Dessert.Apple_Pie == Dessert.Cheesecake);
+    io.label("Dessert.Cheesecake == Dessert.Cheesecake : ", Dessert.Cheesecake == Dessert.Cheesecake);
+    io.label("Farm_Animal.Cow == Dessert.Ice_Cream : ", Farm_Animal.Cow == Dessert.Ice_Cream);
+    io.label("Farm_Animal.Cow == Farm_Animal.Cow : ", Farm_Animal.Cow == Farm_Animal.Cow);
+
     io.label("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
-    io.label("() -> void == () -> void : ", () -> void == () -> void);   
+    io.label("() -> void == () -> void : ", () -> void == () -> void);
 
     core.println("");
 }
 
 check_layouts :: () {
-    print_type_layout("i32             ", i32);
-    print_type_layout("i64             ", i64);
-    print_type_layout("u64             ", u64);
-    print_type_layout("i8              ", i8);
-    print_type_layout("u128            ", u128);
-    print_type_layout("usize           ", usize);
-    print_type_layout("f32             ", f32);
-    print_type_layout("void            ", void);
-    print_type_layout("any             ", any);
-    print_type_layout("str             ", str);
-    print_type_layout("char            ", char);
-    print_type_layout("type            ", type);
-    print_type_layout("Person          ", Person);
-    print_type_layout("Foo             ", Foo);
-    print_type_layout("[6] Person      ", [6] Person);
-    print_type_layout("[ ] Person      ", [] Person);
-    print_type_layout(" ^  Person      ", ^ Person);
-    print_type_layout("distinct Person ", distinct Person);
-    print_type_layout("distinct Person ", distinct Person);
-    print_type_layout("()       -> void", () -> void);
-    print_type_layout("(x: i32) -> f32 ", (x: i32) -> f32);
+    print_type_layout("i32               ", i32);
+    print_type_layout("i64               ", i64);
+    print_type_layout("u64               ", u64);
+    print_type_layout("i8                ", i8);
+    print_type_layout("u128              ", u128);
+    print_type_layout("usize             ", usize);
+    print_type_layout("f32               ", f32);
+    print_type_layout("void              ", void);
+    print_type_layout("any               ", any);
+    print_type_layout("str               ", str);
+    print_type_layout("char              ", char);
+    print_type_layout("type              ", type);
+    print_type_layout("Person            ", Person);
+    print_type_layout("Foo               ", Foo);
+    print_type_layout("[6] Person        ", [6] Person);
+    print_type_layout("[ ] Person        ", [] Person);
+    print_type_layout(" ^  Person        ", ^ Person);
+    print_type_layout("distinct Person   ", distinct Person);
+    print_type_layout("Dessert           ", Dessert);
+    print_type_layout("Dessert.Brownie   ", Dessert.Brownie);
+    print_type_layout("Dessert.Apple_Pie ", Dessert.Apple_Pie);
+    print_type_layout("Dessert.Milkshake ", Dessert.Milkshake);
+    print_type_layout("Farm_Animal       ", Farm_Animal);
+    print_type_layout("Farm_Animal.Sheep ", Farm_Animal.Sheep);
+    print_type_layout("()       -> void  ", () -> void);
+    print_type_layout("(x: i32) -> f32   ", (x: i32) -> f32);
 
     core.println("");
 }
@@ -243,7 +312,34 @@ print_info_with_args :: (ty: type, indent: i32) {
 
         print_indent(indent);
         core.println("ty =");
-        print_info_with_args(info.ty, indent + 1);
+        print_info_with_args(info.sub_ty, indent + 1);
+    } else if meta.is_variant(ty) {
+        print_front(indent, "VARIANT");
+
+        info := meta.get_variant_info(ty);
+
+        print_indent(indent);
+        io.label("discriminant = ", info.discriminant);
+
+        print_front(indent, "ty =");
+        print_info_with_args(info.sub_ty, indent + 1);
+    } else if meta.is_enum(ty) {
+        print_front(indent, "ENUM");
+
+        info := meta.get_enum_info(ty);
+
+        print_indent(indent);
+        io.label("discriminant_offset = ", info.discriminant_offset);
+
+        print_front(indent, "variants =");
+
+        idx := 0;
+        while idx < info.variants.len {
+            variant := info.variants[idx];
+            print_info_with_args(variant, indent + 1);
+
+            idx = idx + 1;
+        }
     } else if meta.is_struct(ty) {
         print_front(indent, "STRUCT");
 
@@ -289,10 +385,12 @@ print_info_with_args :: (ty: type, indent: i32) {
         } else if meta.is_void(ty) {
             "VOID"
         } else {
-            disc := meta.meta_to_raw(ty);
+            raw := meta.meta_to_raw(ty);
 
             core.println("\nokay you fricked up bud");
-            io.label("discriminant = ", disc);
+            io.label("raw = ", raw);
+            io.label("discrim = ", raw >> 26);
+            io.label("idx = ", raw &~ (0b111111 << 26));
 
             core.unreachable();
 

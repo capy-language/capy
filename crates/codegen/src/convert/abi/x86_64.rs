@@ -22,6 +22,7 @@ pub enum Class {
     // TODO: X87?
     /// "NO_CLASS This class is used as initializer in the algorithms. It will be used for
     /// padding and empty structures and unions."
+    #[allow(clippy::enum_variant_names)]
     NoClass,
     // MEMORY This class consists of types that will be passed and returned in memory via the stack.
     //Memory,
@@ -86,15 +87,11 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                 classes[offset / 8 + 1] = classes[offset / 8 + 1].merge_eigthbyte(Int)
             }
             Ty::Distinct { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
+            Ty::Variant { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
             Ty::Struct { members, .. } => {
-                for (field, &field_off) in ty
-                    .struct_layout()
-                    .unwrap()
-                    .offsets()
-                    .iter()
-                    .enumerate()
+                for (field, &field_off) in ty.struct_layout().unwrap().offsets().iter().enumerate()
                 {
-                    classify_eight_byte(members[field].1, classes, offset + field_off as usize)
+                    classify_eight_byte(members[field].ty, classes, offset + field_off as usize)
                 }
             }
             _ => {}
@@ -109,6 +106,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
     let mut classes = [Class::NoClass; 8];
     classify_eight_byte(ty, &mut classes, 0);
     if n > 2 {
+        #[allow(clippy::if_same_then_else)]
         if classes[0] != Class::Sse {
             None
         } else if classes[1..n].iter().any(|&class| class != Class::SseUp) {

@@ -592,6 +592,7 @@ fn ty_diagnostic_message(
                 fqn.to_string(mod_dir, interner),
             )
         }
+        hir_ty::TyDiagnosticKind::CantUseAsTy => "this cannot be used as a type".to_string(),
         hir_ty::TyDiagnosticKind::ParamNotATy => "parameters cannot be used as types".to_string(),
         hir_ty::TyDiagnosticKind::LocalTyIsMutable => {
             "local variables cannot be used as types if they are mutable".to_string()
@@ -650,14 +651,20 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::ArraySizeNotConst => {
             "array size must be known at compile-time".to_string()
         }
-        hir_ty::TyDiagnosticKind::ArraySizeMismatch { found, expected } => {
-            format!("expected `{}` elements, found {}", expected, found)
+        hir_ty::TyDiagnosticKind::DiscriminantNotInt => {
+            "discriminants must be an integer".to_string()
+        }
+        hir_ty::TyDiagnosticKind::DiscriminantNotConst => {
+            "discriminants must be known at compile-time".to_string()
         }
         hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
             "external globals must have a type annotation".to_string()
         }
         hir_ty::TyDiagnosticKind::DeclTypeHasNoDefault { ty } => {
             format!("`{}` does not have a default value. one must be supplied", ty.display(mod_dir, interner))
+        }
+        hir_ty::TyDiagnosticKind::SwitchDoesNotCoverVariant { ty  } => {
+            format!("this switch statement does not have an arm for `{}`", ty.display(mod_dir, interner))
         }
     }
 }
@@ -711,10 +718,13 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Else => "`else`",
         TokenKind::While => "`while`",
         TokenKind::Loop => "`loop`",
+        TokenKind::Switch => "`switch`",
+        TokenKind::In => "`in`",
         TokenKind::Mut => "`mut`",
         TokenKind::Distinct => "`distinct`",
         TokenKind::Extern => "`extern`",
         TokenKind::Struct => "`struct`",
+        TokenKind::Enum => "`enum`",
         TokenKind::Import => "`import`",
         TokenKind::Mod => "`mod`",
         TokenKind::Comptime => "`comptime`",
@@ -756,6 +766,7 @@ fn format_kind(kind: TokenKind) -> &'static str {
         TokenKind::Comma => "`,`",
         TokenKind::Semicolon => "`;`",
         TokenKind::Arrow => "`->`",
+        TokenKind::FatArrow => "`=>`",
         TokenKind::Caret => "`^`",
         TokenKind::Backtick => "'`'", // this one is a little weird lol
         TokenKind::LParen => "`(`",
@@ -776,6 +787,7 @@ fn format_node(kind: NodeKind) -> &'static str {
     // as unimplemented!()
     match kind {
         NodeKind::ArraySize => "array size",
+        NodeKind::CastExpr => "`as`",
         _ => unimplemented!(),
     }
 }
