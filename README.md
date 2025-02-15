@@ -34,7 +34,7 @@ Then install the capy command with cargo,
 cargo install --path crates/capy
 ```
 
-Make sure you have `gcc` installed,
+Make sure you have either `zig` or `gcc` installed (they are used for linking to libc),
 
 Then compile and run your code!
 
@@ -66,7 +66,7 @@ age :: 42;
 ```
 
 Certain other languages have `const` definitions AND immutable variables. Capy combines these two concepts together.
-They are both defined the same way.
+They are both defined the same way, using `::`.
 
 Variables can also shadow each other.
 So later definitions will replace earlier definitions that have the same name,
@@ -75,10 +75,8 @@ So later definitions will replace earlier definitions that have the same name,
 foo := true;
 core.println(foo);  // will print "true"
 
-
 foo :: 5;
 core.println(foo);  // now, this will print "5"
-
 
 foo := "Hullo :3";
 core.println(foo);  // now, this will print "Hullo :3"
@@ -87,25 +85,35 @@ core.println(foo);  // now, this will print "Hullo :3"
 The value of a variable can be omitted and a default/zero value will be supplied.
 
 ```cpp
-milk: f64;      // without a value, this defaults to 0.0
-letter: char;   // without a value, this defaults to '\0'
-number: i32;    // without a value, this defaults to 0
+milk : f64;      // without a value, this defaults to 0.0
+letter : char;   // without a value, this defaults to '\0'
+number : i32;    // without a value, this defaults to 0
 
-// ...
-// etc.
+// etc. for the other types (excluding pointers and enums)
+```
+
+Casting is done with `type.(value)`
+
+```cpp
+age_int: i32 = 33;
+
+age_float := f32.(age_int); // casts age_int -> f32
+
+letter := char.(age_int);   // casts age_float -> char
 ```
 
 Arrays are created like this,
 
 ```cpp
-the_numbers: [6]i32 = i32.[4, 8, 15, 16, 23, 42];  // although you'd usually omit the type `[6]i32`
+the_numbers: [6]i32 = i32.[4, 8, 15, 16, 23, 42];
 
 the_numbers[2] = 10;
 ```
 
 But what happens if we want to change the size of `the_numbers`?
 Unfortunately since `the_numbers` has a type of `[6]i32`, we can't :(
-But there is a way around it. We can use slices!
+
+But there is a way to do it. We can use slices!
 
 Slices are a type of reference that can hold an array of any possible size.
 They look very similar but lack a length within the square brackets.
@@ -117,8 +125,8 @@ the_numbers: []i32 = i32.[4, 5, 6, 7, 8];
 the_numbers[2] = 10;
 ```
 
-As you can see above, arrays just automatically cast themselves into slices.
-But if we want to convert a slice back into a fixed array, we have to do cast it explicitly,
+Arrays can automatically cast themselves to slices, which is what's happening above.
+If we want to convert a slice back into a fixed array we have to do the cast explicitly,
 
 ```cpp
 // start with a fixed array
@@ -128,17 +136,7 @@ the_numbers: [3]i32 = i32.[2, 4, 8];
 my_slice: []i32 = the_numbers;
 
 // manually cast it back to an array
-my_array: [3]i32 = [3]i32.(my_slice);
-```
-
-And as you can see above, casting is done with `type.(value)`
-
-```cpp
-age_int: i32 = 33;
-
-age_float := f32.(age_int); // casts age_int -> f32
-
-letter := char.(age_int);   // casts age_float -> char
+the_numbers: [3]i32 = [3]i32.(my_slice);
 ```
 
 In Capy, pointers can be mutable or immutable, just like Rust.
@@ -158,10 +156,8 @@ Mutable pointers greatly improve the readability of code, and allow one to see a
 
 ### Types
 
-
 Types are first-class in Capy. They can be put inside variables, passed to functions, printed, etc.
-
-Structs are declared by just assigning them to a variable,
+Structs are just values put within immutable variables:
 
 ```cpp
 Person :: struct {
@@ -181,23 +177,23 @@ gandalf.age = gandalf.age + 1;
 Types can also be created with the `distinct` keyword, which creates a new type with the same underlying semantics of it's sub type.
 
 ```cpp
-Imaginary :: distinct i32;
+Seconds :: distinct i32;
 
-x : Imaginary = 42;
-y : i32 = 12;
+foo : Seconds = 42;
+bar : i32 = 12;
 
-y = x; // ERROR! Imaginary != i32 :(
+bar = foo; // ERROR! Seconds != i32
 ```
 
-If you don't use the `distinct` keyword, and simply assign a type to a variable, you've just created a type alias!
+And since types are first-class, type aliases are easy:
 
 ```cpp
 My_Int :: i32;
 
-x : My_Int = 42;
-y : i32 = 12;
+foo : My_Int = 42;
+bar : i32 = 12;
 
-y = x; // yay! My_Int == i32 :)
+bar = foo; // yay! My_Int == i32 :)
 ```
 
 It is important to note that in order to actually use a variable as a type, it must be *const*, or, "known at compile-time."
@@ -218,7 +214,7 @@ There are two requirements which determine if a variable is *const*.
 1. It must be immutable.
 2. It must either contain a literal value, a reference to another const variable, or a `comptime` block.
 
-Beyond type annotations, the size of an array is also expected to be *const*, and this value can be calculated using `comptime`.
+Const variables can also be used for enum discriminants (explained later) and array sizes.
 
 Enums are an incredibly useful construct for dealing with varying state, and representing optional or error values.
 In Capy enums can be declared as follows,
@@ -231,12 +227,12 @@ Dessert :: enum {
     Milkshake,
 };
 
-bobs_order  : Dessert = Dessert.Chocolate_Cake;
-johns_order : Dessert = Dessert.Ice_Cream;
-mikes_order : Dessert = Dessert.Milkshake;
+bobs_order  : Dessert = Dessert.Chocolate_Cake.();
+johns_order : Dessert = Dessert.Ice_Cream.();
+mikes_order : Dessert = Dessert.Milkshake.();
 ```
 
-Enums can also have additional data associated with each variant, and this data can be extracted using `switch` statements!
+Enums can also have additional data associated with each variant, and this data can be extracted using `switch` statements
 
 ```cpp
 Web_Event :: enum {
@@ -259,7 +255,7 @@ clicked : Web_Event = Web_Event.Click.{
 
 switch e in clicked {
     Page_Load => core.println("page loaded"),
-    Page_Unload => core.println("page loaded"),
+    Page_Unload => core.println("page unloaded"),
     Key_Press => {
         // type_of(e) == char
         core.print("pressed key: ");
@@ -284,7 +280,7 @@ As you can see, switches accept a *parameter* (`e`, in this case), and the type 
 actually changes depending on the branch.
 
 One of the unique things about Capy's enums is that each variant of the enum is actually its own unique type.
-When you create the variants `Web_Event.Click`, `Web_Event.Paste`, `Dessert.Chocolate_Cake`, etc. inside an enum block
+When you define the variants `Web_Event.Click`, `Web_Event.Paste`, `Dessert.Chocolate_Cake`, etc. inside an `enum {}` block
 you are actually creating entirely new types. You can reference and instantiate these types just like any other type.
 
 ```cpp
@@ -298,7 +294,8 @@ It's very similar to creating distincts. The only real difference is that enums 
 Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be a hassle.
 
 <details> 
-<summary>Extra enum stuff!</summary>
+<summary>Extra enum stuff</summary>
+
 If you're doing FFI and you need to specify the discriminant you can do that with `|`
 
 ```cpp
@@ -311,6 +308,7 @@ Error :: enum {
 ```
 
 *See [`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) for more*
+
 </details>
 
 With that, here are all the possible types data can have in Capy:
@@ -387,10 +385,14 @@ All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/sr
 
 ```cpp
 array_type := [3]i32;
-info := meta.get_array_info(array_type);
 
-core.assert(info.len == 3);
-core.assert(info.ty  == i32);
+switch info in meta.get_type_info(array_type) {
+    Array => {
+        core.assert(info.len    == 3);
+        core.assert(info.sub_ty == i32);
+    }
+    _ => {}
+}
 ```
 
 The size of an integer type,
@@ -398,8 +400,13 @@ The size of an integer type,
 ```cpp
 int_type := i16;
 
-core.assert(meta.size_of(int_type)  == 2);
-core.assert(meta.align_of(int_type) == 2);
+switch info in meta.get_type_info(int_type) {
+    Int => {
+        core.assert(info.bit_width == 16);
+        core.assert(info.signed    == true);
+    }
+    _ => {}
+}
 ```
 
 The members of a struct,
@@ -408,12 +415,16 @@ The members of a struct,
 struct_type := struct {
     foo: str
 };
-info := meta.get_struct_info(struct_type);
 
-first := info.members[0];
-core.assert(core.str_eq(first.name,    "foo"));
-core.assert(first.ty                == str);
-core.assert(first.offset            == 0);
+switch info in meta.get_type_info(struct_type) {
+    Struct => {
+        first := info.members[0];
+        core.assert(core.str_eq(first.name,    "foo"));
+        core.assert(first.ty                == str);
+        core.assert(first.offset            == 0);
+    }
+    _ => {}
+}
 ```
 
 And anything else you'd like to know about your types.
@@ -497,7 +508,7 @@ defer free_manager(file_manager);
 file_manager.foo := open_file("foo.txt");
 defer close_file(file_manager.foo);
 
-// foo is freed, and then the file manager is freed
+// foo is closed, and *then* the file manager is freed
 ```
 
 ### Functions
@@ -575,13 +586,13 @@ If you find any bugs in the compiler, please be sure to [make an issue](https://
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), the structure of this entire codebase is largely based on [gingerbread](https://github.com/gingerbread-lang/gingerbread) and [eldiro](https://github.com/lunacookies/eldiro).
 Her help in teaching how programming languages really work is immeasurable and I'm very thankful.
 
-Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in testing the limits of the language and optimizing the compiler. Due to her help the language has really expanded to new heights.
+Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in testing the limits of the language and improving the compiler in so many ways. Due to her help the language has really expanded to new heights.
 
 Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and cranelift made all my dreams come true.
 
 I know the cranelift documentation isn't the greatest, so if anyone wants to use this repo to see how I've implemented higher-level features such as arrays, structs, first class functions, etc. then it's all in [`crates/codegen`](./crates/codegen/).
 
-This project was made by [NotAFlyingGoose](https://github.com/NotAFlyingGoose)
+This project was made by [NotAFlyingGoose](https://github.com/NotAFlyingGoose) :)
 
 ## Contributing
 
@@ -589,7 +600,21 @@ Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how
 
 ## License
 
-The Capy Programming Language is distributed under the terms of both the MIT license and the Apache License (Version 2.0).
+The Capy Programming Language is licensed under the Apache License (Version 2.0) with Runtime Library Exception or the MIT license, at your option.
 See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for details.
+
+It is Copyright (c) The Capy Programming Language Contributors.
+
+The Runtime Library Exception makes it clear that end users of the Capy compiler don’t have to attribute their use of Capy in their finished binary application, game, or service. End-users of the Capy programming language should feel unrestricted to create great software. The full text of this exception follows:
+
+```
+As an exception, if you use this Software to compile your source code and
+portions of this Software are embedded into the binary product as a result,
+you may redistribute such product without providing attribution as would
+otherwise be required by Sections 4(a), 4(b) and 4(d) of the License.
+```
+
+This exception can also be found at the bottom of the [LICENSE-APACHE](./LICENSE-APACHE) file.
+This is the same exception used by the [Swift programming language](https://www.swift.org/legal/license.html).
 
 The capybara logo was AI generated by [imagine.art](https://www.imagine.art/), who own the rights to it. It can be used in this non-commercial setting with attribution to them.

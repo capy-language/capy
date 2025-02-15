@@ -216,375 +216,228 @@ align_of :: (ty: type) -> usize {
     }
 }
 
-// `u8`, `u16`, `u32`, `u64`, `u128`, `usize`
-// `i8`, `i16`, `i32`, `i64`, `i128`, `isize`
-//
-// these are the available integer types for use.
-// `usize` and `isize` have the same size as a pointer on the target architecture.
+// simple type ids
+// (they contain all relevant information as bit flags)
+void_discriminant : u8 : 1;
+int_discriminant : u8 : 2;
+float_discriminant : u8 : 3;
+bool_discriminant : u8 : 4;
+string_discriminant : u8 : 5;
+char_discriminant : u8 : 6;
+meta_type_discriminant : u8 : 7;
+any_discriminant : u8 : 8;
+file_discriminant : u8 : 9;
 
-int_discriminant : u32 : 2;
+// complex type ids
+// (they contain an index into a global type info array)
+struct_discriminant : u8 : 16;
+distinct_discriminant : u8 : 17;
+array_discriminant : u8 : 18;
+slice_discriminant : u8 : 19;
+pointer_discriminant : u8 : 20;
+function_discriminant : u8 : 21;
+enum_discriminant : u8 : 22;
+variant_discriminant : u8 : 23;
 
-Int_Info :: struct {
-    bit_width: u8,
-    signed: bool,
+Type_Info :: enum {
+    // `i8`, `i16`, `i32`, `i64`, `i128`, `isize`
+    // `u8`, `u16`, `u32`, `u64`, `u128`, `usize`
+    //
+    // `usize` and `isize` have the same size as a pointer on the target architecture.
+    Int: struct {
+        bit_width: u8,
+        signed: bool,
+    }           | int_discriminant,
+    // `f32`, `f64`
+    Float: struct {
+        bit_width: u8,
+    }           | float_discriminant,
+    // `bool`
+    Bool        | bool_discriminant,
+    // `str`
+    String      | string_discriminant,
+    // `char`
+    Char        | char_discriminant,
+    // `[6] i32`
+    // `[10] u8`
+    // ...
+    //
+    // A standard array of data, laid out linearly in memory.
+    Array: struct {
+        len: usize,
+        sub_ty: type,
+    }           | array_discriminant,
+    // `[] i8`
+    // `[] char`
+    // ...
+    //
+    // The slice. A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
+    Slice: struct {
+        sub_ty: type,
+    }           | slice_discriminant,
+    // `^i32`
+    // `^any`
+    // ...
+    Pointer: struct {
+        sub_ty: type,
+    }           | pointer_discriminant,
+    // `distinct i32`
+    // `distinct bool`
+    // ...
+    //
+    // The distinct, A unique type with the same underlying semantics of its sub-type
+    Distinct: struct {
+        sub_ty: type,
+    }           | distinct_discriminant,
+    // `struct { a: i32, b: i32 }`
+    // `struct { foo: str }`
+    // ...
+    Struct: struct {
+        members: []Member_Info,
+    }           | struct_discriminant,
+    // `enum { Foo, Bar }`
+    // `enum { Number: i32, Text: str, Condition: bool }`
+    // ...
+    Enum: struct {
+        variants: []type,
+        discriminant_offset: usize,
+    }           | enum_discriminant,
+    // `enum { Foo, Bar }`
+    // `enum { Number: i32, Text: str, Condition: bool }`
+    // ...
+    // 
+    // `Foo`, `Bar`, `Number`, etc. are actually their own unique types,
+    // very similar to distinct types. They have the same underlying
+    // semantics of their sub-type.
+    //
+    // Unlike a regular distinct type, enum variants also contain info about the discriminant
+    Variant: struct {
+        sub_ty: type,
+        discriminant: u32,
+    }           | variant_discriminant,
+    // `() -> void`
+    // `(x: i32) -> bool`
+    // ...
+    //
+    // a function type looks the same as an actual function except that it lacks a body `{ }`
+    Function    | function_discriminant,
+    // the file type
+    //
+    // when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`.
+    // no two `file` types are the same, `import "a.capy"` and `import "b.capy"` are really two unique types.
+    //
+    // If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
+    File        | file_discriminant,
+    // `type`
+    //
+    // a "meta type". types are first-class values and `i32` when used as a value has the type of `type`
+    Meta_Type   | meta_type_discriminant,
+    // `any`
+    // 
+    // can represent any arbitrary but unknown value.
+    // cannot be directly obtained, but only held through `^any`, `[] any`, etc.
+    Any         | any_discriminant,
+    // `void`
+    //
+    // an empty type, a `u0`
+    Void        | void_discriminant,
 };
 
-is_int :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == int_discriminant
-}
+array_infos : []Type_Info.Array : extern; // builtin
+slice_infos : []Type_Info.Slice : extern; // builtin
+pointer_infos : []Type_Info.Pointer : extern; // builtin
+distinct_infos : []Type_Info.Distinct : extern; // builtin
+struct_infos : []Type_Info.Struct : extern; // builtin
+enum_infos : []Type_Info.Enum : extern; // builtin
+variant_infos : []Type_Info.Variant : extern; // builtin
 
-get_int_info :: (ty: type) -> Int_Info {
+get_type_info :: (ty: type) -> Type_Info {
     raw := meta_to_raw(ty);
 
-    core.assert_with(
-        raw >> 26 == int_discriminant,
-        "called `get_int_info` on non-int",
-    );
+    discrim := raw >> 26;
 
-    Int_Info.{
-        // the first five bits is the size in bytes
-        bit_width = u8.((raw & 0b11111) * 8),
-        // the ninth bit is the sign flag
-        signed = bool.((raw >> 9) & 1),
+    if discrim == int_discriminant {
+        Type_Info.Int.{
+            // the first five bits is the size in bytes
+            bit_width = u8.((raw & 0b11111) * 8),
+            // the ninth bit is the sign flag
+            signed = bool.((raw >> 9) & 1),
+        }
+    } else if discrim == float_discriminant {
+        Type_Info.Float.{
+            // the first five bits is the size in bytes
+            bit_width = u8.((raw & 0b11111) * 8),
+        }
+    } else if discrim == bool_discriminant {
+        Type_Info.Bool.()
+    } else if discrim == string_discriminant {
+        Type_Info.String.()
+    } else if discrim == char_discriminant {
+        Type_Info.Char.()
+    } else if discrim == array_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        array_infos[idx]
+    } else if discrim == slice_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        slice_infos[idx]
+    } else if discrim == pointer_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        pointer_infos[idx]
+    } else if discrim == distinct_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        distinct_infos[idx]
+    } else if discrim == struct_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        struct_infos[idx]
+    } else if discrim == enum_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        enum_infos[idx]
+    } else if discrim == variant_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        variant_infos[idx]
+    } else if discrim == function_discriminant {
+        Type_Info.Function.()
+    } else if discrim == file_discriminant {
+        Type_Info.File.()
+    } else if discrim == meta_type_discriminant {
+        Type_Info.Meta_Type.()
+    } else if discrim == any_discriminant {
+        Type_Info.Any.()
+    } else if discrim == void_discriminant {
+        Type_Info.Void.()
+    } else {
+        core.println("unknown type id:");
+        core.print("raw = ");
+        core.println(raw);
+        core.print("discrim = ");
+        core.println(discrim);
+        core.print("idx = ");
+        core.println(raw &~ (0b111111) << 26);
+
+        core.unreachable();
+        // todo: add a `!` type so we don't have to return values like this
+        Type_Info.Void.()
     }
 }
 
-// `f32`, `f64`
-//
-// these are the available floating point types for use
-
-float_discriminant : u32 : 3;
-
-Float_Info :: struct {
-    bit_width: u8,
-};
-
-is_float :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == float_discriminant
-}
-
-get_float_info :: (ty: type) -> Float_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == float_discriminant,
-        "called `get_float_info` on non-float",
-    );
-
-    Float_Info.{
-        // the first five bits is the size in bytes
-        bit_width = u8.((raw & 0b11111) * 8),
-    }
-}
-
-// `bool`
-
-bool_discriminant : u32 : 4;
-
-is_bool :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == bool_discriminant
-}
-
-// `str`
-
-string_discriminant : u32 : 5;
-
-is_string :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == string_discriminant
-}
-
-// `char`
-
-char_discriminant : u32 : 6;
-
-is_char :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == char_discriminant
-}
-
-// `[6] i32`
-// `[10] u8`
-// ...
-//
-// A standard array of data, layed out linearly in memory.
-
-array_discriminant : u32 : 18;
-
-array_infos : [] Array_Info : extern; // builtin
-
-Array_Info :: struct {
-    len: usize,
-    ty: type,
-};
-
-is_array :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == array_discriminant
-}
-
-get_array_info :: (ty: type) -> Array_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == array_discriminant,
-        "called `get_array_info` on non-array",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    array_infos[idx]
-}
-
-// `[] i8`
-// `[] char`
-// ...
-//
-// The slice. A reference to an array of any size. It contains only a pointer to the array, and the length of the array.
-
-slice_discriminant : u32 : 19;
-
-slice_infos : [] Slice_Info : extern; // builtin
-
-Slice_Info :: struct {
-    ty: type,
-};
-
-is_slice :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == slice_discriminant
-}
-
-get_slice_info :: (ty: type) -> Slice_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == slice_discriminant,
-        "called `get_slice_info` on non-slice",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    slice_infos[idx]
-}
-
-// `^i32`
-// `^any`
-// ...
-
-pointer_discriminant : u32 : 20;
-
-pointer_infos : [] Pointer_Info : extern; // builtin
-
-Pointer_Info :: struct {
-    ty: type,
-};
-
-is_pointer :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == pointer_discriminant
-}
-
-get_pointer_info :: (ty: type) -> Pointer_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == pointer_discriminant,
-        "called `get_pointer_info` on non-pointer",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    pointer_infos[idx]
-}
-
-// `distinct i32`
-// `distinct bool`
-// ...
-//
-// The distinct, A unique type with the same underlying semantics of its sub-type
-
-distinct_discriminant : u32 : 17;
-
-distinct_infos : [] Distinct_Info : extern; // builtin
-
-Distinct_Info :: struct {
-    sub_ty: type,
-};
-
-is_distinct :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == distinct_discriminant
-}
-
-get_distinct_info :: (ty: type) -> Distinct_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == distinct_discriminant,
-        "called `get_distinct_info` on non-distinct",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    distinct_infos[idx]
-}
-
-// `type`
-//
-// a "meta type". types are first-class values and `i32` when used as a value has the type of `type`
-
-meta_type_discriminant : u32 : 7;
-
-is_meta_type :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == meta_type_discriminant
-}
-
-// `any`
-// 
-// can represent any arbitrary but unknown value.
-// cannot be directly obtained, but only held through `^any`, `[] any`, etc.
-
-any_discriminant : u32 : 8;
-
-is_any :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == any_discriminant
-}
-
-// the file type
-//
-// this is perhaps the most useless type, but it is here for only covering all the possibilities.
-// when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`.
-// no two `file` types are the same, `import "a.capy"` and `import "b.capy"` are really two unique types.
-//
-// If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
-
-file_discriminant : u32 : 9;
-
-is_file :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == file_discriminant
-}
-
-// `() -> void`
-// `(x: i32) -> bool`
-// ...
-//
-// the function type is identical to an actual function except that it lacks a body
-
-function_discriminant : u32 : 21;
-
-is_function :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == function_discriminant
-}
-
-// `struct { a: i32, b: i32 }`
-// `struct { foo: str }`
-// ...
-
-struct_discriminant : u32 : 16;
-
-struct_infos : [] Struct_Info : extern; // builtin
-
-Struct_Info :: struct {
-    members: [] Member_Info,
-};
-
+// A member within a struct e.g. `foo` in `struct { foo: str }`
 Member_Info :: struct {
     name: str,
     ty: type,
     offset: usize,
 };
 
-is_struct :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == struct_discriminant
-}
-
-get_struct_info :: (ty: type) -> Struct_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == struct_discriminant,
-        "called `get_struct_info` on non-struct",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    struct_infos[idx]
-}
-
-// `void`
-//
-// an empty type, a `u0`
-
-void_discriminant : u32 : 1;
-
-is_void :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == void_discriminant
-}
-
-// `enum { Foo, Bar }`
-// `enum { Number: i32, Text: str, Condition: bool }`
-// ...
-
-enum_discriminant : u32 : 22;
-
-enum_infos : [] Enum_Info : extern; // builtin
-
-Enum_Info :: struct {
-    variants: []type,
-    discriminant_offset: usize,
-};
-
-is_enum :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == enum_discriminant
-}
-
-get_enum_info :: (ty: type) -> Enum_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == enum_discriminant,
-        "called `get_enum_info` on non-enum",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    enum_infos[idx]
-}
-
-// `enum { Foo, Bar }`
-// `enum { Number: i32, Text: str, Condition: bool }`
-// ...
-// 
-// `Foo`, `Bar`, `Number`, etc. are actually their own unique types,
-// very similar to distinct types. They have the same underlying
-// semantics of their sub-type.
-//
-// Unlike a regular distinct type, enum variants also contain info about the discriminant
-
-variant_discriminant : u32 : 23;
-
-variant_infos : [] Variant_Info : extern; // builtin
-
-Variant_Info :: struct {
-    sub_ty: type,
-    discriminant: u32,
-};
-
-is_variant :: (ty: type) -> bool {
-    meta_to_raw(ty) >> 26 == variant_discriminant
-}
-
-get_variant_info :: (ty: type) -> Variant_Info {
-    raw := meta_to_raw(ty);
-
-    core.assert_with(
-        raw >> 26 == variant_discriminant,
-        "called `get_variant_info` on non-variant",
-    );
-
-    // removes the discriminant (6 bits)
-    idx := raw &~ (0b111111 << 26);
-
-    variant_infos[idx]
-}

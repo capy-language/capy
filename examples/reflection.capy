@@ -248,154 +248,99 @@ print_indent :: (indent: i32) {
         core.libc.putchar(' ');
         idx = idx + 1;
     }
-}
+};
 
 print_info_with_args :: (ty: type, indent: i32) {
     print_front :: (indent: i32, name: str) {
         print_indent(indent);
         core.println(name);
     };
-    
-    if meta.is_int(ty) {
-        print_front(indent, "INT");
 
-        info := meta.get_int_info(ty);
-
+    print_front_with :: (indent: i32, name: str, val: core.Any) {
         print_indent(indent);
-        io.label("bit_width = ", info.bit_width);
-        print_indent(indent);
-        core.print("signed    = ");
-        res := if info.signed {
-            "true"
-        } else {
-            "false"
-        };
-        core.println(res);
-    } else if meta.is_float(ty) {
-        print_front(indent, "FLOAT");
+        core.print(name);
+        core.println(val);
+    };
 
-        info := meta.get_float_info(ty);
-
-        print_indent(indent);
-        io.label("bit_width = ", info.bit_width);
-    } else if meta.is_array(ty) {
-        print_front(indent, "ARRAY");
-
-        info := meta.get_array_info(ty);
-
-        print_indent(indent);
-        io.label("len = ", info.len);
-
-        print_indent(indent);
-        core.println("ty =");
-        print_info_with_args(info.ty, indent + 1);
-    } else if meta.is_slice(ty) {
-        print_front(indent, "SLICE");
-
-        info := meta.get_slice_info(ty);
-
-        print_indent(indent);
-        core.println("ty =");
-        print_info_with_args(info.ty, indent + 1);
-    } else if meta.is_pointer(ty) {
-        print_front(indent, "POINTER");
-
-        info := meta.get_pointer_info(ty);
-
-        print_indent(indent);
-        core.println("ty =");
-        print_info_with_args(info.ty, indent + 1);
-    } else if meta.is_distinct(ty) {
-        print_front(indent, "DISTINCT");
-
-        info := meta.get_distinct_info(ty);
-
-        print_indent(indent);
-        core.println("ty =");
-        print_info_with_args(info.sub_ty, indent + 1);
-    } else if meta.is_variant(ty) {
-        print_front(indent, "VARIANT");
-
-        info := meta.get_variant_info(ty);
-
-        print_indent(indent);
-        io.label("discriminant = ", info.discriminant);
-
-        print_front(indent, "ty =");
-        print_info_with_args(info.sub_ty, indent + 1);
-    } else if meta.is_enum(ty) {
-        print_front(indent, "ENUM");
-
-        info := meta.get_enum_info(ty);
-
-        print_indent(indent);
-        io.label("discriminant_offset = ", info.discriminant_offset);
-
-        print_front(indent, "variants =");
-
-        idx := 0;
-        while idx < info.variants.len {
-            variant := info.variants[idx];
-            print_info_with_args(variant, indent + 1);
-
-            idx = idx + 1;
+    switch info in meta.get_type_info(ty) {
+        Int => {
+            print_front(indent, "INT");
+            print_front_with(indent, "bit_width = ", info.bit_width);
+            print_front_with(indent, "signed    = ", if info.signed {
+                "true"
+            } else {
+                "false"
+            });
         }
-    } else if meta.is_struct(ty) {
-        print_front(indent, "STRUCT");
-
-        info := meta.get_struct_info(ty);
-
-        print_indent(indent);
-        core.println("members =");
-
-        indent := indent + 1;
-
-        idx := 0;
-        while idx < info.members.len {
-            member := info.members[idx];
-
-            print_indent(indent);
-            core.print("name = ");
-            core.println(member.name);
-
-            print_indent(indent);
-            io.label("offset = ", member.offset);
-
-            print_indent(indent);
-            core.println("ty =");
-            print_info_with_args(member.ty, indent + 1);
-
-            idx = idx + 1;
+        Float => {
+            print_front(indent, "FLOAT");
+            print_front_with(indent, "bit_width = ", info.bit_width);
         }
-    } else {
-        name := if meta.is_bool(ty) {
-            "BOOL"
-        } else if meta.is_string(ty) {
-            "STRING"
-        } else if meta.is_char(ty) {
-            "CHARACTER"
-        } else if meta.is_meta_type(ty) {
-            "META TYPE"
-        } else if meta.is_any(ty) {
-            "ANY"
-        } else if meta.is_file(ty) {
-            "FILE"
-        } else if meta.is_function(ty) {
-            "FUNCTION"
-        } else if meta.is_void(ty) {
-            "VOID"
-        } else {
-            raw := meta.meta_to_raw(ty);
+        Bool => print_front(indent, "BOOL"),
+        String => print_front(indent, "STRING"),
+        Char => print_front(indent, "CHARACTER"),
+        Array => {
+            print_front(indent, "ARRAY");
+            print_front_with(indent, "len = ", info.len);
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        }
+        Slice => {
+            print_front(indent, "SLICE");
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        }
+        Pointer => {
+            print_front(indent, "POINTER");
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        }
+        Distinct => {
+            print_front(indent, "DISTINCT");
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        }
+        Struct => {
+            print_front(indent, "STRUCT");
+            print_front(indent, "members =");
 
-            core.println("\nokay you fricked up bud");
-            io.label("raw = ", raw);
-            io.label("discrim = ", raw >> 26);
-            io.label("idx = ", raw &~ (0b111111 << 26));
+            indent := indent + 1;
 
-            core.unreachable();
+            idx := 0;
+            while idx < info.members.len {
+                member := info.members[idx];
 
-            "unreachable"
-        };
-        print_front(indent, name);
+                print_front_with(indent, "name = ", member.name);
+                print_front_with(indent, "offset = ", member.offset);
+                print_front(indent, "ty =");
+                print_info_with_args(member.ty, indent + 1);
+
+                idx = idx + 1;
+            }
+        }
+        Enum => {
+            print_front(indent, "ENUM");
+            print_front_with(indent, "discriminant_offset = ", info.discriminant_offset);
+            print_front(indent, "variants =");
+
+            idx := 0;
+            while idx < info.variants.len {
+                variant := info.variants[idx];
+                print_info_with_args(variant, indent + 1);
+
+                idx = idx + 1;
+            }
+        }
+        Variant => {
+            print_front(indent, "VARIANT");
+            print_front_with(indent, "discriminant = ", info.discriminant);
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        }
+        Function => print_front(indent, "FUNCTION"),
+        File => print_front(indent, "FILE"),
+        Meta_Type => print_front(indent, "META TYPE"),
+        Any => print_front(indent, "ANY"),
+        Void => print_front(indent, "VOID"),
     }
 }

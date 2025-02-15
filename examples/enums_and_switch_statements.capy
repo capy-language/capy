@@ -17,17 +17,16 @@ Animal :: enum {
 
 main :: () {
     do_animal_stuff(Animal.Dog.("George"));
-    // todo: possibly make void variants easier to instantiate
-    do_animal_stuff(Animal.Cat.(()));
+    do_animal_stuff(Animal.Cat.());
     do_animal_stuff(Animal.Fish.(1000));
-    do_animal_stuff(Animal.Cow.(()));
-    do_animal_stuff(Animal.Chicken.(()));
+    do_animal_stuff(Animal.Cow.());
+    do_animal_stuff(Animal.Chicken.());
     do_animal_stuff(Animal.Sheep.{
         name = "hello",
         wool_amount = 1.0,
         fullness = 0.5,
     });
-    do_animal_stuff(Animal.Pig.(()));
+    do_animal_stuff(Animal.Pig.());
 }
 
 do_animal_stuff :: (animal: Animal) {

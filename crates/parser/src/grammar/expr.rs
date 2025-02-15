@@ -638,11 +638,13 @@ fn parse_cast(
     p.bump();
     p.bump();
 
-    parse_expr_with_recovery_set(
-        p,
-        "cast value",
-        recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RParen])),
-    );
+    if !p.at(TokenKind::RParen) {
+        parse_expr_with_recovery_set(
+            p,
+            "cast value",
+            recovery_set.union(TokenSet::new([TokenKind::Comma, TokenKind::RParen])),
+        );
+    }
 
     p.expect_with_recovery_set(TokenKind::RParen, recovery_set);
 

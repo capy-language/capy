@@ -976,8 +976,12 @@ impl FunctionCompiler<'_> {
                     ))
                 }
             }
+            hir::Expr::Cast { expr: None, .. } => {
+                self.cast(None, Ty::Void.into(), self.tys[self.file_name][expr])
+            }
             hir::Expr::Cast {
-                expr: inner_expr, ..
+                expr: Some(inner_expr),
+                ..
             } => {
                 let cast_to = self.tys[self.file_name][expr];
 
@@ -1500,11 +1504,10 @@ impl FunctionCompiler<'_> {
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
-                let return_ty = self.tys[self.file_name][expr]
-                    .get_final_ty()
-                    .into_real_type();
+                let return_ty = self.tys[self.file_name][expr];
+                let return_ty_real = return_ty.get_final_ty().into_real_type();
 
-                if let Some(return_ty) = return_ty {
+                if let Some(return_ty) = return_ty_real {
                     self.builder.append_block_param(merge_block, return_ty);
                 }
 
@@ -1517,7 +1520,7 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(then_block);
                 self.builder.seal_block(then_block);
 
-                let body_value = self.compile_expr_with_args(body, no_load);
+                let body_value = self.compile_and_cast_with_args(body, no_load, return_ty);
 
                 if *self.tys[self.file_name][body] == Ty::NoEval {
                     self.builder.ins().trap(TRAP_UNREACHABLE);
@@ -1538,7 +1541,8 @@ impl FunctionCompiler<'_> {
                 self.builder.seal_block(else_block);
 
                 if let Some(else_branch) = else_branch {
-                    let else_value = self.compile_expr_with_args(else_branch, no_load);
+                    let else_value =
+                        self.compile_and_cast_with_args(else_branch, no_load, return_ty);
 
                     if *self.tys[self.file_name][else_branch] == Ty::NoEval {
                         self.builder.ins().trap(TRAP_UNREACHABLE);
@@ -1561,7 +1565,7 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(merge_block);
                 self.builder.seal_block(merge_block);
 
-                if return_ty.is_some() {
+                if return_ty_real.is_some() {
                     let phi = self.builder.block_params(merge_block)[0];
 
                     Some(phi)
@@ -1619,7 +1623,10 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Switch {
-                scrutinee, arms, ..
+                scrutinee,
+                arms,
+                default,
+                ..
             } => {
                 let body_block = self.builder.create_block();
                 let fallback_block = self.builder.create_block();
@@ -1646,9 +1653,10 @@ impl FunctionCompiler<'_> {
                 };
                 let enum_layout = enum_ty.enum_layout().unwrap();
 
-                let ty = self.tys[self.file_name][expr].get_final_ty();
+                let return_ty = self.tys[self.file_name][expr];
+                let return_ty_real = return_ty.get_final_ty().into_real_type();
 
-                if let Some(ty) = ty.into_real_type() {
+                if let Some(ty) = return_ty_real {
                     self.builder.append_block_param(exit_block, ty);
                 }
 
@@ -1676,29 +1684,49 @@ impl FunctionCompiler<'_> {
                     else {
                         unreachable!("all variants should be `Ty::Variant`")
                     };
-                    let arm = arm_blocks[variant_name];
 
-                    if let Some(switch_local) = arm.1.switch_local {
-                        self.switch_locals.insert(switch_local, scrutinee_val);
-                    }
+                    let Some(arm) = arm_blocks.get(variant_name) else {
+                        continue;
+                    };
 
                     // todo: maybe discriminant should also be u128
                     switch.set_entry(*discriminant as u128, arm.0);
                 }
+
                 switch.emit(&mut self.builder, discrim_val, fallback_block);
 
                 {
                     self.builder.switch_to_block(fallback_block);
                     self.builder.seal_block(fallback_block);
 
-                    self.builder.ins().trap(TRAP_UNREACHABLE);
+                    if let Some(default) = default {
+                        if let Some(switch_local) = default.switch_local {
+                            self.switch_locals.insert(switch_local, scrutinee_val);
+                        }
+
+                        // todo: should no_load be used here?
+                        let default_val =
+                            self.compile_and_cast_with_args(default.body, no_load, return_ty);
+
+                        if let Some(default_val) = default_val {
+                            self.builder.ins().jump(exit_block, &[default_val]);
+                        } else {
+                            self.builder.ins().jump(exit_block, &[]);
+                        }
+                    } else {
+                        self.builder.ins().trap(TRAP_UNREACHABLE);
+                    }
                 }
 
                 for (arm_block, arm) in arm_blocks.values() {
                     self.builder.switch_to_block(*arm_block);
                     self.builder.seal_block(*arm_block);
 
-                    let body_val = self.compile_expr(arm.body);
+                    if let Some(switch_local) = arm.switch_local {
+                        self.switch_locals.insert(switch_local, scrutinee_val);
+                    }
+
+                    let body_val = self.compile_and_cast_with_args(arm.body, no_load, return_ty);
 
                     if let Some(body_val) = body_val {
                         self.builder.ins().jump(exit_block, &[body_val]);
@@ -1710,7 +1738,7 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(exit_block);
                 self.builder.seal_block(exit_block);
 
-                if ty.into_real_type().is_some() {
+                if return_ty_real.is_some() {
                     Some(self.builder.block_params(exit_block)[0])
                 } else {
                     None
@@ -2092,6 +2120,17 @@ impl FunctionCompiler<'_> {
 
     pub fn compile_and_cast(&mut self, expr: Idx<hir::Expr>, cast_to: Intern<Ty>) -> Option<Value> {
         let value = self.compile_expr(expr);
+
+        self.cast(value, self.tys[self.file_name][expr], cast_to)
+    }
+
+    pub fn compile_and_cast_with_args(
+        &mut self,
+        expr: Idx<hir::Expr>,
+        no_load: bool,
+        cast_to: Intern<Ty>,
+    ) -> Option<Value> {
+        let value = self.compile_expr_with_args(expr, no_load);
 
         self.cast(value, self.tys[self.file_name][expr], cast_to)
     }

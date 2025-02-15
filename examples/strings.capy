@@ -2,7 +2,7 @@ string_builder :: mod "core".string_builder;
 
 main :: () {
     my_str := string_builder.make();
-    defer string_builder.free(^my_str);
+    defer string_builder.free(^mut my_str);
 
     string_builder.append_char(^mut my_str, 'H');
     string_builder.append_char(^mut my_str, 'e');

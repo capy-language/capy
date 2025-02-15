@@ -1,8 +1,38 @@
-use std::sync::LazyLock;
+use std::{cell::RefCell, sync::LazyLock};
 
 use hir::{PrimitiveTy, UnaryOp};
 use internment::Intern;
 use rustc_hash::FxHashMap;
+
+// map of enum uid's to enum types
+//
+// this has to be thread local because all the capy unit tests run in multiple threads,
+// and the enum data will overwrite each other and cause errors.
+//
+// todo: there is probably a much, much cleaner way to do all this
+// the only reason I do this is because `Ty::max` needs to convert a `Ty::Variant` back into
+// its `Ty::Enum`, but this is impossible because they'd both contain references to each other.
+thread_local! {
+    static ENUM_MAP: RefCell<FxHashMap<u32, Intern<Ty>>> = RefCell::new(FxHashMap::default());
+}
+
+#[track_caller]
+pub(crate) fn get_enum_from_uid(enum_uid: u32) -> Intern<Ty> {
+    ENUM_MAP.with(|map| map.borrow()[&enum_uid])
+}
+
+#[track_caller]
+pub(crate) fn set_enum_uid(enum_uid: u32, ty: Intern<Ty>) {
+    let Ty::Enum { uid, .. } = ty.as_ref() else {
+        panic!("passed in non-enum");
+    };
+
+    assert_eq!(enum_uid, *uid);
+
+    ENUM_MAP.with(|map| {
+        map.borrow_mut().insert(enum_uid, ty);
+    });
+}
 
 // Some commonly used types, defined in LazyLocks so that `.into()` is only called once
 
@@ -597,6 +627,28 @@ impl Ty {
                     None
                 }
             }
+            (
+                Ty::Variant {
+                    enum_uid: first_enum_uid,
+                    ..
+                },
+                Ty::Variant {
+                    enum_uid: second_enum_uid,
+                    ..
+                },
+            ) => {
+                if first_enum_uid == second_enum_uid {
+                    Some((*get_enum_from_uid(*first_enum_uid)).clone())
+                } else {
+                    None
+                }
+            }
+            (Ty::Variant { enum_uid, .. }, Ty::Enum { uid, .. }) if enum_uid == uid => {
+                Some(other.clone())
+            }
+            (Ty::Enum { uid, .. }, Ty::Variant { enum_uid, .. }) if enum_uid == uid => {
+                Some(self.clone())
+            }
             (Ty::Unknown | Ty::NoEval, other) | (other, Ty::Unknown | Ty::NoEval) => {
                 Some(other.clone())
             }
@@ -997,6 +1049,19 @@ impl Ty {
                         || found_sub_ty.is_equal_to(expected_sub_ty))
             }
             (
+                Ty::Array {
+                    anonymous: true,
+                    size: _,
+                    sub_ty: found_sub_ty,
+                },
+                Ty::Slice {
+                    sub_ty: expected_sub_ty,
+                },
+            ) => {
+                found_sub_ty.is_weak_replaceable_by(expected_sub_ty)
+                    || found_sub_ty.is_equal_to(expected_sub_ty)
+            }
+            (
                 Ty::Pointer {
                     mutable: found_mutable,
                     sub_ty: found_sub_ty,
@@ -1107,26 +1172,38 @@ pub(crate) trait TypedOp {
 
 impl TypedOp for hir::BinaryOp {
     fn can_perform(&self, found: &Ty) -> bool {
-        let expected: &[Ty] = match self {
+        match self {
             hir::BinaryOp::Add
             | hir::BinaryOp::Sub
             | hir::BinaryOp::Mul
             | hir::BinaryOp::Div
-            | hir::BinaryOp::Xor => &[Ty::IInt(0), Ty::Float(0)],
-            hir::BinaryOp::BAnd | hir::BinaryOp::BOr => &[Ty::IInt(0), Ty::Float(0), Ty::Bool],
-            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => &[Ty::IInt(0)],
+            | hir::BinaryOp::Xor => matches!(
+                found.absolute_ty(),
+                Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_)
+            ),
+            hir::BinaryOp::BAnd | hir::BinaryOp::BOr => matches!(
+                found.absolute_ty(),
+                Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool
+            ),
+            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
+                matches!(found.absolute_ty(), Ty::IInt(_) | Ty::UInt(_))
+            }
             hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
-                &[Ty::IInt(0), Ty::Float(0)]
+                matches!(
+                    found.absolute_ty(),
+                    Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool
+                )
             }
             hir::BinaryOp::Eq | hir::BinaryOp::Ne => {
-                &[Ty::Char, Ty::IInt(0), Ty::Float(0), Ty::Type]
+                // TODO: allow comparing aggregates
+                // todo: make sure this is consistent with codegen
+                !matches!(
+                    found.absolute_ty(),
+                    Ty::String | Ty::Slice { .. } | Ty::Pointer { .. }
+                ) && !found.is_aggregate()
             }
-            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => &[Ty::Bool],
-        };
-
-        expected
-            .iter()
-            .any(|expected| found.has_semantics_of(expected))
+            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => *found.absolute_ty() == Ty::Bool,
+        }
     }
 
     fn default_ty(&self) -> Ty {

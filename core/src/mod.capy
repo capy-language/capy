@@ -69,6 +69,21 @@ unreachable_with :: (message: str) {
     libc.exit(1);
 }
 
+// exits the program due to unfinished code being reached
+todo :: () {
+    _print_str("not yet implemented!\n");
+    libc.exit(1);
+}
+
+// exits the program due to unfinished code being reached,
+// and prints the specificed message
+todo_with :: (message: str) {
+    _print_str("not yet implemented: ");
+    _print_str(message);
+    _print_str("\n");
+    libc.exit(1);
+}
+
 // `Any` can represent any possible value in a Capy program.
 //
 // It's a reference type, and it contains a pointer + a type id
@@ -117,297 +132,290 @@ print :: (val: Any) {
     ty := val.ty;
     data := val.data;
 
-    if meta.is_int(ty) {
-        int_info := meta.get_int_info(ty);
+    switch info in meta.get_type_info(ty) {
+        Int => {
+            str := if info.signed {
+                num := if info.bit_width == 8 {
+                    i64.((^i8).(data)^)
+                } else if info.bit_width == 16 {
+                    i64.((^i16).(data)^)
+                } else if info.bit_width == 32 {
+                    i64.((^i32).(data)^)
+                } else if info.bit_width == 64 {
+                    i64.((^i64).(data)^)
+                } else if info.bit_width == 128 {
+                    i64.((^i128).(data)^)
+                } else {
+                    unreachable();
+                    0
+                };
 
-        str := if int_info.signed {
-            num := if int_info.bit_width == 8 {
-                i64.((^i8).(data)^)
-            } else if int_info.bit_width == 16 {
-                i64.((^i16).(data)^)
-            } else if int_info.bit_width == 32 {
-                i64.((^i32).(data)^)
-            } else if int_info.bit_width == 64 {
-                i64.((^i64).(data)^)
-            } else if int_info.bit_width == 128 {
-                i64.((^i128).(data)^)
+                fmt.i64_to_string(num)
+            } else {
+                num := if info.bit_width == 8 {
+                    u64.((^u8).(data)^)
+                } else if info.bit_width == 16 {
+                    u64.((^u16).(data)^)
+                } else if info.bit_width == 32 {
+                    u64.((^u32).(data)^)
+                } else if info.bit_width == 64 {
+                    u64.((^u64).(data)^)
+                } else if info.bit_width == 128 {
+                    u64.((^u128).(data)^)
+                } else {
+                    unreachable();
+                    0
+                };
+
+                fmt.u64_to_string(num)
+            };
+            defer string_builder.free(^mut str);
+
+            string_builder.print(^str);
+        }
+        Float => {
+            num := if info.bit_width == 32 {
+                f64.((^f32).(data)^)
+            } else if info.bit_width == 64 {
+                f64.((^f64).(data)^)
             } else {
                 unreachable();
                 0
             };
 
-            fmt.i64_to_string(num)
-        } else {
-            num := if int_info.bit_width == 8 {
-                u64.((^u8).(data)^)
-            } else if int_info.bit_width == 16 {
-                u64.((^u16).(data)^)
-            } else if int_info.bit_width == 32 {
-                u64.((^u32).(data)^)
-            } else if int_info.bit_width == 64 {
-                u64.((^u64).(data)^)
-            } else if int_info.bit_width == 128 {
-                u64.((^u128).(data)^)
+            str := fmt.f64_to_string(num);
+            defer string_builder.free(^mut str);
+
+            string_builder.print(^str);
+        }
+        Bool => {
+            if (^bool).(data)^ {
+                _print_str("true");
             } else {
-                unreachable();
-                0
-            };
-
-            fmt.u64_to_string(num)
-        };
-
-        string_builder.print(^str);
-        string_builder.free(^mut str);
-    } else if meta.is_float(ty) {
-        float_info := meta.get_float_info(ty);
-        
-        num := if float_info.bit_width == 32 {
-            f64.((^f32).(data)^)
-        } else if float_info.bit_width == 64 {
-            f64.((^f64).(data)^)
-        } else {
-            unreachable();
-            0
-        };
-
-        str := fmt.f64_to_string(num);
-
-        string_builder.print(^str);
-        string_builder.free(^mut str);
-    } else if meta.is_bool(ty) {
-        if (^bool).(data)^ {
-            _print_str("true");
-        } else {
-            _print_str("false");
-        }
-    } else if meta.is_string(ty) {
-        _print_str((^str).(data)^);
-    } else if meta.is_char(ty) {
-        libc.putchar((^char).(data)^);
-    } else if meta.is_array(ty) {
-        info := meta.get_array_info(ty);
-        elem_stride := meta.stride_of(info.ty);
-
-        _print_str("[ ");
-
-        idx := 0;
-        while idx < info.len {
-            addr := ptr.const_offset(data, elem_stride * idx);
-            
-            print(Any.{ ty = info.ty, data = addr });
-
-            if idx < info.len - 1 {
-                _print_str(", ");
+                _print_str("false");
             }
-            
-            idx = idx + 1;
         }
+        String => _print_str((^str).(data)^),
+        Char => libc.putchar((^char).(data)^),
+        Array => {
+            elem_stride := meta.stride_of(info.sub_ty);
 
-        _print_str(" ]");
-    } else if meta.is_slice(ty) {
-        info := meta.get_slice_info(ty);
-        elem_stride := meta.stride_of(info.ty);
+            _print_str("[ ");
 
-        slice := (^[] any).(data);
-        len := slice.len;
+            idx := 0;
+            while idx < info.len {
+                addr := ptr.const_offset(data, elem_stride * idx);
+                
+                print(Any.{ ty = info.sub_ty, data = addr });
 
-        _print_str("[ ");
-
-        idx := 0;
-        while idx < len {
-            addr := ptr.const_offset(slice.ptr, elem_stride * idx);
-
-            print(Any.{ ty = info.ty, data = addr });
-
-            if idx < len - 1 {
-                _print_str(", ");
+                if idx < info.len - 1 {
+                    _print_str(", ");
+                }
+                
+                idx = idx + 1;
             }
 
-            idx = idx + 1;
+            _print_str(" ]");
         }
+        Slice => {
+            elem_stride := meta.stride_of(info.sub_ty);
 
-        _print_str(" ]");
-    } else if meta.is_pointer(ty) {
-        _print_str("^");
+            slice := (^[] any).(data);
+            len := slice.len;
 
-        info := meta.get_pointer_info(ty);
+            _print_str("[ ");
 
-        print(Any.{ ty = info.ty, data = (^^any).(data)^});
-    } else if meta.is_distinct(ty) {
-        info := meta.get_distinct_info(ty);
+            idx := 0;
+            while idx < len {
+                addr := ptr.const_offset(slice.ptr, elem_stride * idx);
 
-        print(Any.{ ty = info.sub_ty, data = data });
-    } else if meta.is_enum(ty) {
-        info := meta.get_enum_info(ty);
+                print(Any.{ ty = info.sub_ty, data = addr });
 
-        discriminant := (^u8).(ptr.const_offset(data, info.discriminant_offset))^;
+                if idx < len - 1 {
+                    _print_str(", ");
+                }
 
-        idx := 0;
-        while idx < info.variants.len {
-            variant := info.variants[idx];
-
-            assert_with(meta.is_variant(variant), "all enum variants should be variant types");
-            variant_info := meta.get_variant_info(variant);
-
-            if variant_info.discriminant == discriminant {
-                print(Any.{ ty = variant_info.sub_ty, data = data });
-                break;
+                idx = idx + 1;
             }
 
-            idx = idx + 1;
+            _print_str(" ]");
         }
-    } else if meta.is_variant(ty) {
-        info := meta.get_variant_info(ty);
-
-        print(Any.{ ty = info.sub_ty, data = data });
-    } else if meta.is_meta_type(ty) {
-        print_type_info((^type).(data)^);
-    } else if meta.is_any(ty) {
-        _print_str("{any}");
-    } else if meta.is_file(ty) {
-        _print_str("{import}");
-    } else if meta.is_function(ty) {
-        _print_str("{function}");
-    } else if meta.is_struct(ty) {
-        if ty == Any {
-            data := (^Any).(data);
-
-            print(data^);
-
-            return;
+        Pointer => {
+            _print_str("^");
+            print(Any.{ ty = info.sub_ty, data = (^^any).(data)^});
         }
+        Distinct => {
+            print(Any.{ ty = info.sub_ty, data = data });
+        }
+        Struct => {
+            if ty == Any {
+                data := (^Any).(data);
 
-        info := meta.get_struct_info(ty);
+                print(data^);
 
-        _print_str("{ ");
-
-        idx := 0;
-        while idx < info.members.len {
-            member := info.members[idx];
-
-            _print_str(member.name);
-            _print_str(" = ");
-
-            print(Any.{
-                ty = member.ty,
-                data = ptr.const_offset(data, member.offset),
-            });
-
-            if idx < info.members.len - 1 {
-                _print_str(", ");
+                return;
             }
-            idx = idx + 1;
-        }
 
-        _print_str(" }");
-    } else if meta.is_void(ty) {
-        _print_str("()");
+            _print_str("{ ");
+
+            idx := 0;
+            while idx < info.members.len {
+                member := info.members[idx];
+
+                _print_str(member.name);
+                _print_str(" = ");
+
+                print(Any.{
+                    ty = member.ty,
+                    data = ptr.const_offset(data, member.offset),
+                });
+
+                if idx < info.members.len - 1 {
+                    _print_str(", ");
+                }
+                idx = idx + 1;
+            }
+
+            _print_str(" }");
+        }
+        Enum => {
+            discriminant := (^u8).(ptr.const_offset(data, info.discriminant_offset))^;
+
+            idx := 0;
+            while idx < info.variants.len {
+                variant := info.variants[idx];
+
+                variant_info := switch v in meta.get_type_info(variant) {
+                    Variant => v,
+                    _ => {
+                        unreachable_with("all variants of the enum should be `Type_Info.Variant`");
+                        meta.Type_Info.Variant.{sub_ty=void,discriminant=0}
+                    },
+                };
+
+                if variant_info.discriminant == discriminant {
+                    print(Any.{ ty = variant_info.sub_ty, data = data });
+                    break;
+                }
+
+                idx = idx + 1;
+            }
+        }
+        Variant => {
+            print(Any.{ ty = info.sub_ty, data = data });
+        }
+        Function => _print_str("{function}"),
+        File => _print_str("{import}"),
+        Meta_Type => {
+            print_type_info((^type).(data)^);
+        }
+        Any => _print_str("{any}"),
+        Void => _print_str("()"),
     }
 }
 
 // prints a type id as a human readable string
 print_type_info :: (ty: type) {
-    if meta.is_int(ty) {
-        info := meta.get_int_info(ty);
-
-        if info.signed {
-            libc.putchar('i');
-        } else {
-            libc.putchar('u');
-        }
-
-        str := fmt.i64_to_string(info.bit_width);
-        defer string_builder.free(^mut str);
-
-        string_builder.print(^str);
-    } else if meta.is_float(ty) {
-        info := meta.get_float_info(ty);
-
-        libc.putchar('f');
-
-        str := fmt.i64_to_string(info.bit_width);
-        defer string_builder.free(^mut str);
-
-        string_builder.print(^str);
-    } else if meta.is_bool(ty) {
-        _print_str("bool");
-    } else if meta.is_string(ty) {
-        _print_str("str");
-    } else if meta.is_char(ty) {
-        _print_str("char");
-    } else if meta.is_array(ty) {
-        info := meta.get_array_info(ty);
-
-        libc.putchar('[');
-
-        str := fmt.i64_to_string(i64.(info.len));
-        defer string_builder.free(^mut str);
-        string_builder.print(^str);
-
-        libc.putchar(']');
-        libc.putchar(' ');
-
-        print_type_info(info.ty);
-    } else if meta.is_slice(ty) {
-        info := meta.get_slice_info(ty);
-
-        _print_str("[] ");
-        print_type_info(info.ty);
-    } else if meta.is_pointer(ty) {
-        info := meta.get_pointer_info(ty);
-
-        libc.putchar('^');
-        print_type_info(info.ty);
-    } else if meta.is_distinct(ty) {
-        info := meta.get_distinct_info(ty);
-
-        _print_str("distinct ");
-        print_type_info(info.sub_ty);
-    } else if meta.is_enum(ty) {
-        // info := meta.get_enum_info(ty);
-
-        _print_str("enum { ... }");
-    } else if meta.is_variant(ty) {
-        info := meta.get_variant_info(ty);
-
-        _print_str("variant ");
-        print_type_info(info.sub_ty);
-
-        _print_str(" | ");
-        str := fmt.i64_to_string(i64.(info.discriminant));
-        defer string_builder.free(^mut str);
-        string_builder.print(^str);
-    } else if meta.is_meta_type(ty) {
-        _print_str("type");
-    } else if meta.is_any(ty) {
-        _print_str("any");
-    } else if meta.is_file(ty) {
-        _print_str("{import}");
-    } else if meta.is_function(ty) {
-        _print_str("{function}");
-    } else if meta.is_struct(ty) {
-        info := meta.get_struct_info(ty);
-
-        _print_str("struct { ");
-
-        idx := 0;
-        while idx < info.members.len {
-            member := info.members[idx];
-
-            _print_str(member.name);
-            _print_str(": ");
-
-            print_type_info(member.ty);
-
-            if idx < info.members.len - 1 {
-                _print_str(", ");
+    switch info in meta.get_type_info(ty) {
+        Int => {
+            if info.signed {
+                libc.putchar('i');
+            } else {
+                libc.putchar('u');
             }
-            idx = idx + 1;
-        }
 
-        _print_str(" }");
-    } else if meta.is_void(ty) {
-        _print_str("void");
+            str := fmt.i64_to_string(info.bit_width);
+            defer string_builder.free(^mut str);
+
+            string_builder.print(^str);
+        }
+        Float => {
+            libc.putchar('f');
+
+            str := fmt.i64_to_string(info.bit_width);
+            defer string_builder.free(^mut str);
+
+            string_builder.print(^str);
+        }
+        Bool => _print_str("bool"),
+        String => _print_str("str"),
+        Char => _print_str("char"),
+        Array => {
+            libc.putchar('[');
+
+            str := fmt.i64_to_string(i64.(info.len));
+            defer string_builder.free(^mut str);
+            string_builder.print(^str);
+
+            libc.putchar(']');
+            libc.putchar(' ');
+
+            print_type_info(info.sub_ty);
+        }
+        Slice => {
+            _print_str("[] ");
+            print_type_info(info.sub_ty);
+        }
+        Pointer => {
+            libc.putchar('^');
+            print_type_info(info.sub_ty);
+        }
+        Distinct => {
+            _print_str("distinct ");
+            print_type_info(info.sub_ty);
+        }
+        Struct => {
+            _print_str("struct { ");
+
+            idx := 0;
+            while idx < info.members.len {
+                member := info.members[idx];
+
+                _print_str(member.name);
+                _print_str(": ");
+
+                print_type_info(member.ty);
+
+                if idx < info.members.len - 1 {
+                    _print_str(", ");
+                }
+                idx = idx + 1;
+            }
+
+            _print_str(" }");
+        }
+        Enum => {
+            _print_str("enum { ");
+
+            idx := 0;
+            while idx < info.variants.len {
+                variant := info.variants[idx];
+
+                // todo: maybe include the name of the variant here
+                print_type_info(variant);
+
+                if idx < info.variants.len - 1 {
+                    _print_str(", ");
+                }
+                idx = idx + 1;
+            }
+
+            _print_str(" }");
+        }
+        Variant => {
+            _print_str("variant ");
+            print_type_info(info.sub_ty);
+
+            _print_str(" | ");
+            str := fmt.i64_to_string(i64.(info.discriminant));
+            defer string_builder.free(^mut str);
+            string_builder.print(^str);
+        }
+        Function => _print_str("{function type}"),
+        File => _print_str("{import}"),
+        Meta_Type => _print_str("type"),
+        Any => _print_str("any"),
+        Void => _print_str("void"),
     }
 }
 
@@ -466,201 +474,341 @@ str_eq :: (first: str, second: str) -> bool {
 //
 // todo: add more tests for this function, it is probably very incomplete
 cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
-    if meta.is_distinct(expected) {
-        info := meta.get_distinct_info(expected);
+    switch info in meta.get_type_info(expected) {
+        Distinct => {
+            cast_into(value, info.sub_ty, into);
+            return Any.{
+                data = into,
+                ty = expected,
+            };
+        }
+        Variant => {
+            cast_into(value, info.sub_ty, into);
+            return Any.{
+                data = into,
+                ty = expected,
+            };
+        }
+        _ => {}
+    }
 
-        cast_into(value, info.sub_ty, into);
-        return Any.{
-            data = into,
-            ty = expected,
-        };
-    } else if meta.is_variant(expected) {
-        info := meta.get_variant_info(expected);
+    found_ty := value.ty;
+    found_data := value.data;
 
-        cast_into(value, info.sub_ty, into);
+    if found_ty == expected {
+        libc.memcpy(into, found_data, meta.size_of(found_ty));
         return Any.{
             data = into,
             ty = expected,
         };
     }
 
-    ty := value.ty;
-    data := value.data;
+    switch from_info in meta.get_type_info(found_ty) {
+        Int => {
+            num := if from_info.bit_width == 8 {
+                u64.((^u8).(found_data)^)
+            } else if from_info.bit_width == 16 {
+                u64.((^u16).(found_data)^)
+            } else if from_info.bit_width == 32 {
+                u64.((^u32).(found_data)^)
+            } else if from_info.bit_width == 64 {
+                u64.((^u64).(found_data)^)
+            } else if from_info.bit_width == 128 {
+                u64.((^u128).(found_data)^)
+            } else {
+                unreachable();
+                0
+            };
 
-    if meta.is_int(ty) {
-        from_info := meta.get_int_info(ty);
-
-        // todo: add more "in-between" casts, like int -> float etc.
-        assert_with(
-            meta.is_int(expected),
-            "int types can only be casted to int types"
-        );
-        into_info := meta.get_int_info(expected);
-
-        num := if from_info.bit_width == 8 {
-            u64.((^u8).(data)^)
-        } else if from_info.bit_width == 16 {
-            u64.((^u16).(data)^)
-        } else if from_info.bit_width == 32 {
-            u64.((^u32).(data)^)
-        } else if from_info.bit_width == 64 {
-            u64.((^u64).(data)^)
-        } else if from_info.bit_width == 128 {
-            u64.((^u128).(data)^)
-        } else {
-            unreachable();
-            0
-        };
-
-        if into_info.bit_width == 8 {
-            (^mut u8).(into) ^= u8.(num);
-        } else if into_info.bit_width == 16 {
-            (^mut u16).(into) ^= u16.(num);
-        } else if into_info.bit_width == 32 {
-            (^mut u32).(into) ^= u32.(num);
-        } else if into_info.bit_width == 64 {
-            (^mut u64).(into) ^= u64.(num);
-        } else if into_info.bit_width == 128 {
-            (^mut u128).(into) ^= u128.(num);
-        } else {
-            unreachable();
+            switch into_info in meta.get_type_info(expected) {
+                Int => {
+                    // int -> int
+                    if into_info.bit_width == 8 {
+                        (^mut u8).(into) ^= u8.(num);
+                    } else if into_info.bit_width == 16 {
+                        (^mut u16).(into) ^= u16.(num);
+                    } else if into_info.bit_width == 32 {
+                        (^mut u32).(into) ^= u32.(num);
+                    } else if into_info.bit_width == 64 {
+                        (^mut u64).(into) ^= u64.(num);
+                    } else if into_info.bit_width == 128 {
+                        (^mut u128).(into) ^= u128.(num);
+                    } else {
+                        unreachable();
+                    }       
+                }
+                Float => {
+                    // int -> float
+                    if into_info.bit_width == 32 {
+                        (^mut f32).(into) ^= f32.(num);
+                    } else if into_info.bit_width == 64 {
+                        (^mut f64).(into) ^= f64.(num);
+                    } else {
+                        unreachable();
+                    }
+                }
+                Bool => {
+                    (^mut bool).(into) ^= bool.(num);
+                }
+                Char => {
+                    (^mut char).(into) ^= char.(num);
+                }
+                _ => todo_with("only supports int -> int, int -> float, int -> bool, int -> char")
+            }
         }
-    } else if meta.is_float(ty) {
-        from_info := meta.get_float_info(ty);
+        Float => {
+            num := if from_info.bit_width == 32 {
+                f64.((^f32).(found_data)^)
+            } else if from_info.bit_width == 64 {
+                f64.((^f64).(found_data)^)
+            } else {
+                unreachable();
+                0
+            };
 
-        assert_with(
-            meta.is_float(expected),
-            "float types can only be casted to float types"
-        );
-        into_info := meta.get_int_info(expected);
-        
-        num := if from_info.bit_width == 32 {
-            f64.((^f32).(data)^)
-        } else if from_info.bit_width == 64 {
-            f64.((^f64).(data)^)
-        } else {
-            unreachable();
-            0
-        };
-
-        if into_info.bit_width == 32 {
-            (^mut f32).(into) ^= f32.(num);
-        } else if into_info.bit_width == 64 {
-            (^mut f64).(into) ^= f64.(num);
-        } else {
-            unreachable();
+            switch into_info in meta.get_type_info(expected) {
+                Int => {
+                    // float -> int
+                    if into_info.bit_width == 8 {
+                        (^mut u8).(into) ^= u8.(num);
+                    } else if into_info.bit_width == 16 {
+                        (^mut u16).(into) ^= u16.(num);
+                    } else if into_info.bit_width == 32 {
+                        (^mut u32).(into) ^= u32.(num);
+                    } else if into_info.bit_width == 64 {
+                        (^mut u64).(into) ^= u64.(num);
+                    } else if into_info.bit_width == 128 {
+                        (^mut u128).(into) ^= u128.(num);
+                    } else {
+                        unreachable();
+                    }       
+                }
+                Float => {
+                    // float -> float
+                    if into_info.bit_width == 32 {
+                        (^mut f32).(into) ^= f32.(num);
+                    } else if into_info.bit_width == 64 {
+                        (^mut f64).(into) ^= f64.(num);
+                    } else {
+                        unreachable();
+                    }
+                }
+                Bool => {
+                    (^mut bool).(into) ^= bool.(num);
+                }
+                Char => {
+                    (^mut char).(into) ^= char.(num);
+                }
+                _ => todo_with("only supports float -> int, float -> float, float -> bool, and float -> char")
+            }
         }
-    } else if meta.is_bool(ty) {
-        assert_with(
-            meta.is_bool(expected),
-            "bool types can only be casted to bool types"
-        );
-        (^mut bool).(into) ^= (^bool).(data)^;
-    } else if meta.is_string(ty) {
-        assert_with(
-            meta.is_string(expected),
-            "string types can only be casted to string types"
-        );
-        (^mut str).(into) ^= (^str).(data)^;
-    } else if meta.is_char(ty) {
-        assert_with(
-            meta.is_char(expected),
-            "char types can only be casted to char types"
-        );
-        (^mut char).(into) ^= (^char).(data)^;
-    } else if meta.is_array(ty) {
-        assert_with(
-            ty == expected,
-            "array types can only be casted to themselves",
-        );
+        Bool => {
+            value := (^bool).(found_data)^;
 
-        // todo: we can 100% do better than this
-
-        libc.memcpy(into, data, meta.size_of(ty));
-    } else if meta.is_slice(ty) {
-        assert_with(
-            ty == expected,
-            "slice types can only be casted to themselves",
-        );
-
-        (^mut []any).(into) ^= (^[]any).(data)^;
-    } else if meta.is_pointer(ty) {
-        assert_with(
-            ty == expected,
-            "pointer types can only be casted to themselves",
-        );
-
-        (^mut usize).(into) ^= (^usize).(data)^;
-    } else if meta.is_distinct(ty) {
-        info := meta.get_distinct_info(ty);
-        cast_into(
-            Any.{
-                ty = info.sub_ty,
-                data = data
-            },
-            expected,
-            into
-        );
-    } else if meta.is_variant(ty) {
-        variant_info := meta.get_variant_info(ty);
-
-        if meta.is_enum(expected) {
-            enum_info := meta.get_enum_info(expected);
-
-            libc.memcpy(into, data, meta.size_of(ty));
-
-            discrim := (^mut u8).(ptr.mut_offset(into, enum_info.discriminant_offset));
-
-            discrim ^= u8.(variant_info.discriminant);
+            switch into_info in meta.get_type_info(expected) {
+                Int => {
+                    // bool -> int
+                    if into_info.bit_width == 8 {
+                        (^mut u8).(into) ^= u8.(value);
+                    } else if into_info.bit_width == 16 {
+                        (^mut u16).(into) ^= u16.(value);
+                    } else if into_info.bit_width == 32 {
+                        (^mut u32).(into) ^= u32.(value);
+                    } else if into_info.bit_width == 64 {
+                        (^mut u64).(into) ^= u64.(value);
+                    } else if into_info.bit_width == 128 {
+                        (^mut u128).(into) ^= u128.(value);
+                    } else {
+                        unreachable();
+                    }       
+                }
+                Float => {
+                    // bool -> float
+                    if into_info.bit_width == 32 {
+                        (^mut f32).(into) ^= f32.(value);
+                    } else if into_info.bit_width == 64 {
+                        (^mut f64).(into) ^= f64.(value);
+                    } else {
+                        unreachable();
+                    }
+                }
+                Bool => {
+                    // bool -> bool
+                    (^mut bool).(into) ^= bool.(value);
+                }
+                Char => {
+                    // bool -> char
+                    (^mut char).(into) ^= char.(value);
+                }
+                _ => todo_with("only supports bool -> int, bool -> float, bool -> bool, and bool -> char")
+            }
         }
+        String => {
+            assert_with(
+                found_ty == expected,
+                "the string type can only be cast to itself",
+            );
+            (^mut usize).(into) ^= (^usize).(found_data)^;
+        }
+        Char => {
+            value := (^bool).(found_data)^;
 
-        cast_into(
-            Any.{
-                ty = variant_info.sub_ty,
-                data = data
-            },
-            expected,
-            into
-        );
-    } else if meta.is_meta_type(ty) {
-        assert_with(
-            ty == expected,
-            "type ids can only be casted to themselves",
-        );
-        (^mut type).(into) ^= (^type).(data)^;
-    } else if meta.is_any(ty) {
-        assert_with(
-            ty == expected,
-            "any types can only be casted to themselves",
-        );
-        // do nothing ;)
-    } else if meta.is_file(ty) {
-        assert_with(
-            ty == expected,
-            "file types can only be casted to themselves",
-        );
-        // do nothing ;)
-    } else if meta.is_function(ty) {
-        assert_with(
-            ty == expected,
-            "function types can only be casted to themselves",
-        );
-        (^mut usize).(into) ^= (^usize).(data)^;
-    } else if meta.is_struct(ty) {
-        assert_with(
-            ty == expected,
-            "array types can only be casted to themselves",
-        );
+            switch into_info in meta.get_type_info(expected) {
+                Int => {
+                    // char -> int
+                    if into_info.bit_width == 8 {
+                        (^mut u8).(into) ^= u8.(value);
+                    } else if into_info.bit_width == 16 {
+                        (^mut u16).(into) ^= u16.(value);
+                    } else if into_info.bit_width == 32 {
+                        (^mut u32).(into) ^= u32.(value);
+                    } else if into_info.bit_width == 64 {
+                        (^mut u64).(into) ^= u64.(value);
+                    } else if into_info.bit_width == 128 {
+                        (^mut u128).(into) ^= u128.(value);
+                    } else {
+                        unreachable();
+                    }       
+                }
+                Float => {
+                    // char -> float
+                    if into_info.bit_width == 32 {
+                        (^mut f32).(into) ^= f32.(value);
+                    } else if into_info.bit_width == 64 {
+                        (^mut f64).(into) ^= f64.(value);
+                    } else {
+                        unreachable();
+                    }
+                }
+                Bool => {
+                    // char -> bool
+                    (^mut bool).(into) ^= bool.(value);
+                }
+                Char => {
+                    // char -> char
+                    (^mut char).(into) ^= char.(value);
+                }
+                _ => todo_with("only supports char -> int, char -> float, char -> bool, and char -> char"),
+            }
+        }
+        Array => {
+            switch into_info in meta.get_type_info(expected) {
+                Array => {
+                    // array -> array
+                    // todo: we can do much better than this
+                    assert_with(from_info.sub_ty == into_info.sub_ty, "array -> array must have the same sub type");
+                    libc.memcpy(into, found_data, meta.size_of(found_ty));
+                }
+                Slice => {
+                    // array -> slice
+                    assert_with(from_info.sub_ty == into_info.sub_ty, "array -> slice must have the same sub type");
+                    (^mut []any).(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
+                }
+                _ => todo_with("only supports array -> array and array -> slice"),
+            }
+        }
+        Slice => {
+            switch into_info in meta.get_type_info(expected) {
+                Array => {
+                    // slice -> array
+                    // todo: we can do much better than this
+                    assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> array must have the same sub type");
+                    libc.memcpy(into, found_data, (^[]any).(found_data).len);
+                }
+                Slice => {
+                    // slice -> slice
+                    assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> slice must have the same sub type");
+                    (^mut []any).(into) ^= (^[]any).(found_data)^;
+                }
+                _ => todo_with("only supports slice -> array and slice -> slice"),
+            }
+        }
+        Pointer => {
+            (^mut usize).(into) ^= (^usize).(found_data)^;
+        }
+        Distinct => {
+            cast_into(
+                Any.{
+                    ty = from_info.sub_ty,
+                    data = found_data
+                },
+                expected,
+                into
+            );    
+        }
+        Struct => {
+            assert_with(
+                found_ty == expected,
+                "struct types can only be casted to themselves",
+            );
+            libc.memcpy(into, found_data, meta.size_of(found_ty));
+        }
+        Enum => {
+            assert_with(
+                found_ty == expected,
+                "enum types can only be casted to themselves",
+            );
+            libc.memcpy(into, found_data, meta.size_of(found_ty));
+        }
+        Variant => {
+            switch into_info in meta.get_type_info(expected) {
+                Enum => {
+                    libc.memcpy(into, found_data, meta.size_of(found_ty));
 
-        // todo: we can 100% do better than this
+                    discrim := (^mut u8).(ptr.mut_offset(into, into_info.discriminant_offset));
 
-        libc.memcpy(into, data, meta.size_of(ty));
-    } else if meta.is_void(ty) {
-        assert_with(
-            ty == expected,
-            "void types can only be casted to themselves",
-        );
-        // do nothing ;)
+                    discrim ^= u8.(from_info.discriminant);
+                }
+                _ => {
+                    cast_into(
+                        Any.{
+                            ty = from_info.sub_ty,
+                            data = found_data
+                        },
+                        expected,
+                        into
+                    );
+                }
+            }
+        }
+        Function => {
+            assert_with(
+                found_ty == expected,
+                "function types can only be casted to themselves",
+            );
+            (^mut usize).(into) ^= (^usize).(found_data)^;
+        }
+        File => {
+            assert_with(
+                found_ty == expected,
+                "file types can only be casted to themselves",
+            );
+            assert(meta.size_of(found_ty) == 0);
+            // do nothing :)
+        }
+        Meta_Type => {
+            assert_with(
+                found_ty == expected,
+                "type ids can only be casted to themselves",
+            );
+            (^mut type).(into) ^= (^type).(found_data)^;
+        }
+        Any => {
+            assert_with(
+                found_ty == expected,
+                "the any type can only be cast to itself",
+            );
+            assert(meta.size_of(found_ty) == 0);
+            // do nothing :)
+        }
+        Void => {
+            assert_with(
+                found_ty == expected,
+                "the void type can only be cast to itself",
+            );
+            assert(meta.size_of(found_ty) == 0);
+            // do nothing :)
+        }
     }
 
     Any.{

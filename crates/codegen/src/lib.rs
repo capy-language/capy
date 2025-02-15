@@ -491,24 +491,25 @@ mod tests {
 
         let mut comptime_results = FxHashMap::default();
 
-        let InferenceResult { tys, .. } =
-            InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
-                eval_comptime_blocks(
-                    Verbosity::AllFunctions {
-                        include_disasm: true,
-                    },
-                    vec![comptime],
-                    &mut comptime_results,
-                    Path::new(""),
-                    &interner,
-                    &world_bodies,
-                    tys,
-                    HOST.pointer_width().unwrap().bits(),
-                );
+        let InferenceResult {
+            tys, diagnostics, ..
+        } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
+            eval_comptime_blocks(
+                Verbosity::AllFunctions {
+                    include_disasm: true,
+                },
+                vec![comptime],
+                &mut comptime_results,
+                Path::new(""),
+                &interner,
+                &world_bodies,
+                tys,
+                HOST.pointer_width().unwrap().bits(),
+            );
 
-                comptime_results[&comptime].clone()
-            })
-            .finish(Some(entry_point), false);
+            comptime_results[&comptime].clone()
+        })
+        .finish(Some(entry_point), false);
         assert_eq!(diagnostics, vec![]);
 
         println!("comptime:");
@@ -2214,7 +2215,7 @@ mod tests {
                     x
                 }
 
-                do_stuff :: (ptr: ^mut i32) {
+                do_stuff :: (ptr: ^mut u32) {
                     ptr ^= 5;
                 }
             "#,
@@ -2610,6 +2611,107 @@ mod tests {
                 [600] oink oink
                 
             "#]],
+            0,
+        )
+    }
+
+    #[test]
+    fn if_autocast_variant_to_enum() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+
+                Animal :: enum {
+                    Dog,
+                    Fish: i32,
+                    Cat,
+                };
+
+                main :: () {
+                    animal := if false {
+                        Animal.Fish.(42)
+                    } else if true {
+                        Animal.Dog.()
+                    } else {
+                        Animal.Cat.()
+                    };
+
+                    core.println(animal);
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+            ()
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn switch_autocast_variant_to_enum() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+
+                State :: enum {
+                    A,
+                    B,
+                    C,
+                    D,
+                };
+
+                Animal :: enum {
+                    Dog,
+                    Fish: i32,
+                    Cat,
+                };
+
+                main :: () {
+                    animal := switch s in State.(State.C.()) {
+                        A => Animal.Dog.(),
+                        B => Animal.Fish.(42),
+                        C => Animal.Cat.(),
+                        D => Animal.Dog.()
+                    };
+
+                    core.println(animal);
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+            ()
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn autocast_array_to_slice() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+
+                main :: () {
+                    foo := .[1, 2, 3];
+
+                    bar : []u128 = foo;
+
+                    core.println(bar);
+                }
+            "#,
+            "main",
+            true,
+            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            expect![["
+            [ 1, 2, 3 ]
+
+"]],
             0,
         )
     }

@@ -1,0 +1,11 @@
+foo.()
+===
+Root@0..6
+  ExprStmt@0..6
+    CastExpr@0..6
+      Ty@0..3
+        VarRef@0..3
+          Ident@0..3 "foo"
+      Dot@3..4 "."
+      LParen@4..5 "("
+      RParen@5..6 ")"

@@ -6,7 +6,7 @@ use interner::Interner;
 use internment::Intern;
 use itertools::Itertools;
 use la_arena::{ArenaMap, Idx};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use text_size::TextRange;
 use topo::TopoSort;
 
@@ -196,7 +196,10 @@ impl GlobalInferenceCtx<'_> {
     /// y : u16 = x;        // not only is x's type changed, but the above if condition is changed
     /// ```
     ///
-    /// returns true if `expr` had a weak type, returns false if `expr` had a strong type
+    /// returns true if `expr` had a weak type, returns false if `expr` had a strong type.
+    ///
+    /// Also when `.[]` gets replaced by a slice, it doesn't actually replace it with the slice,
+    /// it will replace it with an array instead. In these cases it will return false.
     fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: Intern<Ty>) -> bool {
         let expr_body = &self.bodies[expr];
         if matches!(expr_body, Expr::Missing) {
@@ -207,6 +210,26 @@ impl GlobalInferenceCtx<'_> {
         if !found_ty.is_weak_replaceable_by(&new_ty) {
             return false;
         }
+
+        let (new_ty, really_replaced) = match (found_ty.as_ref(), new_ty.as_ref()) {
+            (
+                Ty::Array {
+                    anonymous: true,
+                    size,
+                    sub_ty: _,
+                },
+                Ty::Slice { sub_ty: new_sub_ty },
+            ) => (
+                Ty::Array {
+                    anonymous: false,
+                    size: *size,
+                    sub_ty: *new_sub_ty,
+                }
+                .into(),
+                false,
+            ),
+            _ => (new_ty, true),
+        };
 
         let expr_body = expr_body.clone();
 
@@ -230,13 +253,28 @@ impl GlobalInferenceCtx<'_> {
                     }
                 }
             }
-            Expr::ArrayLiteral { ty: None, items } => {
-                let (_, sub_ty) = new_ty.as_array().unwrap();
-
-                for item in items {
-                    self.replace_weak_tys(item, sub_ty);
+            Expr::ArrayLiteral { ty: None, items } => match new_ty.as_ref() {
+                Ty::Array { sub_ty, .. } => {
+                    for item in items {
+                        self.replace_weak_tys(item, *sub_ty);
+                    }
                 }
-            }
+                Ty::Slice { sub_ty } => {
+                    let new_ty = Ty::Array {
+                        anonymous: false,
+                        size: items.len() as u64,
+                        sub_ty: *sub_ty,
+                    }
+                    .into();
+
+                    self.tys[self.file].expr_tys.insert(expr, new_ty);
+
+                    for item in items {
+                        self.replace_weak_tys(item, *sub_ty);
+                    }
+                }
+                _ => unreachable!(),
+            },
             Expr::Paren(Some(expr)) => {
                 self.replace_weak_tys(expr, new_ty);
             }
@@ -278,9 +316,12 @@ impl GlobalInferenceCtx<'_> {
                     }
                 }
             }
-            Expr::Switch { arms, .. } => {
+            Expr::Switch { arms, default, .. } => {
                 for arm in arms {
                     self.replace_weak_tys(arm.body, new_ty);
+                }
+                if let Some(default) = default {
+                    self.replace_weak_tys(default.body, new_ty);
                 }
             }
             Expr::Comptime(comptime) => {
@@ -371,7 +412,7 @@ impl GlobalInferenceCtx<'_> {
             _ => {}
         }
 
-        true
+        really_replaced
     }
 
     fn get_const(&self, expr: Idx<Expr>) -> ExprIsConst {
@@ -690,7 +731,7 @@ impl GlobalInferenceCtx<'_> {
 
         for next in self
             .bodies
-            .descendants(expr, hir::DescentOpts::Eval)
+            .descendants(expr, hir::DescentOpts::Infer)
             .collect_vec()
             .into_iter()
             .rev()
@@ -808,15 +849,31 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Local(local) => self.tys[self.file].local_tys[*local],
-                        _ => continue,
+                        _ => {
+                            continue;
+                        }
                     };
 
                     let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
                         && new_ty.is_functionally_equivalent_to(&previous_ty, false);
+                    let array_to_slice = matches!(
+                        (previous_ty.as_ref(), new_ty.as_ref()),
+                        (
+                            Ty::Slice {
+                                sub_ty: previous_sub_ty
+                            },
+                            Ty::Array {
+                                sub_ty: new_sub_ty,
+                                ..
+                            }
+                        ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
+                            || previous_sub_ty.is_equal_to(new_sub_ty)
+                    );
 
-                    #[cfg(debug_assertions)]
                     if previous_ty != new_ty
-                        && !(previous_ty.is_weak_replaceable_by(&new_ty) || loss_of_distinct)
+                        && !(previous_ty.is_weak_replaceable_by(&new_ty)
+                            || loss_of_distinct
+                            || array_to_slice)
                     {
                         panic!(
                             "#{} : {:?} is not weak replaceable by {:?}",
@@ -850,20 +907,34 @@ impl GlobalInferenceCtx<'_> {
 
                         let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
                             && new_ty.is_functionally_equivalent_to(&previous_ty, false);
+                        let array_to_slice = matches!(
+                            (previous_ty.as_ref(), new_ty.as_ref()),
+                            (
+                                Ty::Slice {
+                                    sub_ty: previous_sub_ty
+                                },
+                                Ty::Array {
+                                    sub_ty: new_sub_ty,
+                                    ..
+                                }
+                            ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
+                                || previous_sub_ty.is_equal_to(new_sub_ty)
+                        );
 
-                        #[cfg(debug_assertions)]
                         if previous_ty != new_ty
-                            && !(previous_ty.is_weak_replaceable_by(&new_ty) || loss_of_distinct)
+                            && !(previous_ty.is_weak_replaceable_by(&new_ty)
+                                || loss_of_distinct
+                                || array_to_slice)
                         {
                             panic!(
                                 "#{} : {:?} is not weak replaceable by {:?}",
-                                expr.into_raw(),
+                                value.into_raw(),
                                 previous_ty,
                                 new_ty
                             );
                         }
 
-                        if !loss_of_distinct {
+                        if !loss_of_distinct && !array_to_slice {
                             self.tys[self.file].local_tys.insert(*local_def, new_ty);
                         }
                     }
@@ -887,7 +958,7 @@ impl GlobalInferenceCtx<'_> {
             return Ok(*ty);
         }
 
-        let descendants = self.bodies.descendants(expr, hir::DescentOpts::Eval);
+        let descendants = self.bodies.descendants(expr, hir::DescentOpts::Infer);
 
         // This all works because children will ALWAYS come before parents
         for descendant in descendants.collect_vec().into_iter().rev() {
@@ -1062,7 +1133,32 @@ impl GlobalInferenceCtx<'_> {
                                 Ty::Unknown.into()
                             }
                         }
-                        Expr::Cast { expr: sub_expr, ty } => {
+                        Expr::Cast { ty, expr: None } => {
+                            let cast_ty = self.const_ty(*ty)?;
+
+                            if cast_ty.is_unknown() {
+                                Ty::Unknown.into()
+                            } else {
+                                if !Ty::Void.can_cast_to(&cast_ty) {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::Uncastable {
+                                            from: Ty::Void.into(),
+                                            to: cast_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(expr),
+                                        help: None,
+                                    });
+                                }
+
+                                cast_ty
+                            }
+                        }
+                        Expr::Cast {
+                            ty,
+                            expr: Some(sub_expr),
+                        } => {
                             let expr_ty = self.tys[self.file][*sub_expr];
 
                             if *expr_ty == Ty::Unknown {
@@ -1335,7 +1431,9 @@ impl GlobalInferenceCtx<'_> {
                             if let Some(else_branch) = else_branch {
                                 let else_ty = self.tys[self.file][*else_branch];
 
-                                if let Some(real_ty) = body_ty.max(&else_ty) {
+                                if *else_ty == Ty::Unknown {
+                                    else_ty
+                                } else if let Some(real_ty) = body_ty.max(&else_ty) {
                                     let real_ty = real_ty.into();
                                     self.replace_weak_tys(*body, real_ty);
                                     self.replace_weak_tys(*else_branch, real_ty);
@@ -1343,8 +1441,8 @@ impl GlobalInferenceCtx<'_> {
                                 } else {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::IfMismatch {
-                                            found: else_ty,
-                                            expected: body_ty,
+                                            first: body_ty,
+                                            second: else_ty,
                                         },
                                         file: self.file,
                                         expr: Some(expr),
@@ -1410,7 +1508,10 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Switch {
-                            scrutinee, arms, ..
+                            scrutinee,
+                            arms,
+                            default,
+                            ..
                         } => 'switch: {
                             let scrutinee_ty = self.tys[self.file][*scrutinee];
 
@@ -1418,7 +1519,9 @@ impl GlobalInferenceCtx<'_> {
                                 break 'switch Ty::Unknown.into();
                             };
 
-                            let mut variants: std::collections::HashMap<_, _> = variants
+                            // this is an index map because later errors are reported while looping
+                            // over this map
+                            let mut variants: IndexMap<_, _> = variants
                                 .iter()
                                 .map(|v| {
                                     let Ty::Variant { variant_name, .. } = v.as_ref() else {
@@ -1436,28 +1539,106 @@ impl GlobalInferenceCtx<'_> {
                                     continue;
                                 };
 
-                                let variant = variants.get_mut(&variant_name.name).unwrap();
+                                let Some(variant) = variants.get_mut(&variant_name.name) else {
+                                    // todo: use NonExistantVariant for more things
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::NonExistantVariant {
+                                            variant_name: variant_name.name.0,
+                                            scrutinee_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(arm.body),
+                                        range: self.bodies.range_for_expr(arm.body),
+                                        help: None,
+                                    });
+                                    continue;
+                                };
+                                // mark that this variant is covered by the switch statement
+                                // later, if any variants haven't been covered an error will be
+                                // reported.
                                 variant.1 = true;
 
-                                if first_arm_ty.is_none() {
-                                    first_arm_ty = Some(self.tys[self.file][arm.body]);
+                                let found_arm_ty = self.tys[self.file][arm.body];
+
+                                match first_arm_ty {
+                                    None => {
+                                        first_arm_ty = Some(found_arm_ty);
+                                    }
+                                    Some(first_ty) if *first_ty == Ty::Unknown => {}
+                                    Some(first_ty) => {
+                                        if let Some(real_ty) = first_ty.max(&found_arm_ty) {
+                                            let real_ty = real_ty.into();
+                                            first_arm_ty = Some(real_ty);
+                                        } else {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::SwitchMismatch {
+                                                    second: found_arm_ty,
+                                                    first: first_ty,
+                                                },
+                                                file: self.file,
+                                                expr: Some(arm.body),
+                                                range: self.bodies.range_for_expr(arm.body),
+                                                help: None,
+                                            });
+
+                                            first_arm_ty = Some(Ty::Unknown.into());
+                                        }
+                                    }
                                 }
                             }
 
-                            for (variant_ty, included_in_switch) in variants.values() {
-                                if *included_in_switch {
-                                    continue;
-                                }
+                            if let Some(default) = default {
+                                let default_ty = self.tys[self.file][default.body];
 
-                                self.diagnostics.push(TyDiagnostic {
-                                    kind: TyDiagnosticKind::SwitchDoesNotCoverVariant {
-                                        ty: *variant_ty,
-                                    },
-                                    file: self.file,
-                                    range: self.bodies.range_for_expr(expr),
-                                    expr: Some(expr),
-                                    help: None,
-                                });
+                                match first_arm_ty {
+                                    None => {
+                                        first_arm_ty = Some(default_ty);
+                                    }
+                                    Some(first_ty) if *first_ty == Ty::Unknown => {}
+                                    Some(first_ty) => {
+                                        if let Some(real_ty) = first_ty.max(&default_ty) {
+                                            let real_ty = real_ty.into();
+                                            self.replace_weak_tys(default.body, real_ty);
+                                            first_arm_ty = Some(real_ty);
+                                        } else {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::SwitchMismatch {
+                                                    second: default_ty,
+                                                    first: first_ty,
+                                                },
+                                                file: self.file,
+                                                expr: Some(default.body),
+                                                range: self.bodies.range_for_expr(default.body),
+                                                help: None,
+                                            });
+
+                                            first_arm_ty = Some(Ty::Unknown.into());
+                                        }
+                                    }
+                                }
+                            } else {
+                                for (variant_ty, included_in_switch) in variants.values() {
+                                    if *included_in_switch {
+                                        continue;
+                                    }
+
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::SwitchDoesNotCoverVariant {
+                                            ty: *variant_ty,
+                                        },
+                                        file: self.file,
+                                        range: self.bodies.range_for_expr(expr),
+                                        expr: Some(expr),
+                                        help: None,
+                                    });
+                                }
+                            }
+
+                            if let Some(first_arm_ty) = first_arm_ty.filter(|t| **t != Ty::Unknown)
+                            {
+                                for arm in arms {
+                                    self.replace_weak_tys(arm.body, first_arm_ty);
+                                }
                             }
 
                             first_arm_ty.unwrap_or_else(|| Ty::Void.into())
@@ -1476,6 +1657,11 @@ impl GlobalInferenceCtx<'_> {
                             };
 
                             let scrutinee_ty = self.tys[self.file][switch_local_body.scrutinee];
+
+                            if switch_local_body.default {
+                                // default branches just receive the scrutinee as-is
+                                break 'switch_local scrutinee_ty;
+                            }
 
                             let Ty::Enum { variants, .. } = scrutinee_ty.as_ref() else {
                                 break 'switch_local Ty::Unknown.into();
@@ -2257,37 +2443,43 @@ impl GlobalInferenceCtx<'_> {
                         fqn: None,
                         uid,
                         variants,
-                    } => Ty::Enum {
-                        fqn: Some(fqn),
-                        uid: *uid,
-                        variants: variants
-                            .iter()
-                            .map(|v| {
-                                let Ty::Variant {
-                                    enum_fqn: None,
-                                    enum_uid,
-                                    variant_name,
-                                    uid,
-                                    sub_ty,
-                                    discriminant,
-                                } = v.as_ref()
-                                else {
-                                    unreachable!("all variants should be `Ty::Variant`")
-                                };
+                    } => {
+                        let new_ty = Ty::Enum {
+                            fqn: Some(fqn),
+                            uid: *uid,
+                            variants: variants
+                                .iter()
+                                .map(|v| {
+                                    let Ty::Variant {
+                                        enum_fqn: None,
+                                        enum_uid,
+                                        variant_name,
+                                        uid,
+                                        sub_ty,
+                                        discriminant,
+                                    } = v.as_ref()
+                                    else {
+                                        unreachable!("all variants should be `Ty::Variant`")
+                                    };
 
-                                Ty::Variant {
-                                    enum_fqn: Some(fqn),
-                                    enum_uid: *enum_uid,
-                                    variant_name: *variant_name,
-                                    uid: *uid,
-                                    sub_ty: *sub_ty,
-                                    discriminant: *discriminant,
-                                }
-                                .into()
-                            })
-                            .collect(),
+                                    Ty::Variant {
+                                        enum_fqn: Some(fqn),
+                                        enum_uid: *enum_uid,
+                                        variant_name: *variant_name,
+                                        uid: *uid,
+                                        sub_ty: *sub_ty,
+                                        discriminant: *discriminant,
+                                    }
+                                    .into()
+                                })
+                                .collect(),
+                        }
+                        .into();
+
+                        ty::set_enum_uid(*uid, new_ty);
+
+                        new_ty
                     }
-                    .into(),
                     _ => actual_ty,
                 })
             }
@@ -2559,18 +2751,19 @@ impl GlobalInferenceCtx<'_> {
                         } => {
                             let mut variant_tys = Vec::with_capacity(variants.len());
 
-                            let mut largest_discriminant = 0;
-                            for variant in variants {
-                                let Some(name) = variant.name else {
+                            let mut used_discriminants =
+                                FxHashSet::with_capacity_and_hasher(variants.len(), FxBuildHasher);
+                            let mut manual_discriminants =
+                                FxHashMap::with_capacity_and_hasher(variants.len(), FxBuildHasher);
+
+                            manual_discriminants.values();
+
+                            // first figure out the discriminants, then figure out the final types
+
+                            for (idx, variant) in variants.iter().enumerate() {
+                                if variant.name.is_none() {
                                     continue;
-                                };
-
-                                let sub_ty = variant.ty.map_or_else(
-                                    || Ty::Void.into(),
-                                    |ty| self.tys[self.file].meta_tys[ty],
-                                );
-
-                                let mut discriminant = largest_discriminant;
+                                }
 
                                 if let Some(discrim_expr) = variant.discriminant {
                                     'discrim_calc: {
@@ -2606,10 +2799,22 @@ impl GlobalInferenceCtx<'_> {
 
                                         match self.const_data(self.file, discrim_expr)? {
                                             Some(ComptimeResult::Integer { num, .. }) => {
-                                                if num <= largest_discriminant {
-                                                    todo!("need to figure out replacing earlier discriminants");
+                                                if used_discriminants.contains(&num) {
+                                                    self.diagnostics.push(TyDiagnostic {
+                                                        kind: TyDiagnosticKind::DiscriminantUsedAlready {
+                                                            value: num
+                                                        },
+                                                        file: self.file,
+                                                        range: self
+                                                            .bodies
+                                                            .range_for_expr(discrim_expr),
+                                                        expr: Some(discrim_expr),
+                                                        help: None,
+                                                    })
+                                                } else {
+                                                    used_discriminants.insert(num);
+                                                    manual_discriminants.insert(idx, num);
                                                 }
-                                                discriminant = num
                                             }
                                             _ => {
                                                 // todo: we check that the discriminant is a `usize` above,
@@ -2625,10 +2830,34 @@ impl GlobalInferenceCtx<'_> {
                                         }
                                     }
                                 }
+                            }
 
-                                // if the discriminant was updated, then future variants
-                                // will get the custom + 1
-                                largest_discriminant = discriminant + 1;
+                            let mut latest_discrim = 0;
+
+                            for (idx, variant) in variants.iter().enumerate() {
+                                let Some(name) = variant.name else {
+                                    continue;
+                                };
+
+                                let sub_ty = variant.ty.map_or_else(
+                                    || Ty::Void.into(),
+                                    |ty| self.tys[self.file].meta_tys[ty],
+                                );
+
+                                let discriminant = match manual_discriminants.get(&idx) {
+                                    Some(discrim) => *discrim,
+                                    None => {
+                                        let mut discrim = latest_discrim;
+                                        while used_discriminants.contains(&discrim) {
+                                            discrim += 1;
+                                        }
+                                        discrim
+                                    }
+                                };
+
+                                if discriminant >= latest_discrim {
+                                    latest_discrim = discriminant + 1;
+                                }
 
                                 variant_tys.push(
                                     Ty::Variant {
@@ -2643,12 +2872,16 @@ impl GlobalInferenceCtx<'_> {
                                 );
                             }
 
-                            Ty::Enum {
+                            let enum_ty = Ty::Enum {
                                 fqn: None,
                                 uid: *enum_uid,
                                 variants: variant_tys,
                             }
-                            .into()
+                            .into();
+
+                            ty::set_enum_uid(*enum_uid, enum_ty);
+
+                            enum_ty
                         }
                         Expr::Lambda(lambda) => {
                             let hir::Lambda {

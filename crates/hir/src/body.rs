@@ -119,7 +119,7 @@ pub enum Expr {
     CharLiteral(u8),
     Cast {
         ty: Idx<Expr>,
-        expr: Idx<Expr>,
+        expr: Option<Idx<Expr>>,
     },
     Ref {
         mutable: bool,
@@ -168,6 +168,7 @@ pub enum Expr {
         variable_name: Option<NameWithRange>,
         scrutinee: Idx<Expr>,
         arms: Vec<SwitchArm>,
+        default: Option<SwitchArm>,
     },
     Local(Idx<LocalDef>),
     SwitchLocal(Idx<SwitchLocal>),
@@ -361,6 +362,8 @@ pub struct SwitchLocal {
     /// I couldn't really figure out a better way to do this, although there might be one
     pub scrutinee: Idx<Expr>,
     pub variant_name: Option<NameWithRange>,
+    /// if the current arm is a default arm `_ => {}`
+    pub default: bool,
     pub range: TextRange,
 }
 
@@ -448,6 +451,7 @@ pub enum LoweringDiagnosticKind {
     ReturnFromDefer,
     BreakFromDefer,
     ContinueFromDefer,
+    MultipleDefaultArms,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -963,7 +967,9 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_cast_expr(&mut self, cast_expr: ast::CastExpr) -> Expr {
-        let expr = self.lower_expr(cast_expr.expr(self.tree));
+        let expr = cast_expr
+            .expr(self.tree)
+            .map(|expr| self.lower_expr(Some(expr)));
         let ty = self.lower_expr(cast_expr.ty(self.tree).and_then(|ty| ty.expr(self.tree)));
 
         Expr::Cast { expr, ty }
@@ -1378,18 +1384,24 @@ impl<'a> Ctx<'a> {
             });
         let scrutinee = self.lower_expr(switch_expr.scrutinee(self.tree));
 
+        let mut default = None;
+
         let arms = switch_expr
             .arms(self.tree)
-            .map(|arm| {
+            .filter_map(|arm| {
                 let variant_name = arm.variant_name(self.tree).map(|name| NameWithRange {
                     name: Name(self.interner.intern(name.text(self.tree))),
                     range: name.range(self.tree),
                 });
 
+                let is_default =
+                    variant_name.is_some_and(|n| self.interner.lookup(n.name.0) == "_");
+
                 let switch_local = if let Some(variable_name) = variable_name {
                     let switch_local = self.bodies.switch_locals.alloc(SwitchLocal {
                         scrutinee,
                         variant_name,
+                        default: is_default,
                         range: variant_name
                             .map(|v| v.range)
                             .unwrap_or(arm.range(self.tree)),
@@ -1407,10 +1419,27 @@ impl<'a> Ctx<'a> {
 
                 let body = self.lower_expr(arm.body(self.tree));
 
-                SwitchArm {
+                let arm = SwitchArm {
                     variant_name,
                     body,
                     switch_local,
+                };
+
+                if is_default {
+                    if default.is_some() {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::MultipleDefaultArms,
+                            range: variant_name
+                                .expect(
+                                    "`is_default` can only be true if `variant_name` has a value",
+                                )
+                                .range,
+                        });
+                    }
+                    default = Some(arm);
+                    None
+                } else {
+                    Some(arm)
                 }
             })
             .collect();
@@ -1419,6 +1448,7 @@ impl<'a> Ctx<'a> {
             variable_name,
             scrutinee,
             arms,
+            default,
         }
     }
 
@@ -1776,14 +1806,14 @@ pub enum DescentOpts<'a> {
     /// Doesn't include anything within lambdas.
     /// Doesn't forcefully include local def values
     /// Includes statements.
-    Eval,
+    Infer,
     /// Includes parameters and return type of lambdas.
     /// Will include the value of a referred local if a filter returns true.
     /// Doesn't include blocks.
     Types {
         include_local_value: &'a dyn Fn(Idx<LocalDef>) -> bool,
     },
-    /// Almost the same as `Eval`, except that not all statments of blocks are included.
+    /// Almost the same as `Infer`, except that not all statments of blocks are included.
     /// Only the statements that break to a block are included.
     Reinfer,
     /// Includes *everything*.
@@ -1831,7 +1861,7 @@ impl Iterator for Descendants<'_> {
 
         let include_eval = matches!(
             self.opts,
-            DescentOpts::Eval | DescentOpts::Reinfer | DescentOpts::All { .. }
+            DescentOpts::Infer | DescentOpts::Reinfer | DescentOpts::All { .. }
         );
         let include_types = matches!(
             self.opts,
@@ -1877,7 +1907,10 @@ impl Iterator for Descendants<'_> {
                 Expr::Ref { expr, .. } => {
                     self.todo.push(Descendant::Expr(expr));
                 }
-                Expr::Cast { expr, .. }
+                Expr::Cast { expr: None, .. } => {}
+                Expr::Cast {
+                    expr: Some(expr), ..
+                }
                 | Expr::Deref { pointer: expr }
                 | Expr::Unary { expr, .. }
                 | Expr::Member { previous: expr, .. } => {
@@ -1892,7 +1925,7 @@ impl Iterator for Descendants<'_> {
                 Expr::Paren(Some(expr)) => self.todo.push(Descendant::Expr(expr)),
                 Expr::Paren(None) => {}
                 Expr::Block { stmts, tail_expr } => match self.opts {
-                    DescentOpts::Eval | DescentOpts::All { .. } => {
+                    DescentOpts::Infer | DescentOpts::All { .. } => {
                         self.todo.extend(stmts.into_iter().map(Descendant::Stmt));
 
                         if let Some(tail_expr) = tail_expr {
@@ -1928,7 +1961,7 @@ impl Iterator for Descendants<'_> {
                     }
                 }
                 Expr::While { condition, body } => match self.opts {
-                    DescentOpts::Eval | DescentOpts::All { .. } => {
+                    DescentOpts::Infer | DescentOpts::All { .. } => {
                         if let Some(condition) = condition {
                             self.todo.push(Descendant::Expr(condition));
                         }
@@ -1950,12 +1983,20 @@ impl Iterator for Descendants<'_> {
                     DescentOpts::Types { .. } => {}
                 },
                 Expr::Switch {
-                    scrutinee, arms, ..
+                    scrutinee,
+                    arms,
+                    default,
+                    ..
                 } => match self.opts {
-                    DescentOpts::Eval | DescentOpts::All { .. } => {
+                    DescentOpts::Infer | DescentOpts::All { .. } => {
                         self.todo.push(Descendant::Expr(scrutinee));
                         for arm in arms {
                             self.todo.push(Descendant::Expr(arm.body));
+                        }
+                        // TODO: this might cause unexpected behavior where the default is written
+                        // first but it is processed by hir_ty last.
+                        if let Some(default) = default {
+                            self.todo.push(Descendant::Expr(default.body));
                         }
                     }
                     DescentOpts::Reinfer => {
@@ -1963,6 +2004,9 @@ impl Iterator for Descendants<'_> {
                         self.todo.push(Descendant::Expr(scrutinee));
                         for arm in arms {
                             self.todo.push(Descendant::Expr(arm.body));
+                        }
+                        if let Some(default) = default {
+                            self.todo.push(Descendant::Expr(default.body));
                         }
                     }
                     DescentOpts::Types { .. } => {}
@@ -2379,7 +2423,9 @@ impl Bodies {
                 Expr::Cast { ty, expr } => {
                     write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
                     s.push_str(".(");
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    if let Some(expr) = expr {
+                        write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    }
                     s.push(')');
                 }
 
@@ -2604,6 +2650,7 @@ impl Bodies {
                     variable_name,
                     scrutinee,
                     arms,
+                    default,
                 } => {
                     s.push_str("switch ");
                     if let Some(variable_name) = variable_name {
@@ -2631,10 +2678,32 @@ impl Bodies {
                         } else {
                             s.push('?');
                         }
+                        if let Some(switch_local) = arm.switch_local {
+                            s.push_str(&format!(" (s{})", switch_local.into_raw()));
+                        }
                         s.push_str(" => ");
                         write_expr(
                             s,
                             arm.body,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
+                        s.push_str(",\n");
+                    }
+
+                    if let Some(default) = default {
+                        s.push_str(&" ".repeat(indentation));
+                        s.push('_');
+                        if let Some(switch_local) = default.switch_local {
+                            s.push_str(&format!(" (s{})", switch_local.into_raw()));
+                        }
+                        s.push_str(" => ");
+                        write_expr(
+                            s,
+                            default.body,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -4533,6 +4602,94 @@ mod tests {
                     l1 : l0.Qux = 42;
                     l2 : l0 = l1;
                 };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_statement() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = Foo.Qux.(42);
+
+                    switch f in my_qux {
+                        Bar => 10,
+                        Baz => {
+                            take(f);
+                        }
+                        Qux => take(f),
+                        Quux => {}
+                    }
+                }
+
+                take :: (x: void) {}
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = l0.Qux.(42);
+                    switch f in l1 {
+                        Bar (s0) => 10,
+                        Baz (s1) => {
+                            take(s1);
+                        },
+                        Qux (s2) => take(s2),
+                        Quux (s3) => {},
+                    }
+                };
+                main::take :: (p0: void) {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_statement_with_default() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = Foo.Quux.(true);
+
+                    switch f in my_qux {
+                        Bar => 10,
+                        Baz => {
+                            take(f);
+                        }
+                        _ => take(f),
+                    }
+                }
+
+                take :: (x: void) {}
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = l0.Quux.(true);
+                    switch f in l1 {
+                        Bar (s0) => 10,
+                        Baz (s1) => {
+                            take(s1);
+                        },
+                        _ (s2) => take(s2),
+                    }
+                };
+                main::take :: (p0: void) {};
             "#]],
             |_| [],
         )

@@ -156,8 +156,16 @@ pub enum TyDiagnosticKind {
         ty: Intern<Ty>,
     },
     IfMismatch {
-        found: Intern<Ty>,
-        expected: Intern<Ty>,
+        first: Intern<Ty>,
+        second: Intern<Ty>,
+    },
+    SwitchMismatch {
+        first: Intern<Ty>,
+        second: Intern<Ty>,
+    },
+    NonExistantVariant {
+        variant_name: Key,
+        scrutinee_ty: Intern<Ty>,
     },
     IndexNonArray {
         found: Intern<Ty>,
@@ -222,6 +230,9 @@ pub enum TyDiagnosticKind {
     ArraySizeNotConst,
     DiscriminantNotInt,
     DiscriminantNotConst,
+    DiscriminantUsedAlready {
+        value: u64,
+    },
     ExternGlobalMissingTy,
     DeclTypeHasNoDefault {
         ty: Intern<Ty>,
@@ -1001,6 +1012,10 @@ mod tests {
                 Path::new(""),
                 true,
             );
+            let debug = bodies.debug(module, std::path::Path::new(""), &interner, true);
+            if !debug.is_empty() {
+                println!("{}", debug);
+            }
             world_index.add_file(module, index);
             world_bodies.add_file(module, bodies);
         }
@@ -1027,6 +1042,10 @@ mod tests {
             Path::new(""),
             true,
         );
+        let debug = bodies.debug(module, std::path::Path::new(""), &interner, true);
+        if !debug.is_empty() {
+            println!("{}", debug);
+        }
         lowering_diags.extend(d);
         world_index.add_file(module, index);
         world_bodies.add_file(module, bodies);
@@ -5575,8 +5594,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::IfMismatch {
-                        found: Ty::UInt(0).into(),
-                        expected: Ty::String.into(),
+                        first: Ty::String.into(),
+                        second: Ty::UInt(0).into(),
                     },
                     164..284,
                     None,
@@ -9698,7 +9717,6 @@ mod tests {
 
     #[test]
     fn anon_array_into_known_slice() {
-        // TODO: this should actually replace the {uint} with u16
         check(
             r#"
                 anon :: () {
@@ -9707,10 +9725,10 @@ mod tests {
             "#,
             expect![[r#"
                 main::anon : () -> void
-                2 : {uint}
-                3 : {uint}
-                4 : {uint}
-                5 : [3]~{uint}
+                2 : u16
+                3 : u16
+                4 : u16
+                5 : [3]u16
                 6 : void
                 7 : () -> void
                 l0 : []u16
@@ -9745,7 +9763,6 @@ mod tests {
 
     #[test]
     fn anon_array_as_known_slice() {
-        // this looks wrong
         check(
             r#"
                 anon :: () {
@@ -9754,10 +9771,10 @@ mod tests {
             "#,
             expect![[r#"
                 main::anon : () -> void
-                0 : {uint}
-                1 : {uint}
-                2 : {uint}
-                3 : [3]~{uint}
+                0 : i8
+                1 : i8
+                2 : i8
+                3 : [3]i8
                 6 : []i8
                 7 : void
                 8 : () -> void
@@ -9879,7 +9896,6 @@ mod tests {
 
     #[test]
     fn anon_array_into_known_slice_by_inference() {
-        // TODO: this should actually replace the {uint} with u128
         check(
             r#"
                 anon :: () {
@@ -9890,13 +9906,13 @@ mod tests {
             "#,
             expect![[r#"
                 main::anon : () -> void
-                0 : {uint}
-                1 : {uint}
-                2 : [2]~{uint}
-                5 : [2]~{uint}
+                0 : u128
+                1 : u128
+                2 : [2]u128
+                5 : [2]u128
                 6 : void
                 7 : () -> void
-                l0 : [2]~{uint}
+                l0 : [2]u128
                 l1 : []u128
             "#]],
             |_| [],
@@ -10472,6 +10488,782 @@ mod tests {
                 25 : (main::Animal) -> void
                 l0 : main::Animal.Dog
                 l1 : main::Animal.Fish
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    switch e in clicked {
+                        Page_Load => {
+                            e;
+                            1; // this is done so that the `e`s are clearly visible below
+                        },
+                        Page_Unload => {
+                            e;
+                            true;
+                        },
+                        Key_Press => {
+                            e;
+                            "";
+                        },
+                        Paste => {
+                            e;
+                            ' ';
+                        }
+                        Click => {
+                            e;
+                            e.x;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : main::Web_Event.Page_Load
+                14 : {uint}
+                15 : void
+                16 : main::Web_Event.Page_Unload
+                17 : bool
+                18 : void
+                19 : main::Web_Event.Key_Press
+                20 : str
+                21 : void
+                22 : main::Web_Event.Paste
+                23 : char
+                24 : void
+                25 : main::Web_Event.Click
+                26 : main::Web_Event.Click
+                27 : i64
+                28 : void
+                29 : void
+                30 : void
+                31 : () -> void
+                l0 : main::Web_Event
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_val() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    val : i16 = switch e in clicked {
+                        Page_Load => {
+                            e;
+                            10
+                        },
+                        Page_Unload => {
+                            e;
+                            20
+                        },
+                        Key_Press => {
+                            e;
+                            30
+                        },
+                        Paste => {
+                            e;
+                            40
+                        }
+                        Click => {
+                            e;
+                            50
+                        }
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                13 : main::Web_Event
+                14 : main::Web_Event.Page_Load
+                15 : i16
+                16 : i16
+                17 : main::Web_Event.Page_Unload
+                18 : i16
+                19 : i16
+                20 : main::Web_Event.Key_Press
+                21 : i16
+                22 : i16
+                23 : main::Web_Event.Paste
+                24 : i16
+                25 : i16
+                26 : main::Web_Event.Click
+                27 : i16
+                28 : i16
+                29 : i16
+                30 : void
+                31 : () -> void
+                l0 : main::Web_Event
+                l1 : i16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_mismatch_val() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    val : u8 = switch e in clicked {
+                        Page_Load => {
+                            e;
+                            10
+                        },
+                        Page_Unload => {
+                            e;
+                            20
+                        },
+                        Key_Press => {
+                            e;
+                            "hello"
+                        },
+                        Paste => {
+                            e;
+                            true
+                        }
+                        Click => {
+                            e;
+                            ' '
+                        }
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                13 : main::Web_Event
+                14 : main::Web_Event.Page_Load
+                15 : {uint}
+                16 : {uint}
+                17 : main::Web_Event.Page_Unload
+                18 : {uint}
+                19 : {uint}
+                20 : main::Web_Event.Key_Press
+                21 : str
+                22 : str
+                23 : main::Web_Event.Paste
+                24 : bool
+                25 : bool
+                26 : main::Web_Event.Click
+                27 : char
+                28 : char
+                29 : <unknown>
+                30 : void
+                31 : () -> void
+                l0 : main::Web_Event
+                l1 : u8
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::SwitchMismatch {
+                        second: Ty::String.into(),
+                        first: Ty::UInt(0).into(),
+                    },
+                    836..930,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn switch_missing_variant() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    val : i128 = switch e in clicked {
+                        Page_Load => {
+                            e;
+                            10
+                        },
+                        Page_Unload => {
+                            e;
+                            20
+                        },
+                        Key_Press => {
+                            e;
+                            "hello"
+                        },
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                13 : main::Web_Event
+                14 : main::Web_Event.Page_Load
+                15 : {uint}
+                16 : {uint}
+                17 : main::Web_Event.Page_Unload
+                18 : {uint}
+                19 : {uint}
+                20 : main::Web_Event.Key_Press
+                21 : str
+                22 : str
+                23 : <unknown>
+                24 : void
+                25 : () -> void
+                l0 : main::Web_Event
+                l1 : i128
+            "#]],
+            |i| {
+                [
+                    (
+                        TyDiagnosticKind::SwitchMismatch {
+                            second: Ty::String.into(),
+                            first: Ty::UInt(0).into(),
+                        },
+                        838..932,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::SwitchDoesNotCoverVariant {
+                            ty: Ty::Variant {
+                                enum_fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Web_Event")),
+                                }),
+                                enum_uid: 6,
+                                variant_name: hir::Name(i.intern("Paste")),
+                                uid: 3,
+                                sub_ty: Ty::String.into(),
+                                discriminant: 3,
+                            }
+                            .into(),
+                        },
+                        521..955,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::SwitchDoesNotCoverVariant {
+                            ty: Ty::Variant {
+                                enum_fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Web_Event")),
+                                }),
+                                enum_uid: 6,
+                                variant_name: hir::Name(i.intern("Click")),
+                                uid: 5,
+                                sub_ty: Ty::Struct {
+                                    anonymous: false,
+                                    fqn: None,
+                                    uid: 4,
+                                    members: vec![
+                                        MemberTy {
+                                            name: hir::Name(i.intern("x")),
+                                            ty: Ty::IInt(64).into(),
+                                        },
+                                        MemberTy {
+                                            name: hir::Name(i.intern("y")),
+                                            ty: Ty::IInt(64).into(),
+                                        },
+                                    ],
+                                }
+                                .into(),
+                                discriminant: 4,
+                            }
+                            .into(),
+                        },
+                        521..955,
+                        None,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn switch_default() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    val : u16 = switch e in clicked {
+                        Page_Load => {
+                            e;
+                            10
+                        },
+                        Page_Unload => {
+                            e;
+                            20
+                        },
+                        Key_Press => {
+                            e;
+                            30
+                        },
+                        _ => 40,
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                13 : main::Web_Event
+                14 : main::Web_Event.Page_Load
+                15 : u16
+                16 : u16
+                17 : main::Web_Event.Page_Unload
+                18 : u16
+                19 : u16
+                20 : main::Web_Event.Key_Press
+                21 : u16
+                22 : u16
+                23 : u16
+                24 : u16
+                25 : void
+                26 : () -> void
+                l0 : main::Web_Event
+                l1 : u16
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_default_mismatch() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    val : u16 = switch e in clicked {
+                        Page_Load => {
+                            e;
+                            10
+                        },
+                        Page_Unload => {
+                            e;
+                            20
+                        },
+                        Key_Press => {
+                            e;
+                            30
+                        },
+                        _ => "hello",
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                13 : main::Web_Event
+                14 : main::Web_Event.Page_Load
+                15 : {uint}
+                16 : {uint}
+                17 : main::Web_Event.Page_Unload
+                18 : {uint}
+                19 : {uint}
+                20 : main::Web_Event.Key_Press
+                21 : {uint}
+                22 : {uint}
+                23 : str
+                24 : <unknown>
+                25 : void
+                26 : () -> void
+                l0 : main::Web_Event
+                l1 : u16
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::SwitchMismatch {
+                        second: Ty::String.into(),
+                        first: Ty::UInt(0).into(),
+                    },
+                    957..964,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn enum_single_unused_discriminant() {
+        check(
+            r#"
+                foo :: () {
+                    Web_Event :: enum {
+                        Page_Load,
+                        Page_Unload,
+                        Key_Press: char,
+                        Paste: str | 10,
+                        Click: struct {
+                            x: i64,
+                            y: i64,
+                        },
+                        Unclick: struct {
+                            x: i64,
+                            y: i64,
+                        }
+                    };
+
+                    clicked : Web_Event = Web_Event.Click.{x=10, y=20};
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                2 : u8
+                9 : type
+                11 : type
+                13 : i64
+                14 : i64
+                15 : .Click'5
+                16 : void
+                17 : () -> void
+                l0 : type
+                l1 : enum '8 {Page_Load | 0, Page_Unload | 1, Key_Press: char | 2, Paste: str | 10, Click: struct'4 {x: i64, y: i64} | 11, Unclick: struct'6 {x: i64, y: i64} | 12}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn enum_double_unused_discriminant() {
+        check(
+            r#"
+                foo :: () {
+                    Web_Event :: enum {
+                        Page_Load,
+                        Page_Unload,
+                        Key_Press: char,
+                        Paste: str | 10,
+                        Click: struct {
+                            x: i64,
+                            y: i64,
+                        } | 10,
+                        Unclick: struct {
+                            x: i64,
+                            y: i64,
+                        }
+                    };
+
+                    clicked : Web_Event = Web_Event.Click.{x=10, y=20};
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                2 : u8
+                6 : u8
+                10 : type
+                12 : type
+                14 : i64
+                15 : i64
+                16 : .Click'5
+                17 : void
+                18 : () -> void
+                l0 : type
+                l1 : enum '8 {Page_Load | 0, Page_Unload | 1, Key_Press: char | 2, Paste: str | 10, Click: struct'4 {x: i64, y: i64} | 11, Unclick: struct'6 {x: i64, y: i64} | 12}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::DiscriminantUsedAlready { value: 10 },
+                    363..365,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn enum_single_used_discriminant() {
+        check(
+            r#"
+                foo :: () {
+                    Web_Event :: enum {
+                        Page_Load,
+                        Page_Unload,
+                        Key_Press: char,
+                        Paste: str,
+                        Click: struct {
+                            x: i64,
+                            y: i64,
+                        } | 2,
+                        Unclick: struct {
+                            x: i64,
+                            y: i64,
+                        }
+                    };
+
+                    clicked : Web_Event = Web_Event.Click.{x=10, y=20};
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                5 : u8
+                9 : type
+                11 : type
+                13 : i64
+                14 : i64
+                15 : .Click'5
+                16 : void
+                17 : () -> void
+                l0 : type
+                l1 : enum '8 {Page_Load | 0, Page_Unload | 1, Key_Press: char | 3, Paste: str | 4, Click: struct'4 {x: i64, y: i64} | 2, Unclick: struct'6 {x: i64, y: i64} | 5}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn enum_double_used_discriminant() {
+        check(
+            r#"
+                foo :: () {
+                    Web_Event :: enum {
+                        Page_Load,
+                        Page_Unload,
+                        Key_Press: char,
+                        Paste: str | 2,
+                        Click: struct {
+                            x: i64,
+                            y: i64,
+                        } | 2,
+                        Unclick: struct {
+                            x: i64,
+                            y: i64,
+                        }
+                    };
+
+                    clicked : Web_Event = Web_Event.Click.{x=10, y=20};
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                2 : u8
+                6 : u8
+                10 : type
+                12 : type
+                14 : i64
+                15 : i64
+                16 : .Click'5
+                17 : void
+                18 : () -> void
+                l0 : type
+                l1 : enum '8 {Page_Load | 0, Page_Unload | 1, Key_Press: char | 3, Paste: str | 2, Click: struct'4 {x: i64, y: i64} | 4, Unclick: struct'6 {x: i64, y: i64} | 5}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::DiscriminantUsedAlready { value: 2 },
+                    362..363,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn only_report_one_if_mismatch() {
+        check(
+            r#"
+                foo :: () {
+                    if true {
+                        42
+                    } else if true {
+                        42
+                    } else if true {
+                        "hello"
+                    } else if true {
+                        "hello"
+                    } else if true {
+                        "hello"
+                    } else if true {
+                        42
+                    } else {
+                        42
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : bool
+                1 : {uint}
+                2 : {uint}
+                3 : bool
+                4 : {uint}
+                5 : {uint}
+                6 : bool
+                7 : str
+                8 : str
+                9 : bool
+                10 : str
+                11 : str
+                12 : bool
+                13 : str
+                14 : str
+                15 : bool
+                16 : {uint}
+                17 : {uint}
+                18 : {uint}
+                19 : {uint}
+                20 : {uint}
+                21 : <unknown>
+                22 : <unknown>
+                23 : <unknown>
+                24 : <unknown>
+                25 : <unknown>
+                26 : void
+                27 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::IfMismatch {
+                        first: Ty::String.into(),
+                        second: Ty::UInt(0).into(),
+                    },
+                    315..498,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn compare_bool_to_bool() {
+        check(
+            r#"
+                foo :: () {
+                    true == false;
+                }
+            "#,
+            expect![[r#"
+                main::foo : () -> void
+                0 : bool
+                1 : bool
+                2 : bool
+                3 : void
+                4 : () -> void
             "#]],
             |_| [],
         )

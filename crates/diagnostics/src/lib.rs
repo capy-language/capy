@@ -234,7 +234,7 @@ fn input_snippet(
     with_colors: bool,
     missing_arrow: bool,
 ) {
-    let (ansi_reset, ansi_gray, ansi_selection) = if with_colors {
+    let (ansi_reset, ansi_gray, ansi_err) = if with_colors {
         (
             "\x1B[0m",
             "\x1B[90m",
@@ -255,7 +255,21 @@ fn input_snippet(
     const PADDING: &str = " │ ";
 
     let file_lines: Vec<_> = input.lines().collect();
-    let line_number_padding = " ".repeat(count_digits(end_line.0 + 1, 10));
+
+    let mut max_digits = count_digits(end_line.0 + 3, 10);
+
+    let line_end = end_line.0 as usize + 3;
+    let line_start = (start_line.0 as usize).saturating_sub(2);
+
+    // if the selection of text is really really long, omit the middle and put a "..."
+    const OMIT_POINT: usize = 5 + 2; // +2 for the extra non-error lines that get shown at the ends
+
+    if line_end - line_start > OMIT_POINT * 2 {
+        // make sure max_digits is at least big enough to support the "..."
+        max_digits = max_digits.max(3);
+    }
+
+    let line_number_padding = " ".repeat(max_digits);
 
     lines.push(format!(
         "{}{}--> at {}:{}:{}",
@@ -270,9 +284,21 @@ fn input_snippet(
     for (num, file_line) in file_lines
         .iter()
         .enumerate()
-        .take(end_line.0 as usize + 3)
-        .skip((start_line.0 as usize).saturating_sub(2))
+        .take(line_end)
+        .skip(line_start)
     {
+        if num - line_start >= OMIT_POINT && line_end - num > OMIT_POINT {
+            if num - line_start == OMIT_POINT {
+                lines.push(format!(
+                    "{ansi_err}...{}{}{}",
+                    " ".repeat(max_digits - 3),
+                    ansi_gray,
+                    PADDING,
+                ));
+            }
+            continue;
+        }
+
         let error_line = num >= start_line.0 as usize && num <= end_line.0 as usize;
         let arrow = error_line && missing_arrow;
         let file_line = match (num == start_line.0 as usize, num == end_line.0 as usize) {
@@ -284,7 +310,7 @@ fn input_snippet(
                         "{}{}{}{}{}{}",
                         ansi_reset,
                         &file_line[..start_col.0 as usize],
-                        ansi_selection,
+                        ansi_err,
                         &file_line[start_col.0 as usize..end_col.0 as usize + 1],
                         ansi_reset,
                         &file_line[end_col.0 as usize + 1..],
@@ -296,49 +322,44 @@ fn input_snippet(
                     "{}{}{}{}",
                     ansi_reset,
                     &file_line[..start_col.0 as usize],
-                    ansi_selection,
+                    ansi_err,
                     &file_line[start_col.0 as usize..]
                 )
             }
             (false, true) => {
                 format!(
                     "{}{}{}{}",
-                    ansi_selection,
+                    ansi_err,
                     &file_line[..end_col.0 as usize + 1],
                     ansi_reset,
                     &file_line[end_col.0 as usize + 1..]
                 )
             }
-            (false, false) if error_line => format!("{}{}", ansi_selection, file_line),
+            (false, false) if error_line => format!("{}{}", ansi_err, file_line),
             (false, false) => format!("{}{}", ansi_reset, file_line),
         };
 
         lines.push(format!(
-            "{}{:>digits$}{}{}{}",
-            if error_line {
-                ansi_selection
-            } else {
-                ansi_reset
-            },
+            "{}{:>max_digits$}{}{}{}",
+            if error_line { ansi_err } else { ansi_reset },
             num + 1,
             ansi_gray,
             PADDING,
             file_line.replace('\t', "    "),
-            digits = count_digits(end_line.0 + 3, 10)
         ));
 
         if arrow {
             lines.push(format!(
                 "{}{}{}{}{}{}{}",
                 ansi_reset,
-                " ".repeat(count_digits(end_line.0 + 3, 10)),
+                " ".repeat(max_digits),
                 ansi_gray,
                 PADDING,
                 " ".repeat(
                     start_col.0 as usize
                         + file_line.chars().filter(|char| *char == '\t').count() * 3
                 ),
-                ansi_selection,
+                ansi_err,
                 "^",
             ));
         }
@@ -466,6 +487,9 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::ContinueFromDefer => {
             "cannot `continue` an outer loop from within a `defer`".to_string()
         }
+        LoweringDiagnosticKind::MultipleDefaultArms => {
+            "a switch statement cannot have multiple default arms `_ => {}`".to_string()
+        }
     }
 }
 
@@ -528,14 +552,21 @@ fn ty_diagnostic_message(
                 ty.display(mod_dir, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::IfMismatch { found, expected } => {
+        hir_ty::TyDiagnosticKind::IfMismatch { first, second } => {
             format!(
                 "the first branch is `{}` but the second branch is `{}`. they must be the same",
-                expected.display(mod_dir, interner),
-                found.display(mod_dir, interner),
+                first.display(mod_dir, interner),
+                second.display(mod_dir, interner),
             )
         }
-        hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
+        hir_ty::TyDiagnosticKind::SwitchMismatch { first, second } => {
+            format!(
+                "the first branch is `{}` but this branch is `{}`. they must be the same",
+                first.display(mod_dir, interner),
+                second.display(mod_dir, interner),
+            )
+        }
+                hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
             format!(
                 "tried indexing `[]` a non-array, `{}`",
                 found.display(mod_dir, interner)
@@ -620,10 +651,15 @@ fn ty_diagnostic_message(
             interner.lookup(fqn.name.0),
             fqn.file.to_string(mod_dir, interner)
         ),
-        hir_ty::TyDiagnosticKind::NonExistentMember { member: field, found_ty } => format!(
+        hir_ty::TyDiagnosticKind::NonExistentMember { member, found_ty } => format!(
             "there is no member named `{}` within `{}`",
-            interner.lookup(*field),
+            interner.lookup(*member),
             found_ty.display(mod_dir, interner)
+        ),
+        hir_ty::TyDiagnosticKind::NonExistantVariant { variant_name, scrutinee_ty } => format!(
+            "there is no variant named `{}` within `{}`",
+            interner.lookup(*variant_name),
+            scrutinee_ty.display(mod_dir, interner),
         ),
         hir_ty::TyDiagnosticKind::StructLiteralMissingMember { member: field, expected_ty } => format!(
             "`{}` struct literal is missing the member `{}`",
@@ -656,6 +692,9 @@ fn ty_diagnostic_message(
         }
         hir_ty::TyDiagnosticKind::DiscriminantNotConst => {
             "discriminants must be known at compile-time".to_string()
+        }
+        hir_ty::TyDiagnosticKind::DiscriminantUsedAlready { value } => {
+            format!("you've already used `{value}` as a discriminant")
         }
         hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
             "external globals must have a type annotation".to_string()
