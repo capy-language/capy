@@ -200,7 +200,25 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
             sub_ty.size()
         }
         Ty::Type => 32 / 8,
-        Ty::Any => 0,
+        Ty::Any => {
+            let mut current_offset = 0;
+
+            let typeid_size = 32 / 8;
+            // let typeid_align = typeid_size.min(8);
+
+            let rawptr_size = pointer_bit_width / 8;
+            let rawptr_align = rawptr_size.min(8);
+
+            current_offset += typeid_size;
+            current_offset += padding_needed_for(current_offset, rawptr_align);
+
+            current_offset += rawptr_size;
+
+            current_offset
+        }
+        Ty::RawPtr { .. } => pointer_bit_width / 8,
+        // a slice is len (usize) + ptr (usize)
+        Ty::RawSlice => pointer_bit_width / 8 * 2,
         Ty::Void => 0,
         Ty::NoEval => 0,
         Ty::File(_) => 0,
@@ -210,16 +228,26 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::NotYetResolved | Ty::Unknown => 1,
         Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) => size.min(8),
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
-        Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size,
+        Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size.min(8),
         // the sub_ty was already `calc()`ed just before
         Ty::Array { sub_ty, .. } => sub_ty.align(),
-        Ty::Slice { .. } => size / 2,
+        Ty::Slice { .. } => (size / 2).min(8),
         Ty::Distinct { sub_ty, .. } => sub_ty.align(),
         Ty::Struct { .. } => ty.struct_layout().unwrap().align,
         Ty::Enum { .. } => ty.enum_layout().unwrap().align,
         Ty::Variant { sub_ty, .. } => sub_ty.align(),
         Ty::Type => size,
-        Ty::Any => 1,
+        Ty::Any => {
+            let typeid_size = 32 / 8;
+            let typeid_align = typeid_size.min(8);
+
+            let rawptr_size = pointer_bit_width / 8;
+            let rawptr_align = rawptr_size.min(8);
+
+            typeid_align.max(rawptr_align)
+        }
+        Ty::RawPtr { .. } => size.min(8),
+        Ty::RawSlice => (size / 2).min(8),
         Ty::Void => 1,
         Ty::NoEval => 1,
         Ty::File(_) => 1,

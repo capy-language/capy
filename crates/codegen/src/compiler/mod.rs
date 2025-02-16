@@ -32,6 +32,14 @@ use self::functions::FunctionCompiler;
 
 #[derive(Default)]
 pub(crate) struct MetaTyData {
+    // it would be more efficient to use a hashmap for this,
+    // but the problem is that sometimes you'll have a type where
+    // type_1 != type_2 but type_1.is_equal_to(type_2)
+    //
+    // as a result of this, anonymous structs will get different type ids
+    //
+    // todo: is this really that important?
+    pub(crate) type_ids: Vec<(Intern<Ty>, u32)>,
     pub(crate) tys_to_compile: Vec<Intern<Ty>>,
 
     pub(crate) array_uid_gen: UIDGenerator,
@@ -925,47 +933,36 @@ fn cast_into_memory(
                 ptr_ty.bytes() as i32,
             ));
         }
-        _ if cast_to.is_any_struct() => {
+        (_, Ty::Any) => {
             let any_mem = memory.unwrap_or_alloca(builder, cast_to);
 
-            let struct_layout = cast_to.struct_layout().unwrap();
+            let typeid_size = 32 / 8;
+            let typeid_offset = 0;
 
-            for (idx, hir_ty::MemberTy { ty, .. }) in
-                cast_to.as_struct().unwrap().into_iter().enumerate()
-            {
-                match ty.as_ref() {
-                    Ty::Pointer { .. } => {
-                        if let Some(val) = val {
-                            let offset = struct_layout.offsets()[idx] as i32;
+            let rawptr_size = ptr_ty.bytes();
+            let rawptr_align = rawptr_size.min(8);
+            let rawptr_offset = typeid_size + layout::padding_needed_for(typeid_size, rawptr_align);
 
-                            let ptr = if cast_from.is_aggregate() {
-                                val
-                            } else {
-                                let tmp_stack_slot =
-                                    builder.create_sized_stack_slot(StackSlotData {
-                                        kind: StackSlotKind::ExplicitSlot,
-                                        size: cast_from.size(),
-                                        align_shift: cast_from.align_shift(),
-                                    });
+            let typeid = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
+            let typeid = builder.ins().iconst(types::I32, typeid);
+            any_mem.store(builder, typeid, typeid_offset);
 
-                                builder.ins().stack_store(val, tmp_stack_slot, 0);
+            if let Some(val) = val {
+                let ptr = if cast_from.is_aggregate() {
+                    val
+                } else {
+                    let tmp_stack_slot = builder.create_sized_stack_slot(StackSlotData {
+                        kind: StackSlotKind::ExplicitSlot,
+                        size: cast_from.size(),
+                        align_shift: cast_from.align_shift(),
+                    });
 
-                                builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
-                            };
+                    builder.ins().stack_store(val, tmp_stack_slot, 0);
 
-                            any_mem.store(builder, ptr, offset);
-                        }
-                    }
-                    Ty::Type => {
-                        let offset = struct_layout.offsets()[idx] as i32;
+                    builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
+                };
 
-                        let id = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
-                        let id = builder.ins().iconst(types::I32, id);
-
-                        any_mem.store(builder, id, offset);
-                    }
-                    _ => {}
-                }
+                any_mem.store(builder, ptr, rawptr_offset as i32);
             }
 
             return Some(any_mem.into_value(builder, ptr_ty));

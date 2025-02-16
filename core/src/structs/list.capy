@@ -9,7 +9,7 @@ math :: core.math;
 // [A Simple Yet Useful Version of Generics by Luna Razzaghipour](https://blog.xoria.org/simple-generics/)
 List :: struct {
     ty: type,
-    buf: ^mut any,
+    buf: mut rawptr,
     cap: usize,
     len: usize,
 };
@@ -53,7 +53,7 @@ free :: (self: ^mut List) {
     self.len = 0;
 }
 
-push :: (list: ^mut List, value: core.Any) {
+push :: (list: ^mut List, value: any) {
     _grow_by(list, 1);
 
     offset := ptr.mut_offset(list.buf, list.len * core.meta.stride_of(list.ty));
@@ -63,15 +63,15 @@ push :: (list: ^mut List, value: core.Any) {
     list.len = list.len + 1;
 }
 
-get :: (list: ^List, index: usize) -> core.Any {
+get :: (list: ^List, index: usize) -> any {
     if index >= list.len {
         core.panic_with("called `get` with an index outside the list");
     }
 
-    core.Any.{
-        data = ptr.const_offset(list.buf, index * core.meta.stride_of(list.ty)),
-        ty = list.ty,
-    }
+    core.any_from_raw_parts(
+        ptr.const_offset(list.buf, index * core.meta.stride_of(list.ty)),
+        list.ty,
+    )
 }
 
 // todo: return the item
@@ -90,10 +90,10 @@ print :: (list: ^List) {
 
     idx := 0;
     while idx < list.len {
-        core.print(core.Any.{
-            ty = list.ty,
-            data = ptr.const_offset(list.buf, idx * ty_stride)
-        });
+        core.print(core.any_from_raw_parts(
+            ptr.const_offset(list.buf, idx * ty_stride),
+            list.ty,
+        ));
 
         idx = idx + 1;
         
@@ -110,7 +110,7 @@ println :: (list: ^List) {
     core.print('\n');
 }
 
-to_slice :: (list: ^List) -> [] any {
+to_slice :: (list: ^List) -> rawslice {
     ptr.slice_from_raw_parts(list.buf, list.len)
 }
 

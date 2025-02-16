@@ -52,6 +52,8 @@ impl_interner! {
     char => "char",
     r#type => "type",
     any => "any",
+    rawptr => "rawptr",
+    rawslice => "rawslice",
 }
 
 impl Interner {

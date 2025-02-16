@@ -69,7 +69,7 @@ check_type_info :: () {
     print_info(Foo);
     print_info(Bar);
     print_info(Person);
-    print_info(core.Any);
+    print_info(any);
     print_info(distinct Foo);
     print_info(distinct Farm_Animal);
     print_info(Dessert);
@@ -86,23 +86,30 @@ check_any :: () {
         array: [3] i16,
     };
 
-    // The `core.Any` type combines a type id with an opaque pointer
-    // to allow representation of *any* possible value in your program.
-    // `core.Any` powers the `core.println` function, which does something
-    // different depending on the type of the `core.Any` passed in.
-
-    core.println(core.Any.{ ty = u8, data = (^u8).(^123) });
-    core.println(core.Any.{ ty = [6]i32, data = ^i32.[ 4, 8, 15, 16, 23, 42 ] });
-    core.println(core.Any.{ ty = []i32, data = ^[]i32.(i32.[ 1, 2, 3 ]) });
-    core.println(core.Any.{ ty = ^i32, data = (^^i32).(^^52) });
-
-    // `core.Any` of `core.Any`
+    // The `any` type contains a type id and an opaque pointer and
+    // as a result, it can represent *any* possible value in your program.
+    // `any` powers the `core.println` function, which uses the type id
+    // to figure out how the data should be printed
     
-    i := core.Any.{ ty = imaginary, data = (^imaginary).(^42) };
-    core.println(i);
-    core.println(core.Any.{ ty = core.Any, data = ^i });
+    num : any = u8.(123);
+    core.println(num);
 
-    // auto cast to `core.Any` (or any other struct with a `type` and a `^any`)
+    the_numbers : any = i32.[4, 8, 15, 16, 23, 42]; 
+    core.println(the_numbers);
+
+    one_two_three : any = u16.[1, 2, 3];
+    core.println(one_two_three);
+
+    retirement_age_ptr : any = ^i128.(52);
+    core.println(retirement_age_ptr);
+
+    // `any` within `any` (for testing)
+    
+    the_answer : any = u64.(42);
+    core.println(the_answer);
+    core.println(core.any_from_raw_parts(^the_answer, any));
+
+    // auto cast to `any`
 
     core.println(256);
     core.println("hello");
@@ -111,12 +118,12 @@ check_any :: () {
     // printing types
     core.println(i32);
     core.println(^Bar);
-    core.println(core.Any);
+    core.println(any);
 
     // printing arrays
     core.println(.[3, -1, 4, 1, 5, 9]);
-    core.println([]i32.( .[4, 8, 15, 16, 23, 42] ));
-    core.println(core.Any.[1, "hello", true, 5.3]);
+    core.println([]i32.( .[4, 8, 15, 16, 23, 42] )); // forcefully cast the array to a slice (for testing)
+    core.println(any.[1, "hello", true, 5.3]);
 
     // printing structs
     core.println(Bar.{
@@ -204,7 +211,10 @@ check_layouts :: () {
     print_type_layout("f32               ", f32);
     print_type_layout("void              ", void);
     print_type_layout("any               ", any);
+    print_type_layout("rawptr            ", rawptr);
+    print_type_layout("rawslice          ", rawslice);
     print_type_layout("str               ", str);
+    print_type_layout("bool              ", bool);
     print_type_layout("char              ", char);
     print_type_layout("type              ", type);
     print_type_layout("Person            ", Person);
@@ -256,7 +266,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         core.println(name);
     };
 
-    print_front_with :: (indent: i32, name: str, val: core.Any) {
+    print_front_with :: (indent: i32, name: str, val: any) {
         print_indent(indent);
         core.print(name);
         core.println(val);
@@ -341,6 +351,11 @@ print_info_with_args :: (ty: type, indent: i32) {
         File => print_front(indent, "FILE"),
         Meta_Type => print_front(indent, "META TYPE"),
         Any => print_front(indent, "ANY"),
+        Raw_Ptr => {
+            print_front(indent, "RAW_POINTER");
+            print_front_with(indent, "mutable = ", info.mutable);
+        }
+        Raw_Slice => print_front(indent, "RAW_SLICE"),
         Void => print_front(indent, "VOID"),
     }
 }

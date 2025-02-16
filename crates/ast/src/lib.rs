@@ -384,6 +384,7 @@ def_multi_node! {
     Expr:
     Cast -> CastExpr
     Ref -> RefExpr
+    Mut -> MutExpr
     Deref -> DerefExpr
     Binary -> BinaryExpr
     Unary -> UnaryExpr
@@ -449,6 +450,14 @@ impl RefExpr {
         token(self, tree)
     }
 
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(MutExpr);
+
+impl MutExpr {
     pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
@@ -2512,5 +2521,27 @@ mod tests {
         assert!(matches!(arm.body(&tree).unwrap(), Expr::VarRef(_)));
 
         assert!(switch_arms.next().is_none());
+    }
+
+    #[test]
+    fn mut_expr() {
+        let (tree, root) = parse("mut foo");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let mut_expr = match expr {
+            Some(Expr::Mut(mut_expr)) => mut_expr,
+            _ => unreachable!(),
+        };
+
+        let var_ref = match mut_expr.expr(&tree) {
+            Some(Expr::VarRef(ref_expr)) => ref_expr,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "foo");
     }
 }

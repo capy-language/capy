@@ -72,7 +72,8 @@ pub enum NodeKind {
     CharLiteral,
     StringLiteral,
     CastExpr,
-    RefExpr,
+    RefExpr, // `^foo` or `^mut foo`
+    MutExpr, // `mut rawptr` (yes, that's the only thing its used for)
     DerefExpr,
     BinaryExpr,
     UnaryExpr,

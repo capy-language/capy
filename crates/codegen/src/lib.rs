@@ -1019,8 +1019,11 @@ mod tests {
                 usize              (134217992) : size = 8, align = 8, stride = 8
                 f32                (201326724) : size = 4, align = 4, stride = 4
                 void               (67108896) : size = 0, align = 1, stride = 0
-                any                (536870944) : size = 0, align = 1, stride = 0
+                any                (536871184) : size = 16, align = 8, stride = 16
+                rawptr             (671088904) : size = 8, align = 8, stride = 8
+                rawslice           (738197776) : size = 16, align = 8, stride = 16
                 str                (335544584) : size = 8, align = 8, stride = 8
+                bool               (268435489) : size = 1, align = 1, stride = 1
                 char               (402653217) : size = 1, align = 1, stride = 1
                 type               (469762180) : size = 4, align = 4, stride = 4
                 Person             (1073741824) : size = 12, align = 8, stride = 16
@@ -1177,18 +1180,7 @@ mod tests {
                   bit_width = 32
                   signed    = true
                 
-                STRUCT
-                members =
-                 name = ty
-                 offset = 0
-                 ty =
-                  META TYPE
-                 name = data
-                 offset = 8
-                 ty =
-                  POINTER
-                  ty =
-                   ANY
+                ANY
                 
                 DISTINCT
                 ty =
@@ -1328,7 +1320,7 @@ mod tests {
                 ()
                 i32
                 ^struct { text: str, flag: bool, array: [3] i16 }
-                struct { ty: type, data: ^any }
+                any
                 [ 3, -1, 4, 1, 5, 9 ]
                 [ 4, 8, 15, 16, 23, 42 ]
                 [ 1, hello, true, 5.300 ]
@@ -1702,7 +1694,7 @@ mod tests {
                 }
 
                 print :: (s: str, n: i64) {
-                    s := (^[1000]char).((^any).(s));
+                    s := (^[1000]char).(rawptr.(s));
                     idx := 0;
                     while idx < 100 {
                         ch := s[idx];
@@ -1809,8 +1801,8 @@ mod tests {
                     y := ^x;
                     z := ^x;
                 
-                    y_raw := (^usize).((^any).(^y))^;
-                    z_raw := (^usize).((^any).(^z))^;
+                    y_raw := (^usize).(rawptr.(^y))^;
+                    z_raw := (^usize).(rawptr.(^z))^;
 
                     i32.(y_raw == z_raw)
                 }
@@ -2187,7 +2179,7 @@ mod tests {
                 main :: () -> u32 {
                     x : u32 = 42;
 
-                    ptr := (^mut any).(^mut x);
+                    ptr := (mut rawptr).(^mut x);
 
                     (^mut u32).(ptr) ^= 5;
 

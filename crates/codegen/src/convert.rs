@@ -6,7 +6,7 @@ use hir_ty::Ty;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
-use crate::compiler::MetaTyData;
+use crate::{compiler::MetaTyData, layout::GetLayoutInfo};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FinalTy {
@@ -258,8 +258,9 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             float: false,
             signed: false,
         }),
-        // you should never be able to get an any value
-        hir_ty::Ty::Any => FinalTy::Void,
+        hir_ty::Ty::Any => FinalTy::Pointer(ptr_ty),
+        hir_ty::Ty::RawPtr { .. } => FinalTy::Pointer(ptr_ty),
+        hir_ty::Ty::RawSlice { .. } => FinalTy::Pointer(ptr_ty),
         hir_ty::Ty::Void => FinalTy::Void,
         hir_ty::Ty::NoEval => FinalTy::Void,
         hir_ty::Ty::File(_) => FinalTy::Void,
@@ -281,6 +282,8 @@ pub(crate) const CHAR_DISCRIMINANT: u32 = 6;
 pub(crate) const META_TYPE_DISCRIMINANT: u32 = 7;
 pub(crate) const ANY_DISCRIMINANT: u32 = 8;
 pub(crate) const FILE_DISCRIMINANT: u32 = 9;
+pub(crate) const RAW_PTR_DISCRIMINANT: u32 = 10;
+pub(crate) const RAW_SLICE_DISCRIMINANT: u32 = 11;
 
 pub(crate) const STRUCT_DISCRIMINANT: u32 = 16;
 pub(crate) const DISTINCT_DISCRIMINANT: u32 = 17;
@@ -292,25 +295,55 @@ pub(crate) const ENUM_DISCRIMINANT: u32 = 22;
 pub(crate) const VARIANT_DISCRIMINANT: u32 = 23;
 
 fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
+    let size = bit_width / 8;
+    let align = size.clamp(1, 8);
+
+    simple_id_with_align(discriminant, bit_width / 8, align, signed)
+}
+
+// `size` and `align` are in bytes
+fn simple_id_with_align(discriminant: u32, size: u32, align: u32, signed: bool) -> u32 {
+    assert!(discriminant < 0b111111);
+    assert!(size < 0b11111);
+    assert!(align < 0b1111);
+
     // the last 6 bits are reserved for the discriminant
     let id = discriminant << 26;
 
-    let byte_width = bit_width / 8;
-
-    let align = byte_width.clamp(1, 8) << 5;
+    let align = align << 5;
 
     let sign = (signed as u32) << 9;
 
-    id | sign | align | byte_width
+    id | sign | align | size
 }
 
 pub(crate) trait ToTyId {
     fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32;
-    fn to_previous_type_id(self, meta_tys: &MetaTyData, pointer_ty: types::Type) -> u32;
+    fn to_previous_type_id(self, meta_tys: &MetaTyData) -> u32;
 }
 
 impl ToTyId for Intern<Ty> {
     fn to_type_id(self, meta_tys: &mut MetaTyData, pointer_ty: types::Type) -> u32 {
+        if let Some(id) = meta_tys
+            .type_ids
+            .iter()
+            .find(|(ty, _)| ty.is_equal_to(&self))
+            .map(|(_, id)| *id)
+        {
+            assert!(meta_tys
+                .tys_to_compile
+                .iter()
+                .any(|ty| ty.is_equal_to(&self)));
+            return id;
+        }
+
+        println!("{self:?}");
+
+        assert!(!meta_tys
+            .tys_to_compile
+            .iter()
+            .any(|ty| ty.is_equal_to(&self)));
+
         let id = match self.as_ref() {
             Ty::NotYetResolved | Ty::Unknown => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::UInt(0) | Ty::IInt(0) => simple_id(INT_DISCRIMINANT, 32, true),
@@ -336,336 +369,118 @@ impl ToTyId for Intern<Ty> {
             Ty::String => simple_id(STRING_DISCRIMINANT, pointer_ty.bits(), false),
             Ty::Char => simple_id(CHAR_DISCRIMINANT, 8, false),
             Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
-            Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
+            Ty::Any => simple_id_with_align(ANY_DISCRIMINANT, self.size(), self.align(), false),
+            Ty::RawPtr { mutable } => simple_id_with_align(
+                RAW_PTR_DISCRIMINANT,
+                pointer_ty.bytes(),
+                pointer_ty.bytes().min(8),
+                *mutable,
+            ),
+            Ty::RawSlice => simple_id_with_align(
+                RAW_SLICE_DISCRIMINANT,
+                pointer_ty.bytes() * 2,
+                pointer_ty.bytes().min(8),
+                false,
+            ),
             Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
             Ty::Void | Ty::NoEval => simple_id(VOID_DISCRIMINANT, 0, false),
             Ty::Array { sub_ty, .. } => {
                 let id = ARRAY_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Array { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        // make sure to compile the sub type too
-                        sub_ty.to_type_id(meta_tys, pointer_ty);
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.array_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.array_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
             Ty::Slice { sub_ty } => {
                 let id = SLICE_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Slice { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        // make sure to compile the sub type too
-                        sub_ty.to_type_id(meta_tys, pointer_ty);
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.slice_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.slice_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
             Ty::Pointer { sub_ty, .. } => {
                 let id = POINTER_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Pointer { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        // make sure to compile the sub type too
-                        sub_ty.to_type_id(meta_tys, pointer_ty);
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.pointer_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.pointer_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
-            Ty::Distinct { uid, sub_ty, .. } => {
+            Ty::Distinct { sub_ty, .. } => {
                 let id = DISTINCT_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter_map(|ty| match ty.as_ref() {
-                        Ty::Distinct { uid, .. } => Some(*uid),
-                        _ => None,
-                    })
-                    .enumerate()
-                    .find(|(_, other_uid)| other_uid == uid)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        // make sure to compile the sub type too
-                        sub_ty.to_type_id(meta_tys, pointer_ty);
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.distinct_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.distinct_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
             Ty::Function { .. } => {
                 let id = FUNCTION_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Function { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.function_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.function_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
             Ty::Struct { members, .. } => {
                 let id = STRUCT_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Struct { .. }))
-                    .enumerate()
-                    // `is_equal_to` takes care of the difference between anonymous structs and
-                    // strong structs
-                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        for member in members {
-                            // make sure to compile the sub type too
-                            member.ty.to_type_id(meta_tys, pointer_ty);
-                        }
+                // make sure to compile the member types too
+                for member in members {
+                    member.ty.to_type_id(meta_tys, pointer_ty);
+                }
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.struct_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.struct_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
             Ty::Enum { variants, .. } => {
                 let id = ENUM_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Enum { .. }))
-                    .enumerate()
-                    // `is_equal_to` takes care of the difference between anonymous structs and
-                    // strong structs
-                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        for variant in variants {
-                            // make sure to compile the sub type too
-                            variant.to_type_id(meta_tys, pointer_ty);
-                        }
+                // make sure to compile the variants too
+                for variant in variants {
+                    variant.to_type_id(meta_tys, pointer_ty);
+                }
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.enum_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.enum_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
-            Ty::Variant { uid, sub_ty, .. } => {
+            Ty::Variant { sub_ty, .. } => {
                 let id = VARIANT_DISCRIMINANT << 26;
 
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter_map(|ty| match ty.as_ref() {
-                        Ty::Variant { uid, .. } => Some(*uid),
-                        _ => None,
-                    })
-                    .enumerate()
-                    .find(|(_, other_uid)| other_uid == uid)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap_or_else(|| {
-                        // make sure to compile the sub type too
-                        sub_ty.to_type_id(meta_tys, pointer_ty);
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
 
-                        meta_tys.tys_to_compile.push(self);
-                        meta_tys.variant_uid_gen.generate_unique_id()
-                    });
+                let list_id = meta_tys.variant_uid_gen.generate_unique_id();
 
-                return id | list_id;
+                id | list_id
             }
         };
 
-        if !meta_tys.tys_to_compile.iter().any(|ty| *ty == self) {
-            meta_tys.tys_to_compile.push(self);
-        }
+        meta_tys.type_ids.push((self, id));
+
+        meta_tys.tys_to_compile.push(self);
 
         id
     }
 
-    fn to_previous_type_id(self, meta_tys: &MetaTyData, pointer_ty: types::Type) -> u32 {
-        match self.as_ref() {
-            Ty::NotYetResolved | Ty::Unknown => simple_id(VOID_DISCRIMINANT, 0, false),
-            Ty::UInt(0) | Ty::IInt(0) => simple_id(INT_DISCRIMINANT, 32, true),
-            Ty::IInt(bit_width) => simple_id(
-                INT_DISCRIMINANT,
-                match *bit_width {
-                    u8::MAX => pointer_ty.bits(),
-                    other => other as u32,
-                },
-                true,
-            ),
-            Ty::UInt(bit_width) => simple_id(
-                INT_DISCRIMINANT,
-                match *bit_width {
-                    u8::MAX => pointer_ty.bits(),
-                    other => other as u32,
-                },
-                false,
-            ),
-            Ty::Float(0) => simple_id(FLOAT_DISCRIMINANT, 32, false),
-            Ty::Float(bit_width) => simple_id(FLOAT_DISCRIMINANT, *bit_width as u32, false),
-            Ty::Bool => simple_id(BOOL_DISCRIMINANT, 8, false),
-            Ty::String => simple_id(STRING_DISCRIMINANT, pointer_ty.bits(), false),
-            Ty::Char => simple_id(CHAR_DISCRIMINANT, 8, false),
-            Ty::Type => simple_id(META_TYPE_DISCRIMINANT, 32, false),
-            Ty::Any => simple_id(ANY_DISCRIMINANT, 0, false),
-            Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
-            Ty::Void | Ty::NoEval => simple_id(VOID_DISCRIMINANT, 0, false),
-            Ty::Array { .. } => {
-                let id = ARRAY_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Array { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Slice { .. } => {
-                let id = SLICE_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Slice { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Pointer { .. } => {
-                let id = POINTER_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Pointer { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Distinct { uid, .. } => {
-                let id = DISTINCT_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter_map(|ty| match ty.as_ref() {
-                        Ty::Distinct { uid, .. } => Some(*uid),
-                        _ => None,
-                    })
-                    .enumerate()
-                    .find(|(_, other_uid)| other_uid == uid)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Function { .. } => {
-                let id = FUNCTION_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Function { .. }))
-                    .enumerate()
-                    .find(|(_, ty)| **ty == self)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Struct { .. } => {
-                let id = STRUCT_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Struct { .. }))
-                    .enumerate()
-                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Enum { .. } => {
-                let id = ENUM_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter(|ty| matches!(ty.as_ref(), Ty::Enum { .. }))
-                    .enumerate()
-                    .find(|(_, other_ty)| self.is_equal_to(other_ty))
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-            Ty::Variant { uid, .. } => {
-                let id = VARIANT_DISCRIMINANT << 26;
-
-                let list_id = meta_tys
-                    .tys_to_compile
-                    .iter()
-                    .filter_map(|ty| match ty.as_ref() {
-                        Ty::Variant { uid, .. } => Some(*uid),
-                        _ => None,
-                    })
-                    .enumerate()
-                    .find(|(_, other_uid)| other_uid == uid)
-                    .map(|(idx, _)| idx as u32)
-                    .unwrap();
-
-                id | list_id
-            }
-        }
+    #[track_caller]
+    fn to_previous_type_id(self, meta_tys: &MetaTyData) -> u32 {
+        meta_tys
+            .type_ids
+            .iter()
+            .find(|(ty, _)| ty.is_equal_to(&self))
+            .map(|(_, id)| *id)
+            .expect("to_previous_type_id can only be called on types that have already been compiled to id's")
     }
 }

@@ -80,6 +80,11 @@ pub enum Ty {
         size: u64,
         sub_ty: Intern<Ty>,
     },
+    // capy slices are always len before ptr
+    // offset       field
+    // --------     -----
+    // 0            len
+    // ptr_size     ptr
     Slice {
         sub_ty: Intern<Ty>,
     },
@@ -93,7 +98,17 @@ pub enum Ty {
         sub_ty: Intern<Ty>,
     },
     Type,
+    // the any type is always typeid before rawptr
+    // offset       field
+    // --------     -----
+    // 0            typeid
+    // 4            {padding}
+    // ptr_size     rawptr
     Any,
+    RawPtr {
+        mutable: bool,
+    },
+    RawSlice,
     File(hir::FileName),
     /// this is only ever used for functions defined locally
     Function {
@@ -161,6 +176,8 @@ impl Ty {
             PrimitiveTy::Char { .. } => Self::Char,
             PrimitiveTy::Type { .. } => Self::Type,
             PrimitiveTy::Any { .. } => Self::Any,
+            PrimitiveTy::RawPtr { mutable, .. } => Self::RawPtr { mutable },
+            PrimitiveTy::RawSlice { .. } => Self::RawSlice,
             PrimitiveTy::Void { .. } => Self::Void,
         }
     }
@@ -181,6 +198,8 @@ impl Ty {
             Ty::Distinct { sub_ty, .. } => sub_ty.has_default_value(),
             Ty::Type => false,
             Ty::Any => false,
+            Ty::RawPtr { .. } => false,
+            Ty::RawSlice => false,
             Ty::File(_) => false,
             Ty::Function { .. } => false,
             Ty::Struct { members, .. } => members
@@ -253,14 +272,23 @@ impl Ty {
         }
     }
 
-    pub fn is_any_type(&self) -> bool {
+    pub fn is_any(&self) -> bool {
         matches!(self.absolute_ty(), Ty::Any)
+    }
+
+    pub fn is_raw(&self) -> bool {
+        matches!(self.absolute_ty(), Ty::RawPtr { .. } | Ty::RawSlice)
     }
 
     pub fn is_aggregate(&self) -> bool {
         matches!(
             self.absolute_ty(),
-            Ty::Struct { .. } | Ty::Enum { .. } | Ty::Array { .. } | Ty::Slice { .. }
+            Ty::Struct { .. }
+                | Ty::Enum { .. }
+                | Ty::Array { .. }
+                | Ty::Slice { .. }
+                | Ty::RawSlice
+                | Ty::Any
         )
     }
 
@@ -282,24 +310,6 @@ impl Ty {
 
     pub fn is_struct(&self) -> bool {
         matches!(self.absolute_ty(), Ty::Struct { .. })
-    }
-
-    /// Returns `true` if the struct contains only a `^any` and a `type`
-    pub fn is_any_struct(&self) -> bool {
-        match self.absolute_ty() {
-            Ty::Struct { members, .. } => {
-                if members.len() != 2 {
-                    return false;
-                }
-
-                matches!(
-                    (members[0].ty.as_ref(), members[1].ty.as_ref()),
-                    (Ty::Pointer { sub_ty, .. }, Ty::Type) | (Ty::Type, Ty::Pointer { sub_ty, mutable: false })
-                        if **sub_ty == Ty::Any
-                )
-            }
-            _ => false,
-        }
     }
 
     /// returns true if the type is zero-sized
@@ -718,19 +728,40 @@ impl Ty {
                 matches!(
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
-                ) && ((**expected_ty == Ty::Any && !found_ty.might_be_weak())
-                    || found_ty.can_fit_into(expected_ty))
+                ) && found_ty.can_fit_into(expected_ty)
             }
+            (
+                Ty::Pointer {
+                    mutable: found_mutable,
+                    sub_ty: found_ty,
+                },
+                Ty::RawPtr {
+                    mutable: expected_mutable,
+                },
+            ) => {
+                matches!(
+                    (found_mutable, expected_mutable),
+                    (true, _) | (false, false)
+                ) && !found_ty.might_be_weak()
+            }
+            (
+                Ty::RawPtr {
+                    mutable: found_mutable,
+                },
+                Ty::RawPtr {
+                    mutable: expected_mutable,
+                },
+            ) => matches!(
+                (found_mutable, expected_mutable),
+                (true, _) | (false, false)
+            ),
             (
                 Ty::Slice { sub_ty: found_ty },
                 Ty::Slice {
                     sub_ty: expected_ty,
                 },
-            ) => {
-                // todo: do we need this `might_be_weak`?
-                (**expected_ty == Ty::Any && !found_ty.might_be_weak())
-                    || found_ty.can_fit_into(expected_ty)
-            }
+            ) => found_ty.can_fit_into(expected_ty),
+            (Ty::Slice { sub_ty: found_ty }, Ty::RawSlice) => !found_ty.might_be_weak(),
             (
                 Ty::Array {
                     anonymous,
@@ -776,7 +807,7 @@ impl Ty {
                     && found_size == expected_size
                     && found_ty.is_functionally_equivalent_to(expected_ty, false)
             }
-            (_, expected) if expected.is_any_struct() => true,
+            (_, Ty::Any) => true,
             (
                 Ty::Struct {
                     anonymous: false,
@@ -893,27 +924,76 @@ impl Ty {
                     (found_mutable, expected_mutable),
                     (true, _) | (false, false)
                 ) && (found_sub_ty == expected_sub_ty
-                    || **found_sub_ty == Ty::Any
-                    || **expected_sub_ty == Ty::Any
                     || found_sub_ty.is_weak_replaceable_by(expected_sub_ty))
             }
-            // string to and from ^any and ^char and ^u8
-            (Ty::String, Ty::Pointer { sub_ty, .. }) | (Ty::Pointer { sub_ty, .. }, Ty::String) => {
-                matches!(sub_ty.as_ref(), Ty::Any | Ty::Char | Ty::UInt(8))
+            // raw pointer casts just need to maintain mutability
+            (
+                Ty::Pointer {
+                    mutable: found_mutable,
+                    sub_ty: _,
+                },
+                Ty::RawPtr {
+                    mutable: expected_mutable,
+                },
+            )
+            | (
+                Ty::RawPtr {
+                    mutable: found_mutable,
+                },
+                Ty::Pointer {
+                    mutable: expected_mutable,
+                    sub_ty: _,
+                },
+            )
+            | (
+                Ty::RawPtr {
+                    mutable: found_mutable,
+                },
+                Ty::RawPtr {
+                    mutable: expected_mutable,
+                },
+            ) => {
+                matches!(
+                    (found_mutable, expected_mutable),
+                    (true, _) | (false, false)
+                )
             }
+            // string to and from ^char and ^u8
+            (
+                Ty::String,
+                Ty::Pointer {
+                    sub_ty,
+                    mutable: false,
+                },
+            )
+            | (
+                Ty::Pointer {
+                    sub_ty,
+                    mutable: false,
+                },
+                Ty::String,
+            ) => {
+                matches!(sub_ty.as_ref(), Ty::Char | Ty::UInt(8))
+            }
+            // string to and from rawptr
+            (Ty::String, Ty::RawPtr { mutable: false })
+            | (Ty::RawPtr { mutable: false }, Ty::String) => true,
             // string to and from [_]char and [_]u8
             (Ty::String, Ty::Array { sub_ty, .. }) | (Ty::Array { sub_ty, .. }, Ty::String) => {
                 matches!(sub_ty.as_ref(), Ty::Char | Ty::UInt(8))
             }
-            // `[]any` acts like `^any`
+
             (Ty::Slice { sub_ty: from, .. }, Ty::Slice { sub_ty: to }) => {
-                from == to
-                    || **from == Ty::Any
-                    || **to == Ty::Any
-                    || from.is_weak_replaceable_by(to)
+                from == to || from.is_weak_replaceable_by(to)
             }
+            // `rawslice` casts are pretty much the same as `rawptr` casts
+            (Ty::Slice { .. }, Ty::RawSlice)
+            | (Ty::RawSlice, Ty::Slice { .. })
+            | (Ty::RawSlice, Ty::RawSlice) => true,
+
             (Ty::Array { sub_ty: from, .. }, Ty::Slice { sub_ty: to })
             | (Ty::Slice { sub_ty: from }, Ty::Array { sub_ty: to, .. }) => from.can_cast_to(to),
+            // TODO: maybe allow array -> rawslice
             (
                 Ty::Array {
                     size: found_size,
@@ -926,7 +1006,9 @@ impl Ty {
                     ..
                 },
             ) => found_size == expected_size && found_ty.can_cast_to(expected_ty),
-            (_, expected) if expected.is_any_struct() => true,
+
+            (found, Ty::Any) => !found.might_be_weak(),
+
             (
                 Ty::Struct {
                     members: found_members,
@@ -969,7 +1051,7 @@ impl Ty {
 
                 true
             }
-            _ => self.is_functionally_equivalent_to(cast_into, true) || cast_into.is_any_struct(),
+            _ => self.is_functionally_equivalent_to(cast_into, true),
         }
     }
 
@@ -1008,12 +1090,16 @@ impl Ty {
         self.can_fit_into(expected)
     }
 
-    /// THIS IS NOT AN INDICATOR AS TO WHETHER OR NOT A TYPE CAN BE REPLACED BY ANOTHER
-    /// USE `is_weak_replaceable_by` INSTEAD
+    /// JUST BECAUSE THIS FUNCTION RETURNS TRUE, THAT DOES NOT MEAN THAT THIS TYPE IS *ACTUALLY*
+    /// WEAK TYPE REPLACEABLE BY ANOTHER OTHER TYPE
+    ///
+    /// USE `is_weak_replaceable_by` INSTEAD IF YOU NEED THAT
     pub(crate) fn might_be_weak(&self) -> bool {
         match self {
             Ty::IInt(0) | Ty::UInt(0) | Ty::Float(0) => true,
             Ty::Array { sub_ty, .. } => sub_ty.might_be_weak(),
+            // todo: is this slice branch needed? i just added it because i thought it was missing
+            Ty::Slice { sub_ty, .. } => sub_ty.might_be_weak(),
             Ty::Pointer { sub_ty, .. } => sub_ty.might_be_weak(),
             _ => false,
         }
@@ -1081,7 +1167,7 @@ impl Ty {
                     anonymous: true, ..
                 },
                 Ty::Struct { .. },
-            ) => !expected.is_any_struct() && self.can_fit_into(expected),
+            ) => self.can_fit_into(expected),
             (
                 Ty::Distinct { uid: found_uid, .. },
                 Ty::Distinct {

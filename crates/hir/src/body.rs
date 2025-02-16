@@ -930,6 +930,7 @@ impl<'a> Ctx<'a> {
             match expr {
                 ast::Expr::Cast(cast_expr) => self.lower_cast_expr(cast_expr),
                 ast::Expr::Ref(ref_expr) => self.lower_ref_expr(ref_expr),
+                ast::Expr::Mut(mut_expr) => self.lower_mut_expr(mut_expr),
                 ast::Expr::Deref(deref_expr) => self.lower_deref_expr(deref_expr),
                 ast::Expr::Binary(binary_expr) => self.lower_binary_expr(binary_expr),
                 ast::Expr::Unary(unary_expr) => self.lower_unary_expr(unary_expr),
@@ -981,6 +982,25 @@ impl<'a> Ctx<'a> {
         Expr::Ref {
             mutable: ref_expr.mutable(self.tree).is_some(),
             expr,
+        }
+    }
+
+    /// mut expressions are only used for `mut rawptr`
+    fn lower_mut_expr(&mut self, mut_expr: ast::MutExpr) -> Expr {
+        let expr = self.lower_expr(mut_expr.expr(self.tree));
+
+        match &self.bodies[expr] {
+            Expr::PrimitiveTy(PrimitiveTy::RawPtr {
+                mutable: false,
+                range,
+            }) => Expr::PrimitiveTy(PrimitiveTy::RawPtr {
+                mutable: true,
+                range: *range,
+            }),
+            _ => Expr::Ref {
+                mutable: true,
+                expr,
+            },
         }
     }
 
@@ -4690,6 +4710,46 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn mut_expr_rawptr() {
+        check(
+            r#"
+                bar :: () {
+                    foo :: i32;
+
+                    x: mut rawptr = ^mut 42;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := i32;
+                    l1 : mut rawptr = ^mut 42;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn mut_expr_error() {
+        check(
+            r#"
+                bar :: () {
+                    foo :: i32;
+
+                    x: mut foo = ^mut 42;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := i32;
+                    l1 : ^mut l0 = ^mut 42;
+                };
             "#]],
             |_| [],
         )

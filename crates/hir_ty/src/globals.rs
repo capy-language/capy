@@ -12,8 +12,9 @@ use topo::TopoSort;
 
 use crate::{
     ty::{self, BinaryOutput},
-    ComptimeResult, EvalComptimeFn, InferResult, Inferrable, MemberTy, ProjectInference, Ty,
-    TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TypedOp, UnaryOutput,
+    ComptimeResult, EvalComptimeFn, InferResult, Inferrable, InternTyExt, MemberTy,
+    ProjectInference, Ty, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind,
+    TypedOp, UnaryOutput,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -999,7 +1000,6 @@ impl GlobalInferenceCtx<'_> {
                             .into()
                         }
                         Expr::ArrayLiteral { ty: None, items } => {
-                            // todo: allow `.[ .. ]` to cast to `[]core.Any`
                             let mut max_ty = None;
                             let mut any_error = false;
                             for item in items {
@@ -1073,6 +1073,16 @@ impl GlobalInferenceCtx<'_> {
 
                             if *deref_source_ty == Ty::Unknown {
                                 Ty::Unknown.into()
+                            } else if *deref_source_ty == Ty::RawSlice {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::IndexRaw { size: None },
+                                    file: self.file,
+                                    expr: Some(expr),
+                                    range: self.bodies.range_for_expr(expr),
+                                    help: None,
+                                });
+
+                                Ty::Unknown.into()
                             } else if let Some((actual_size, array_sub_ty)) =
                                 deref_source_ty.as_array()
                             {
@@ -1092,35 +1102,9 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                 }
 
-                                if array_sub_ty.is_any_type() {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::IndexAny {
-                                            size: Some(actual_size),
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(expr),
-                                        help: None,
-                                    });
-
-                                    Ty::Unknown.into()
-                                } else {
-                                    array_sub_ty
-                                }
+                                array_sub_ty
                             } else if let Some(slice_sub_ty) = deref_source_ty.as_slice() {
-                                if slice_sub_ty.is_any_type() {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::IndexAny { size: None },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(expr),
-                                        help: None,
-                                    });
-
-                                    Ty::Unknown.into()
-                                } else {
-                                    slice_sub_ty
-                                }
+                                slice_sub_ty
                             } else {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
@@ -1225,9 +1209,9 @@ impl GlobalInferenceCtx<'_> {
                             let deref_ty = self.tys[self.file][*pointer];
 
                             match *deref_ty {
-                                Ty::Pointer { sub_ty, .. } if *sub_ty == Ty::Any => {
+                                Ty::RawPtr { .. } => {
                                     self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::DerefAny,
+                                        kind: TyDiagnosticKind::DerefRaw,
                                         file: self.file,
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
@@ -1763,7 +1747,7 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                 }
                                 Ty::Type => {
-                                    // resolving the type might reveal diagnostics such as recursive types
+                                    // this is included for resolving enum variants
                                     self.const_ty(expr)?;
                                     Ty::Type.into()
                                 }
@@ -1773,51 +1757,63 @@ impl GlobalInferenceCtx<'_> {
                                     while let Some((_, sub_ty)) = deref_ty.as_pointer() {
                                         deref_ty = sub_ty;
                                     }
+                                    deref_ty = deref_ty.absolute_intern_ty(true);
 
-                                    if let Some(matching_member) =
-                                        deref_ty.as_struct().and_then(|fields| {
-                                            fields
-                                                .into_iter()
+                                    let field_name = self.interner.lookup(field.name.0);
+
+                                    match (deref_ty.as_ref(), field_name) {
+                                        (Ty::Struct { members, .. }, _) => {
+                                            if let Some(matching_member) = members
+                                                .iter()
                                                 .find(|member_ty| member_ty.name == field.name)
-                                        })
-                                    {
-                                        matching_member.ty
-                                    } else if let Some((sub_ty, field_name)) =
-                                        deref_ty.as_slice().and_then(|sub_ty| {
-                                            ["len", "ptr"]
-                                                .into_iter()
-                                                .find(|f| f == &self.interner.lookup(field.name.0))
-                                                .map(|f| (sub_ty, f))
-                                        })
-                                    {
-                                        if field_name == "len" {
-                                            Ty::UInt(u8::MAX).into()
-                                        } else {
-                                            Ty::Pointer {
-                                                mutable: false,
-                                                sub_ty,
-                                            }
-                                            .into()
-                                        }
-                                    } else if deref_ty.is_array()
-                                        && self.interner.lookup(field.name.0) == "len"
-                                    {
-                                        Ty::UInt(u8::MAX).into()
-                                    } else {
-                                        if !previous_ty.is_unknown() {
-                                            self.diagnostics.push(TyDiagnostic {
-                                                kind: TyDiagnosticKind::NonExistentMember {
-                                                    member: field.name.0,
-                                                    found_ty: previous_ty,
-                                                },
-                                                file: self.file,
-                                                expr: Some(expr),
-                                                range: self.bodies.range_for_expr(expr),
-                                                help: None,
-                                            });
-                                        }
+                                            {
+                                                matching_member.ty
+                                            } else {
+                                                if !previous_ty.is_unknown() {
+                                                    self.diagnostics.push(TyDiagnostic {
+                                                        kind: TyDiagnosticKind::NonExistentMember {
+                                                            member: field.name.0,
+                                                            found_ty: previous_ty,
+                                                        },
+                                                        file: self.file,
+                                                        expr: Some(expr),
+                                                        range: self.bodies.range_for_expr(expr),
+                                                        help: None,
+                                                    });
+                                                }
 
-                                        Ty::Unknown.into()
+                                                Ty::Unknown.into()
+                                            }
+                                        }
+                                        (Ty::Slice { .. }, "len") => Ty::UInt(u8::MAX).into(),
+                                        (Ty::Slice { sub_ty }, "ptr") => Ty::Pointer {
+                                            mutable: false,
+                                            sub_ty: *sub_ty,
+                                        }
+                                        .into(),
+                                        (Ty::RawSlice, "len") => Ty::UInt(u8::MAX).into(),
+                                        (Ty::RawSlice, "ptr") => {
+                                            Ty::RawPtr { mutable: false }.into()
+                                        }
+                                        (Ty::Any, "ty") => Ty::Type.into(),
+                                        (Ty::Any, "ptr") => Ty::RawPtr { mutable: false }.into(),
+                                        (Ty::Array { .. }, "len") => Ty::UInt(u8::MAX).into(),
+                                        _ => {
+                                            if !previous_ty.is_unknown() {
+                                                self.diagnostics.push(TyDiagnostic {
+                                                    kind: TyDiagnosticKind::NonExistentMember {
+                                                        member: field.name.0,
+                                                        found_ty: previous_ty,
+                                                    },
+                                                    file: self.file,
+                                                    expr: Some(expr),
+                                                    range: self.bodies.range_for_expr(expr),
+                                                    help: None,
+                                                });
+                                            }
+
+                                            Ty::Unknown.into()
+                                        }
                                     }
                                 }
                             }

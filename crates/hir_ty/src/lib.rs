@@ -185,8 +185,8 @@ pub enum TyDiagnosticKind {
     DerefNonPointer {
         found: Intern<Ty>,
     },
-    DerefAny,
-    IndexAny {
+    DerefRaw,
+    IndexRaw {
         // set this if it is an array, leave `None` if slice
         size: Option<u64>,
     },
@@ -928,6 +928,9 @@ impl Ty {
             }
             Self::Type => "type".to_string(),
             Self::Any => "any".to_string(),
+            Self::RawPtr { mutable: false } => "rawptr".to_string(),
+            Self::RawPtr { mutable: true } => "mut rawptr".to_string(),
+            Self::RawSlice => "rawslice".to_string(),
             Self::Void => "void".to_string(),
             Self::File(file_name) => {
                 format!("file {}", file_name.to_string(mod_dir, interner))
@@ -6464,7 +6467,7 @@ mod tests {
                     foo : i32 = 5;
 
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = (^any).(ptr);
+                    ptr : rawptr = (rawptr).(ptr);
                     ptr : ^f32 = (^f32).(ptr);
 
                     foo : f32 = ptr^;
@@ -6475,17 +6478,17 @@ mod tests {
                 1 : i32
                 4 : i32
                 5 : ^i32
-                8 : ^i32
-                12 : ^any
-                15 : ^any
+                7 : ^i32
+                10 : rawptr
+                13 : rawptr
+                17 : ^f32
                 19 : ^f32
-                21 : ^f32
-                22 : f32
-                23 : void
-                24 : () -> void
+                20 : f32
+                21 : void
+                22 : () -> void
                 l0 : i32
                 l1 : ^i32
-                l2 : ^any
+                l2 : rawptr
                 l3 : ^f32
                 l4 : f32
             "#]],
@@ -6500,7 +6503,7 @@ mod tests {
                 get_any :: () {
                     foo : [] i32 = i32.[100, 200];
 
-                    ptr : [] any = []any.(foo);
+                    ptr : rawslice = rawslice.(foo);
 
                     foo : [] f32 = []f32.(ptr);
 
@@ -6512,17 +6515,17 @@ mod tests {
                 3 : i32
                 4 : i32
                 5 : [2]i32
-                8 : []i32
-                11 : []any
-                14 : []any
+                7 : []i32
+                9 : rawslice
+                12 : rawslice
+                15 : []f32
                 17 : []f32
-                19 : []f32
-                20 : usize
-                21 : f32
-                22 : void
-                23 : () -> void
+                18 : usize
+                19 : f32
+                20 : void
+                21 : () -> void
                 l0 : []i32
-                l1 : []any
+                l1 : rawslice
                 l2 : []f32
                 l3 : f32
             "#]],
@@ -6622,16 +6625,16 @@ mod tests {
     }
 
     #[test]
-    fn deref_any() {
+    fn deref_rawptr() {
         check(
             r#"
                 get_any :: () {
                     foo : i32 = 5;
 
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = (^any).(ptr);
+                    ptr : rawptr = (rawptr).(ptr);
 
-                    foo : any = ptr^;
+                    foo := ptr^;
                 }
             "#,
             expect![[r#"
@@ -6639,32 +6642,32 @@ mod tests {
                 1 : i32
                 4 : i32
                 5 : ^i32
-                8 : ^i32
-                12 : ^any
-                14 : ^any
-                15 : <unknown>
-                16 : void
-                17 : () -> void
+                7 : ^i32
+                10 : rawptr
+                11 : rawptr
+                12 : <unknown>
+                13 : void
+                14 : () -> void
                 l0 : i32
                 l1 : ^i32
-                l2 : ^any
-                l3 : any
+                l2 : rawptr
+                l3 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::DerefAny, 188..192, None)],
+            |_| [(TyDiagnosticKind::DerefRaw, 187..191, None)],
         );
     }
 
     #[test]
-    fn index_any_slice() {
+    fn index_rawslice() {
         check(
             r#"
                 get_any :: () {
                     foo : [3] i32 = i32.[5, 10, 15];
 
                     ptr : [] i32 = foo;
-                    ptr : [] any = []any.(ptr);
+                    ptr : rawslice = rawslice.(ptr);
 
-                    foo : any = ptr[0];
+                    foo := ptr[0];
                 }
             "#,
             expect![[r#"
@@ -6675,43 +6678,44 @@ mod tests {
                 6 : i32
                 7 : [3]i32
                 10 : [3]i32
-                13 : []i32
-                16 : []any
-                18 : []any
-                19 : usize
-                20 : <unknown>
-                21 : void
-                22 : () -> void
+                12 : []i32
+                14 : rawslice
+                15 : rawslice
+                16 : usize
+                17 : <unknown>
+                18 : void
+                19 : () -> void
                 l0 : [3]i32
                 l1 : []i32
-                l2 : []any
-                l3 : any
+                l2 : rawslice
+                l3 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::IndexAny { size: None }, 208..214, None)],
+            |_| [(TyDiagnosticKind::IndexRaw { size: None }, 208..214, None)],
         );
     }
 
-    #[test]
-    fn index_any_array() {
-        check(
-            r#"
-                get_any :: (foo: [3] any) {
-                    foo : any = foo[0];
-                }
-            "#,
-            expect![[r#"
-                main::get_any : ([3]any) -> void
-                0 : usize
-                4 : [3]any
-                5 : usize
-                6 : <unknown>
-                7 : void
-                8 : ([3]any) -> void
-                l0 : any
-            "#]],
-            |_| [(TyDiagnosticKind::IndexAny { size: Some(3) }, 77..83, None)],
-        );
-    }
+    // todo: should there be a rawarray type?
+    // #[test]
+    // fn index_any_array() {
+    //     check(
+    //         r#"
+    //             get_any :: (foo: [3] any) {
+    //                 foo : any = foo[0];
+    //             }
+    //         "#,
+    //         expect![[r#"
+    //             main::get_any : ([3]any) -> void
+    //             0 : usize
+    //             4 : [3]any
+    //             5 : usize
+    //             6 : <unknown>
+    //             7 : void
+    //             8 : ([3]any) -> void
+    //             l0 : any
+    //         "#]],
+    //         |_| [(TyDiagnosticKind::IndexRaw { size: Some(3) }, 77..83, None)],
+    //     );
+    // }
 
     #[test]
     fn auto_real_ptr_to_any_ptr() {
@@ -6721,7 +6725,7 @@ mod tests {
                     foo : i32 = 5;
                     ptr : ^i32 = ^foo;
 
-                    ptr : ^any = ptr;
+                    ptr : rawptr = ptr;
                 }
             "#,
             expect![[r#"
@@ -6729,12 +6733,12 @@ mod tests {
                 1 : i32
                 4 : i32
                 5 : ^i32
-                8 : ^i32
-                9 : void
-                10 : () -> void
+                7 : ^i32
+                8 : void
+                9 : () -> void
                 l0 : i32
                 l1 : ^i32
-                l2 : ^any
+                l2 : rawptr
             "#]],
             |_| [],
         );
@@ -6747,7 +6751,7 @@ mod tests {
                 get_any :: () {
                     foo : i32 = 5;
                     ptr : ^i32 = ^foo;
-                    ptr : ^any = ptr as ^any;
+                    ptr : rawptr = ptr as rawptr;
 
                     ptr : ^i32 = ptr;
                 }
@@ -6757,14 +6761,14 @@ mod tests {
                 1 : i32
                 4 : i32
                 5 : ^i32
-                8 : ^i32
-                11 : ^any
-                14 : ^any
-                15 : void
-                16 : () -> void
+                7 : ^i32
+                9 : rawptr
+                12 : rawptr
+                13 : void
+                14 : () -> void
                 l0 : i32
                 l1 : ^i32
-                l2 : ^any
+                l2 : rawptr
                 l3 : ^i32
             "#]],
             |_| {
@@ -6775,13 +6779,9 @@ mod tests {
                             sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        found: Ty::Pointer {
-                            mutable: false,
-                            sub_ty: Ty::Any.into(),
-                        }
-                        .into(),
+                        found: Ty::RawPtr { mutable: false }.into(),
                     },
-                    187..190,
+                    191..194,
                     None,
                 )]
             },
@@ -6789,13 +6789,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_real_slice_to_any_slice() {
+    fn auto_real_slice_to_rawslice() {
         check(
             r#"
                 get_any :: () {
                     foo : [] i32 = i32.[5, 10, 15];
 
-                    ptr : [] any = foo;
+                    ptr : rawslice = foo;
                 }
             "#,
             expect![[r#"
@@ -6804,23 +6804,23 @@ mod tests {
                 4 : i32
                 5 : i32
                 6 : [3]i32
-                9 : []i32
-                10 : void
-                11 : () -> void
+                8 : []i32
+                9 : void
+                10 : () -> void
                 l0 : []i32
-                l1 : []any
+                l1 : rawslice
             "#]],
             |_| [],
         );
     }
 
     #[test]
-    fn auto_any_slice_to_real_slice() {
+    fn auto_rawslice_to_real_slice() {
         check(
             r#"
                 get_any :: () {
                     foo : [] i32 = i32.[5, 10, 15];
-                    ptr : [] any = []any.(foo);
+                    ptr : rawslice = rawslice.(foo);
 
                     ptr : [] i32 = ptr;
                 }
@@ -6831,13 +6831,13 @@ mod tests {
                 4 : i32
                 5 : i32
                 6 : [3]i32
-                9 : []i32
-                12 : []any
-                15 : []any
-                16 : void
-                17 : () -> void
+                8 : []i32
+                10 : rawslice
+                13 : rawslice
+                14 : void
+                15 : () -> void
                 l0 : []i32
-                l1 : []any
+                l1 : rawslice
                 l2 : []i32
             "#]],
             |_| {
@@ -6847,12 +6847,9 @@ mod tests {
                             sub_ty: Ty::IInt(32).into(),
                         }
                         .into(),
-                        found: Ty::Slice {
-                            sub_ty: Ty::Any.into(),
-                        }
-                        .into(),
+                        found: Ty::RawSlice.into(),
                     },
-                    169..172,
+                    174..177,
                     None,
                 )]
             },
@@ -6865,7 +6862,7 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := (^any).(^data);
+                    ptr := (rawptr).(^data);
                     str := str.(ptr);
                 }
             "#,
@@ -6877,13 +6874,13 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                10 : ^any
-                11 : ^any
-                13 : str
-                14 : void
-                15 : () -> void
+                9 : rawptr
+                10 : rawptr
+                12 : str
+                13 : void
+                14 : () -> void
                 l0 : [3]char
-                l1 : ^any
+                l1 : rawptr
                 l2 : str
             "#]],
             |_| [],
@@ -6896,7 +6893,7 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := (^char).((^any).(^data));
+                    ptr := (^char).((rawptr).(^data));
                     str := str.(ptr);
                 }
             "#,
@@ -6908,12 +6905,12 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                10 : ^any
+                9 : rawptr
+                13 : ^char
                 14 : ^char
-                15 : ^char
-                17 : str
-                18 : void
-                19 : () -> void
+                16 : str
+                17 : void
+                18 : () -> void
                 l0 : [3]char
                 l1 : ^char
                 l2 : str
@@ -6928,7 +6925,7 @@ mod tests {
             r#"
                 get_any :: () {
                     data := char.['h', 'i', '\0'];
-                    ptr := (^u8).((^any).(^data));
+                    ptr := (^u8).((rawptr).(^data));
                     str := str.(ptr);
                 }
             "#,
@@ -6940,12 +6937,12 @@ mod tests {
                 4 : [3]char
                 5 : [3]char
                 6 : ^[3]char
-                10 : ^any
+                9 : rawptr
+                13 : ^u8
                 14 : ^u8
-                15 : ^u8
-                17 : str
-                18 : void
-                19 : () -> void
+                16 : str
+                17 : void
+                18 : () -> void
                 l0 : [3]char
                 l1 : ^u8
                 l2 : str
@@ -8467,32 +8464,28 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x : ^any = ^42;
+                    x : rawptr = ^42;
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                2 : {uint}
-                3 : ^{uint}
-                4 : void
-                5 : () -> void
-                l0 : ^any
+                1 : {uint}
+                2 : ^{uint}
+                3 : void
+                4 : () -> void
+                l0 : rawptr
             "#]],
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Pointer {
-                            mutable: false,
-                            sub_ty: Ty::Any.into(),
-                        }
-                        .into(),
+                        expected: Ty::RawPtr { mutable: false }.into(),
                         found: Ty::Pointer {
                             mutable: false,
                             sub_ty: Ty::UInt(0).into(),
                         }
                         .into(),
                     },
-                    60..63,
+                    62..65,
                     None,
                 )]
             },
@@ -8504,17 +8497,17 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    x : ^any = (^i32).(^42);
+                    x : rawptr = (^i32).(^42);
                 }
             "#,
             expect![[r#"
                 main::foo : () -> void
-                2 : i32
-                3 : ^i32
-                7 : ^i32
-                8 : void
-                9 : () -> void
-                l0 : ^any
+                1 : i32
+                2 : ^i32
+                6 : ^i32
+                7 : void
+                8 : () -> void
+                l0 : rawptr
             "#]],
             |_| [],
         )
@@ -8833,14 +8826,10 @@ mod tests {
     fn reinfer_params() {
         // usually an argument will replace the weak type of a variable.
         // in this case it doesn't and so more advanced replacing is needed.
+        // todo: make sure the test is still testing for what it was testing for
         check(
             r#"
-                Any :: struct {
-                    ty: type,
-                    data: ^any,
-                };
-                
-                accept_any :: (val: Any) {}
+                accept_any :: (val: any) {}
                 
                 foo :: () {
                     x := 0;
@@ -8849,20 +8838,18 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::Any : type
-                main::accept_any : (main::Any) -> void
+                main::accept_any : (any) -> void
                 main::foo : () -> void
-                3 : type
-                5 : void
-                6 : (main::Any) -> void
+                1 : void
+                2 : (any) -> void
+                3 : i16
+                4 : (any) -> void
+                5 : i16
+                6 : void
                 7 : i16
-                8 : (main::Any) -> void
                 9 : i16
                 10 : void
-                11 : i16
-                13 : i16
-                14 : void
-                15 : () -> void
+                11 : () -> void
                 l0 : i16
             "#]],
             |_| [],
@@ -10000,6 +9987,8 @@ mod tests {
 
     #[test]
     fn anon_array_mismatch_inner_types() {
+        // this SHOULD return an error.
+        // I think automatically casting this to any would be unexpected
         check(
             r#"
                 anon :: () {

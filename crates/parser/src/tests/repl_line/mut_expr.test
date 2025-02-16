@@ -1,0 +1,13 @@
+mut foo.bar
+===
+Root@0..11
+  ExprStmt@0..11
+    MutExpr@0..11
+      Mut@0..3 "mut"
+      Whitespace@3..4 " "
+      Path@4..11
+        VarRef@4..7
+          Ident@4..7 "foo"
+        Dot@7..8 "."
+        Ident@8..11 "bar"
+error at 0: missing Caret

@@ -1,0 +1,9 @@
+mut rawptr
+===
+Root@0..10
+  ExprStmt@0..10
+    MutExpr@0..10
+      Mut@0..3 "mut"
+      Whitespace@3..4 " "
+      VarRef@4..10
+        Ident@4..10 "rawptr"

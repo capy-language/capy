@@ -1,6 +1,6 @@
 use syntax::TokenKind;
 
-use crate::{parser::marker::Marker, token_set::TokenSet};
+use crate::{parser::marker::Marker, token_set::TokenSet, ExpectedSyntax};
 
 use super::*;
 
@@ -135,6 +135,8 @@ fn parse_lhs(
         parse_var_ref(p)
     } else if p.at(TokenKind::Caret) {
         parse_ref(p, recovery_set)
+    } else if p.at(TokenKind::Mut) {
+        parse_mut(p, recovery_set)
     } else if p.at(TokenKind::Distinct) {
         parse_distinct(p, recovery_set)
     } else if p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])) {
@@ -282,7 +284,7 @@ fn parse_post_operators(
 
                 let end_token = p.token_idx.saturating_sub(1).max(cm.start_token_idx());
 
-                p.mark_old_error(
+                p.mark_old_unexpected(
                     NodeKind::CastExpr,
                     cm.start_token_idx(),
                     end_token,
@@ -398,6 +400,25 @@ fn parse_ref(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     parse_expr_for_prefix(p, recovery_set, "operand");
 
     m.complete(p, NodeKind::RefExpr)
+}
+
+fn parse_mut(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
+    let start_idx = p.token_idx;
+
+    assert!(p.at(TokenKind::Mut));
+    let m = p.start();
+    p.bump();
+
+    let expr = parse_expr_for_prefix(p, recovery_set, "operand");
+
+    // anything other than `mut rawptr` will produce an error
+    if !expr.is_some_and(|expr| {
+        expr.kind() == NodeKind::VarRef && p.text(expr.start_token_idx()) == "rawptr"
+    }) {
+        p.mark_old_missing(start_idx, ExpectedSyntax::Unnamed(TokenKind::Caret));
+    }
+
+    m.complete(p, NodeKind::MutExpr)
 }
 
 fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
@@ -910,7 +931,7 @@ fn parse_array_decl(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     // make sure someone isn't using the wrong syntax
     match ty {
         Some(ty) if !recovery_set.contains(TokenKind::LBrace) && p.at(TokenKind::LBrace) => {
-            p.mark_old_error(
+            p.mark_old_unexpected(
                 NodeKind::ArraySize,
                 size_start,
                 size_end,

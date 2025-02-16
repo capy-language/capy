@@ -1,12 +1,12 @@
 
 core :: mod "core";
 
-label :: (label: str, val: core.Any) {
+label :: (label: str, val: any) {
     core.print(label);
     core.println(val);
 }
 
-label_two :: (label1: str, val1: core.Any, label2: str, val2: core.Any) {
+label_two :: (label1: str, val1: any, label2: str, val2: any) {
     core.print(label1);
     core.print(val1);
     core.print(label2);
@@ -16,7 +16,7 @@ label_two :: (label1: str, val1: core.Any, label2: str, val2: core.Any) {
 get_user_input :: () -> i32 {
     buffer := char.['\0', '\0', '\0', '\0', '\0'];
 
-    core.libc.read(core.libc.stdin, (^mut u8).((^mut any).(^mut buffer)), 2);
+    core.libc.read(core.libc.stdin, (^mut u8).((mut rawptr).(^mut buffer)), 2);
 
     len := isize.(core.str_len(str.(buffer)));
 

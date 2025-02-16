@@ -606,11 +606,11 @@ fn ty_diagnostic_message(
                 found.display(mod_dir, interner)
             )
         }
-        hir_ty::TyDiagnosticKind::DerefAny => {
+        hir_ty::TyDiagnosticKind::DerefRaw => {
             "tried dereferencing `^` a pointer to `any`. try casting it to a different pointer type first".to_string()
         }
-        hir_ty::TyDiagnosticKind::IndexAny { size: Some(size) } => format!("tried indexing `[]` an array of `[{size}] any`. try casting it to a different array type first"),
-        hir_ty::TyDiagnosticKind::IndexAny { size: None } => "tried indexing `[]` a slice of `[] any`. try casting it to a different slice type first".to_string(),
+        hir_ty::TyDiagnosticKind::IndexRaw { size: Some(size) } => format!("tried indexing `[]` an array of `[{size}] any`. try casting it to a different array type first"),
+        hir_ty::TyDiagnosticKind::IndexRaw { size: None } => "tried indexing `[]` a slice of `[] any`. try casting it to a different slice type first".to_string(),
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",

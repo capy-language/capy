@@ -84,26 +84,23 @@ todo_with :: (message: str) {
     libc.exit(1);
 }
 
-// `Any` can represent any possible value in a Capy program.
-//
-// It's a reference type, and it contains a pointer + a type id
-// which can be used to reflect on the data in any way imaginable.
-//
-// All values can implicitly cast into an `Any`, which allows
-// for a sort of runtime polymorphism.
-//
-// It's important to remember that `Any` is a reference type.
-// Even though a function may take `Any` as a value, or a value
-// may implicitly cast into an `Any`, it will always be a reference,
-// and it's a bad idea to return an `Any` from a function unless
-// you know what you're doing.
-Any :: struct {
-    ty: type,
-    data: ^any,
-};
+any_from_raw_parts :: (data: rawptr, ty: type) -> any {
+    Any :: struct {
+        ty: type,
+        data: rawptr,
+    };
+
+    raw := Any.{
+        ty = ty,
+        data = data,
+    };
+
+    // transmute Any to any using rawptr
+    (^any).(rawptr.(^raw))^
+}
 
 // see `print`
-println :: (val: Any) {
+println :: (val: any) {
     print(val);
     libc.putchar('\n');
 }
@@ -128,9 +125,9 @@ _print_str :: (text: str) {
 // the print function uses the `Any` type to be able to print
 // all possible values. you don't need to implement `Display` or `Debug`,
 // struct printing just works due to the reflection system.
-print :: (val: Any) {
+print :: (val: any) {
     ty := val.ty;
-    data := val.data;
+    data := val.ptr;
 
     switch info in meta.get_type_info(ty) {
         Int => {
@@ -206,7 +203,7 @@ print :: (val: Any) {
             while idx < info.len {
                 addr := ptr.const_offset(data, elem_stride * idx);
                 
-                print(Any.{ ty = info.sub_ty, data = addr });
+                print(any_from_raw_parts(addr, info.sub_ty));
 
                 if idx < info.len - 1 {
                     _print_str(", ");
@@ -229,7 +226,7 @@ print :: (val: Any) {
             while idx < len {
                 addr := ptr.const_offset(slice.ptr, elem_stride * idx);
 
-                print(Any.{ ty = info.sub_ty, data = addr });
+                print(any_from_raw_parts(addr, info.sub_ty));
 
                 if idx < len - 1 {
                     _print_str(", ");
@@ -242,20 +239,13 @@ print :: (val: Any) {
         }
         Pointer => {
             _print_str("^");
-            print(Any.{ ty = info.sub_ty, data = (^^any).(data)^});
+            // since data is a pointer, we can safely dereference it
+            print(any_from_raw_parts((^rawptr).(data)^, info.sub_ty));
         }
         Distinct => {
-            print(Any.{ ty = info.sub_ty, data = data });
+            print(any_from_raw_parts(data, info.sub_ty));
         }
         Struct => {
-            if ty == Any {
-                data := (^Any).(data);
-
-                print(data^);
-
-                return;
-            }
-
             _print_str("{ ");
 
             idx := 0;
@@ -265,10 +255,9 @@ print :: (val: Any) {
                 _print_str(member.name);
                 _print_str(" = ");
 
-                print(Any.{
-                    ty = member.ty,
-                    data = ptr.const_offset(data, member.offset),
-                });
+                addr := ptr.const_offset(data, member.offset);
+
+                print(any_from_raw_parts(addr, member.ty));
 
                 if idx < info.members.len - 1 {
                     _print_str(", ");
@@ -294,7 +283,7 @@ print :: (val: Any) {
                 };
 
                 if variant_info.discriminant == discriminant {
-                    print(Any.{ ty = variant_info.sub_ty, data = data });
+                    print(any_from_raw_parts(data, variant_info.sub_ty));
                     break;
                 }
 
@@ -302,14 +291,25 @@ print :: (val: Any) {
             }
         }
         Variant => {
-            print(Any.{ ty = info.sub_ty, data = data });
+            print(any_from_raw_parts(data, info.sub_ty));
         }
         Function => _print_str("{function}"),
         File => _print_str("{import}"),
         Meta_Type => {
             print_type_info((^type).(data)^);
         }
-        Any => _print_str("{any}"),
+        Any => {
+            print((^any).(data)^);
+        },
+        Raw_Ptr => _print_str("{rawptr}"),
+        Raw_Slice => {
+            _print_str("[ {rawslice} ; ");
+
+            data := (^rawslice).(data)^;
+            print(data.len);
+
+            _print_str(" ]");
+        },
         Void => _print_str("()"),
     }
 }
@@ -415,6 +415,12 @@ print_type_info :: (ty: type) {
         File => _print_str("{import}"),
         Meta_Type => _print_str("type"),
         Any => _print_str("any"),
+        Raw_Ptr => if info.mutable {
+            _print_str("mut rawptr")
+        } else {
+            _print_str("rawptr")
+        },
+        Raw_Slice => _print_str("rawslice"),
         Void => _print_str("void"),
     }
 }
@@ -462,7 +468,7 @@ str_eq :: (first: str, second: str) -> bool {
     true
 }
 
-// casts a `core.Any` into the specificied memory.
+// casts an `any` into the specificied memory.
 // the buffer must have enough space for `expected`.
 //
 // this is more than just a memcpy, it casts `value`
@@ -470,39 +476,36 @@ str_eq :: (first: str, second: str) -> bool {
 //
 // Think of this as a runtime `as` operator.
 //
-// The returned `Any` is made of the given `expected` and `into`
+// The returned `any` is made of the given `expected` and `into`
 //
 // todo: add more tests for this function, it is probably very incomplete
-cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
-    switch info in meta.get_type_info(expected) {
-        Distinct => {
-            cast_into(value, info.sub_ty, into);
-            return Any.{
-                data = into,
-                ty = expected,
-            };
-        }
-        Variant => {
-            cast_into(value, info.sub_ty, into);
-            return Any.{
-                data = into,
-                ty = expected,
-            };
-        }
-        _ => {}
-    }
-
+cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
     found_ty := value.ty;
-    found_data := value.data;
+    found_data := value.ptr;
 
     if found_ty == expected {
         libc.memcpy(into, found_data, meta.size_of(found_ty));
-        return Any.{
-            data = into,
-            ty = expected,
-        };
+        return any_from_raw_parts(into, expected);
     }
 
+    // unwrap distincts
+    expected := expected;
+    `l loop {
+        switch info in meta.get_type_info(expected) {
+            Distinct => {
+                expected = info.sub_ty;
+            }
+            Variant => {
+                expected = info.sub_ty;
+            }
+            _ => {
+                // todo break expressions
+                break l`;
+            },
+        }
+    }
+
+    // do actual casting
     switch from_info in meta.get_type_info(found_ty) {
         Int => {
             num := if from_info.bit_width == 8 {
@@ -702,7 +705,7 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
                 Slice => {
                     // array -> slice
                     assert_with(from_info.sub_ty == into_info.sub_ty, "array -> slice must have the same sub type");
-                    (^mut []any).(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
+                    (^mut rawslice).(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
                 }
                 _ => todo_with("only supports array -> array and array -> slice"),
             }
@@ -713,12 +716,26 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
                     // slice -> array
                     // todo: we can do much better than this
                     assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> array must have the same sub type");
-                    libc.memcpy(into, found_data, (^[]any).(found_data).len);
+                    libc.memcpy(into, found_data, meta.stride_of(into_info.sub_ty) * (^rawslice).(found_data).len);
                 }
                 Slice => {
                     // slice -> slice
                     assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> slice must have the same sub type");
-                    (^mut []any).(into) ^= (^[]any).(found_data)^;
+                    (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
+                }
+                _ => todo_with("only supports slice -> array and slice -> slice"),
+            }
+        }
+        Raw_Slice => {
+            switch into_info in meta.get_type_info(expected) {
+                Array => {
+                    // slice -> array
+                    // todo: we can do much better than this
+                    libc.memcpy(into, found_data, meta.size_of(into_info.sub_ty) * (^rawslice).(found_data).len);
+                }
+                Slice => {
+                    // slice -> slice
+                    (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
                 }
                 _ => todo_with("only supports slice -> array and slice -> slice"),
             }
@@ -726,12 +743,15 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         Pointer => {
             (^mut usize).(into) ^= (^usize).(found_data)^;
         }
+        Raw_Ptr => {
+            (^mut usize).(into) ^= (^usize).(found_data)^;
+        }
         Distinct => {
             cast_into(
-                Any.{
-                    ty = from_info.sub_ty,
-                    data = found_data
-                },
+                any_from_raw_parts(
+                    found_data,
+                    from_info.sub_ty,
+                ),
                 expected,
                 into
             );    
@@ -761,10 +781,10 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
                 }
                 _ => {
                     cast_into(
-                        Any.{
-                            ty = from_info.sub_ty,
-                            data = found_data
-                        },
+                        any_from_raw_parts(
+                            found_data,
+                            from_info.sub_ty,
+                        ),
                         expected,
                         into
                     );
@@ -811,14 +831,11 @@ cast_into :: (value: Any, expected: type, into: ^mut any) -> Any {
         }
     }
 
-    Any.{
-        data = into,
-        ty = expected,
-    }
+    any_from_raw_parts(into, expected)
 }
 
 // todo: make this a comptime parameter
-type_of :: (val: Any) -> type {
+type_of :: (val: any) -> type {
     val.ty
 }
 

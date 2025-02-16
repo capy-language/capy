@@ -1,38 +1,38 @@
 
 // compiler defined
-to_raw :: (ptr: ^any) -> usize extern;
+to_raw :: (ptr: rawptr) -> usize extern;
 // compiler defined
-const_from_raw :: (raw: usize) -> ^any extern;
+const_from_raw :: (raw: usize) -> rawptr extern;
 // compiler defined
-mut_from_raw :: (raw: usize) -> ^mut any extern;
+mut_from_raw :: (raw: usize) -> mut rawptr extern;
 
-const_offset :: (ptr: ^any, offset: usize) -> ^any {
+const_offset :: (ptr: rawptr, offset: usize) -> rawptr {
     const_from_raw(to_raw(ptr) + offset)
 }
 
-mut_offset :: (ptr: ^mut any, offset: usize) -> ^mut any {
+mut_offset :: (ptr: mut rawptr, offset: usize) -> mut rawptr {
     mut_from_raw(to_raw(ptr) + offset)
 }
 
-read :: (ptr: ^any, offset: usize) -> u8 {
+read :: (ptr: rawptr, offset: usize) -> u8 {
     plus_offset := (^u8).(const_offset(ptr, offset));
     plus_offset^
 }
 
-write :: (ptr: ^mut any, byte: u8, offset: usize) {
+write :: (ptr: mut rawptr, byte: u8, offset: usize) {
     plus_offset := (^mut u8).(mut_offset(ptr, offset));
     plus_offset^ = byte;
 }
 
-null :: () -> ^any {
+null :: () -> rawptr {
     const_from_raw(0)
 }
 
-mut_null :: () -> ^mut any {
+mut_null :: () -> mut rawptr {
     mut_from_raw(0)
 }
 
-is_null :: (ptr: ^any) -> bool {
+is_null :: (ptr: rawptr) -> bool {
     to_raw(ptr) == 0
 }
 
@@ -45,16 +45,17 @@ is_null :: (ptr: ^any) -> bool {
 //
 // core.println(slice);
 // ```
-slice_from_raw_parts :: (ptr: ^any, len: usize) -> [] any {
+slice_from_raw_parts :: (data: rawptr, len: usize) -> rawslice {
     Raw_Slice :: struct {
         len: usize,
-        ptr: ^any,
+        data: rawptr,
     };
 
     raw := Raw_Slice.{
         len = len,
-        ptr = ptr,
+        data = data,
     };
 
-    (^[]any).((^any).(^raw))^
+    // transmute Any to any using rawptr
+    (^rawslice).((rawptr).(^raw))^
 }

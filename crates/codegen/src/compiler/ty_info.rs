@@ -319,33 +319,19 @@ fn compile_type_info(compiler: &mut Compiler) {
         match ty.as_ref() {
             Ty::Array { size, sub_ty, .. } => {
                 array_info_data.push_num(*size as u32, ptr_bit_width);
-
-                array_info_data.push_num(
-                    sub_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                    32,
-                );
-
+                array_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 array_info_data.finish_array_item();
             }
             Ty::Slice { sub_ty } => {
-                slice_info_data.push_num(
-                    sub_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                    32,
-                );
+                slice_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 slice_info_data.finish_array_item();
             }
             Ty::Pointer { sub_ty, .. } => {
-                pointer_info_data.push_num(
-                    sub_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                    32,
-                );
+                pointer_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 pointer_info_data.finish_array_item();
             }
             Ty::Distinct { sub_ty, .. } => {
-                distinct_info_data.push_num(
-                    sub_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                    32,
-                );
+                distinct_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 distinct_info_data.finish_array_item();
             }
             Ty::Variant {
@@ -353,10 +339,7 @@ fn compile_type_info(compiler: &mut Compiler) {
                 discriminant,
                 ..
             } => {
-                variant_info_data.push_num(
-                    sub_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                    32,
-                );
+                variant_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 variant_info_data.push_num(*discriminant as u32, 32);
                 variant_info_data.finish_array_item();
             }
@@ -365,10 +348,8 @@ fn compile_type_info(compiler: &mut Compiler) {
                 // member_array_starting_offsets.push(member_array_data.len());
 
                 for variant_ty in variants {
-                    variant_enum_ty_data.push_num(
-                        variant_ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                        32,
-                    );
+                    variant_enum_ty_data
+                        .push_num(variant_ty.to_previous_type_id(&compiler.meta_tys), 32);
 
                     variant_enum_ty_data.finish_array_item();
                 }
@@ -420,10 +401,7 @@ fn compile_type_info(compiler: &mut Compiler) {
 
                     // `ty` field
 
-                    member_info_data.push_num(
-                        ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                        32,
-                    );
+                    member_info_data.push_num(ty.to_previous_type_id(&compiler.meta_tys), 32);
 
                     // `offset` field
 

@@ -13,7 +13,7 @@ i64_to_string :: (n: i64) -> StringBuilder {
     // idk man i'm just copying rust
     str := string_builder.make_with_capacity(39);
     
-    new_len := _write_i64_to_buf(n, true, (^mut u8).((^mut any).(str.buf)), 0, 0);
+    new_len := _write_i64_to_buf(n, true, (^mut u8).((mut rawptr).(str.buf)), 0, 0);
 
     str.len = new_len;
 
@@ -46,7 +46,7 @@ u64_to_string :: (n: u64) -> StringBuilder {
 f64_to_string :: (n: f64) -> StringBuilder {
     str := string_builder.make_with_capacity(39 * 2 + 1);
 
-    new_len := _write_f64_to_buf(n, (^mut u8).((^mut any).(str.buf)), 3);
+    new_len := _write_f64_to_buf(n, (^mut u8).((mut rawptr).(str.buf)), 3);
 
     str.len = new_len;
 

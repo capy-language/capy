@@ -18,12 +18,12 @@ use syntax::{SyntaxTree, SyntaxTreeBuf};
 use token::Tokens;
 
 pub fn parse_source_file(tokens: &Tokens, input: &str) -> Parse {
-    let (events, errors) = Parser::new(tokens).parse(grammar::source_file);
+    let (events, errors) = Parser::new(tokens, input).parse(grammar::source_file);
     Sink::new(events, tokens, input).finish(errors)
 }
 
 pub fn parse_repl_line(tokens: &Tokens, input: &str) -> Parse {
-    let (events, errors) = Parser::new(tokens).parse(grammar::repl_line);
+    let (events, errors) = Parser::new(tokens, input).parse(grammar::repl_line);
     Sink::new(events, tokens, input).finish(errors)
 }
 

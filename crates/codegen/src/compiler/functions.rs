@@ -10,7 +10,7 @@ use cranelift::{
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use hir::{FQComptime, LocalDef, ScopeId, SwitchLocal};
-use hir_ty::{ComptimeResult, Ty};
+use hir_ty::{ComptimeResult, InternTyExt, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -20,7 +20,7 @@ use uid_gen::UIDGenerator;
 use crate::{
     builtin::{self, BuiltinFunction},
     convert::{GetFinalTy, ToTyId},
-    layout::GetLayoutInfo,
+    layout::{self, GetLayoutInfo},
     mangle::{self, Mangle},
 };
 
@@ -694,6 +694,8 @@ impl FunctionCompiler<'_> {
             }
             Ty::Type => unreachable!("types do not have default values"),
             Ty::Any => unreachable!("any does not have a default value"),
+            Ty::RawPtr { .. } => unreachable!("rawptr does not have a default value"),
+            Ty::RawSlice => unreachable!("rawslice does not have a default value"),
             Ty::File(_) => unreachable!("files do not have default values"),
             Ty::Function { .. } => unreachable!("functions do not have default values"),
             Ty::Struct { members, .. } => {
@@ -729,7 +731,7 @@ impl FunctionCompiler<'_> {
         let expr_ty = self.tys[self.file_name][expr];
 
         // if the expression has to be casted in order to become the expected type, do that.
-        // the one cast this applies to is `core.Any` casting.
+        // the one cast this applies to is `any` casting.
         if !expr_ty.is_functionally_equivalent_to(&expected_ty, true) {
             // todo: this could probably be made even more efficient
             self.compile_and_cast_into_memory(expr, expected_ty, memory);
@@ -1815,48 +1817,85 @@ impl FunctionCompiler<'_> {
                             source_ty = sub_ty;
                             required_derefs += 1;
                         }
+                        source_ty = source_ty.absolute_intern_ty(true);
 
-                        if source_ty.is_slice() {
-                            let slice = self.compile_expr(previous).unwrap();
-                            let addr = match self.interner.lookup(name.name.0) {
-                                "len" => slice,
-                                "ptr" => self
-                                    .builder
-                                    .ins()
-                                    .iadd_imm(slice, self.ptr_ty.bytes() as i64),
-                                _ => unreachable!(),
-                            };
-                            if no_load {
-                                return Some(addr);
-                            } else {
-                                return Some(self.builder.ins().load(
-                                    self.ptr_ty,
-                                    MemFlags::trusted(),
-                                    addr,
-                                    0,
-                                ));
+                        match source_ty.as_ref() {
+                            Ty::Slice { .. } | Ty::RawSlice => {
+                                let slice = self.compile_expr(previous).unwrap();
+                                let addr = match self.interner.lookup(name.name.0) {
+                                    "len" => slice,
+                                    "ptr" => self
+                                        .builder
+                                        .ins()
+                                        .iadd_imm(slice, self.ptr_ty.bytes() as i64),
+                                    _ => unreachable!(),
+                                };
+                                if no_load {
+                                    return Some(addr);
+                                } else {
+                                    return Some(self.builder.ins().load(
+                                        self.ptr_ty,
+                                        MemFlags::trusted(),
+                                        addr,
+                                        0,
+                                    ));
+                                }
                             }
-                        } else if let Some((len, _)) = source_ty.as_array() {
-                            // the len isn't actually located anywhere in memory. In memory the
-                            // array is just the raw data only. However, when you usually get the
-                            // address of a field it returns the actual address of that field in
-                            // the struct or slice, so here we have to fake it by allocating
-                            // enough extra space on the stack for the len if we need to.
-                            if no_load {
-                                let ss = self.builder.create_sized_stack_slot(StackSlotData {
-                                    kind: StackSlotKind::ExplicitSlot,
-                                    size: self.ptr_ty.bytes(),
-                                    // todo: maybe do this better
-                                    align_shift: self.ptr_ty.bytes().trailing_zeros() as u8,
-                                });
+                            Ty::Array { size, .. } => {
+                                // the len isn't actually located anywhere in memory. In memory the
+                                // array is just the raw data only. However, when you usually get the
+                                // address of a field it returns the actual address of that field in
+                                // the struct or slice, so here we have to fake it by allocating
+                                // enough extra space on the stack for the len if we need to.
+                                if no_load {
+                                    let ss = self.builder.create_sized_stack_slot(StackSlotData {
+                                        kind: StackSlotKind::ExplicitSlot,
+                                        size: self.ptr_ty.bytes(),
+                                        // todo: maybe do this better
+                                        align_shift: self.ptr_ty.bytes().trailing_zeros() as u8,
+                                    });
 
-                                let len = self.builder.ins().iconst(self.ptr_ty, len as i64);
-                                self.builder.ins().stack_store(len, ss, 0);
+                                    let size = self.builder.ins().iconst(self.ptr_ty, *size as i64);
+                                    self.builder.ins().stack_store(size, ss, 0);
 
-                                return Some(self.builder.ins().stack_addr(self.ptr_ty, ss, 0));
-                            } else {
-                                return Some(self.builder.ins().iconst(self.ptr_ty, len as i64));
+                                    return Some(self.builder.ins().stack_addr(self.ptr_ty, ss, 0));
+                                } else {
+                                    return Some(
+                                        self.builder.ins().iconst(self.ptr_ty, *size as i64),
+                                    );
+                                }
                             }
+                            Ty::Any => {
+                                let any = self.compile_expr(previous).unwrap();
+                                let (addr, ty) = match self.interner.lookup(name.name.0) {
+                                    "ty" => (any, types::I32),
+                                    "ptr" => {
+                                        let typeid_size = 32 / 8;
+
+                                        let rawptr_size = self.ptr_ty.bytes();
+                                        let rawptr_align = rawptr_size.min(8);
+                                        let rawptr_offset = typeid_size
+                                            + layout::padding_needed_for(typeid_size, rawptr_align);
+
+                                        let addr =
+                                            self.builder.ins().iadd_imm(any, rawptr_offset as i64);
+
+                                        (addr, self.ptr_ty)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                if no_load {
+                                    return Some(addr);
+                                } else {
+                                    return Some(self.builder.ins().load(
+                                        ty,
+                                        MemFlags::trusted(),
+                                        addr,
+                                        0,
+                                    ));
+                                }
+                            }
+                            _ => {}
                         }
 
                         let struct_fields = source_ty.as_struct().unwrap();
@@ -2173,8 +2212,8 @@ impl FunctionCompiler<'_> {
         )
     }
 
-    /// This takes an Option and returns an Option because a `()` might be automatically casted to
-    /// a `core.Any`
+    /// This takes an Option because a `()` might be automatically casted to an `any`.
+    /// This returns an Option because `()` might not be automatically casted to an `any`.
     fn cast(
         &mut self,
         val: Option<Value>,

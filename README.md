@@ -47,11 +47,11 @@ capy run examples/hello_world.capy
 Variables are declared like this,
 
 ```cpp
-my_cool_name: str = "Gandalf";
+wizard_name: str = "Gandalf";
 
 // alternatively, the compiler can figure out the type for you
 
-my_cool_name := "Gandalf";
+wizard_name := "Gandalf";
 ```
 
 Variables can also be made *immutable*. This prevents them from being updated by other code.
@@ -321,7 +321,7 @@ With that, here are all the possible types data can have in Capy:
 6. `char`
 7. Fixed arrays (`[6]i32`, `[3]f32`, `[10]bool`, etc.)
 8. Slices       (`[]i32`, `[]f32`, `[]bool`, etc.)
-9. Pointers     (`^i32`, `^f32`, `^bool`, etc.)
+9. Pointers     (`^i32`, `^f32`, `^mut bool`, etc.)
 10. Distincts   (`distinct i32`, `distinct f32`, `distinct bool`, etc.)
 11. Structs     (`struct { a: i32, b: i32 }`, `struct { foo: str }`, etc.)
 12. Enums       (`enum { Foo: i32, Bar: str, Baz: bool }`, etc.)
@@ -329,8 +329,10 @@ With that, here are all the possible types data can have in Capy:
 14. Functions   (`() -> void`, `(x: i32) -> bool`, etc.)
 15. Files       (when you import a file, that file is actually its own type)
 16. `type`      (types are first-class and `i32` when used as a value has the type `type`)
-17. `any`       (used for opaque pointers, explained later)
-18. `void`
+17. `any`       (a reference type, explained later)
+18. `rawptr`, `mut rawptr`  (an opaque pointer, like void* in C)
+19. `rawslice`              (an opaque slice)
+20. `void`
 
 You can also look through [`core/meta.capy`](./core/src/meta.capy),
 which contains [reflection](#Reflection) related code and documentation for all of Capy's types.
@@ -431,50 +433,19 @@ And anything else you'd like to know about your types.
 
 This information is supplied in a few global arrays at both runtime and compile-time, meaning that reflection works within both.
 
-This functionality powers the `core.Any` type, which can represent *any* possible value.
+This functionality powers the `any` type, which can represent *any* possible value.
 
 ```cpp
-count        : i32  = 5;
-should_start : bool = true;
-greeting     : str  = "Hi";
+count        : any = 5;
+should_start : any = true;
+greeting     : any = "Hi";
 
-// core.Any contains a type ID and an opaque pointer (like `void*` in C).
-// The type ID allows `core.println` to know how to display the given pointer.
-
-core.println(core.Any.{
-    ty = i32,
-    data = ^count,
-});
-
-core.println(core.Any.{
-    ty = bool,
-    data = ^should_start,
-});
-
-core.println(core.Any.{
-    ty = str,
-    data = ^greeting,
-});
+core.println(count);
+core.println(should_start);
+core.println(greeting);
 ```
 
-This is pretty verbose, so the compiler will automatically cast values to a `core.Any` if needed,
-
-```cpp
-core.println(5);
-core.println(true);
-core.println("Hello");
-```
-
-This isn't hard coded for the `core.Any` struct, but works for *any* struct with the following members:
-
-```cpp
-struct {
-    type_id: type,
-    opaque_pointer: ^any, // `^any` and `^mut any` are opaque pointers (they have no associated type)
-}
-```
-
-As you can probably guess, `core.println` internally uses a lot of reflection to determine what to actually print to the screen when given a `core.Any`.
+`any` internally contains a type ID and a rawptr. `core.println` uses a lot of reflection on this type ID to determine how to display the pointer.
 Reflection is extremely useful, and allows for things like a `debug` function that doesn't need to be implemented manually for all types (like Rust), or making it easy to
 serialize and deserialize structs.
 

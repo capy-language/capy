@@ -162,6 +162,13 @@ pub enum PrimitiveTy {
     Any {
         range: TextRange,
     },
+    RawPtr {
+        mutable: bool,
+        range: TextRange,
+    },
+    RawSlice {
+        range: TextRange,
+    },
     Void {
         range: TextRange,
     },
@@ -178,6 +185,8 @@ impl PrimitiveTy {
             | PrimitiveTy::Char { range }
             | PrimitiveTy::Type { range }
             | PrimitiveTy::Any { range }
+            | PrimitiveTy::RawPtr { range, .. }
+            | PrimitiveTy::RawSlice { range }
             | PrimitiveTy::Void { range } => *range,
         }
     }
@@ -275,6 +284,13 @@ impl PrimitiveTy {
                 Some(PrimitiveTy::Type { range })
             } else if key == Key::any() {
                 Some(PrimitiveTy::Any { range })
+            } else if key == Key::rawptr() {
+                Some(PrimitiveTy::RawPtr {
+                    mutable: false,
+                    range,
+                })
+            } else if key == Key::rawslice() {
+                Some(PrimitiveTy::RawSlice { range })
             } else {
                 None
             }
@@ -305,6 +321,9 @@ impl PrimitiveTy {
             Self::Char { .. } => "char".to_string(),
             Self::Type { .. } => "type".to_string(),
             Self::Any { .. } => "any".to_string(),
+            Self::RawPtr { mutable: false, .. } => "rawptr".to_string(),
+            Self::RawPtr { mutable: true, .. } => "mut rawptr".to_string(),
+            Self::RawSlice { .. } => "rawslice".to_string(),
             Self::Void { .. } => "void".to_string(),
         }
     }

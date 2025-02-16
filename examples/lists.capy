@@ -16,7 +16,7 @@ main :: () {
     list.push(^mut my_list, 23);
 
     // `List` uses `core.cast_into`, which will cast
-    // `core.Any`s into the correct type at runtime
+    // `any`s into the correct type at runtime
     last : u8 = 42;
     list.push(^mut my_list, last);
 

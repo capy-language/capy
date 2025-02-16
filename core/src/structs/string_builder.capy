@@ -85,7 +85,7 @@ append_str :: (self: ^mut StringBuilder, s: str) {
 
     offset := ptr.mut_offset(self.buf, self.len);
 
-    libc.memcpy(offset, (^any).(s), len);
+    libc.memcpy(offset, rawptr.(s), len);
     
     self.len = self.len + len;
 }

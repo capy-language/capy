@@ -227,6 +227,8 @@ char_discriminant : u8 : 6;
 meta_type_discriminant : u8 : 7;
 any_discriminant : u8 : 8;
 file_discriminant : u8 : 9;
+raw_ptr_discriminant : u8 : 10;
+raw_slice_discriminant : u8 : 11;
 
 // complex type ids
 // (they contain an index into a global type info array)
@@ -276,9 +278,10 @@ Type_Info :: enum {
         sub_ty: type,
     }           | slice_discriminant,
     // `^i32`
-    // `^any`
+    // `^bool`
     // ...
     Pointer: struct {
+        // todo: add mutable info
         sub_ty: type,
     }           | pointer_discriminant,
     // `distinct i32`
@@ -335,8 +338,12 @@ Type_Info :: enum {
     // `any`
     // 
     // can represent any arbitrary but unknown value.
-    // cannot be directly obtained, but only held through `^any`, `[] any`, etc.
+    // internally `any` contains a `rawptr` and a `type`
     Any         | any_discriminant,
+    Raw_Ptr: struct {
+        mutable: bool,
+    }           | raw_ptr_discriminant,
+    Raw_Slice   | raw_slice_discriminant,
     // `void`
     //
     // an empty type, a `u0`
@@ -417,6 +424,13 @@ get_type_info :: (ty: type) -> Type_Info {
         Type_Info.Meta_Type.()
     } else if discrim == any_discriminant {
         Type_Info.Any.()
+    } else if discrim == raw_ptr_discriminant {
+        Type_Info.Raw_Ptr.{
+            // the ninth bit is the mutable flag
+            mutable = bool.((raw >> 9) & 1),
+        }
+    } else if discrim == raw_slice_discriminant {
+        Type_Info.Raw_Slice.()
     } else if discrim == void_discriminant {
         Type_Info.Void.()
     } else {

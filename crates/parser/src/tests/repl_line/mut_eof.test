@@ -1,0 +1,8 @@
+mut
+===
+Root@0..3
+  ExprStmt@0..3
+    MutExpr@0..3
+      Mut@0..3 "mut"
+error at 3: missing operand
+error at 0: missing Caret

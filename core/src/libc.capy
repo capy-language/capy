@@ -2,15 +2,15 @@
 // in the future, you wouldn't call `malloc` directly, you'd use an Allocator abstraction
 
 // allocates size bytes of memory. make sure to free() the pointer after your done.
-malloc :: (size: usize) -> ^mut any extern;
+malloc :: (size: usize) -> mut rawptr extern;
 // allocates len * size bytes, all the bits are set to 0
-calloc :: (len: usize, size: usize) -> ^mut any extern;
+calloc :: (len: usize, size: usize) -> mut rawptr extern;
 // frees allocated memory
-free :: (ptr: ^any) extern;
+free :: (ptr: rawptr) extern;
 // reallocates already allocated memory
-realloc :: (ptr: ^mut any, size: usize) -> ^mut any extern;
+realloc :: (ptr: mut rawptr, size: usize) -> mut rawptr extern;
 // copies len bytes from dst to src
-memcpy :: (dst: ^mut any, src: ^any, len: usize) extern;
+memcpy :: (dst: mut rawptr, src: rawptr, len: usize) extern;
 
 // prints a string to the screen, adds a newline at the end
 puts :: (text: str) extern;

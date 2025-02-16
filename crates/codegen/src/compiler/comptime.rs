@@ -218,12 +218,7 @@ pub fn eval_comptime_blocks<'a>(
         .meta_tys
         .tys_to_compile
         .iter()
-        .map(|ty| {
-            (
-                ty.to_previous_type_id(&compiler.meta_tys, compiler.ptr_ty),
-                ty,
-            )
-        })
+        .map(|ty| (ty.to_previous_type_id(&compiler.meta_tys), ty))
         .collect();
 
     // Finalize the functions which were defined, which resolves any

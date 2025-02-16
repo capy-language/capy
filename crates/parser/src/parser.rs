@@ -24,6 +24,7 @@ pub(crate) const DEFAULT_RECOVERY_SET: TokenSet =
 
 pub(crate) struct Parser<'tokens> {
     tokens: &'tokens Tokens,
+    input: &'tokens str,
     pub(crate) token_idx: usize,
     events: Vec<Option<Event>>,
     errors: Vec<SyntaxError>,
@@ -32,9 +33,10 @@ pub(crate) struct Parser<'tokens> {
 }
 
 impl<'tokens> Parser<'tokens> {
-    pub(crate) fn new(tokens: &'tokens Tokens) -> Self {
+    pub(crate) fn new(tokens: &'tokens Tokens, input: &'tokens str) -> Self {
         Self {
             tokens,
+            input,
             token_idx: 0,
             events: Vec::new(),
             errors: Vec::new(),
@@ -64,6 +66,11 @@ impl<'tokens> Parser<'tokens> {
             },
             self.errors,
         )
+    }
+
+    pub(crate) fn text(&self, token_idx: usize) -> &'tokens str {
+        let range = self.tokens.range(token_idx);
+        &self.input[range.start().into()..range.end().into()]
     }
 
     /// this will skip all tokens except those in the default recovery set.
@@ -153,7 +160,7 @@ impl<'tokens> Parser<'tokens> {
         Some(m.complete(self, NodeKind::Error))
     }
 
-    pub(crate) fn mark_old_error(
+    pub(crate) fn mark_old_unexpected(
         &mut self,
         found: NodeKind,
         start_token: usize,
@@ -168,6 +175,15 @@ impl<'tokens> Parser<'tokens> {
                     .tokens
                     .range(start_token)
                     .cover(self.tokens.range(end_token)),
+            },
+        });
+    }
+
+    pub(crate) fn mark_old_missing(&mut self, start_token: usize, expected: ExpectedSyntax) {
+        self.errors.push(SyntaxError {
+            expected_syntax: expected,
+            kind: SyntaxErrorKind::Missing {
+                offset: self.tokens.range(start_token).start(),
             },
         });
     }
