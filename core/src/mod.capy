@@ -20,67 +20,76 @@ args : [] str : extern;
 len :: (slice: [] any) -> usize extern;
 
 // for testing.
-// exits the program if a check failed
-assert :: (condition: bool) {
-    if !condition {
-        _print_str("assertion failed!\n");
-        libc.exit(1);
-    }
-}
-
-// for testing.
 // exits the program if a check failed, and prints the specificed message
-assert_with :: (condition: bool, message: str) {
+assert :: (condition: bool, message: ...any) {
     if !condition {
-        _print_str("assertion failed: ");
-        _print_str(message);
-        _print_str("\n");
+        _print_str("assertion failed");
+        if message.len == 0 {
+            libc.putchar('!');
+        } else {
+            _print_str(": ");
+            idx := 0;
+            while idx < message.len {
+                print(message[idx]);
+                idx = idx + 1;
+            }
+        }
+        libc.putchar('\n');
         libc.exit(1);
     }
-}
-
-// exits the program due to an unrecoverable state being reached
-panic :: () {
-    _print_str("explicit panic!\n");
-    libc.exit(1);
 }
 
 // exits the program due to an unrecoverable state being reached,
 // and prints the specificed message
-panic_with :: (message: str) {
-    _print_str("explicit panic: ");
-    _print_str(message);
-    _print_str("\n");
+panic :: (message: ...any) {
+    _print_str("explicit panic");
+    if message.len == 0 {
+        libc.putchar('!');
+    } else {
+        _print_str(": ");
+        idx := 0;
+        while idx < message.len {
+            print(message[idx]);
+            idx = idx + 1;
+        }
+    }
+    libc.putchar('\n');
     libc.exit(1);
 }
 
 // exits the program due to an unexpected code path being reached.
-unreachable :: () {
-    _print_str("entered unreachable code!\n");
-    libc.exit(1);
-}
-
-// exits the program due to an unexpected code path being reached,
 // and prints the specificed message
-unreachable_with :: (message: str) {
-    _print_str("entered unreachable code: ");
-    _print_str(message);
-    _print_str("\n");
-    libc.exit(1);
-}
-
-// exits the program due to unfinished code being reached
-todo :: () {
-    _print_str("not yet implemented!\n");
+unreachable :: (message: ...any) {
+    _print_str("entered unreachable code");
+    if message.len == 0 {
+        libc.putchar('!');
+    } else {
+        _print_str(": ");
+        idx := 0;
+        while idx < message.len {
+            print(message[idx]);
+            idx = idx + 1;
+        }
+    }
+    libc.putchar('\n');
     libc.exit(1);
 }
 
 // exits the program due to unfinished code being reached,
 // and prints the specificed message
-todo_with :: (message: str) {
-    _print_str("not yet implemented: ");
-    _print_str(message);
-    _print_str("\n");
+todo :: (message: ...any) {
+    _print_str("not yet implemented");
+    if message.len == 0 {
+        libc.putchar('!');
+    } else {
+        _print_str(": ");
+        idx := 0;
+        while idx < message.len {
+            print(message[idx]);
+            idx = idx + 1;
+        }
+    }
+    libc.putchar('\n');
     libc.exit(1);
 }
 
@@ -157,7 +166,7 @@ print :: (values: ...any) {
                         0
                     };
 
-                    fmt.i64_to_string(num)
+                    fmt.int_to_string(fmt.decimal(num))
                 } else {
                     num := if info.bit_width == 8 {
                         u64.((^u8).(data)^)
@@ -174,7 +183,7 @@ print :: (values: ...any) {
                         0
                     };
 
-                    fmt.u64_to_string(num)
+                    fmt.int_to_string(fmt.decimal_unsigned(num))
                 };
                 defer string_builder.free(^mut str);
 
@@ -190,7 +199,7 @@ print :: (values: ...any) {
                     0
                 };
 
-                str := fmt.f64_to_string(num);
+                str := fmt.float_to_string(num);
                 defer string_builder.free(^mut str);
 
                 string_builder.print(^str);
@@ -256,6 +265,15 @@ print :: (values: ...any) {
                 print(any_from_raw_parts(data, info.sub_ty));
             }
             Struct => {
+                if ty == fmt.Number_Formatting {
+                    str := fmt.int_to_string((^fmt.Number_Formatting).(data)^);
+                    defer string_builder.free(^mut str);
+
+                    string_builder.print(^str);
+                    
+                    return;
+                }
+            
                 _print_str("{ ");
 
                 idx := 0;
@@ -287,7 +305,7 @@ print :: (values: ...any) {
                     variant_info := switch v in meta.get_type_info(variant) {
                         Variant => v,
                         _ => {
-                            unreachable_with("all variants of the enum should be `Type_Info.Variant`");
+                            unreachable("all variants of the enum should be `Type_Info.Variant`");
                             meta.Type_Info.Variant.{sub_ty=void,discriminant=0}
                         },
                     };
@@ -337,7 +355,7 @@ print_type_info :: (ty: type) {
                 libc.putchar('u');
             }
 
-            str := fmt.i64_to_string(info.bit_width);
+            str := fmt.int_to_string(fmt.decimal(info.bit_width));
             defer string_builder.free(^mut str);
 
             string_builder.print(^str);
@@ -345,7 +363,7 @@ print_type_info :: (ty: type) {
         Float => {
             libc.putchar('f');
 
-            str := fmt.i64_to_string(info.bit_width);
+            str := fmt.int_to_string(fmt.decimal(info.bit_width));
             defer string_builder.free(^mut str);
 
             string_builder.print(^str);
@@ -356,7 +374,7 @@ print_type_info :: (ty: type) {
         Array => {
             libc.putchar('[');
 
-            str := fmt.i64_to_string(i64.(info.len));
+            str := fmt.int_to_string(fmt.decimal(i64.(info.len)));
             defer string_builder.free(^mut str);
             string_builder.print(^str);
 
@@ -420,7 +438,7 @@ print_type_info :: (ty: type) {
             print_type_info(info.sub_ty);
 
             _print_str(" | ");
-            str := fmt.i64_to_string(i64.(info.discriminant));
+            str := fmt.int_to_string(fmt.decimal(i64.(info.discriminant)));
             defer string_builder.free(^mut str);
             string_builder.print(^str);
         }
@@ -569,7 +587,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 Char => {
                     (^mut char).(into) ^= char.(num);
                 }
-                _ => todo_with("only supports int -> int, int -> float, int -> bool, int -> char")
+                _ => todo("only supports int -> int, int -> float, int -> bool, int -> char")
             }
         }
         Float => {
@@ -615,7 +633,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 Char => {
                     (^mut char).(into) ^= char.(num);
                 }
-                _ => todo_with("only supports float -> int, float -> float, float -> bool, and float -> char")
+                _ => todo("only supports float -> int, float -> float, float -> bool, and float -> char")
             }
         }
         Bool => {
@@ -656,11 +674,11 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                     // bool -> char
                     (^mut char).(into) ^= char.(value);
                 }
-                _ => todo_with("only supports bool -> int, bool -> float, bool -> bool, and bool -> char")
+                _ => todo("only supports bool -> int, bool -> float, bool -> bool, and bool -> char")
             }
         }
         String => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "the string type can only be cast to itself",
             );
@@ -704,7 +722,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                     // char -> char
                     (^mut char).(into) ^= char.(value);
                 }
-                _ => todo_with("only supports char -> int, char -> float, char -> bool, and char -> char"),
+                _ => todo("only supports char -> int, char -> float, char -> bool, and char -> char"),
             }
         }
         Array => {
@@ -712,15 +730,15 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 Array => {
                     // array -> array
                     // todo: we can do much better than this
-                    assert_with(from_info.sub_ty == into_info.sub_ty, "array -> array must have the same sub type");
+                    assert(from_info.sub_ty == into_info.sub_ty, "array -> array must have the same sub type");
                     libc.memcpy(into, found_data, meta.size_of(found_ty));
                 }
                 Slice => {
                     // array -> slice
-                    assert_with(from_info.sub_ty == into_info.sub_ty, "array -> slice must have the same sub type");
+                    assert(from_info.sub_ty == into_info.sub_ty, "array -> slice must have the same sub type");
                     (^mut rawslice).(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
                 }
-                _ => todo_with("only supports array -> array and array -> slice"),
+                _ => todo("only supports array -> array and array -> slice"),
             }
         }
         Slice => {
@@ -728,15 +746,15 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 Array => {
                     // slice -> array
                     // todo: we can do much better than this
-                    assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> array must have the same sub type");
+                    assert(from_info.sub_ty == into_info.sub_ty, "slice -> array must have the same sub type");
                     libc.memcpy(into, found_data, meta.stride_of(into_info.sub_ty) * (^rawslice).(found_data).len);
                 }
                 Slice => {
                     // slice -> slice
-                    assert_with(from_info.sub_ty == into_info.sub_ty, "slice -> slice must have the same sub type");
+                    assert(from_info.sub_ty == into_info.sub_ty, "slice -> slice must have the same sub type");
                     (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
                 }
-                _ => todo_with("only supports slice -> array and slice -> slice"),
+                _ => todo("only supports slice -> array and slice -> slice"),
             }
         }
         Raw_Slice => {
@@ -750,7 +768,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                     // slice -> slice
                     (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
                 }
-                _ => todo_with("only supports slice -> array and slice -> slice"),
+                _ => todo("only supports slice -> array and slice -> slice"),
             }
         }
         Pointer => {
@@ -770,14 +788,14 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
             );    
         }
         Struct => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "struct types can only be casted to themselves",
             );
             libc.memcpy(into, found_data, meta.size_of(found_ty));
         }
         Enum => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "enum types can only be casted to themselves",
             );
@@ -805,14 +823,14 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
             }
         }
         Function => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "function types can only be casted to themselves",
             );
             (^mut usize).(into) ^= (^usize).(found_data)^;
         }
         File => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "file types can only be casted to themselves",
             );
@@ -820,14 +838,14 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
             // do nothing :)
         }
         Meta_Type => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "type ids can only be casted to themselves",
             );
             (^mut type).(into) ^= (^type).(found_data)^;
         }
         Any => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "the any type can only be cast to itself",
             );
@@ -835,7 +853,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
             // do nothing :)
         }
         Void => {
-            assert_with(
+            assert(
                 found_ty == expected,
                 "the void type can only be cast to itself",
             );

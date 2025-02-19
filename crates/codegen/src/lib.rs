@@ -1004,6 +1004,7 @@ mod tests {
 
     #[test]
     fn reflection() {
+        // todo: should probably check that the hex ids are the same as the old ids
         check_files(
             "../../examples/reflection.capy",
             &["../../examples/io.capy"],
@@ -1011,35 +1012,35 @@ mod tests {
             expect![[r#"
                 Reflection!
                 
-                i32                (134218372) : size = 4, align = 4, stride = 4
-                i64                (134218504) : size = 8, align = 8, stride = 8
-                u64                (134217992) : size = 8, align = 8, stride = 8
-                i8                 (134218273) : size = 1, align = 1, stride = 1
-                u128               (134218000) : size = 16, align = 8, stride = 16
-                usize              (134217992) : size = 8, align = 8, stride = 8
-                f32                (201326724) : size = 4, align = 4, stride = 4
-                void               (67108896) : size = 0, align = 1, stride = 0
-                any                (536871184) : size = 16, align = 8, stride = 16
-                rawptr             (671088904) : size = 8, align = 8, stride = 8
-                rawslice           (738197776) : size = 16, align = 8, stride = 16
-                str                (335544584) : size = 8, align = 8, stride = 8
-                bool               (268435489) : size = 1, align = 1, stride = 1
-                char               (402653217) : size = 1, align = 1, stride = 1
-                type               (469762180) : size = 4, align = 4, stride = 4
-                Person             (1073741824) : size = 12, align = 8, stride = 16
-                Foo                (1073741825) : size = 1, align = 1, stride = 1
-                [6] Person         (1207959552) : size = 96, align = 8, stride = 96
-                [ ] Person         (1275068416) : size = 16, align = 8, stride = 16
-                 ^  Person         (1342177280) : size = 8, align = 8, stride = 8
-                distinct Person    (1140850688) : size = 12, align = 8, stride = 16
-                Dessert            (1476395008) : size = 17, align = 8, stride = 24
-                Dessert.Brownie    (1543503876) : size = 0, align = 1, stride = 0
-                Dessert.Apple_Pie  (1543503874) : size = 16, align = 8, stride = 16
-                Dessert.Milkshake  (1543503879) : size = 1, align = 1, stride = 1
-                Farm_Animal        (1476395009) : size = 1, align = 1, stride = 1
-                Farm_Animal.Sheep  (1543503881) : size = 0, align = 1, stride = 0
-                ()       -> void   (1409286144) : size = 8, align = 8, stride = 8
-                (x: i32) -> f32    (1409286145) : size = 8, align = 8, stride = 8
+                i32                (0x08000284) : size = 4, align = 4, stride = 4
+                i64                (0x08000308) : size = 8, align = 8, stride = 8
+                u64                (0x08000108) : size = 8, align = 8, stride = 8
+                i8                 (0x08000221) : size = 1, align = 1, stride = 1
+                u128               (0x08000110) : size = 16, align = 8, stride = 16
+                usize              (0x08000108) : size = 8, align = 8, stride = 8
+                f32                (0x0c000084) : size = 4, align = 4, stride = 4
+                void               (0x4000020) : size = 0, align = 1, stride = 0
+                any                (0x20000110) : size = 16, align = 8, stride = 16
+                rawptr             (0x28000108) : size = 8, align = 8, stride = 8
+                rawslice           (0x2c000110) : size = 16, align = 8, stride = 16
+                str                (0x14000108) : size = 8, align = 8, stride = 8
+                bool               (0x10000021) : size = 1, align = 1, stride = 1
+                char               (0x18000021) : size = 1, align = 1, stride = 1
+                type               (0x1c000084) : size = 4, align = 4, stride = 4
+                Person             (0x040000000) : size = 12, align = 8, stride = 16
+                Foo                (0x040000001) : size = 1, align = 1, stride = 1
+                [6] Person         (0x048000000) : size = 96, align = 8, stride = 96
+                [ ] Person         (0x04c000000) : size = 16, align = 8, stride = 16
+                 ^  Person         (0x050000000) : size = 8, align = 8, stride = 8
+                distinct Person    (0x044000000) : size = 12, align = 8, stride = 16
+                Dessert            (0x058000000) : size = 17, align = 8, stride = 24
+                Dessert.Brownie    (0x05c000004) : size = 0, align = 1, stride = 0
+                Dessert.Apple_Pie  (0x05c000002) : size = 16, align = 8, stride = 16
+                Dessert.Milkshake  (0x05c000007) : size = 1, align = 1, stride = 1
+                Farm_Animal        (0x058000001) : size = 1, align = 1, stride = 1
+                Farm_Animal.Sheep  (0x05c000009) : size = 0, align = 1, stride = 0
+                ()       -> void   (0x054000000) : size = 8, align = 8, stride = 8
+                (x: i32) -> f32    (0x054000001) : size = 8, align = 8, stride = 8
                 
                 i32 == i16 : false
                 i32 == u32 : false
@@ -1323,7 +1324,7 @@ mod tests {
                 any
                 [ 3, -1, 4, 1, 5, 9 ]
                 [ 4, 8, 15, 16, 23, 42 ]
-                [ 1, hello, true, 5.300 ]
+                [ 1, hello, true, 5.030 ]
                 { text = Hello, flag = false, array = [ 1, 2, 3 ] }
                 { hello = world, foo = { bar = { baz = { qux = 1.200 } } } }
                 { warm = true, crumble = false, crust_thickness = 1.300 }
@@ -1336,6 +1337,9 @@ mod tests {
                 ()
                 ()
                 { malt = false }
+                1715004
+                0x1a2b3c
+                0b110100010101100111100
                 
             "#]],
             0,
@@ -2277,7 +2281,7 @@ mod tests {
             "main",
             true,
             expect![["
-            { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.000, d = false, e = \0, f = () }
+            { a = [ [ 0, 0, 0, 0 ], [ 0, 0, 0, 0 ] ], b = 0, c = 0.0, d = false, e = \0, f = () }
 
 "]],
             0,

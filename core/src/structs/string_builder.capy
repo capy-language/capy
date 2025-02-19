@@ -25,7 +25,7 @@ make_with_capacity :: (cap: usize) -> StringBuilder {
     buf := (^mut char).(libc.malloc(cap));
 
     if cap > 0 && ptr.is_null(buf) {
-        core.panic_with("Error allocating the StringBuilder");
+        core.panic("Error allocating the StringBuilder");
     }
 
     StringBuilder.{
@@ -48,7 +48,7 @@ shrink_to_fit :: (self: ^mut StringBuilder) {
         self.cap = self.len;
 
         if self.cap > 0 && ptr.is_null(self.buf) {
-            core.panic_with("Error reallocating the StringBuilder");
+            core.panic("Error reallocating the StringBuilder");
         }
     }
 }
@@ -65,7 +65,7 @@ _grow_by :: (self: ^mut StringBuilder, len: usize) {
         self.cap = new_cap;
 
         if ptr.is_null(self.buf) {
-            core.panic_with("Error reallocating the StringBuilder");
+            core.panic("Error reallocating the StringBuilder");
         }
     }
 }
@@ -88,6 +88,30 @@ append_str :: (self: ^mut StringBuilder, s: str) {
     libc.memcpy(offset, rawptr.(s), len);
     
     self.len = self.len + len;
+}
+
+append_string_builder :: (self: ^mut StringBuilder, other: ^StringBuilder) {
+    _grow_by(self, other.len);
+
+    offset := ptr.mut_offset(self.buf, self.len);
+
+    libc.memcpy(offset, other.buf, other.len);
+    
+    self.len = self.len + other.len;
+}
+
+reverse :: (self: ^mut StringBuilder) {
+    i := 0;
+    j := self.len - 1;
+    temp := 0;
+
+    while i < j {
+        temp = ptr.read(self.buf, i);
+        ptr.write(self.buf, ptr.read(self.buf, j), i);
+        ptr.write(self.buf, temp, j);
+        i = i + 1;
+        j = j - 1;
+    }
 }
 
 as_slice :: (self: ^mut StringBuilder) -> [] char {

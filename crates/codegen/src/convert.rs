@@ -337,7 +337,7 @@ impl ToTyId for Intern<Ty> {
             return id;
         }
 
-        println!("{self:?}");
+        // println!("{self:?}");
 
         assert!(!meta_tys
             .tys_to_compile

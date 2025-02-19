@@ -1953,7 +1953,6 @@ impl Iterator for Descendants<'_> {
                         }
                         Expr::ArrayLiteral { ty, items } => {
                             if let Some(ty) = ty {
-                                println!("include type");
                                 self.todo.push(PossibleDescendant::expr(ty, include_types));
                             }
 

@@ -29,13 +29,13 @@ make_with_capacity :: (ty: type, cap: usize) -> List {
     raw_cap :: cap * core.meta.stride_of(ty);
 
     if raw_cap < cap || raw_cap < core.meta.stride_of(ty) {
-        core.panic_with("overflow when trying to allocate the backing array of a list");
+        core.panic("overflow when trying to allocate the backing array of a list");
     }
 
     buf := (^mut char).(libc.malloc(raw_cap));
 
     if cap > 0 && ptr.is_null(buf) {
-        core.panic_with("Error allocating the List");
+        core.panic("Error allocating the List");
     }
 
     List.{
@@ -65,7 +65,7 @@ push :: (list: ^mut List, value: any) {
 
 get :: (list: ^List, index: usize) -> any {
     if index >= list.len {
-        core.panic_with("called `get` with an index outside the list");
+        core.panic("called `get` with an index outside the list");
     }
 
     core.any_from_raw_parts(
@@ -77,7 +77,7 @@ get :: (list: ^List, index: usize) -> any {
 // todo: return the item
 pop :: (list: ^mut List) {
     if list.len == 0 {
-        core.panic_with("cannot pop from an empty list");
+        core.panic("cannot pop from an empty list");
     }
 
     list.len = list.len - 1;
@@ -127,7 +127,7 @@ _grow_by :: (list: ^mut List, len: usize) {
 	new_cap_raw :: new_cap * ty_stride;
 
 	if new_cap_raw < new_cap || new_cap_raw < ty_stride {
-	    core.panic_with("overflow when trying to grow list");
+	    core.panic("overflow when trying to grow list");
 	}
 	
         list.buf = (^mut char).(libc.realloc(list.buf, new_cap_raw));

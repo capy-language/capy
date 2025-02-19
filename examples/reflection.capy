@@ -1,6 +1,8 @@
 core :: mod "core";
 meta :: core.meta;
-io :: import "io.capy";
+fmt  :: core.fmt; 
+
+io   :: import "io.capy";
 
 imaginary :: distinct i32;
 
@@ -123,7 +125,7 @@ check_any :: () {
     // printing arrays
     core.println(.[3, -1, 4, 1, 5, 9]);
     core.println([]i32.( .[4, 8, 15, 16, 23, 42] )); // forcefully cast the array to a slice (for testing)
-    core.println(any.[1, "hello", true, 5.3]);
+    core.println(any.[1, "hello", true, 5.03]);
 
     // printing structs
     core.println(Bar.{
@@ -167,6 +169,11 @@ check_any :: () {
     core.println(Dessert.(Dessert.Milkshake.{
         malt = false,
     }));
+
+    // formatting
+    core.println(fmt.decimal(0x1a2b3c));
+    core.println("0x", fmt.hex(0x1a2b3c));
+    core.println("0b", fmt.binary(0x1a2b3c));
 }
 
 check_equality :: () {
@@ -238,8 +245,8 @@ check_layouts :: () {
 print_type_layout :: (name: str, ty: type) {
     core.println(
         name,
-        " (",
-        meta.meta_to_raw(ty),
+        " (0x",
+        fmt.hex(meta.meta_to_raw(ty)),
         ") : size = ",
         meta.size_of(ty),
         ", align = ",

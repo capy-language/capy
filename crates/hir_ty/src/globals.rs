@@ -779,13 +779,24 @@ impl GlobalInferenceCtx<'_> {
                             let lhs_ty = self.tys[self.file][*lhs];
                             let rhs_ty = self.tys[self.file][*rhs];
 
+                            let should_print = expr.into_raw().into_u32() == 265;
+                            if should_print {
+                                println!("#265 prev={:?}", self.tys[self.file][expr]);
+                                println!("#265 left={lhs_ty:?}, right={rhs_ty:?}");
+                            }
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
+                                if should_print {
+                                    println!("max = {output_ty:?}");
+                                }
                                 let max_ty = output_ty.max_ty.into();
                                 self.replace_weak_tys(*lhs, max_ty);
                                 self.replace_weak_tys(*rhs, max_ty);
 
                                 output_ty.final_output_ty.into()
                             } else {
+                                if should_print {
+                                    println!("default");
+                                }
                                 op.default_ty().into()
                             }
                         }
@@ -870,21 +881,36 @@ impl GlobalInferenceCtx<'_> {
                         ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
                             || previous_sub_ty.is_equal_to(new_sub_ty)
                     );
+                    // this might happen in the following case:
+                    // ```
+                    // x : u64 = 1;
+                    // y : i64 = 2;
+                    //
+                    // z : i64 = x + y;
+                    // ```
+                    // 1. since `u64 + i64` is invalid, the output of `x + y` is {uint} (the
+                    //    default type of addition).
+                    // 2. since the value of z is {uint}, it gets weak type replaced by {i64}.
+                    // 3. reinfer_expr doesn't know about the weak type replacement, so it
+                    //    attempts to panic here.
+                    let strong_int_to_weak_int = matches!((previous_ty.as_ref(), new_ty.as_ref()), (Ty::UInt(strong_bit_width) | Ty::IInt(strong_bit_width), Ty::UInt(0) | Ty::IInt(0)) if *strong_bit_width != 0);
 
                     if previous_ty != new_ty
                         && !(previous_ty.is_weak_replaceable_by(&new_ty)
                             || loss_of_distinct
-                            || array_to_slice)
+                            || array_to_slice
+                            || strong_int_to_weak_int)
                     {
                         panic!(
-                            "#{} : {:?} is not weak replaceable by {:?}",
+                            "{} #{} : {:?} is not weak replaceable by {:?}",
+                            self.file.debug(self.interner),
                             expr.into_raw(),
                             previous_ty,
                             new_ty
                         );
                     }
 
-                    if !loss_of_distinct {
+                    if !loss_of_distinct && !array_to_slice && !strong_int_to_weak_int {
                         self.tys[self.file].expr_tys.insert(expr, new_ty);
                     }
                 }
@@ -921,21 +947,36 @@ impl GlobalInferenceCtx<'_> {
                             ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
                                 || previous_sub_ty.is_equal_to(new_sub_ty)
                         );
+                        // this might happen in the following case:
+                        // ```
+                        // x : u64 = 1;
+                        // y : i64 = 2;
+                        //
+                        // z : i64 = x + y;
+                        // ```
+                        // 1. since `u64 + i64` is invalid, the output of `x + y` is {uint} (the
+                        //    default type of addition).
+                        // 2. since the value of z is {uint}, it gets weak type replaced by {i64}.
+                        // 3. reinfer_expr doesn't know about the weak type replacement, so it
+                        //    attempts to panic here.
+                        let strong_int_to_weak_int = matches!((previous_ty.as_ref(), new_ty.as_ref()), (Ty::UInt(strong_bit_width) | Ty::IInt(strong_bit_width), Ty::UInt(0) | Ty::IInt(0)) if *strong_bit_width != 0);
 
                         if previous_ty != new_ty
                             && !(previous_ty.is_weak_replaceable_by(&new_ty)
                                 || loss_of_distinct
-                                || array_to_slice)
+                                || array_to_slice
+                                || strong_int_to_weak_int)
                         {
                             panic!(
-                                "#{} : {:?} is not weak replaceable by {:?}",
-                                value.into_raw(),
+                                "{} #{} : {:?} is not weak replaceable by {:?}",
+                                self.file.debug(self.interner),
+                                expr.into_raw(),
                                 previous_ty,
                                 new_ty
                             );
                         }
 
-                        if !loss_of_distinct && !array_to_slice {
+                        if !loss_of_distinct && !array_to_slice && !strong_int_to_weak_int {
                             self.tys[self.file].local_tys.insert(*local_def, new_ty);
                         }
                     }
@@ -1247,6 +1288,11 @@ impl GlobalInferenceCtx<'_> {
                             let lhs_ty = self.tys[self.file][*lhs];
                             let rhs_ty = self.tys[self.file][*rhs];
 
+                            let should_print = expr.into_raw().into_u32() == 265;
+                            if should_print {
+                                println!("- #265 left={lhs_ty:?}, right={rhs_ty:?}");
+                            }
+
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
                                 if *lhs_ty != Ty::Unknown
                                     && *rhs_ty != Ty::Unknown
@@ -1263,6 +1309,10 @@ impl GlobalInferenceCtx<'_> {
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
                                     });
+                                }
+
+                                if should_print {
+                                    println!("- max={output_ty:?}");
                                 }
 
                                 let max_ty = output_ty.max_ty.into();
@@ -1284,7 +1334,13 @@ impl GlobalInferenceCtx<'_> {
                                     help: None,
                                 });
 
-                                op.default_ty().into()
+                                let default = op.default_ty().into();
+
+                                if should_print {
+                                    println!("- default\n- new={default:?}");
+                                }
+
+                                default
                             }
                         }
                         Expr::Unary { expr, op } => {
@@ -1753,11 +1809,6 @@ impl GlobalInferenceCtx<'_> {
                                 }
                                 Ty::Type => {
                                     // this is included for resolving enum variants
-                                    println!(
-                                        "prev #{} : {:?}",
-                                        previous.into_raw(),
-                                        self.tys[self.file][*previous]
-                                    );
                                     self.const_ty(expr)?;
                                     Ty::Type.into()
                                 }
@@ -1856,7 +1907,10 @@ impl GlobalInferenceCtx<'_> {
                                                 .checked_sub(TextSize::new(1))
                                                 .unwrap_or(call_range.end());
 
-                                            if !param.impossible_to_differentiate {
+                                            // TODO: test this != Ty::Unknown
+                                            if !param.impossible_to_differentiate
+                                                && *param_ty != Ty::Unknown
+                                            {
                                                 self.diagnostics.push(TyDiagnostic {
                                                     kind: TyDiagnosticKind::MissingArg {
                                                         expected: param_ty,
@@ -2794,8 +2848,7 @@ impl GlobalInferenceCtx<'_> {
                                 }
                                 _ => {
                                     // todo: remove recursion
-                                    // let expr_ty = self.infer_expr(expr)?;
-                                    let expr_ty = self.tys[self.file][expr];
+                                    let expr_ty = self.infer_expr(expr)?;
 
                                     self.report_non_type(expr, expr_ty);
 

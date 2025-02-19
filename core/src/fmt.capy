@@ -9,139 +9,213 @@ string_builder :: core.string_builder;
 
 StringBuilder :: string_builder.StringBuilder;
 
-i64_to_string :: (n: i64) -> StringBuilder {
-    // idk man i'm just copying rust
-    str := string_builder.make_with_capacity(39);
-    
-    new_len := _write_i64_to_buf(n, true, (^mut u8).((mut rawptr).(str.buf)), 0, 0);
+Number_Formatting :: struct {
+    number: i64,
+    base: u64,
+    signed: bool,
+};
 
-    str.len = new_len;
-
-    string_builder.shrink_to_fit(^mut str);
-
-    str
+binary :: (n: i64) -> Number_Formatting {
+    Number_Formatting.{
+        number = n,
+        base = 2,
+        signed = true,
+    }
 }
 
-u64_to_string :: (n: u64) -> StringBuilder {
-    n := n;
-    digits := core.math.lg_u64(n) + 1;
+binary_unsigned :: (n: u64) -> Number_Formatting {
+    Number_Formatting.{
+        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        base = 2,
+        signed = false,
+    }
+}
+
+hex :: (n: i64) -> Number_Formatting {
+    Number_Formatting.{
+        number = n,
+        base = 16,
+        signed = true,
+    }
+}
+
+hex_unsigned :: (n: u64) -> Number_Formatting {
+    Number_Formatting.{
+        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        base = 16,
+        signed = false,
+    }
+}
+
+decimal :: (n: i64) -> Number_Formatting {
+    Number_Formatting.{
+        number = n,
+        base = 10,
+        signed = true,
+    }
+}
+
+decimal_unsigned :: (n: u64) -> Number_Formatting {
+    Number_Formatting.{
+        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        base = 10,
+        signed = false,
+    }
+}
+
+/// takes in a number with formatting and returns how big the resulting string would be
+int_string_len :: (n: Number_Formatting) -> usize {
+    negative := n.signed && n.number < 0;
+
+    number := if negative {
+        u64.(-1) &~ u64.(n.number) + 1
+    } else {
+        u64.(n.number)
+    };
+    base   := n.base;
+
+    // log_10(1)  == 0
+    // log_10(10) == 1
+    // etc.
+    // therefore +1 is needed
+    digits := if base == 2 {
+        core.math.log2_u64(number) + 1
+    } else if base == 10 {
+        core.math.log10_u64(number) + 1
+    } else {
+        // no +1 here
+        // otherwise it doesn't work
+        core.math.log10_u64(number)/core.math.log10_u64(base)
+    };
+
+    if negative {
+        digits = digits + 1; // +1 for minus sign
+    }
+
+    digits
+}
+
+
+int_to_string :: (n: Number_Formatting) -> StringBuilder {
+    // lena's version of this function was much better than mine so I'm just gonna get rid of mine and add a few extra things to hers
+    negative := n.signed && n.number < 0;
+
+    number := if negative {
+        u64.(-1) &~ u64.(n.number) + 1
+    } else {
+        u64.(n.number)
+    };
+
+    base     := n.base;
+
+    digits   := int_string_len(n);
+
     str := string_builder.make_with_capacity(digits);
     str.len = digits;
 
-    while digits > 0 {
-        remainder :: n % 10;
-        n         =  n / 10;
+    // don't try and do anything for index 0, if the number is negative
+    while digits > u32.(negative) {
+        remainder :: number % u64.(base);
+        number    =  number / u64.(base);
         digits    =  digits - 1;
 
+        zero_to_nine := u8.('9')-u8.('0');
+        a_to_z := zero_to_nine + u8.('z')-u8.('a');
+        A_to_Z := a_to_z + u8.('Z')-u8.('A');
+
+        ch := if remainder <= zero_to_nine {
+            u8.('0') + u8.(remainder)
+        } else if remainder <= a_to_z {
+            u8.('a') + u8.(remainder - zero_to_nine - 1)
+        } else if remainder <= A_to_Z {
+            u8.('A') + u8.(remainder - a_to_z - 1)
+        } else {
+            core.todo("bases this high are not yet supported");
+            0
+        };
+
+        ptr.write(str.buf, ch, digits);
+    }
+
+    if negative {
         ptr.write(
             str.buf,
-            u8.('0') + u8.(remainder),
-            digits
+            u8.('-'),
+            0
         );
     }
 
     str
 }
 
-f64_to_string :: (n: f64) -> StringBuilder {
-    str := string_builder.make_with_capacity(39 * 2 + 1);
+precision               : f64   : 0.00000000000001;
+max_number_string_size  : usize : 32;
 
-    new_len := _write_f64_to_buf(n, (^mut u8).((mut rawptr).(str.buf)), 3);
-
-    str.len = new_len;
-
-    string_builder.shrink_to_fit(^mut str);
-
-    str
+float_string_len :: (n: f64) -> usize {
+    // todo: do something smart
+    max_number_string_size
 }
 
-_reverse_buf :: (buf: ^mut u8, start: usize, len: usize) {
-    i := start;
-    j := len - 1;
-    temp := 0;
+dec_part :: (val: f64) -> i64 {
+    mult := i64.(math.floor(val));
+    val := val;
 
-    while i < j {
-        temp = ptr.read(buf, i);
-        ptr.write(buf, ptr.read(buf, j), i);
-        ptr.write(buf, temp, j);
-        i = i + 1;
-        j = j - 1;
+    while math.floor(val) != math.ceil(val) {
+        mult = mult * 10;
+        val = val * 10;
     }
+
+    i64.(math.floor(val)) - mult
 }
 
-_write_i64_to_buf :: (n: i64, signed: bool, buf: ^mut u8, buf_offset: usize, required_digits: usize) -> usize {
-    idx := buf_offset;
-
-    n := n;
-    is_neg := signed && n < 0;
-    
-    if is_neg {
-        n = -n;
-    }
-
-    if n == 0 {
-        ptr.write(buf, u8.('0'), idx);
-        idx = idx + 1;
-    }
-
-    while n != 0 {
-        remainder := n % 10;
-        n = n / 10;
-
-        ptr.write(buf, u8.('0') + u8.(remainder), idx);
-
-        idx = idx + 1;
-    }
-
-    while idx - buf_offset < required_digits {
-        ptr.write(buf, u8.('0'), idx);
-        idx = idx + 1;
-    }
-
-    if is_neg {
-        ptr.write(buf, u8.('-'), idx);
-        idx = idx + 1;
-    }
-
-    _reverse_buf(buf, buf_offset, idx);
-
-    idx
-}
-
-_write_f64_to_buf :: (n: f64, buf: ^mut u8, afterpoint: usize) -> usize {
+float_to_string :: (n: f64) -> StringBuilder {
     if math.is_NaN(n) {
-        ptr.write(buf, u8.('N'), 0);
-        ptr.write(buf, u8.('a'), 1);
-        ptr.write(buf, u8.('N'), 2);
-        return 3;
+        res := string_builder.make_with_capacity(3);
+        string_builder.append_str(^mut res, "NaN");
+        return res;
     } else if n == math.positive_inf {
-        ptr.write(buf, u8.('+'), 0);
-        ptr.write(buf, u8.('I'), 1);
-        ptr.write(buf, u8.('n'), 2);
-        ptr.write(buf, u8.('f'), 3);
-        return 4;
+        res := string_builder.make_with_capacity(4);
+        string_builder.append_str(^mut res, "+Inf");
+        return res;
     } else if n == math.negative_inf {
-        ptr.write(buf, u8.('-'), 0);
-        ptr.write(buf, u8.('I'), 1);
-        ptr.write(buf, u8.('n'), 2);
-        ptr.write(buf, u8.('f'), 3);
-        return 4;
+        res := string_builder.make_with_capacity(4);
+        string_builder.append_str(^mut res, "-Inf");
+        return res;
+    } else if n == 0.0 {
+        res := string_builder.make_with_capacity(3);
+        string_builder.append_str(^mut res, "0.0");
+        return res;
     }
 
-    ipart := i64.(n);
+    afterpoint : usize : 3;
+
+
+    digits := float_string_len(n);
+    res := string_builder.make_with_capacity(digits);
+
+    ipart := i64.(math.floor(n));
+    front := int_to_string(decimal(ipart));
+    string_builder.append_string_builder(^mut res, ^front);
+    string_builder.free(^mut front);
+
+
+    string_builder.append_char(^mut res, '.');
+
 
     fpart := n - f64.(ipart);
+    fpart = fpart * f64.(math.pow_i32(10, i32.(afterpoint)));
+    fpart := decimal(i64.(fpart));
 
-    idx := _write_i64_to_buf(ipart, true, buf, 0, 0);
+    digits := int_string_len(fpart);
 
-    if afterpoint != 0 {
-        ptr.write(buf, u8.('.'), idx);
-
-        fpart = fpart * f64.(math.pow(10, i32.(afterpoint)));
-
-        // add one for the period
-        idx = _write_i64_to_buf(i64.(fpart), false, buf, idx + 1, afterpoint);
+    while afterpoint - digits > 0 {
+        string_builder.append_char(^mut res, '0');
+        digits = digits + 1;
     }
 
-    idx
+    decimal := int_to_string(fpart);
+    string_builder.append_string_builder(^mut res, ^decimal);
+    string_builder.free(^mut decimal);
+
+    res
 }

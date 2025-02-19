@@ -169,6 +169,7 @@ pub struct ParamTy {
     pub impossible_to_differentiate: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct BinaryOutputTy {
     pub(crate) max_ty: Ty,
     pub(crate) final_output_ty: Ty,

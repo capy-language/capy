@@ -344,9 +344,9 @@ powers_of_two := comptime {
     // array with default value (all zeros)
     array : [3]i32;
 
-    array[0] = math.pow(2, 1);
-    array[1] = math.pow(2, 2);
-    array[2] = math.pow(2, 3);
+    array[0] = math.pow_i32(2, 1);
+    array[1] = math.pow_i32(2, 2);
+    array[2] = math.pow_i32(2, 3);
 
     array
 };

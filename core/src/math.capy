@@ -4,7 +4,7 @@ negative_inf :: comptime -1.0 / 0.0;
 // NaN != NaN, so use is_NaN instead
 NaN :: comptime 0.0 / 0.0;
 
-pow :: (base: i32, exp: i32) -> i32 {
+pow_i32 :: (base: i32, exp: i32) -> i32 {
     result := 1;
 
     i := 0;
@@ -16,10 +16,81 @@ pow :: (base: i32, exp: i32) -> i32 {
     result
 }
 
+pow :: (base: f64, power: f64) -> f64 {
+    // based on https://stackoverflow.com/a/26710645
+    if base == 1 || power == 1 {
+        base
+    } else if power < 0 {
+        1 / pow(base, -power)
+    } else {
+        // b^(log_b(K)) = K
+        // therefore:
+        // b^(log_b(x^y)) = x^y
+        // or,
+        // b^(y * log_b x) = x^y
+        // since b is irrelevant let's just pick e since it's easy
+        exp(power * ln(base))
+    }
+}
+
 euler_const : f64 : 2.718281828459045235;
 taylor_iterations :: 20;
 
+// calculates e^x
+exp :: (x: f64) -> f64 {
+    // based on https://stackoverflow.com/a/26710645
+    // TODO: pick a better implementation
+    max_delta_double :: 1.0e-15;
+
+    pow_int_float :: (base: f64, power: i64) -> f64 {
+        result := 1;
+
+        i := 0;
+        while i < power {
+            result = result * base;
+            i = i + 1;
+        }
+
+        result
+    };
+
+    if x == 1 {
+        euler_const
+    } else if x < 0 {
+        1 / exp(-x)
+    } else {
+        n : i32 = 2;
+        d : f64 = 0;
+        res := 1 + x;
+        `l loop {
+            scalar :: 1_000_000_000_000;
+            // mod"core".libc.puts("exp iter");
+            // printf("delta = %lli\n", i64.(d * scalar));
+            // printf("m     = %lli\n", i64.(max_delta_double * scalar));
+            // printf("d > m = %lli\n", i64.(d > max_delta_double));
+            if d != d {
+                mod"core".libc.exit(1);
+            }
+            d = x;
+
+            i := 2;
+            while i <= n {
+                d = d * (x / i);
+                i = i + 1;
+            }
+
+            res = res + d;
+            n = n + 1;
+
+            if d < max_delta_double {
+                break l` res;
+            }
+        }
+    }
+}
+
 ln :: (x: f64) -> f64 {
+    // i forgot where i got this from originally
     if x <= 0 {
         return 0 / 0;
     }
@@ -53,6 +124,10 @@ ln :: (x: f64) -> f64 {
 
 log10 :: (x: f64) -> f64 {
     ln(x) / comptime ln(10)
+}
+
+log2 :: (x: f64) -> f64 {
+    ln(x) / comptime ln(2)
 }
 
 max_usize :: (x: usize, y: usize) -> usize {
@@ -108,7 +183,7 @@ log2_u64 :: (n: u64) -> u64 {
 
 // logarithm base 10 of unsigned 64 bit integers
 // returns 0 if n == 0
-lg_u64 :: (n: u64) -> u64 {
+log10_u64 :: (n: u64) -> u64 {
     pows_of_10 :: comptime {
         arr : [20] u64;
         i := 0;
@@ -126,4 +201,32 @@ lg_u64 :: (n: u64) -> u64 {
 
     t :: (((log2_u64(n) + 1) * 1233) >> 12);
     t - u64.(n < pows_of_10[t])
+}
+
+abs :: (n: f64) -> f64 {
+    if n >= 0 {
+        n
+    } else {
+        -n
+    }
+}
+
+floor :: (n: f64) -> f64 {
+    if n >= 0 {
+        f64.(i64.(n))
+    } else {
+        // f64 -> u64 truncates, it doesn't floor
+        // i.e. floor(-3.1) has to return -4, not -3
+        f64.(i64.(n)) - 1
+    }
+}
+
+ceil :: (n: f64) -> f64 {
+    if n >= 0 {
+        // f64 -> u64 truncates, it doesn't ceil
+        // i.e. ceil(3.1) has to return 4, not 3
+        f64.(i64.(n)) + 1
+    } else {
+        f64.(i64.(n))
+    }
 }
