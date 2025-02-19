@@ -32,35 +32,25 @@ main :: () {
 do_animal_stuff :: (animal: Animal) {
     num := animal_to_num(animal);
 
-    core.print("[");
-    core.print(num);
-    core.print("] ");
+    core.print("[", num, "] ");
 
     switch a in animal {
         Cat => core.print("cat!"),
         Dog => {
-            core.print("dog: ");
-            core.print(a);
+            core.print("dog: ", a);
         },
         Fish => {
-            core.print("it was a fish (age = ");
-            core.print(a);
-            core.print(")");
+            core.print("it was a fish (age = ", a, ")");
         },
         Cow => core.print("cow!!!"),
         Chicken => core.print("chicken >>>"),
         Pig => core.print("oink oink"),
         Sheep => {
-            core.print("sheep: ");
-            core.print(a.name);
-            core.print(", wool: ");
-            core.print(a.wool_amount);
-            core.print(", fullness: ");
-            core.print(a.fullness);
+            core.print("sheep: ", a.name, ", wool: ", a.wool_amount, ", fullness: ", a.fullness);
         },
     }
 
-    core.println("");
+    core.println();
 }
 
 animal_to_num :: (animal: Animal) -> u16 {

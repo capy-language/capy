@@ -95,13 +95,31 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         }
     };
 
+    let mut diagnostics = quote!();
+
     let mut at_end = false;
     let mut entries = quote!();
     for line in file
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with("//"))
     {
-        let parts = line.splitn(3, ' ').collect::<Vec<_>>();
+        let mut parts = Vec::new();
+        let mut latest = String::new();
+        for ch in line.chars() {
+            if ch.is_whitespace() && parts.len() < 2 {
+                if !latest.is_empty() {
+                    parts.push(latest.clone());
+                    latest.clear();
+                }
+            } else {
+                latest.push(ch);
+            }
+        }
+        if !latest.is_empty() {
+            parts.push(latest.clone());
+            latest.clear();
+        }
+
         if parts.len() != 1 && parts.len() != 3 {
             let msg = format!("`{}` not one or three parts", line);
             return quote_spanned! {
@@ -110,7 +128,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
             .into();
         }
 
-        let name = format_ident!("{}", parts[0]);
+        let mut name = format_ident!("{}", parts[0]);
 
         if parts[0].starts_with("__") {
             at_end = true
@@ -122,19 +140,14 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         }
 
         match enum_ty {
-            EnumTy::Full if parts.len() == 3 => {
-                let equals = parts[1];
-                if equals != "=" {
-                    let msg = format!("expected equals sign, found `{}`", equals);
-                    return quote_spanned! {
-                        input[4].span().into() => compile_error!(#msg)
-                    }
-                    .into();
-                }
-                let value = parts[2].trim();
+            EnumTy::Full if parts.len() == 3 && parts[1] == "=" => {
+                let value = &parts[2];
                 let docs = format!("represents `{}`", value);
 
                 let tag = if value.starts_with('/') {
+                    let (value, _) = value.split_once("|=>").unwrap_or((value, ""));
+                    let value = value.trim();
+
                     let regex = value
                         .strip_prefix('/')
                         .unwrap()
@@ -161,9 +174,12 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                         #[token(#token)]
                     }
                 } else if value == "!" {
+                    diagnostics.extend(quote! {
+                        #enum_name::#name => "an unrecognized token",
+                    });
+
                     quote! {
                         #[doc = "represents an error value"]
-                        #[error]
                     }
                 } else {
                     let msg = format!("expected regex, token, or `!`, but found {}", value);
@@ -172,6 +188,7 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                     }
                     .into();
                 };
+
                 entries.extend(quote! {
                     #tag
                     #name,
@@ -184,13 +201,72 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                 });
             }
             EnumTy::Stripped => {
+                if parts[0].starts_with("__") {
+                    continue;
+                }
+                if let Some(stripped) = parts[0].strip_prefix('_') {
+                    name = format_ident!("{}", stripped);
+                }
+
                 let tag = if parts.len() == 3 {
                     let value = parts[2].trim();
 
+                    if parts[1] == "|=>" {
+                        let diagnostic_name = value
+                            .strip_prefix('\'')
+                            .unwrap()
+                            .strip_suffix('\'')
+                            .unwrap()
+                            .replace("\\r", "\r")
+                            .replace("\\n", "\n");
+
+                        diagnostics.extend(quote! {
+                            #enum_name::#name => #diagnostic_name,
+                        });
+                    } else if let Some((_, diagnostic_name)) = value.split_once("|=>") {
+                        let diagnostic_name = diagnostic_name.trim();
+
+                        let diagnostic_name = diagnostic_name
+                            .strip_prefix('\'')
+                            .unwrap()
+                            .strip_suffix('\'')
+                            .unwrap()
+                            .replace("\\r", "\r")
+                            .replace("\\n", "\n");
+
+                        diagnostics.extend(quote! {
+                            #enum_name::#name => #diagnostic_name,
+                        });
+                    } else {
+                        if !value.starts_with('\'') {
+                            let msg = format!("`{name}` must have diagnostic name");
+                            return quote_spanned! {
+                                input[4].span().into() => compile_error!(#msg)
+                            }
+                            .into();
+                        }
+
+                        let token = value
+                            .strip_prefix('\'')
+                            .unwrap()
+                            .strip_suffix('\'')
+                            .unwrap()
+                            .replace("\\r", "\r")
+                            .replace("\\n", "\n");
+
+                        let diagnostic_name = format!("`{token}`");
+
+                        diagnostics.extend(quote! {
+                            #enum_name::#name => #diagnostic_name,
+                        });
+                    }
+
                     let doc = if value == "!" {
                         "represents an error value".to_string()
-                    } else {
+                    } else if value.starts_with('\'') {
                         format!("represents `{}`", value)
+                    } else {
+                        "custom defined token".to_string()
                     };
                     quote! {
                         #[doc = #doc]
@@ -201,20 +277,10 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
                     }
                 };
 
-                if parts[0].starts_with("__") {
-                    continue;
-                } else if parts[0].starts_with('_') {
-                    let name = format_ident!("{}", parts[0].strip_prefix('_').unwrap());
-                    entries.extend(quote! {
-                        #tag
-                        #name,
-                    });
-                } else {
-                    entries.extend(quote! {
-                        #tag
-                        #name,
-                    });
-                }
+                entries.extend(quote! {
+                    #tag
+                    #name,
+                });
             }
         }
     }
@@ -228,6 +294,19 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         },
     };
 
+    let diagnostics = match enum_ty {
+        EnumTy::Full => quote!(),
+        EnumTy::Stripped => quote! {
+            impl #enum_name {
+                pub fn to_str(self) -> &'static str {
+                    match self {
+                        #diagnostics
+                    }
+                }
+            }
+        },
+    };
+
     quote! {
         /// Represents a token in a Capy program.
         ///
@@ -236,6 +315,8 @@ pub fn define_token_enum(input: TokenStream) -> TokenStream {
         pub enum #enum_name {
             #entries
         }
+
+        #diagnostics
     }
     .into()
 }

@@ -258,20 +258,15 @@ switch e in clicked {
     Page_Unload => core.println("page unloaded"),
     Key_Press => {
         // type_of(e) == char
-        core.print("pressed key: ");
-        core.println(e);
+        core.println("pressed key: ", e);
     },
     Paste => {
         // type_of(e) == str
-        core.print("pasted: ");
-        core.println(e);
+        core.println("pasted: ", e);
     }
     Click => {
         // type_of(e) == struct { x: i64, y: i64 }
-        core.print("clicked at x=");
-        core.print(e.x);
-        core.print(", y=");
-        core.println(e.y);
+        core.println("clicked at x=", e.x, ", y=", e.y);
     }
 }
 ```
@@ -330,7 +325,7 @@ With that, here are all the possible types data can have in Capy:
 15. Files       (when you import a file, that file is actually its own type)
 16. `type`      (types are first-class and `i32` when used as a value has the type `type`)
 17. `any`       (a reference type, explained later)
-18. `rawptr`, `mut rawptr`  (an opaque pointer, like void* in C)
+18. `rawptr`, `mut rawptr`  (opaque pointers, like void* in C)
 19. `rawslice`              (an opaque slice)
 20. `void`
 
@@ -446,6 +441,7 @@ core.println(greeting);
 ```
 
 `any` internally contains a type ID and a rawptr. `core.println` uses a lot of reflection on this type ID to determine how to display the pointer.
+
 Reflection is extremely useful, and allows for things like a `debug` function that doesn't need to be implemented manually for all types (like Rust), or making it easy to
 serialize and deserialize structs.
 

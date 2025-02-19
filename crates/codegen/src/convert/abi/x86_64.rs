@@ -1,5 +1,5 @@
 use cranelift::codegen::ir::{self, Type};
-use hir_ty::Ty;
+use hir_ty::{ParamTy, Ty};
 use internment::Intern;
 use tinyvec::{array_vec, ArrayVec};
 
@@ -180,7 +180,7 @@ pub fn split_aggregate(aggr: Intern<Ty>, cls: &[Class]) -> ArrayVec<[Type; 4]> {
     tys
 }
 
-pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[ParamTy], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
 
     let push_direct = |arg: Intern<Ty>, cls: &[_], to: &mut Vec<_>, idx: u16| {
@@ -217,10 +217,10 @@ pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
         }
     }
     for (idx, arg) in args.iter().enumerate() {
-        if arg.is_zero_sized() {
+        if arg.ty.is_zero_sized() {
             continue;
         }
-        if let Some(classes) = classify_arg(*arg) {
+        if let Some(classes) = classify_arg(arg.ty) {
             let mut needed_int = 0;
             let mut needed_sse = 0;
             for c in classes {
@@ -241,17 +241,17 @@ pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
                     // this lint is wrong in this situation, as they are read when performing
                     // the `checked_sub` above
                     let (_, _) = (int_regs, sse_regs);
-                    push_direct(*arg, &classes, &mut sig.args, idx.try_into().unwrap())
+                    push_direct(arg.ty, &classes, &mut sig.args, idx.try_into().unwrap())
                 }
                 _ => {
-                    if arg.is_aggregate() {
+                    if arg.ty.is_aggregate() {
                         sig.args.push((
-                            PassMode::indirect_by_val(arg.stride().next_multiple_of(8) as usize),
+                            PassMode::indirect_by_val(arg.ty.stride().next_multiple_of(8) as usize),
                             idx.try_into().unwrap(),
                         ))
                     } else {
                         sig.args.push((
-                            PassMode::direct(arg.get_final_ty().into_real_type().unwrap()),
+                            PassMode::direct(arg.ty.get_final_ty().into_real_type().unwrap()),
                             idx.try_into().unwrap(),
                         ))
                     }
@@ -259,7 +259,7 @@ pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
             }
         } else {
             sig.args.push((
-                PassMode::indirect_by_val(arg.stride().next_multiple_of(8) as usize),
+                PassMode::indirect_by_val(arg.ty.stride().next_multiple_of(8) as usize),
                 idx.try_into().unwrap(),
             ))
         }

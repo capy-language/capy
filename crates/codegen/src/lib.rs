@@ -1619,10 +1619,7 @@ mod tests {
                             break loop {
                                 res := fib(x);
                                 if res > 1_000 {
-                                    core.print("fib(");
-                                    core.print(x);
-                                    core.print(") = ");
-                                    core.println(res);
+                                    core.println("fib(", x, ") = ", res);
                                     break x;
                                 }
                                 x = x + 1;
@@ -2396,15 +2393,11 @@ mod tests {
                 main :: () {
                     list : [3]u32 = .[1, 2, 3];
 
-                    core.print(core.type_of(list));
-                    core.print(" : ");
-                    core.println(list);
+                    core.println(core.type_of(list), " : ", list);
 
                     list := [3]f64.(list);
 
-                    core.print(core.type_of(list));
-                    core.print(" : ");
-                    core.println(list);
+                    core.println(core.type_of(list), " : ", list);
                 };
             "#,
             "main",
@@ -2475,10 +2468,7 @@ mod tests {
                 main :: () {
                     idx := 0;
                     while idx < core.args.len {
-                        core.print("arg(");
-                        core.print(idx);
-                        core.print(") = ");
-                        core.println(core.args[idx]);
+                        core.println("arg(", idx, ") = ", core.args[idx]);
 
                         idx = idx + 1;
                     }
@@ -2489,7 +2479,7 @@ mod tests {
             &["hello", "world!", "wow look at this arg", "foo=bar"],
             if cfg!(windows) {
                 expect![["
-                arg(0) = test-temp\\73c274e.exe
+                arg(0) = test-temp\\14e703d.exe
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2498,7 +2488,7 @@ mod tests {
 "]]
             } else {
                 expect![["
-                arg(0) = test-temp/73c274e
+                arg(0) = test-temp/14e703d
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg

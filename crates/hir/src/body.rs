@@ -294,7 +294,16 @@ pub struct Lambda {
 pub struct Param {
     pub name: Option<Name>,
     pub ty: Idx<Expr>,
+    pub varargs: bool,
+    pub range: TextRange,
 }
+
+// #[derive(Debug, Clone)]
+// pub struct Argument {
+//     pub value: Idx<Expr>,
+//     // `hir_ty` will update this with the correct
+//     pub associated_param: usize,
+// }
 
 /// Fully qualified lambda
 #[derive(Debug, Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq)]
@@ -632,6 +641,8 @@ impl<'a> Ctx<'a> {
                 params.push(Param {
                     name: key.map(Name),
                     ty,
+                    varargs: param.ellipsis(self.tree).is_some(),
+                    range: param.range(self.tree),
                 });
 
                 if let Some(key) = key {
@@ -1821,6 +1832,35 @@ pub enum Descendant {
     Stmt(Idx<Stmt>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PossibleDescendant {
+    descendant: Descendant,
+    actually_return: bool,
+}
+
+impl PossibleDescendant {
+    fn expr(expr: Idx<Expr>, actually_return: bool) -> Self {
+        Self {
+            descendant: Descendant::Expr(expr),
+            actually_return,
+        }
+    }
+
+    fn maybe_expr(expr: Option<Idx<Expr>>, actually_return: bool) -> Option<Self> {
+        expr.map(|expr| Self {
+            descendant: Descendant::Expr(expr),
+            actually_return,
+        })
+    }
+
+    fn stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
+        Self {
+            descendant: Descendant::Stmt(stmt),
+            actually_return,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum DescentOpts<'a> {
     /// Doesn't include anything within lambdas.
@@ -1870,310 +1910,361 @@ pub enum DescentOpts<'a> {
 pub struct Descendants<'a> {
     bodies: &'a Bodies,
     opts: DescentOpts<'a>,
-    todo: Vec<Descendant>,
+    todo: Vec<PossibleDescendant>,
 }
 
 impl Iterator for Descendants<'_> {
     type Item = Descendant;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.todo.pop()?;
+        loop {
+            let PossibleDescendant {
+                descendant: next,
+                actually_return,
+            } = self.todo.pop()?;
 
-        let include_eval = matches!(
-            self.opts,
-            DescentOpts::Infer | DescentOpts::Reinfer | DescentOpts::All { .. }
-        );
-        let include_types = matches!(
-            self.opts,
-            DescentOpts::Types { .. } | DescentOpts::All { .. }
-        );
-        let is_all = matches!(self.opts, DescentOpts::All { .. });
+            let include_eval = matches!(
+                self.opts,
+                DescentOpts::Infer | DescentOpts::Reinfer | DescentOpts::All { .. }
+            );
+            let include_types = matches!(
+                self.opts,
+                DescentOpts::Types { .. } | DescentOpts::All { .. }
+            );
+            let is_all = matches!(self.opts, DescentOpts::All { .. });
 
-        match next {
-            Descendant::Expr(expr) => match self.bodies[expr].clone() {
-                Expr::Missing => {}
-                Expr::IntLiteral(_) => {}
-                Expr::FloatLiteral(_) => {}
-                Expr::BoolLiteral(_) => {}
-                Expr::StringLiteral(_) => {}
-                Expr::CharLiteral(_) => {}
-                Expr::ArrayDecl { size, ty } => {
-                    if is_all {
-                        if let Some(size) = size {
-                            self.todo.push(Descendant::Expr(size));
-                        }
-                    }
+            match next {
+                Descendant::Expr(expr) => {
+                    match self.bodies[expr].clone() {
+                        Expr::Missing => {}
+                        Expr::IntLiteral(_) => {}
+                        Expr::FloatLiteral(_) => {}
+                        Expr::BoolLiteral(_) => {}
+                        Expr::StringLiteral(_) => {}
+                        Expr::CharLiteral(_) => {}
+                        Expr::ArrayDecl { size, ty } => {
+                            if include_eval {
+                                if let Some(size) = size {
+                                    self.todo.push(PossibleDescendant::expr(size, true));
+                                }
+                            }
 
-                    if include_types {
-                        self.todo.push(Descendant::Expr(ty));
-                    }
-                }
-                Expr::ArrayLiteral { ty, items } => {
-                    if include_types {
-                        if let Some(ty) = ty {
-                            self.todo.push(Descendant::Expr(ty));
+                            self.todo.push(PossibleDescendant::expr(ty, include_types));
                         }
-                    }
+                        Expr::ArrayLiteral { ty, items } => {
+                            if let Some(ty) = ty {
+                                println!("include type");
+                                self.todo.push(PossibleDescendant::expr(ty, include_types));
+                            }
 
-                    if include_eval {
-                        self.todo
-                            .extend(items.into_iter().rev().map(Descendant::Expr));
-                    }
-                }
-                Expr::Index { source, index } => {
-                    self.todo.push(Descendant::Expr(source));
-                    self.todo.push(Descendant::Expr(index));
-                }
-                Expr::Ref { expr, .. } => {
-                    self.todo.push(Descendant::Expr(expr));
-                }
-                Expr::Cast { expr: None, .. } => {}
-                Expr::Cast {
-                    expr: Some(expr), ..
-                }
-                | Expr::Deref { pointer: expr }
-                | Expr::Unary { expr, .. }
-                | Expr::Member { previous: expr, .. } => {
-                    if include_eval {
-                        self.todo.push(Descendant::Expr(expr));
-                    }
-                }
-                Expr::Binary { lhs, rhs, .. } => {
-                    self.todo.push(Descendant::Expr(lhs));
-                    self.todo.push(Descendant::Expr(rhs));
-                }
-                Expr::Paren(Some(expr)) => self.todo.push(Descendant::Expr(expr)),
-                Expr::Paren(None) => {}
-                Expr::Block { stmts, tail_expr } => match self.opts {
-                    DescentOpts::Infer | DescentOpts::All { .. } => {
-                        self.todo.extend(stmts.into_iter().map(Descendant::Stmt));
-
-                        if let Some(tail_expr) = tail_expr {
-                            self.todo.push(Descendant::Expr(tail_expr));
-                        }
-                    }
-                    DescentOpts::Reinfer => {
-                        if let Some(id) = self.bodies.block_to_scope_id(expr) {
-                            self.todo.extend(
-                                self.bodies
-                                    .scope_id_usages(id)
-                                    .iter()
-                                    .copied()
-                                    .map(Descendant::Stmt),
-                            )
-                        }
-
-                        if let Some(tail_expr) = tail_expr {
-                            self.todo.push(Descendant::Expr(tail_expr));
-                        }
-                    }
-                    DescentOpts::Types { .. } => {}
-                },
-                Expr::If {
-                    condition,
-                    body,
-                    else_branch,
-                } => {
-                    self.todo.push(Descendant::Expr(condition));
-                    self.todo.push(Descendant::Expr(body));
-                    if let Some(else_branch) = else_branch {
-                        self.todo.push(Descendant::Expr(else_branch));
-                    }
-                }
-                Expr::While { condition, body } => match self.opts {
-                    DescentOpts::Infer | DescentOpts::All { .. } => {
-                        if let Some(condition) = condition {
-                            self.todo.push(Descendant::Expr(condition));
-                        }
-                        self.todo.push(Descendant::Expr(body));
-                    }
-                    DescentOpts::Reinfer => {
-                        if condition.is_none() {
-                            if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                            if include_eval {
                                 self.todo.extend(
-                                    self.bodies
-                                        .scope_id_usages(id)
-                                        .iter()
-                                        .copied()
-                                        .map(Descendant::Stmt),
+                                    items
+                                        .into_iter()
+                                        .rev()
+                                        .map(|expr| PossibleDescendant::expr(expr, true)),
                                 );
                             }
                         }
-                    }
-                    DescentOpts::Types { .. } => {}
-                },
-                Expr::Switch {
-                    scrutinee,
-                    arms,
-                    default,
-                    ..
-                } => match self.opts {
-                    DescentOpts::Infer | DescentOpts::All { .. } => {
-                        self.todo.push(Descendant::Expr(scrutinee));
-                        for arm in arms {
-                            self.todo.push(Descendant::Expr(arm.body));
+                        Expr::Index { source, index } => {
+                            self.todo
+                                .push(PossibleDescendant::expr(source, actually_return));
+                            self.todo
+                                .push(PossibleDescendant::expr(index, actually_return));
                         }
-                        // TODO: this might cause unexpected behavior where the default is written
-                        // first but it is processed by hir_ty last.
-                        if let Some(default) = default {
-                            self.todo.push(Descendant::Expr(default.body));
+                        Expr::Ref { expr, .. } => {
+                            self.todo
+                                .push(PossibleDescendant::expr(expr, actually_return));
                         }
-                    }
-                    DescentOpts::Reinfer => {
-                        // todo: maybe don't do this
-                        self.todo.push(Descendant::Expr(scrutinee));
-                        for arm in arms {
-                            self.todo.push(Descendant::Expr(arm.body));
-                        }
-                        if let Some(default) = default {
-                            self.todo.push(Descendant::Expr(default.body));
-                        }
-                    }
-                    DescentOpts::Types { .. } => {}
-                },
-                Expr::Local(local_def) => {
-                    if let DescentOpts::Types {
-                        include_local_value,
-                    } = self.opts
-                    {
-                        if include_local_value(local_def) {
-                            let local_def = &self.bodies[local_def];
+                        Expr::Cast { expr: None, .. } => {}
+                        Expr::Cast {
+                            expr: Some(expr),
+                            ty,
+                        } => {
+                            self.todo.push(PossibleDescendant::expr(ty, include_types));
 
-                            if let Some(value) = local_def.value {
-                                self.todo.push(Descendant::Expr(value));
+                            if include_eval {
+                                self.todo
+                                    .push(PossibleDescendant::expr(expr, actually_return));
                             }
                         }
-                    }
-                }
-                Expr::SwitchLocal(_) => {}
-                Expr::Param { .. } => {}
-                Expr::LocalGlobal(_) => {}
-                Expr::Call { callee, args } => {
-                    self.todo.push(Descendant::Expr(callee));
-                    self.todo
-                        .extend(args.into_iter().rev().map(Descendant::Expr));
-                }
-                Expr::Lambda(lambda) => {
-                    if include_types {
-                        let lambda = &self.bodies[lambda];
-
-                        self.todo.extend(
-                            lambda
-                                .params
-                                .iter()
-                                .rev()
-                                .map(|param| Descendant::Expr(param.ty)),
-                        );
-
-                        if let Some(return_ty) = lambda.return_ty {
-                            self.todo.push(Descendant::Expr(return_ty));
-                        }
-
-                        let is_type = !lambda.is_extern
-                            && lambda.return_ty.is_some()
-                            && self.bodies[lambda.body] == Expr::Missing;
-
-                        if matches!(
-                            self.opts,
-                            DescentOpts::All {
-                                include_lambdas: true
+                        Expr::Deref { pointer: expr } | Expr::Unary { expr, .. } => {
+                            if include_eval {
+                                self.todo
+                                    .push(PossibleDescendant::expr(expr, actually_return));
                             }
-                        ) && !lambda.is_extern
-                            && !is_type
-                        {
-                            self.todo.push(Descendant::Expr(lambda.body));
                         }
-                    }
-                }
-                Expr::Comptime(comptime) => {
-                    if include_eval {
-                        let comptime = self.bodies[comptime];
+                        Expr::Member { previous, .. } => {
+                            if include_eval {
+                                self.todo.push(PossibleDescendant::expr(previous, true));
+                            }
+                        }
+                        Expr::Binary { lhs, rhs, .. } => {
+                            self.todo
+                                .push(PossibleDescendant::expr(lhs, actually_return));
+                            self.todo
+                                .push(PossibleDescendant::expr(rhs, actually_return));
+                        }
+                        Expr::Paren(Some(expr)) => self
+                            .todo
+                            .push(PossibleDescendant::expr(expr, actually_return)),
+                        Expr::Paren(None) => {}
+                        Expr::Block { stmts, tail_expr } => match self.opts {
+                            DescentOpts::Infer | DescentOpts::All { .. } => {
+                                self.todo.extend(
+                                    stmts.into_iter().map(|stmt| {
+                                        PossibleDescendant::stmt(stmt, actually_return)
+                                    }),
+                                );
 
-                        self.todo.push(Descendant::Expr(comptime.body));
-                    }
-                }
-                Expr::StructLiteral { ty, members, .. } => {
-                    if is_all {
-                        if let Some(ty) = ty {
-                            self.todo.push(Descendant::Expr(ty));
+                                if let Some(tail_expr) = tail_expr {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(tail_expr, actually_return));
+                                }
+                            }
+                            DescentOpts::Reinfer => {
+                                if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                                    self.todo.extend(
+                                        self.bodies.scope_id_usages(id).iter().copied().map(
+                                            |stmt| PossibleDescendant::stmt(stmt, actually_return),
+                                        ),
+                                    )
+                                }
+
+                                if let Some(tail_expr) = tail_expr {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(tail_expr, actually_return));
+                                }
+                            }
+                            DescentOpts::Types { .. } => {}
+                        },
+                        Expr::If {
+                            condition,
+                            body,
+                            else_branch,
+                        } => {
+                            self.todo
+                                .push(PossibleDescendant::expr(condition, actually_return));
+                            self.todo
+                                .push(PossibleDescendant::expr(body, actually_return));
+                            if let Some(else_branch) = else_branch {
+                                self.todo
+                                    .push(PossibleDescendant::expr(else_branch, actually_return));
+                            }
                         }
+                        Expr::While { condition, body } => match self.opts {
+                            DescentOpts::Infer | DescentOpts::All { .. } => {
+                                if let Some(condition) = condition {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(condition, actually_return));
+                                }
+                                self.todo
+                                    .push(PossibleDescendant::expr(body, actually_return));
+                            }
+                            DescentOpts::Reinfer => {
+                                if condition.is_none() {
+                                    if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                                        self.todo.extend(
+                                            self.bodies.scope_id_usages(id).iter().copied().map(
+                                                |stmt| {
+                                                    PossibleDescendant::stmt(stmt, actually_return)
+                                                },
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            DescentOpts::Types { .. } => {}
+                        },
+                        Expr::Switch {
+                            scrutinee,
+                            arms,
+                            default,
+                            ..
+                        } => match self.opts {
+                            DescentOpts::Infer | DescentOpts::All { .. } => {
+                                self.todo
+                                    .push(PossibleDescendant::expr(scrutinee, actually_return));
+                                for arm in arms {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(arm.body, actually_return));
+                                }
+                                // TODO: this might cause unexpected behavior where the default is written
+                                // first but it is processed by hir_ty last.
+                                if let Some(default) = default {
+                                    self.todo.push(PossibleDescendant::expr(
+                                        default.body,
+                                        actually_return,
+                                    ));
+                                }
+                            }
+                            DescentOpts::Reinfer => {
+                                // todo: maybe don't do this
+                                self.todo
+                                    .push(PossibleDescendant::expr(scrutinee, actually_return));
+                                for arm in arms {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(arm.body, actually_return));
+                                }
+                                if let Some(default) = default {
+                                    self.todo.push(PossibleDescendant::expr(
+                                        default.body,
+                                        actually_return,
+                                    ));
+                                }
+                            }
+                            DescentOpts::Types { .. } => {}
+                        },
+                        Expr::Local(local_def) => {
+                            if let DescentOpts::Types {
+                                include_local_value,
+                            } = self.opts
+                            {
+                                if include_local_value(local_def) {
+                                    let local_def = &self.bodies[local_def];
+
+                                    if let Some(value) = local_def.value {
+                                        self.todo
+                                            .push(PossibleDescendant::expr(value, actually_return));
+                                    }
+                                }
+                            }
+                        }
+                        Expr::SwitchLocal(_) => {}
+                        Expr::Param { .. } => {}
+                        Expr::LocalGlobal(_) => {}
+                        Expr::Call { callee, args } => {
+                            self.todo
+                                .push(PossibleDescendant::expr(callee, actually_return));
+                            self.todo.extend(
+                                args.into_iter()
+                                    .rev()
+                                    .map(|expr| PossibleDescendant::expr(expr, actually_return)),
+                            );
+                        }
+                        Expr::Lambda(lambda) => {
+                            let lambda = &self.bodies[lambda];
+
+                            self.todo.extend(
+                                lambda
+                                    .params
+                                    .iter()
+                                    .rev()
+                                    .map(|param| PossibleDescendant::expr(param.ty, include_types)),
+                            );
+
+                            if let Some(return_ty) = lambda.return_ty {
+                                self.todo
+                                    .push(PossibleDescendant::expr(return_ty, include_types));
+                            }
+
+                            let is_type = !lambda.is_extern
+                                && lambda.return_ty.is_some()
+                                && self.bodies[lambda.body] == Expr::Missing;
+
+                            if matches!(
+                                self.opts,
+                                DescentOpts::All {
+                                    include_lambdas: true
+                                }
+                            ) && !lambda.is_extern
+                                && !is_type
+                            {
+                                self.todo
+                                    .push(PossibleDescendant::expr(lambda.body, include_types));
+                            }
+                        }
+                        Expr::Comptime(comptime) => {
+                            if include_eval {
+                                let comptime = self.bodies[comptime];
+
+                                self.todo
+                                    .push(PossibleDescendant::expr(comptime.body, actually_return));
+                            }
+                        }
+                        Expr::StructLiteral { ty, members, .. } => {
+                            if let Some(ty) = ty {
+                                self.todo.push(PossibleDescendant::expr(ty, is_all));
+                            }
+
+                            self.todo.extend(members.into_iter().rev().map(
+                                |MemberLiteral { value, .. }| {
+                                    PossibleDescendant::expr(value, actually_return)
+                                },
+                            ));
+                        }
+                        Expr::Distinct { ty, .. } => {
+                            self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        }
+                        Expr::PrimitiveTy(_) => {}
+                        Expr::StructDecl { members, .. } => {
+                            self.todo.extend(members.into_iter().map(
+                                |MemberDecl { ty, .. }| PossibleDescendant::expr(ty, include_types),
+                            ));
+                        }
+                        Expr::EnumDecl { variants, .. } => {
+                            self.todo.extend(
+                                variants
+                                    .into_iter()
+                                    .flat_map(
+                                        |VariantDecl {
+                                             ty, discriminant, ..
+                                         }| {
+                                            [
+                                                PossibleDescendant::maybe_expr(ty, include_types),
+                                                PossibleDescendant::maybe_expr(
+                                                    discriminant,
+                                                    include_eval,
+                                                ),
+                                            ]
+                                        },
+                                    )
+                                    .flatten(),
+                            );
+                        }
+                        Expr::Import(_) => {}
                     }
-                    self.todo.extend(
-                        members
-                            .into_iter()
-                            .rev()
-                            .map(|MemberLiteral { value, .. }| Descendant::Expr(value)),
-                    );
                 }
-                Expr::Distinct { ty, .. } => {
-                    if include_types {
-                        self.todo.push(Descendant::Expr(ty));
-                    }
-                }
-                Expr::PrimitiveTy(_) => {}
-                Expr::StructDecl { members, .. } => {
-                    if include_types {
-                        self.todo.extend(
-                            members
-                                .into_iter()
-                                .map(|MemberDecl { ty, .. }| Descendant::Expr(ty)),
-                        );
-                    }
-                }
-                Expr::EnumDecl { variants, .. } => {
-                    if is_all {
-                        self.todo.extend(
-                            variants
-                                .into_iter()
-                                .flat_map(
-                                    |VariantDecl {
-                                         ty, discriminant, ..
-                                     }| { [ty, discriminant] },
-                                )
-                                .filter_map(|expr| expr.map(Descendant::Expr)),
-                        );
-                    } else if include_types {
-                        self.todo.extend(
-                            variants
-                                .into_iter()
-                                .filter_map(|VariantDecl { ty, .. }| ty.map(Descendant::Expr)),
-                        );
-                    }
-                }
-                Expr::Import(_) => {}
-            },
-            Descendant::Stmt(stmt) => match self.bodies[stmt] {
-                Stmt::LocalDef(local_def) => {
-                    let local_def = &self.bodies[local_def];
-                    if is_all {
+                Descendant::Stmt(stmt) => match self.bodies[stmt] {
+                    Stmt::LocalDef(local_def) => {
+                        let local_def = &self.bodies[local_def];
+
                         if let Some(ty) = local_def.ty {
-                            self.todo.push(Descendant::Expr(ty));
+                            self.todo.push(PossibleDescendant::expr(ty, is_all));
+                        }
+
+                        if let Some(value) = local_def.value {
+                            self.todo
+                                .push(PossibleDescendant::expr(value, actually_return));
                         }
                     }
-                    if let Some(value) = local_def.value {
-                        self.todo.push(Descendant::Expr(value));
+                    Stmt::Assign(assign) => {
+                        let assign = &self.bodies[assign];
+                        self.todo
+                            .push(PossibleDescendant::expr(assign.dest, actually_return));
+                        self.todo
+                            .push(PossibleDescendant::expr(assign.value, actually_return));
                     }
-                }
-                Stmt::Assign(assign) => {
-                    let assign = &self.bodies[assign];
-                    self.todo.push(Descendant::Expr(assign.dest));
-                    self.todo.push(Descendant::Expr(assign.value));
-                }
-                Stmt::Expr(expr) => self.todo.push(Descendant::Expr(expr)),
-                Stmt::Break {
-                    value: Some(value), ..
-                } => {
-                    self.todo.push(Descendant::Expr(value));
-                }
-                Stmt::Break { value: None, .. } => {}
-                Stmt::Continue { .. } => {}
-                Stmt::Defer { expr, .. } => {
-                    self.todo.push(Descendant::Expr(expr));
-                }
-            },
-        }
+                    Stmt::Expr(expr) => self
+                        .todo
+                        .push(PossibleDescendant::expr(expr, actually_return)),
+                    Stmt::Break {
+                        value: Some(value), ..
+                    } => self
+                        .todo
+                        .push(PossibleDescendant::expr(value, actually_return)),
+                    Stmt::Break { value: None, .. } => {}
+                    Stmt::Continue { .. } => {}
+                    Stmt::Defer { expr, .. } => self
+                        .todo
+                        .push(PossibleDescendant::expr(expr, actually_return)),
+                },
+            }
 
-        Some(next)
+            if actually_return {
+                return Some(next);
+            }
+        }
     }
 }
 
@@ -2194,7 +2285,7 @@ impl Bodies {
         Descendants {
             bodies: self,
             opts,
-            todo: vec![Descendant::Expr(expr)],
+            todo: vec![PossibleDescendant::expr(expr, true)],
         }
     }
 
@@ -2360,6 +2451,7 @@ impl Bodies {
         file: FileName,
         mod_dir: &std::path::Path,
         interner: &Interner,
+        with_color: bool,
         show_expr_idx: bool,
     ) -> String {
         let mut s = String::new();
@@ -2372,7 +2464,16 @@ impl Bodies {
                 "{} :: ",
                 Fqn { file, name: *name }.to_string(mod_dir, interner)
             ));
-            write_expr(&mut s, *expr_id, show_expr_idx, self, mod_dir, interner, 0);
+            write_expr(
+                &mut s,
+                *expr_id,
+                with_color,
+                show_expr_idx,
+                self,
+                mod_dir,
+                interner,
+                0,
+            );
             s.push_str(";\n");
         }
 
@@ -2382,6 +2483,7 @@ impl Bodies {
         fn write_expr(
             s: &mut String,
             idx: Idx<Expr>,
+            with_color: bool,
             show_idx: bool,
             bodies: &Bodies,
             mod_dir: &std::path::Path,
@@ -2389,7 +2491,13 @@ impl Bodies {
             mut indentation: usize,
         ) {
             if show_idx {
-                s.push_str("\x1B[90m(\x1B[0m")
+                if with_color {
+                    s.push_str("\x1B[90m");
+                }
+                s.push('(');
+                if with_color {
+                    s.push_str("\x1B[0m");
+                }
             }
 
             match &bodies[idx] {
@@ -2408,20 +2516,56 @@ impl Bodies {
                 Expr::ArrayDecl { size, ty } => {
                     s.push('[');
                     if let Some(size) = size {
-                        write_expr(s, *size, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *size,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(']');
-                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::ArrayLiteral { items, ty } => {
                     if let Some(ty) = ty {
-                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *ty,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push_str(".[");
 
                     for (idx, item) in items.iter().enumerate() {
-                        write_expr(s, *item, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *item,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                         if idx != items.len() - 1 {
                             s.push_str(", ");
                         }
@@ -2434,17 +2578,53 @@ impl Bodies {
                     source: array,
                     index,
                 } => {
-                    write_expr(s, *array, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *array,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     s.push('[');
-                    write_expr(s, *index, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *index,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     s.push(']');
                 }
 
                 Expr::Cast { ty, expr } => {
-                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     s.push_str(".(");
                     if let Some(expr) = expr {
-                        write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *expr,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(')');
                 }
@@ -2456,13 +2636,23 @@ impl Bodies {
                         s.push_str("mut ");
                     }
 
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Deref { pointer } => {
                     write_expr(
                         s,
                         *pointer,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2474,7 +2664,16 @@ impl Bodies {
                 }
 
                 Expr::Binary { lhs, rhs, op } => {
-                    write_expr(s, *lhs, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *lhs,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
 
                     s.push(' ');
 
@@ -2501,7 +2700,16 @@ impl Bodies {
 
                     s.push(' ');
 
-                    write_expr(s, *rhs, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *rhs,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Unary { expr, op } => {
@@ -2512,12 +2720,30 @@ impl Bodies {
                         UnaryOp::LNot => s.push('!'),
                     }
 
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Paren(Some(expr)) => {
                     s.push('(');
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     s.push(')');
                 }
 
@@ -2546,6 +2772,7 @@ impl Bodies {
                     write_expr(
                         &mut inner,
                         *tail_expr,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2586,7 +2813,16 @@ impl Bodies {
 
                     for stmt in stmts.clone() {
                         s.push_str(&" ".repeat(indentation));
-                        write_stmt(s, stmt, show_idx, bodies, mod_dir, interner, indentation);
+                        write_stmt(
+                            s,
+                            stmt,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                         s.push('\n');
                     }
 
@@ -2595,6 +2831,7 @@ impl Bodies {
                         write_expr(
                             s,
                             *tail_expr,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2619,6 +2856,7 @@ impl Bodies {
                     write_expr(
                         s,
                         *condition,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2626,12 +2864,22 @@ impl Bodies {
                         indentation,
                     );
                     s.push(' ');
-                    write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *body,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     if let Some(else_branch) = else_branch {
                         s.push_str(" else ");
                         write_expr(
                             s,
                             *else_branch,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2653,6 +2901,7 @@ impl Bodies {
                         write_expr(
                             s,
                             *condition,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2663,7 +2912,16 @@ impl Bodies {
                     } else {
                         s.push_str("loop ");
                     }
-                    write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *body,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::Switch {
@@ -2682,6 +2940,7 @@ impl Bodies {
                     write_expr(
                         s,
                         *scrutinee,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2705,6 +2964,7 @@ impl Bodies {
                         write_expr(
                             s,
                             arm.body,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2724,6 +2984,7 @@ impl Bodies {
                         write_expr(
                             s,
                             default.body,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2745,7 +3006,16 @@ impl Bodies {
                 Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
                 Expr::Call { callee, args } => {
-                    write_expr(s, *callee, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *callee,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
 
                     s.push('(');
                     for (idx, arg) in args.iter().enumerate() {
@@ -2753,7 +3023,16 @@ impl Bodies {
                             s.push_str(", ");
                         }
 
-                        write_expr(s, *arg, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *arg,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(')');
                 }
@@ -2768,6 +3047,7 @@ impl Bodies {
                     write_expr(
                         s,
                         *previous,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2795,9 +3075,14 @@ impl Bodies {
                         s.push_str(idx.to_string().as_str());
                         s.push_str(": ");
 
+                        if param.varargs {
+                            s.push_str("...");
+                        }
+
                         write_expr(
                             s,
                             param.ty,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2817,6 +3102,7 @@ impl Bodies {
                         write_expr(
                             s,
                             *return_ty,
+                            with_color,
                             show_idx,
                             bodies,
                             mod_dir,
@@ -2830,7 +3116,16 @@ impl Bodies {
                     if *is_extern {
                         s.push_str("extern");
                     } else {
-                        write_expr(s, *body, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *body,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                 }
 
@@ -2839,12 +3134,30 @@ impl Bodies {
 
                     s.push_str("comptime ");
 
-                    write_expr(s, body, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        body,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::StructLiteral { ty, members } => {
                     if let Some(ty) = ty {
-                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *ty,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
 
                     s.push_str(".{");
@@ -2855,7 +3168,16 @@ impl Bodies {
                             s.push_str(" = ");
                         }
 
-                        write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *value,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
 
                         if idx != members.len() - 1 {
                             s.push_str(", ");
@@ -2871,7 +3193,16 @@ impl Bodies {
                     s.push_str("distinct'");
                     s.push_str(&uid.to_string());
                     s.push(' ');
-                    write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                 }
 
                 Expr::StructDecl { uid, members } => {
@@ -2885,7 +3216,16 @@ impl Bodies {
                             s.push('?');
                         }
                         s.push_str(": ");
-                        write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *ty,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                         if idx != members.len() - 1 {
                             s.push_str(", ");
                         }
@@ -2915,13 +3255,23 @@ impl Bodies {
                         s.push_str(&format!("'{uid}"));
                         if let Some(ty) = ty {
                             s.push_str(": ");
-                            write_expr(s, *ty, show_idx, bodies, mod_dir, interner, indentation);
+                            write_expr(
+                                s,
+                                *ty,
+                                with_color,
+                                show_idx,
+                                bodies,
+                                mod_dir,
+                                interner,
+                                indentation,
+                            );
                         }
                         if let Some(discriminant) = discriminant {
                             s.push_str(" | ");
                             write_expr(
                                 s,
                                 *discriminant,
+                                with_color,
                                 show_idx,
                                 bodies,
                                 mod_dir,
@@ -2942,9 +3292,15 @@ impl Bodies {
             }
 
             if show_idx {
-                s.push_str("\x1B[90m #");
+                if with_color {
+                    s.push_str("\x1B[90m");
+                }
+                s.push_str(" #");
                 s.push_str(&idx.into_raw().to_string());
-                s.push_str(")\x1B[0m")
+                s.push(')');
+                if with_color {
+                    s.push_str("\x1B[0m");
+                }
             }
         }
 
@@ -2952,6 +3308,7 @@ impl Bodies {
         fn write_stmt(
             s: &mut String,
             expr: Idx<Stmt>,
+            with_color: bool,
             show_idx: bool,
             bodies: &Bodies,
             mod_dir: &std::path::Path,
@@ -2963,6 +3320,7 @@ impl Bodies {
                     write_expr(
                         s,
                         *expr_id,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -2978,7 +3336,16 @@ impl Bodies {
 
                     if let Some(ty) = local_def.ty {
                         s.push(' ');
-                        write_expr(s, ty, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            ty,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                         if local_def.value.is_some() {
                             s.push(' ');
                         }
@@ -2986,7 +3353,16 @@ impl Bodies {
 
                     if let Some(value) = local_def.value {
                         s.push_str("= ");
-                        write_expr(s, value, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            value,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(';');
                 }
@@ -2994,6 +3370,7 @@ impl Bodies {
                     write_expr(
                         s,
                         bodies[*local_set_id].dest,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -3004,6 +3381,7 @@ impl Bodies {
                     write_expr(
                         s,
                         bodies[*local_set_id].value,
+                        with_color,
                         show_idx,
                         bodies,
                         mod_dir,
@@ -3022,7 +3400,16 @@ impl Bodies {
                     s.push('`');
                     if let Some(value) = value {
                         s.push(' ');
-                        write_expr(s, *value, show_idx, bodies, mod_dir, interner, indentation);
+                        write_expr(
+                            s,
+                            *value,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
                     }
                     s.push(';');
                 }
@@ -3038,7 +3425,16 @@ impl Bodies {
                 }
                 Stmt::Defer { expr, .. } => {
                     s.push_str("defer ");
-                    write_expr(s, *expr, show_idx, bodies, mod_dir, interner, indentation);
+                    write_expr(
+                        s,
+                        *expr,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
                     s.push(';');
                 }
             }
@@ -3081,6 +3477,7 @@ mod tests {
             FileName(interner.intern("main.capy")),
             std::path::Path::new(""),
             &interner,
+            false,
             false,
         ));
 

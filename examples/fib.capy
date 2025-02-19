@@ -16,14 +16,14 @@ fib :: (n: i32) -> i32 {
 main :: () {
     io :: import "io.capy";
     
-    io.label("Running Fibonacci #", target);
+    core.println("Running Fibonacci #", target);
     core.println("Ready... Go!");
 
     result := fib(target);
 
-    io.label_two("Fibonacci number #", target, " = ", result);
+    core.println("Fibonacci number #", target, " = ", result);
 
     if result != answer {
-        io.label("The answer is WRONG! Should be ", answer);
+        core.println("The answer is WRONG! Should be ", answer);
     }
 }

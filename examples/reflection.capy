@@ -170,33 +170,33 @@ check_any :: () {
 }
 
 check_equality :: () {
-    io.label("i32 == i16 : ", i32 == i16);
-    io.label("i32 == u32 : ", i32 == u32);
-    io.label("i32 == i32 : ", i32 == i32);
-    io.label("Foo == Person : ", Foo == Person);
-    io.label("Person == Person : ", Person == Person);
-    io.label("[5] Person == [6] Person : ", [5] Person == [6] Person);
-    io.label("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
-    io.label("[6] Person == [6] Person : ", [6] Person == [6] Person);
-    io.label("^Person == ^Foo : ", ^Person == ^Foo);
-    io.label("^Person == ^Person : ", ^Person == ^Person);
+    core.println("i32 == i16 : ", i32 == i16);
+    core.println("i32 == u32 : ", i32 == u32);
+    core.println("i32 == i32 : ", i32 == i32);
+    core.println("Foo == Person : ", Foo == Person);
+    core.println("Person == Person : ", Person == Person);
+    core.println("[5] Person == [6] Person : ", [5] Person == [6] Person);
+    core.println("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
+    core.println("[6] Person == [6] Person : ", [6] Person == [6] Person);
+    core.println("^Person == ^Foo : ", ^Person == ^Foo);
+    core.println("^Person == ^Person : ", ^Person == ^Person);
 
     d1Person :: distinct Person;
     d2Person :: distinct Person;
 
-    io.label("Person == distinct 'a Person : ", Person == d1Person);
-    io.label("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
-    io.label("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
+    core.println("Person == distinct 'a Person : ", Person == d1Person);
+    core.println("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
+    core.println("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
     
-    io.label("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
-    io.label("Dessert == Dessert : ", Dessert == Dessert);
-    io.label("Dessert.Apple_Pie == Dessert.Cheesecake : ", Dessert.Apple_Pie == Dessert.Cheesecake);
-    io.label("Dessert.Cheesecake == Dessert.Cheesecake : ", Dessert.Cheesecake == Dessert.Cheesecake);
-    io.label("Farm_Animal.Cow == Dessert.Ice_Cream : ", Farm_Animal.Cow == Dessert.Ice_Cream);
-    io.label("Farm_Animal.Cow == Farm_Animal.Cow : ", Farm_Animal.Cow == Farm_Animal.Cow);
+    core.println("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
+    core.println("Dessert == Dessert : ", Dessert == Dessert);
+    core.println("Dessert.Apple_Pie == Dessert.Cheesecake : ", Dessert.Apple_Pie == Dessert.Cheesecake);
+    core.println("Dessert.Cheesecake == Dessert.Cheesecake : ", Dessert.Cheesecake == Dessert.Cheesecake);
+    core.println("Farm_Animal.Cow == Dessert.Ice_Cream : ", Farm_Animal.Cow == Dessert.Ice_Cream);
+    core.println("Farm_Animal.Cow == Farm_Animal.Cow : ", Farm_Animal.Cow == Farm_Animal.Cow);
 
-    io.label("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
-    io.label("() -> void == () -> void : ", () -> void == () -> void);
+    core.println("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
+    core.println("() -> void == () -> void : ", () -> void == () -> void);
 
     core.println("");
 }
@@ -236,15 +236,17 @@ check_layouts :: () {
 }
 
 print_type_layout :: (name: str, ty: type) {
-    core.print(name);
-    core.print(" (");
-    core.print(meta.meta_to_raw(ty));
-    core.print(") : size = ");
-    core.print(meta.size_of(ty));
-    core.print(", align = ");
-    core.print(meta.align_of(ty));
-    core.print(", stride = ");
-    core.println(meta.stride_of(ty));
+    core.println(
+        name,
+        " (",
+        meta.meta_to_raw(ty),
+        ") : size = ",
+        meta.size_of(ty),
+        ", align = ",
+        meta.align_of(ty),
+        ", stride = ",
+        meta.stride_of(ty)
+    );
 }
 
 print_info :: (ty: type) {
@@ -261,22 +263,22 @@ print_indent :: (indent: i32) {
 };
 
 print_info_with_args :: (ty: type, indent: i32) {
-    print_front :: (indent: i32, name: str) {
+    print_front :: (indent: i32, values: ...any) {
         print_indent(indent);
-        core.println(name);
-    };
-
-    print_front_with :: (indent: i32, name: str, val: any) {
-        print_indent(indent);
-        core.print(name);
-        core.println(val);
+        // TODO: add a spread operator like in JavaScript
+        val_idx := 0;
+        while val_idx < values.len {
+            core.print(values[val_idx]);
+            val_idx = val_idx + 1;
+        }
+        core.println();
     };
 
     switch info in meta.get_type_info(ty) {
         Int => {
             print_front(indent, "INT");
-            print_front_with(indent, "bit_width = ", info.bit_width);
-            print_front_with(indent, "signed    = ", if info.signed {
+            print_front(indent, "bit_width = ", info.bit_width);
+            print_front(indent, "signed    = ", if info.signed {
                 "true"
             } else {
                 "false"
@@ -284,14 +286,14 @@ print_info_with_args :: (ty: type, indent: i32) {
         }
         Float => {
             print_front(indent, "FLOAT");
-            print_front_with(indent, "bit_width = ", info.bit_width);
+            print_front(indent, "bit_width = ", info.bit_width);
         }
         Bool => print_front(indent, "BOOL"),
         String => print_front(indent, "STRING"),
         Char => print_front(indent, "CHARACTER"),
         Array => {
             print_front(indent, "ARRAY");
-            print_front_with(indent, "len = ", info.len);
+            print_front(indent, "len = ", info.len);
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
         }
@@ -320,8 +322,8 @@ print_info_with_args :: (ty: type, indent: i32) {
             while idx < info.members.len {
                 member := info.members[idx];
 
-                print_front_with(indent, "name = ", member.name);
-                print_front_with(indent, "offset = ", member.offset);
+                print_front(indent, "name = ", member.name);
+                print_front(indent, "offset = ", member.offset);
                 print_front(indent, "ty =");
                 print_info_with_args(member.ty, indent + 1);
 
@@ -330,7 +332,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         }
         Enum => {
             print_front(indent, "ENUM");
-            print_front_with(indent, "discriminant_offset = ", info.discriminant_offset);
+            print_front(indent, "discriminant_offset = ", info.discriminant_offset);
             print_front(indent, "variants =");
 
             idx := 0;
@@ -343,7 +345,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         }
         Variant => {
             print_front(indent, "VARIANT");
-            print_front_with(indent, "discriminant = ", info.discriminant);
+            print_front(indent, "discriminant = ", info.discriminant);
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
         }
@@ -353,7 +355,7 @@ print_info_with_args :: (ty: type, indent: i32) {
         Any => print_front(indent, "ANY"),
         Raw_Ptr => {
             print_front(indent, "RAW_POINTER");
-            print_front_with(indent, "mutable = ", info.mutable);
+            print_front(indent, "mutable = ", info.mutable);
         }
         Raw_Slice => print_front(indent, "RAW_SLICE"),
         Void => print_front(indent, "VOID"),

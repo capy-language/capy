@@ -232,7 +232,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             return_ty,
         } => {
             for param in param_tys {
-                calc_single(*param, ptr_ty);
+                calc_single(param.ty, ptr_ty);
             }
             calc_single(*return_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)

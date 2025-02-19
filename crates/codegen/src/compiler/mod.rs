@@ -11,7 +11,7 @@ use cranelift::prelude::{
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
 use hir::FQComptime;
-use hir_ty::{ComptimeResult, InternTyExt, Ty};
+use hir_ty::{ComptimeResult, InternTyExt, ParamTy, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -186,7 +186,7 @@ pub(crate) struct FunctionToCompile {
     pub(crate) file_name: hir::FileName,
     pub(crate) function_name: Option<hir::Name>,
     pub(crate) lambda: Idx<hir::Lambda>,
-    pub(crate) param_tys: Vec<Intern<Ty>>,
+    pub(crate) param_tys: Vec<ParamTy>,
     pub(crate) return_ty: Intern<Ty>,
 }
 
@@ -399,7 +399,7 @@ impl Compiler<'_> {
         mangled_name: &str,
         module_name: hir::FileName,
         body: Idx<hir::Expr>,
-        param_tys: Vec<Intern<Ty>>,
+        param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
     ) -> FuncId {
         self.compile_real_function_with_abi(
@@ -420,7 +420,7 @@ impl Compiler<'_> {
         mangled_name: &str,
         module_name: hir::FileName,
         body: Idx<hir::Expr>,
-        param_tys: Vec<Intern<Ty>>,
+        param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
         abi: Abi,
     ) -> FuncId {

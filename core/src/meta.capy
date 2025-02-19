@@ -435,12 +435,9 @@ get_type_info :: (ty: type) -> Type_Info {
         Type_Info.Void.()
     } else {
         core.println("unknown type id:");
-        core.print("raw = ");
-        core.println(raw);
-        core.print("discrim = ");
-        core.println(discrim);
-        core.print("idx = ");
-        core.println(raw &~ (0b111111) << 26);
+        core.println("raw = ", raw);
+        core.println("discrim = ", discrim);
+        core.println("idx = ", raw &~ (0b111111) << 26);
 
         core.unreachable();
         // todo: add a `!` type so we don't have to return values like this

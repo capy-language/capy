@@ -1,0 +1,32 @@
+(first: i32, others: ...i32) {
+
+}
+===
+Root@0..33
+  ExprStmt@0..33
+    Lambda@0..33
+      ParamList@0..28
+        LParen@0..1 "("
+        Param@1..11
+          Ident@1..6 "first"
+          Colon@6..7 ":"
+          Whitespace@7..8 " "
+          Ty@8..11
+            VarRef@8..11
+              Ident@8..11 "i32"
+        Comma@11..12 ","
+        Whitespace@12..13 " "
+        Param@13..27
+          Ident@13..19 "others"
+          Colon@19..20 ":"
+          Whitespace@20..21 " "
+          Ellipsis@21..24 "..."
+          Ty@24..27
+            VarRef@24..27
+              Ident@24..27 "i32"
+        RParen@27..28 ")"
+      Whitespace@28..29 " "
+      Block@29..33
+        LBrace@29..30 "{"
+        Whitespace@30..32 "\n\n"
+        RBrace@32..33 "}"

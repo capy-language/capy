@@ -1,8 +1,8 @@
 // This is a DSL I quickly put together to make it easier to
 // make new tokens or alter existing tokens
-Whitespace = /[ \t\r\n]+/
+Whitespace = /[ \t\r\n]+/                                       |=> 'whitespace'
 // Ideally this would be a literal instead of a regex
-NonBreakingSpace = /\xa0/
+NonBreakingSpace = /\xa0/                                       |=> 'non-breaking space character'
 As = 'as'
 If = 'if'
 Else = 'else'
@@ -22,18 +22,18 @@ Return = 'return'
 Break = 'break'
 Continue = 'continue'
 Defer = 'defer'
-Ident = /[A-Za-z_][A-Za-z0-9_]*/
+Ident = /[A-Za-z_][A-Za-z0-9_]*/                                |=> 'identifier'
 // these basically match numbers that can contain `_`,
 // but must contain a digit as the first char
-Float = /(\d[\d_]*)?\.(\d[\d_]*)+([eE][-+]?(\d[\d_]*)+)?/
-Int = /(\d[\d_]*)+([eE](\d[\d_]*)+)?/
-Hex = /0x[0-9a-fA-F]+/
-Bin = /0b[01]+/
-Bool = /true|false/
-_SingleQuote
-_DoubleQuote
-_Escape
-_StringContents
+Float = /(\d[\d_]*)?\.(\d[\d_]*)+([eE][-+]?(\d[\d_]*)+)?/       |=> 'float'
+Int = /(\d[\d_]*)+([eE](\d[\d_]*)+)?/                           |=> 'integer'
+Hex = /0x[0-9a-fA-F]+/                                          |=> 'hex literal'
+Bin = /0b[01]+/                                                 |=> 'binary literal'
+Bool = /true|false/                                             |=> 'boolean'
+_SingleQuote            |=> '`'`'
+_DoubleQuote            |=> '`"`'
+_Escape                 |=> 'escape sequence'
+_StringContents         |=> 'string'
 Plus = '+'
 Hyphen = '-'
 Asterisk = '*'
@@ -56,6 +56,7 @@ DoubleEquals = '=='
 Tilde = '~'
 Comma = ','
 Dot = '.'
+Ellipsis = '...'
 Arrow = '->'
 FatArrow = '=>'
 Caret = '^'
@@ -66,11 +67,11 @@ LBrack = '['
 RBrack = ']'
 LBrace = '{'
 RBrace = '}'
-_CommentLeader
-_CommentContents
+_CommentLeader                  |=> 'comment'
+_CommentContents                |=> 'comment'
 Colon = ':'
 Semicolon = ';'
-Error
+Error                           |=> 'an unrecognized token'
 // The string/char doesn't have to end on a quote, this results in better error messages
 // this will internally get replaced by _SingleQuote, _Escape, and _StringContents
 __InternalString = /"([^"\\\n]|\\.)*"?/

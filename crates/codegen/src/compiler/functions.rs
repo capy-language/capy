@@ -10,7 +10,7 @@ use cranelift::{
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use hir::{FQComptime, LocalDef, ScopeId, SwitchLocal};
-use hir_ty::{ComptimeResult, InternTyExt, Ty};
+use hir_ty::{ComptimeResult, InternTyExt, ParamTy, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -92,7 +92,7 @@ impl FunctionCompiler<'_> {
     pub(crate) fn finish(
         mut self,
         fn_abi: FnAbi,
-        (args, return_ty): (&Vec<Intern<Ty>>, Intern<Ty>),
+        (args, return_ty): (&Vec<ParamTy>, Intern<Ty>),
         function_body: Idx<hir::Expr>,
         debug_print: bool,
     ) {
@@ -1277,13 +1277,159 @@ impl FunctionCompiler<'_> {
                 let fn_abi = Into::<Abi>::into(self.module.target_config())
                     .fn_to_target((&param_tys, return_ty));
 
-                let arg_values = args
-                    .iter()
-                    .zip(param_tys.iter())
-                    .filter_map(|(arg_expr, expected_ty)| {
-                        self.compile_and_cast(*arg_expr, *expected_ty)
-                    })
-                    .collect::<Vec<_>>();
+                // first, figure out how many varargs there are for each parameter
+                let mut params_iter = param_tys.iter();
+                let mut args_iter = args.iter();
+
+                let mut current_param = params_iter.next();
+                let mut current_arg = args_iter.next();
+
+                #[derive(Debug, PartialEq, Eq)]
+                struct ArgToCompile<'a> {
+                    values: Vec<Idx<hir::Expr>>,
+                    associated_param: &'a ParamTy,
+                }
+
+                let mut actual_args = Vec::with_capacity(args.len());
+                let mut working_arg = None::<ArgToCompile>;
+                loop {
+                    let Some(arg) = current_arg else {
+                        if let Some(param) = current_param {
+                            // there are more params than args
+                            if param.varargs {
+                                // something has to be pushed.
+                                // look at this example:
+                                // ```
+                                // core.println();
+                                // ```
+                                // what will happen here?
+                                // if we push nothing, a slice won't be created.
+                                // and if a slice isn't created, there will be an error, because
+                                // the definition of `println` expects a slice.
+                                if let Some(working_arg) = working_arg {
+                                    actual_args.push(working_arg);
+                                } else {
+                                    actual_args.push(ArgToCompile {
+                                        values: Vec::new(),
+                                        associated_param: param,
+                                    });
+                                }
+                                break; // break without reporting error
+                            }
+
+                            unreachable!("an error should have been reported");
+                        }
+                        if let Some(working_arg) = working_arg {
+                            actual_args.push(working_arg);
+                        }
+                        break;
+                    };
+                    let arg_ty = self.tys[self.file_name][*arg];
+
+                    let Some(param) = current_param else {
+                        // there are more args than params
+                        unreachable!("an error should have been reported");
+                    };
+
+                    if param.varargs {
+                        let actual_sub_ty = param.ty.as_slice().unwrap();
+
+                        if arg_ty.can_fit_into(&actual_sub_ty) {
+                            let working = working_arg.get_or_insert_with(|| ArgToCompile {
+                                values: Vec::with_capacity(1),
+                                associated_param: param,
+                            });
+
+                            working.values.push(*arg);
+
+                            current_arg = args_iter.next();
+                        } else if let Some(next_param) = params_iter.next() {
+                            // go to the next param but don't go to the next arg.
+                            // this basically just reevaluates the current argument
+                            // under the next parameter.
+                            current_param = Some(next_param);
+                            actual_args
+                                .push(working_arg.take().expect("it should be Some(_) here"));
+                        } else {
+                            unreachable!("an error should have been reported");
+                        }
+                    } else {
+                        assert_eq!(working_arg, None);
+
+                        actual_args.push(ArgToCompile {
+                            values: vec![*arg],
+                            associated_param: param,
+                        });
+
+                        current_param = params_iter.next();
+                        current_arg = args_iter.next();
+                    }
+                }
+
+                // second, actually compile each argument and vararg
+                let mut arg_values = Vec::with_capacity(args.len());
+                for arg in actual_args {
+                    if arg.associated_param.varargs {
+                        let actual_sub_ty = arg.associated_param.ty.as_slice().unwrap();
+                        let stride = actual_sub_ty.stride();
+
+                        let array_stack_slot =
+                            self.builder.create_sized_stack_slot(StackSlotData {
+                                kind: StackSlotKind::ExplicitSlot,
+                                size: stride * arg.values.len() as u32,
+                                align_shift: actual_sub_ty.align_shift(),
+                            });
+                        let array_mem = MemoryLoc::from_stack(array_stack_slot, 0);
+
+                        for (idx, value) in arg.values.iter().enumerate() {
+                            self.compile_and_cast_into_memory(
+                                *value,
+                                actual_sub_ty,
+                                array_mem.with_offset(idx as u32 * stride),
+                            );
+                        }
+
+                        assert!(arg.associated_param.ty.is_slice());
+                        let slice_stack_slot =
+                            self.builder.create_sized_stack_slot(StackSlotData {
+                                kind: StackSlotKind::ExplicitSlot,
+                                size: arg.associated_param.ty.size(),
+                                align_shift: arg.associated_param.ty.align_shift(),
+                            });
+
+                        let len_val = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_ty, arg.values.len() as i64);
+                        self.builder.ins().stack_store(len_val, slice_stack_slot, 0);
+
+                        let array_addr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ptr_ty, array_stack_slot, 0);
+                        self.builder.ins().stack_store(
+                            array_addr,
+                            slice_stack_slot,
+                            self.ptr_ty.bytes() as i32,
+                        );
+
+                        let slice_addr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ptr_ty, slice_stack_slot, 0);
+
+                        arg_values.push(slice_addr);
+                    } else {
+                        assert_eq!(arg.values.len(), 1);
+
+                        if let Some(value) =
+                            self.compile_and_cast(arg.values[0], arg.associated_param.ty)
+                        {
+                            arg_values.push(value);
+                        }
+                    }
+                }
+
                 let mut arg_values = fn_abi.get_arg_list(arg_values, self);
 
                 let ret_mem =

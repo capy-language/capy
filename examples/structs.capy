@@ -52,15 +52,9 @@ main :: () {
 // it's stack before using it
 
 print_person_by_value :: (p: Person) {
-    core.print(p.name);
-    core.print(" is ");
-    core.print(p.age);
-    core.println(" years old");
+    core.println(p.name, " is ", p.age, " years old");
 }
 
 print_person_by_ref :: (p: ^Person) {
-    core.print(p.name);
-    core.print(" is ");
-    core.print(p.age);
-    core.println(" years old");
+    core.println(p.name, " is ", p.age, " years old");
 }

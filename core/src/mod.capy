@@ -100,8 +100,14 @@ any_from_raw_parts :: (data: rawptr, ty: type) -> any {
 }
 
 // see `print`
-println :: (val: any) {
-    print(val);
+println :: (values: ...any) {
+    // we can't just do `print(values)` because then values will be passed in as a single slice, as opposed to multiple arguments.
+    // TODO: add a spread operator like JavaScript
+    val_idx := 0;
+    while val_idx < values.len {
+        print(values[val_idx]);
+        val_idx = val_idx + 1;
+    }
     libc.putchar('\n');
 }
 
@@ -125,192 +131,199 @@ _print_str :: (text: str) {
 // the print function uses the `Any` type to be able to print
 // all possible values. you don't need to implement `Display` or `Debug`,
 // struct printing just works due to the reflection system.
-print :: (val: any) {
-    ty := val.ty;
-    data := val.ptr;
+print :: (values: ...any) {
+    val_idx := 0;
+    while val_idx < values.len {
+        val := values[val_idx];
 
-    switch info in meta.get_type_info(ty) {
-        Int => {
-            str := if info.signed {
-                num := if info.bit_width == 8 {
-                    i64.((^i8).(data)^)
-                } else if info.bit_width == 16 {
-                    i64.((^i16).(data)^)
-                } else if info.bit_width == 32 {
-                    i64.((^i32).(data)^)
+        ty := val.ty;
+        data := val.ptr;
+
+        switch info in meta.get_type_info(ty) {
+            Int => {
+                str := if info.signed {
+                    num := if info.bit_width == 8 {
+                        i64.((^i8).(data)^)
+                    } else if info.bit_width == 16 {
+                        i64.((^i16).(data)^)
+                    } else if info.bit_width == 32 {
+                        i64.((^i32).(data)^)
+                    } else if info.bit_width == 64 {
+                        i64.((^i64).(data)^)
+                    } else if info.bit_width == 128 {
+                        i64.((^i128).(data)^)
+                    } else {
+                        unreachable();
+                        0
+                    };
+
+                    fmt.i64_to_string(num)
+                } else {
+                    num := if info.bit_width == 8 {
+                        u64.((^u8).(data)^)
+                    } else if info.bit_width == 16 {
+                        u64.((^u16).(data)^)
+                    } else if info.bit_width == 32 {
+                        u64.((^u32).(data)^)
+                    } else if info.bit_width == 64 {
+                        u64.((^u64).(data)^)
+                    } else if info.bit_width == 128 {
+                        u64.((^u128).(data)^)
+                    } else {
+                        unreachable();
+                        0
+                    };
+
+                    fmt.u64_to_string(num)
+                };
+                defer string_builder.free(^mut str);
+
+                string_builder.print(^str);
+            }
+            Float => {
+                num := if info.bit_width == 32 {
+                    f64.((^f32).(data)^)
                 } else if info.bit_width == 64 {
-                    i64.((^i64).(data)^)
-                } else if info.bit_width == 128 {
-                    i64.((^i128).(data)^)
+                    f64.((^f64).(data)^)
                 } else {
                     unreachable();
                     0
                 };
 
-                fmt.i64_to_string(num)
-            } else {
-                num := if info.bit_width == 8 {
-                    u64.((^u8).(data)^)
-                } else if info.bit_width == 16 {
-                    u64.((^u16).(data)^)
-                } else if info.bit_width == 32 {
-                    u64.((^u32).(data)^)
-                } else if info.bit_width == 64 {
-                    u64.((^u64).(data)^)
-                } else if info.bit_width == 128 {
-                    u64.((^u128).(data)^)
+                str := fmt.f64_to_string(num);
+                defer string_builder.free(^mut str);
+
+                string_builder.print(^str);
+            }
+            Bool => {
+                if (^bool).(data)^ {
+                    _print_str("true");
                 } else {
-                    unreachable();
-                    0
-                };
-
-                fmt.u64_to_string(num)
-            };
-            defer string_builder.free(^mut str);
-
-            string_builder.print(^str);
-        }
-        Float => {
-            num := if info.bit_width == 32 {
-                f64.((^f32).(data)^)
-            } else if info.bit_width == 64 {
-                f64.((^f64).(data)^)
-            } else {
-                unreachable();
-                0
-            };
-
-            str := fmt.f64_to_string(num);
-            defer string_builder.free(^mut str);
-
-            string_builder.print(^str);
-        }
-        Bool => {
-            if (^bool).(data)^ {
-                _print_str("true");
-            } else {
-                _print_str("false");
-            }
-        }
-        String => _print_str((^str).(data)^),
-        Char => libc.putchar((^char).(data)^),
-        Array => {
-            elem_stride := meta.stride_of(info.sub_ty);
-
-            _print_str("[ ");
-
-            idx := 0;
-            while idx < info.len {
-                addr := ptr.const_offset(data, elem_stride * idx);
-                
-                print(any_from_raw_parts(addr, info.sub_ty));
-
-                if idx < info.len - 1 {
-                    _print_str(", ");
+                    _print_str("false");
                 }
-                
-                idx = idx + 1;
             }
+            String => _print_str((^str).(data)^),
+            Char => libc.putchar((^char).(data)^),
+            Array => {
+                elem_stride := meta.stride_of(info.sub_ty);
 
-            _print_str(" ]");
-        }
-        Slice => {
-            elem_stride := meta.stride_of(info.sub_ty);
+                _print_str("[ ");
 
-            slice := (^[] any).(data);
-            len := slice.len;
+                idx := 0;
+                while idx < info.len {
+                    addr := ptr.const_offset(data, elem_stride * idx);
+                    
+                    print(any_from_raw_parts(addr, info.sub_ty));
 
-            _print_str("[ ");
-
-            idx := 0;
-            while idx < len {
-                addr := ptr.const_offset(slice.ptr, elem_stride * idx);
-
-                print(any_from_raw_parts(addr, info.sub_ty));
-
-                if idx < len - 1 {
-                    _print_str(", ");
+                    if idx < info.len - 1 {
+                        _print_str(", ");
+                    }
+                    
+                    idx = idx + 1;
                 }
 
-                idx = idx + 1;
+                _print_str(" ]");
             }
+            Slice => {
+                elem_stride := meta.stride_of(info.sub_ty);
 
-            _print_str(" ]");
-        }
-        Pointer => {
-            _print_str("^");
-            // since data is a pointer, we can safely dereference it
-            print(any_from_raw_parts((^rawptr).(data)^, info.sub_ty));
-        }
-        Distinct => {
-            print(any_from_raw_parts(data, info.sub_ty));
-        }
-        Struct => {
-            _print_str("{ ");
+                slice := (^[] any).(data);
+                len := slice.len;
 
-            idx := 0;
-            while idx < info.members.len {
-                member := info.members[idx];
+                _print_str("[ ");
 
-                _print_str(member.name);
-                _print_str(" = ");
+                idx := 0;
+                while idx < len {
+                    addr := ptr.const_offset(slice.ptr, elem_stride * idx);
 
-                addr := ptr.const_offset(data, member.offset);
+                    print(any_from_raw_parts(addr, info.sub_ty));
 
-                print(any_from_raw_parts(addr, member.ty));
+                    if idx < len - 1 {
+                        _print_str(", ");
+                    }
 
-                if idx < info.members.len - 1 {
-                    _print_str(", ");
-                }
-                idx = idx + 1;
-            }
-
-            _print_str(" }");
-        }
-        Enum => {
-            discriminant := (^u8).(ptr.const_offset(data, info.discriminant_offset))^;
-
-            idx := 0;
-            while idx < info.variants.len {
-                variant := info.variants[idx];
-
-                variant_info := switch v in meta.get_type_info(variant) {
-                    Variant => v,
-                    _ => {
-                        unreachable_with("all variants of the enum should be `Type_Info.Variant`");
-                        meta.Type_Info.Variant.{sub_ty=void,discriminant=0}
-                    },
-                };
-
-                if variant_info.discriminant == discriminant {
-                    print(any_from_raw_parts(data, variant_info.sub_ty));
-                    break;
+                    idx = idx + 1;
                 }
 
-                idx = idx + 1;
+                _print_str(" ]");
             }
-        }
-        Variant => {
-            print(any_from_raw_parts(data, info.sub_ty));
-        }
-        Function => _print_str("{function}"),
-        File => _print_str("{import}"),
-        Meta_Type => {
-            print_type_info((^type).(data)^);
-        }
-        Any => {
-            print((^any).(data)^);
-        },
-        Raw_Ptr => _print_str("{rawptr}"),
-        Raw_Slice => {
-            _print_str("[ {rawslice} ; ");
+            Pointer => {
+                _print_str("^");
+                // since data is a pointer, we can safely dereference it
+                print(any_from_raw_parts((^rawptr).(data)^, info.sub_ty));
+            }
+            Distinct => {
+                print(any_from_raw_parts(data, info.sub_ty));
+            }
+            Struct => {
+                _print_str("{ ");
 
-            data := (^rawslice).(data)^;
-            print(data.len);
+                idx := 0;
+                while idx < info.members.len {
+                    member := info.members[idx];
 
-            _print_str(" ]");
-        },
-        Void => _print_str("()"),
+                    _print_str(member.name);
+                    _print_str(" = ");
+
+                    addr := ptr.const_offset(data, member.offset);
+
+                    print(any_from_raw_parts(addr, member.ty));
+
+                    if idx < info.members.len - 1 {
+                        _print_str(", ");
+                    }
+                    idx = idx + 1;
+                }
+
+                _print_str(" }");
+            }
+            Enum => {
+                discriminant := (^u8).(ptr.const_offset(data, info.discriminant_offset))^;
+
+                idx := 0;
+                while idx < info.variants.len {
+                    variant := info.variants[idx];
+
+                    variant_info := switch v in meta.get_type_info(variant) {
+                        Variant => v,
+                        _ => {
+                            unreachable_with("all variants of the enum should be `Type_Info.Variant`");
+                            meta.Type_Info.Variant.{sub_ty=void,discriminant=0}
+                        },
+                    };
+
+                    if variant_info.discriminant == discriminant {
+                        print(any_from_raw_parts(data, variant_info.sub_ty));
+                        break;
+                    }
+
+                    idx = idx + 1;
+                }
+            }
+            Variant => {
+                print(any_from_raw_parts(data, info.sub_ty));
+            }
+            Function => _print_str("{function}"),
+            File => _print_str("{import}"),
+            Meta_Type => {
+                print_type_info((^type).(data)^);
+            }
+            Any => {
+                print((^any).(data)^);
+            },
+            Raw_Ptr => _print_str("{rawptr}"),
+            Raw_Slice => {
+                _print_str("[ {rawslice} ; ");
+
+                data := (^rawslice).(data)^;
+                print(data.len);
+
+                _print_str(" ]");
+            },
+            Void => _print_str("()"),
+        }
+
+        val_idx = val_idx + 1;
     }
 }
 

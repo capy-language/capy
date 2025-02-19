@@ -14,15 +14,15 @@ main :: () {
         b = 8,
     };
 
-    io.label("my_foo.b   ", my_foo.b);
+    core.println("my_foo.b   ", my_foo.b);
 
     ptr := ^^^^my_foo;
 
-    io.label("ptr^^^^.b  ", ptr^^^^.b);
-    io.label("ptr^^^.b   ", ptr^^^.b);
-    io.label("ptr^^.b    ", ptr^^.b);
-    io.label("ptr^.b     ", ptr^.b);
-    io.label("ptr.b      ", ptr.b);
+    core.println("ptr^^^^.b  ", ptr^^^^.b);
+    core.println("ptr^^^.b   ", ptr^^^.b);
+    core.println("ptr^^.b    ", ptr^^.b);
+    core.println("ptr^.b     ", ptr^.b);
+    core.println("ptr.b      ", ptr.b);
 
     core.println("  give:");
 
@@ -36,17 +36,17 @@ main :: () {
 
     idx : usize = 0;
     while idx < 3 {
-        io.label_two("ptr^[", idx, "] ", ptr^[idx]);
-        io.label_two("ptr[", idx, "]  ", ptr[idx]);
+        core.println("ptr^[", idx, "] ", ptr^[idx]);
+        core.println("ptr[", idx, "]  ", ptr[idx]);
         idx = idx + 1;
     }
 
     ptr_ptr := ^^my_array;
 
     while idx < 6 {
-        io.label_two("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
-        io.label_two("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
-        io.label_two("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
+        core.println("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
+        core.println("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
+        core.println("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
         idx = idx + 1;
     }
 
@@ -56,17 +56,17 @@ main :: () {
 }
 
 give_struct :: (ptr: ^^Foo) {
-    io.label("ptr^^.b    ", ptr^^.b);
-    io.label("ptr^.b     ", ptr^.b);
-    io.label("ptr.b      ", ptr.b);
+    core.println("ptr^^.b    ", ptr^^.b);
+    core.println("ptr^.b     ", ptr^.b);
+    core.println("ptr.b      ", ptr.b);
 }
 
 give_array :: (ptr_ptr: ^^[6] i32) {
     idx : usize = 0;
     while idx < 6 {
-        io.label_two("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
-        io.label_two("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
-        io.label_two("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
+        core.println("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
+        core.println("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
+        core.println("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
         idx = idx + 1;
     }
 }

@@ -2,39 +2,28 @@ core :: mod "core";
 
 main :: () {
     core.println(3.14159);
-    core.println("");
+    core.println();
 
-    core.print("ln 10 = ");
-    core.println(comptime core.math.ln(10));
+    core.println("ln 10 = ", comptime core.math.ln(10));
 
-    core.print("ln 50 = ");
-    core.println(comptime core.math.ln(50));
+    core.println("ln 50 = ", comptime core.math.ln(50));
 
-    core.print("ln 100 = ");
-    core.println(comptime core.math.ln(100));
+    core.println("ln 100 = ", comptime core.math.ln(100));
 
-    core.print("ln 500 = ");
-    core.println(comptime core.math.ln(500));
+    core.println("ln 500 = ", comptime core.math.ln(500));
 
-    core.print("log 10 = ");
-    core.println(comptime core.math.log10(10));
+    core.println("log 10 = ", comptime core.math.log10(10));
 
-    core.print("log 50 = ");
-    core.println(comptime core.math.log10(50));
+    core.println("log 50 = ", comptime core.math.log10(50));
 
-    core.print("log 100 = ");
-    core.println(comptime core.math.log10(100));
+    core.println("log 100 = ", comptime core.math.log10(100));
 
-    core.print("log 500 = ");
-    core.println(comptime core.math.log10(500));
+    core.println("log 500 = ", comptime core.math.log10(500));
 
-    core.print(" 1 / 0 = ");
-    core.println(1.0 / 0.0);
+    core.println(" 1 / 0 = ", 1.0 / 0.0);
 
-    core.print("-1 / 0 = ");
-    core.println(-1.0 / 0.0);
+    core.println("-1 / 0 = ", -1.0 / 0.0);
 
-    core.print(" 0 / 0 = ");
-    core.println(0.0 / 0.0);
+    core.println(" 0 / 0 = ", 0.0 / 0.0);
 }
 

@@ -26,7 +26,9 @@ pub(crate) struct SourceFile {
     index: hir::Index,
     verbose_hir: VerboseScope,
     /// the types don't actually get printed here
+    /// this is just used to determine if the expression idx's should be printed
     verbose_types: VerboseScope,
+    with_color: bool,
 }
 
 impl SourceFile {
@@ -42,6 +44,7 @@ impl SourceFile {
         verbose_hir: VerboseScope,
         verbose_ast: VerboseScope,
         verbose_types: VerboseScope,
+        with_color: bool,
     ) -> SourceFile {
         let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
 
@@ -78,6 +81,7 @@ impl SourceFile {
             world_index,
             verbose_hir,
             verbose_types,
+            with_color,
         };
 
         res.diagnostics.extend(
@@ -127,6 +131,7 @@ impl SourceFile {
                 self.module,
                 mod_dir,
                 &interner,
+                self.with_color,
                 self.verbose_types.should_show(self.is_mod),
             );
             if !debug.is_empty() {

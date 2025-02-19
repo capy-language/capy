@@ -9,7 +9,7 @@ use cranelift::{
     },
     frontend::{FunctionBuilder, Variable},
 };
-use hir_ty::Ty;
+use hir_ty::{ParamTy, Ty};
 use internment::Intern;
 use la_arena::Idx;
 use tinyvec::ArrayVec;
@@ -37,7 +37,7 @@ pub enum Abi {
 }
 
 impl Abi {
-    pub fn fn_to_target(&self, func_ty: (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
+    pub fn fn_to_target(&self, func_ty: (&[ParamTy], Intern<Ty>)) -> FnAbi {
         #[allow(unreachable_patterns)]
         match self {
             Abi::Simplified => simplified::fn_ty_to_abi(func_ty),
@@ -253,7 +253,7 @@ impl FnAbi {
         &self,
         func_cmplr: &mut FunctionCompiler,
         return_ty: Intern<Ty>,
-        args: &[Intern<Ty>],
+        args: &[ParamTy],
         function_body: Idx<hir::Expr>,
     ) {
         // Create the entry block, to start emitting code in.
@@ -310,7 +310,7 @@ impl FnAbi {
                     let sz = if let Some(sz) = sz {
                         *sz
                     } else {
-                        args[*idx as usize].stride() as usize
+                        args[*idx as usize].ty.stride() as usize
                     };
                     let stack_slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
                         kind: StackSlotKind::ExplicitSlot,

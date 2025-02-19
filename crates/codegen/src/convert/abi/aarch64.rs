@@ -1,7 +1,7 @@
 // TODO: other kinds of aarch64 abis then apple
 
 use cranelift::prelude::types::{I128, I64};
-use hir_ty::Ty;
+use hir_ty::{ParamTy, Ty};
 use internment::Intern;
 use tinyvec::ArrayVec;
 
@@ -88,12 +88,12 @@ fn classify_arg(arg: Intern<Ty>) -> Option<PassMode> {
     }
 }
 
-pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[ParamTy], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = classify_ret(ret);
 
     for (idx, arg) in args.iter().enumerate() {
-        if let Some(arg) = classify_arg(*arg) {
+        if let Some(arg) = classify_arg(arg.ty) {
             sig.args.push((arg, idx as u16))
         }
     }

@@ -1,18 +1,6 @@
 
 core :: mod "core";
 
-label :: (label: str, val: any) {
-    core.print(label);
-    core.println(val);
-}
-
-label_two :: (label1: str, val1: any, label2: str, val2: any) {
-    core.print(label1);
-    core.print(val1);
-    core.print(label2);
-    core.println(val2);
-}
-
 get_user_input :: () -> i32 {
     buffer := char.['\0', '\0', '\0', '\0', '\0'];
 

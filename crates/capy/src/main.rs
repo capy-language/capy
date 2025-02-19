@@ -15,7 +15,7 @@ use std::{
     time::Instant,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{ColorChoice, Parser, Subcommand};
 use enum_display::EnumDisplay;
 use hir::{FQComptime, WorldBodies, WorldIndex};
 use hir_ty::{ComptimeResult, InferenceResult};
@@ -199,6 +199,10 @@ create_build_action! {
         #[arg(long)]
         verbose_all: bool,
 
+        /// Sets the color output of the program
+        #[arg(long, default_value_t = ColorChoice::Auto)]
+        color: ColorChoice,
+
         /// Will skip building the final executable binary and only output a .o file
         #[arg(long)]
         no_exec: bool,
@@ -375,7 +379,11 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         }
     };
 
-    let with_color = supports_color::on(supports_color::Stream::Stdout).is_some();
+    let with_color = match config.color {
+        ColorChoice::Auto => supports_color::on(supports_color::Stream::Stdout).is_some(),
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+    };
     let (ansi_red, ansi_green, ansi_white, ansi_reset) = if with_color {
         (ANSI_RED, ANSI_GREEN, ANSI_WHITE, ANSI_RESET)
     } else {
@@ -454,6 +462,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         config.verbose_hir,
         config.verbose_ast,
         config.verbose_types,
+        with_color,
     );
 
     line_indexes.insert(source_file.module, LineIndex::new(&file_contents));
@@ -493,6 +502,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
                 config.verbose_hir,
                 config.verbose_ast,
                 config.verbose_types,
+                with_color,
             );
 
             line_indexes.insert(source_file.module, LineIndex::new(&file_contents));

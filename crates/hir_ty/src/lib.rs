@@ -163,9 +163,9 @@ pub enum TyDiagnosticKind {
         first: Intern<Ty>,
         second: Intern<Ty>,
     },
-    NonExistantVariant {
+    NonExistentVariant {
         variant_name: Key,
-        scrutinee_ty: Intern<Ty>,
+        enum_ty: Intern<Ty>,
     },
     IndexNonArray {
         found: Intern<Ty>,
@@ -175,9 +175,11 @@ pub enum TyDiagnosticKind {
         actual_size: u64,
         array_ty: Intern<Ty>,
     },
-    MismatchedArgCount {
-        found: usize,
-        expected: usize,
+    ExtraArg {
+        found: Intern<Ty>,
+    },
+    MissingArg {
+        expected: Intern<Ty>,
     },
     CalledNonFunction {
         found: Intern<Ty>,
@@ -239,6 +241,10 @@ pub enum TyDiagnosticKind {
     },
     SwitchDoesNotCoverVariant {
         ty: Intern<Ty>,
+    },
+    ImpossibleToDifferentiateVarArgs {
+        previous_ty: Intern<Ty>,
+        current_ty: Intern<Ty>,
     },
 }
 
@@ -829,7 +835,11 @@ impl Ty {
                 let mut res = "(".to_string();
 
                 for (idx, param) in params.iter().enumerate() {
-                    res.push_str(&param.display(mod_dir, interner));
+                    if param.varargs {
+                        res.push_str("...");
+                    }
+
+                    res.push_str(&param.ty.display(mod_dir, interner));
 
                     if idx != params.len() - 1 {
                         res.push_str(", ");
@@ -1015,7 +1025,7 @@ mod tests {
                 Path::new(""),
                 true,
             );
-            let debug = bodies.debug(module, std::path::Path::new(""), &interner, true);
+            let debug = bodies.debug(module, std::path::Path::new(""), &interner, true, true);
             if !debug.is_empty() {
                 println!("{}", debug);
             }
@@ -1045,7 +1055,7 @@ mod tests {
             Path::new(""),
             true,
         );
-        let debug = bodies.debug(module, std::path::Path::new(""), &interner, true);
+        let debug = bodies.debug(module, std::path::Path::new(""), &interner, true, true);
         if !debug.is_empty() {
             println!("{}", debug);
         }
@@ -5061,18 +5071,31 @@ mod tests {
                 10 : (i32) -> void
             "#]],
             |_| {
-                let float = Ty::Float(32).into();
-                let int = Ty::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::Mismatch {
                             expected: Ty::Function {
-                                param_tys: vec![float, Ty::IInt(8).into()],
+                                param_tys: vec![
+                                    ParamTy {
+                                        ty: *ty::F32,
+                                        varargs: false,
+                                        impossible_to_differentiate: false,
+                                    },
+                                    ParamTy {
+                                        ty: *ty::I8,
+                                        varargs: false,
+                                        impossible_to_differentiate: false,
+                                    },
+                                ],
                                 return_ty: Ty::String.into(),
                             }
                             .into(),
                             found: Ty::Function {
-                                param_tys: vec![int],
+                                param_tys: vec![ParamTy {
+                                    ty: *ty::I32,
+                                    varargs: false,
+                                    impossible_to_differentiate: false,
+                                }],
                                 return_ty: Ty::Void.into(),
                             }
                             .into(),
@@ -5081,19 +5104,18 @@ mod tests {
                         None,
                     ),
                     (
-                        TyDiagnosticKind::MismatchedArgCount {
-                            found: 1,
-                            expected: 2,
+                        TyDiagnosticKind::Mismatch {
+                            expected: *ty::F32,
+                            found: *ty::I32,
                         },
-                        84..90,
+                        88..89,
                         None,
                     ),
                     (
-                        TyDiagnosticKind::Mismatch {
-                            expected: float,
-                            found: int,
+                        TyDiagnosticKind::MissingArg {
+                            expected: Ty::IInt(8).into(),
                         },
-                        88..89,
+                        89..89,
                         None,
                     ),
                 ]
@@ -5118,13 +5140,16 @@ mod tests {
                 6 : (i32) -> void
             "#]],
             |_| {
-                let int = Ty::IInt(32).into();
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: int,
+                            expected: *ty::I32,
                             found: Ty::Function {
-                                param_tys: vec![int],
+                                param_tys: vec![ParamTy {
+                                    ty: *ty::I32,
+                                    varargs: false,
+                                    impossible_to_differentiate: false,
+                                }],
                                 return_ty: Ty::Void.into(),
                             }
                             .into(),
@@ -5133,7 +5158,7 @@ mod tests {
                         None,
                     ),
                     (
-                        TyDiagnosticKind::CalledNonFunction { found: int },
+                        TyDiagnosticKind::CalledNonFunction { found: *ty::I32 },
                         60..66,
                         None,
                     ),
@@ -5640,7 +5665,8 @@ mod tests {
     }
 
     #[test]
-    fn mismatch_arg_count() {
+    fn extra_arg() {
+        // todo: since there are two extra args here, maybe throw two errors instead of one
         check(
             r#"
                 bar :: (num: i32) {};
@@ -5663,12 +5689,378 @@ mod tests {
                 9 : () -> void
             "#]],
             |_| {
+                [
+                    (
+                        TyDiagnosticKind::ExtraArg {
+                            found: Ty::UInt(0).into(),
+                        },
+                        95..96,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::ExtraArg {
+                            found: Ty::UInt(0).into(),
+                        },
+                        98..99,
+                        None,
+                    ),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn missing_arg() {
+        check(
+            r#"
+                bar :: (num: i32, text: str, condition: bool) {};
+
+                foo :: () {
+                    bar(1, "hello");
+                }
+            "#,
+            expect![[r#"
+                main::bar : (i32, str, bool) -> void
+                main::foo : () -> void
+                3 : void
+                4 : (i32, str, bool) -> void
+                5 : (i32, str, bool) -> void
+                6 : i32
+                7 : str
+                8 : void
+                9 : void
+                10 : () -> void
+            "#]],
+            |_| {
                 [(
-                    TyDiagnosticKind::MismatchedArgCount {
-                        found: 3,
-                        expected: 1,
+                    TyDiagnosticKind::MissingArg {
+                        expected: Ty::Bool.into(),
                     },
-                    88..100,
+                    130..130,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn varargs() {
+        check(
+            r#"
+                bar :: (numbers: ...i8) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8) -> void
+                main::foo : () -> void
+                1 : void
+                2 : (...[]i8) -> void
+                3 : (...[]i8) -> void
+                4 : i8
+                5 : i8
+                6 : i8
+                7 : i8
+                8 : i8
+                9 : void
+                10 : void
+                11 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn multiple_varargs() {
+        check(
+            r#"
+                bar :: (numbers: ...i8, conditions: ...bool, text: ...str, more_numbers: ...i8) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5, true, false, "hello", "world", "sailor", "wassup", 42);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                main::foo : () -> void
+                4 : void
+                5 : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                6 : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                7 : i8
+                8 : i8
+                9 : i8
+                10 : i8
+                11 : i8
+                12 : bool
+                13 : bool
+                14 : str
+                15 : str
+                16 : str
+                17 : str
+                18 : i8
+                19 : void
+                20 : void
+                21 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn multiple_varargs_with_regular_args() {
+        check(
+            r#"
+                bar :: (numbers: ...i8, a: str, conditions: ...bool, b: str, text: ...str, c: i8, more_numbers: ...i8) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5, "conditions: ", true, false, "text: ", "hello", "world", "sailor", "wassup", 0, 42);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, str, ...[]bool, str, ...[]str, i8, ...[]i8) -> void
+                main::foo : () -> void
+                7 : void
+                8 : (...[]i8, str, ...[]bool, str, ...[]str, i8, ...[]i8) -> void
+                9 : (...[]i8, str, ...[]bool, str, ...[]str, i8, ...[]i8) -> void
+                10 : i8
+                11 : i8
+                12 : i8
+                13 : i8
+                14 : i8
+                15 : str
+                16 : bool
+                17 : bool
+                18 : str
+                19 : str
+                20 : str
+                21 : str
+                22 : str
+                23 : i8
+                24 : i8
+                25 : void
+                26 : void
+                27 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn empty_varargs() {
+        check(
+            r#"
+                bar :: (conditions: ...bool) {};
+
+                foo :: () {
+                    bar();
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]bool) -> void
+                main::foo : () -> void
+                1 : void
+                2 : (...[]bool) -> void
+                3 : (...[]bool) -> void
+                4 : void
+                5 : void
+                6 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn multiple_empty_varargs() {
+        check(
+            r#"
+                bar :: (numbers: ...i8, conditions: ...bool, text: ...str, more_numbers: ...i8) {};
+
+                foo :: () {
+                    bar();
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                main::foo : () -> void
+                4 : void
+                5 : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                6 : (...[]i8, ...[]bool, ...[]str, ...[]i8) -> void
+                7 : void
+                8 : void
+                9 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn multiple_empty_varargs_one_regular_arg_diff_than_previous() {
+        check(
+            r#"
+                bar :: (numbers: ...i8, conditions: ...bool, regular_arg: str, text: ...str, more_numbers: ...i8) {};
+
+                foo :: () {
+                    bar("will this go to the regular arg?");
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]bool, str, ...[]str, ...[]i8) -> void
+                main::foo : () -> void
+                5 : void
+                6 : (...[]i8, ...[]bool, str, ...[]str, ...[]i8) -> void
+                7 : (...[]i8, ...[]bool, str, ...[]str, ...[]i8) -> void
+                8 : str
+                9 : void
+                10 : void
+                11 : () -> void
+            "#]],
+            |_| [],
+        );
+    }
+
+    #[test]
+    fn multiple_empty_varargs_one_regular_arg_same_as_previous() {
+        check(
+            r#"
+                bar :: (numbers: ...i8, conditions: ...bool, regular_arg: i64, text: ...str, more_numbers: ...i8) {};
+
+                foo :: () {
+                    bar(42);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]bool, i64, ...[]str, ...[]i8) -> void
+                main::foo : () -> void
+                5 : void
+                6 : (...[]i8, ...[]bool, i64, ...[]str, ...[]i8) -> void
+                7 : (...[]i8, ...[]bool, i64, ...[]str, ...[]i8) -> void
+                8 : i8
+                9 : void
+                10 : void
+                11 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::MissingArg {
+                        expected: Ty::IInt(64).into(),
+                    },
+                    174..174,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn impossible_to_differentiate_prev_varargs_next_arg() {
+        check(
+            r#"
+                bar :: (first: ...i8, second: i64) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, i64) -> void
+                main::foo : () -> void
+                2 : void
+                3 : (...[]i8, i64) -> void
+                4 : (...[]i8, i64) -> void
+                5 : i8
+                6 : i8
+                7 : i8
+                8 : i8
+                9 : i8
+                10 : void
+                11 : void
+                12 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
+                        previous_ty: Ty::IInt(8).into(),
+                        current_ty: Ty::IInt(64).into(),
+                    },
+                    39..50,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn impossible_to_differentiate_prev_varargs_next_vararg() {
+        check(
+            r#"
+                bar :: (first: ...i8, second: ...u64) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]u64) -> void
+                main::foo : () -> void
+                2 : void
+                3 : (...[]i8, ...[]u64) -> void
+                4 : (...[]i8, ...[]u64) -> void
+                5 : i8
+                6 : i8
+                7 : i8
+                8 : i8
+                9 : i8
+                10 : void
+                11 : void
+                12 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
+                        previous_ty: Ty::IInt(8).into(),
+                        current_ty: Ty::UInt(64).into(),
+                    },
+                    39..53,
+                    None,
+                )]
+            },
+        );
+    }
+
+    #[test]
+    fn impossible_to_differentiate_prev_varargs_next_any_vararg() {
+        check(
+            r#"
+                bar :: (first: ...i8, second: ...any) {};
+
+                foo :: () {
+                    bar(1, 2, 3, 4, 5);
+                }
+            "#,
+            expect![[r#"
+                main::bar : (...[]i8, ...[]any) -> void
+                main::foo : () -> void
+                2 : void
+                3 : (...[]i8, ...[]any) -> void
+                4 : (...[]i8, ...[]any) -> void
+                5 : i8
+                6 : i8
+                7 : i8
+                8 : i8
+                9 : i8
+                10 : void
+                11 : void
+                12 : () -> void
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
+                        previous_ty: Ty::IInt(8).into(),
+                        current_ty: Ty::Any.into(),
+                    },
+                    39..53,
                     None,
                 )]
             },
@@ -6345,7 +6737,11 @@ mod tests {
                     TyDiagnosticKind::Mismatch {
                         expected: Ty::Type.into(),
                         found: Ty::Function {
-                            param_tys: vec![Ty::String.into()],
+                            param_tys: vec![ParamTy {
+                                ty: Ty::String.into(),
+                                varargs: false,
+                                impossible_to_differentiate: false,
+                            }],
                             return_ty: Ty::Void.into(),
                         }
                         .into(),

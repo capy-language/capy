@@ -38,6 +38,7 @@ pub(crate) fn set_enum_uid(enum_uid: u32, ty: Intern<Ty>) {
 
 /// i0 represents ANY signed integer type `{int}`
 pub static I0: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::IInt(0).into());
+pub static I8: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::IInt(8).into());
 pub static I32: LazyLock<Intern<Ty>> = LazyLock::new(|| Ty::IInt(32).into());
 
 /// u0 represents ANY unsigned integer type `{uint}`
@@ -110,9 +111,8 @@ pub enum Ty {
     },
     RawSlice,
     File(hir::FileName),
-    /// this is only ever used for functions defined locally
     Function {
-        param_tys: Vec<Intern<Ty>>,
+        param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
     },
     Struct {
@@ -158,6 +158,15 @@ pub struct MemberTy {
     /// we can't do anything with them
     pub name: hir::Name,
     pub ty: Intern<Ty>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamTy {
+    pub ty: Intern<Ty>,
+    pub varargs: bool,
+    /// This is used so that "Missing Arg" errors aren't reported for arguments that are
+    /// impossible to detect
+    pub impossible_to_differentiate: bool,
 }
 
 pub(crate) struct BinaryOutputTy {
@@ -238,7 +247,7 @@ impl Ty {
     }
 
     /// If self is a function, this returns the parameters and return type
-    pub fn as_function(&self) -> Option<(Vec<Intern<Ty>>, Intern<Ty>)> {
+    pub fn as_function(&self) -> Option<(Vec<ParamTy>, Intern<Ty>)> {
         match self.absolute_ty() {
             Ty::Function {
                 param_tys: params,
@@ -353,7 +362,7 @@ impl Ty {
             Ty::Function {
                 param_tys,
                 return_ty,
-            } => param_tys.iter().any(|p| p.is_unknown()) || return_ty.is_unknown(),
+            } => param_tys.iter().any(|p| p.ty.is_unknown()) || return_ty.is_unknown(),
             _ => false,
         }
     }
@@ -403,10 +412,12 @@ impl Ty {
             ) => {
                 first_return_ty.is_equal_to(second_return_ty)
                     && first_params.len() == second_params.len()
-                    && first_params
-                        .iter()
-                        .zip(second_params.iter())
-                        .all(|(first_param, second_param)| first_param.is_equal_to(second_param))
+                    && first_params.iter().zip(second_params.iter()).all(
+                        |(first_param, second_param)| {
+                            first_param.varargs == second_param.varargs
+                                && first_param.ty.is_equal_to(&second_param.ty)
+                        },
+                    )
             }
             (
                 Ty::Struct {
@@ -687,7 +698,7 @@ impl Ty {
     /// Any int can fit into a wildcard int type (bit-width of 0)
     ///
     /// diagram stolen from vlang docs bc i liked it
-    pub(crate) fn can_fit_into(&self, expected: &Ty) -> bool {
+    pub fn can_fit_into(&self, expected: &Ty) -> bool {
         if self.is_equal_to(expected) {
             return true;
         }
@@ -878,6 +889,129 @@ impl Ty {
             ) => found_uid == expected_uid,
             (Ty::Variant { enum_uid, .. }, Ty::Enum { uid, .. }) => enum_uid == uid,
             (found, expected) => found.is_functionally_equivalent_to(expected, false),
+        }
+    }
+
+    pub(crate) fn can_differentiate(&self, other: &Ty) -> bool {
+        match (self, other) {
+            (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+            (
+                Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_),
+                Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_),
+            ) => false,
+            (
+                Ty::Pointer {
+                    sub_ty: left_ty, ..
+                },
+                Ty::Pointer {
+                    sub_ty: right_ty, ..
+                },
+            ) => left_ty.can_differentiate(right_ty),
+            (Ty::Pointer { .. }, Ty::RawPtr { .. }) | (Ty::RawPtr { .. }, Ty::Pointer { .. }) => {
+                false
+            }
+            (Ty::RawPtr { .. }, Ty::RawPtr { .. }) => false,
+            (Ty::Slice { sub_ty: left_ty }, Ty::Slice { sub_ty: right_ty }) => {
+                left_ty.can_differentiate(right_ty)
+            }
+            (Ty::Slice { .. }, Ty::RawSlice) | (Ty::RawPtr { .. }, Ty::Slice { .. }) => false,
+            (
+                Ty::Array {
+                    sub_ty: left_ty, ..
+                },
+                Ty::Slice { sub_ty: right_ty },
+            )
+            | (
+                Ty::Slice { sub_ty: left_ty },
+                Ty::Array {
+                    sub_ty: right_ty, ..
+                },
+            ) => {
+                // this is perhaps much more strict than `can_fit_into`
+                left_ty.can_differentiate(right_ty)
+            }
+            (
+                Ty::Array {
+                    size: left_size,
+                    sub_ty: left_ty,
+                    ..
+                },
+                Ty::Array {
+                    size: right_size,
+                    sub_ty: right_ty,
+                    ..
+                },
+            ) => left_size != right_size || left_ty.can_differentiate(right_ty),
+            (_, Ty::Any) | (Ty::Any, _) => false,
+            (
+                Ty::Struct {
+                    anonymous: false,
+                    uid: found_uid,
+                    ..
+                },
+                Ty::Struct {
+                    anonymous: false,
+                    uid: expected_uid,
+                    ..
+                },
+            ) => found_uid != expected_uid,
+            (
+                Ty::Struct {
+                    anonymous: left_anon,
+                    members: left_members,
+                    ..
+                },
+                Ty::Struct {
+                    anonymous: right_anon,
+                    members: right_members,
+                    ..
+                },
+            ) => {
+                assert!(*left_anon || *right_anon);
+
+                if left_members.len() != right_members.len() {
+                    return true;
+                }
+
+                let right_members: FxHashMap<_, _> = right_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
+
+                for MemberTy { name, ty: left_ty } in left_members {
+                    let Some(right_ty) = right_members.get(name) else {
+                        return true;
+                    };
+
+                    if !left_ty.can_differentiate(right_ty) {
+                        return true;
+                    }
+                }
+
+                let left_members: FxHashMap<_, _> = left_members
+                    .iter()
+                    .map(|MemberTy { name, ty }| (*name, *ty))
+                    .collect();
+
+                for (name, _) in right_members {
+                    if !left_members.contains_key(&name) {
+                        return true;
+                    }
+                }
+
+                false
+            }
+            (Ty::Distinct { uid: left_uid, .. }, Ty::Distinct { uid: right_uid, .. }) => {
+                left_uid != right_uid
+            }
+            (other, Ty::Distinct { sub_ty, .. }) | (Ty::Distinct { sub_ty, .. }, other) => {
+                other.can_differentiate(sub_ty)
+            }
+            (Ty::Variant { uid: left_uid, .. }, Ty::Variant { uid: right_uid, .. }) => {
+                left_uid != right_uid
+            }
+            (Ty::Variant { enum_uid, .. }, Ty::Enum { uid, .. }) => enum_uid != uid,
+            _ => !(self.can_fit_into(other) || other.can_fit_into(self)),
         }
     }
 

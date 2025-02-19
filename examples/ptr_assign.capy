@@ -5,33 +5,18 @@ main :: () {
     x := 5; // to get a `^mut` to x, x must be mutable `:=` instead of immutable `::`
     y :: ^mut x; // since we're not actually assigning a value to y, y can be immutable `::`
 
-    core.print("x = ");
-    core.println(x);
+    core.println("x = ", x);
 
     y^ = 25;
 
-    core.print("x = ");
-    core.print(x);
-    core.print("\n\n");
+    core.println("x = ", x, "\n");
 
     x := i32.[1, 2, 3];
     y :: ^mut x;
 
-    core.print("x = { ");
-    core.print(x[0]);
-    core.print(", ");
-    core.print(x[1]);
-    core.print(", ");
-    core.print(x[2]);
-    core.println(" }");
+    core.println("x = { ", x[0], ", ", x[1], ", ", x[2], " }");
 
     y[1] = 42;
 
-    core.print("x = { ");
-    core.print(x[0]);
-    core.print(", ");
-    core.print(x[1]);
-    core.print(", ");
-    core.print(x[2]);
-    core.println(" }");
+    core.println("x = { ", x[0], ", ", x[1], ", ", x[2], " }");
 }

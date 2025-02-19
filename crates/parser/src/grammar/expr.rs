@@ -500,8 +500,9 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
                 }
             };
 
-            // only the top level of a parameter list could have these tokens
-            const PARAM_ONLY: TokenSet = TokenSet::new([TokenKind::Colon, TokenKind::Comma]);
+            // only a parameter list could have these tokens
+            const PARAM_ONLY: TokenSet =
+                TokenSet::new([TokenKind::Colon, TokenKind::Comma, TokenKind::Ellipsis]);
 
             if depth == 1 && kind != TokenKind::RParen {
                 if PARAM_ONLY.contains(kind) {
@@ -555,6 +556,9 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
 
     p.bump();
 
+    const PARAM_RECOVERY_SET: TokenSet =
+        TokenSet::new([TokenKind::Comma, TokenKind::RParen, TokenKind::Ellipsis]);
+
     loop {
         if p.at(TokenKind::RParen) {
             break;
@@ -563,16 +567,16 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         let param_m = p.start();
         {
             let _guard = p.expected_syntax_name("parameter name");
-            p.expect(TokenKind::Ident);
+            p.expect_with_recovery_set(TokenKind::Ident, PARAM_RECOVERY_SET);
         }
 
         p.expect_with_no_skip(TokenKind::Colon);
 
-        parse_ty(
-            p,
-            "parameter type",
-            TokenSet::new([TokenKind::Comma, TokenKind::RParen]),
-        );
+        if p.at(TokenKind::Ellipsis) {
+            p.bump();
+        }
+
+        parse_ty(p, "parameter type", PARAM_RECOVERY_SET);
 
         param_m.complete(p, NodeKind::Param);
 

@@ -6,7 +6,7 @@ use hir_ty::{TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
-use syntax::{NodeKind, TokenKind};
+use syntax::NodeKind;
 use text_size::{TextRange, TextSize};
 
 pub struct Diagnostic(Repr);
@@ -179,7 +179,7 @@ impl Diagnostic {
                 kind: SyntaxErrorKind::Missing { .. },
                 ..
             })
-        )
+        ) || self.range().len() == TextSize::new(0)
     }
 
     pub fn message(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
@@ -387,7 +387,7 @@ fn count_digits(n: u32, base: u32) -> usize {
 fn syntax_error_message(e: &SyntaxError) -> String {
     let write_expected_syntax = |buf: &mut String| match e.expected_syntax {
         ExpectedSyntax::Named(name) => buf.push_str(name),
-        ExpectedSyntax::Unnamed(kind) => buf.push_str(format_kind(kind)),
+        ExpectedSyntax::Unnamed(kind) => buf.push_str(kind.to_str()),
     };
 
     let mut message = String::new();
@@ -400,7 +400,7 @@ fn syntax_error_message(e: &SyntaxError) -> String {
         SyntaxErrorKind::UnexpectedToken { found, .. } => {
             message.push_str("expected ");
             write_expected_syntax(&mut message);
-            message.push_str(&format!(" but found {}", format_kind(found)));
+            message.push_str(&format!(" but found {}", found.to_str()));
         }
         SyntaxErrorKind::UnexpectedNode { found, .. } => {
             message.push_str("expected ");
@@ -591,8 +591,11 @@ fn ty_diagnostic_message(
                 )
             }
         }
-        hir_ty::TyDiagnosticKind::MismatchedArgCount { found, expected } => {
-            format!("expected {} arguments but found {}", expected, found)
+        hir_ty::TyDiagnosticKind::ExtraArg { found } => {
+            format!("found an extra argument of type `{}`", found.display(mod_dir, interner))
+        }
+        hir_ty::TyDiagnosticKind::MissingArg { expected } => {
+            format!("expected an argument of type `{}`", expected.display(mod_dir, interner))
         }
         hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
             format!(
@@ -656,7 +659,7 @@ fn ty_diagnostic_message(
             interner.lookup(*member),
             found_ty.display(mod_dir, interner)
         ),
-        hir_ty::TyDiagnosticKind::NonExistantVariant { variant_name, scrutinee_ty } => format!(
+        hir_ty::TyDiagnosticKind::NonExistentVariant { variant_name, enum_ty: scrutinee_ty } => format!(
             "there is no variant named `{}` within `{}`",
             interner.lookup(*variant_name),
             scrutinee_ty.display(mod_dir, interner),
@@ -705,6 +708,9 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::SwitchDoesNotCoverVariant { ty  } => {
             format!("this switch statement does not have an arm for `{}`", ty.display(mod_dir, interner))
         }
+        hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateVarArgs { previous_ty, current_ty } => {
+            format!("the type of this parameter, `{}`, cannot be differentiated from the var arg parameter right behind it, `...{}`", current_ty.display(mod_dir, interner), previous_ty.display(mod_dir, interner))
+        }
     }
 }
 
@@ -749,77 +755,78 @@ fn ty_diagnostic_help_message(
     }
 }
 
-fn format_kind(kind: TokenKind) -> &'static str {
-    match kind {
-        TokenKind::Ident => "identifier",
-        TokenKind::As => "`as`",
-        TokenKind::If => "`if`",
-        TokenKind::Else => "`else`",
-        TokenKind::While => "`while`",
-        TokenKind::Loop => "`loop`",
-        TokenKind::Switch => "`switch`",
-        TokenKind::In => "`in`",
-        TokenKind::Mut => "`mut`",
-        TokenKind::Distinct => "`distinct`",
-        TokenKind::Extern => "`extern`",
-        TokenKind::Struct => "`struct`",
-        TokenKind::Enum => "`enum`",
-        TokenKind::Import => "`import`",
-        TokenKind::Mod => "`mod`",
-        TokenKind::Comptime => "`comptime`",
-        TokenKind::Return => "`return`",
-        TokenKind::Break => "`break`",
-        TokenKind::Continue => "`continue`",
-        TokenKind::Defer => "`defer`",
-        TokenKind::Bool => "boolean",
-        TokenKind::Int => "integer",
-        TokenKind::Hex => "hex literal",
-        TokenKind::Bin => "binary literal",
-        TokenKind::Float => "float",
-        TokenKind::SingleQuote => "`'`",
-        TokenKind::DoubleQuote => "`\"`",
-        TokenKind::Escape => "escape sequence",
-        TokenKind::StringContents => "string",
-        TokenKind::Plus => "`+`",
-        TokenKind::Hyphen => "`-`",
-        TokenKind::Asterisk => "`*`",
-        TokenKind::Slash => "`/`",
-        TokenKind::Percent => "`%`",
-        TokenKind::Left => "`<`",
-        TokenKind::DoubleLeft => "`<<`",
-        TokenKind::LeftEquals => "`<=`",
-        TokenKind::Right => "`>`",
-        TokenKind::DoubleRight => "`>>`",
-        TokenKind::RightEquals => "`>=`",
-        TokenKind::Bang => "`!`",
-        TokenKind::BangEquals => "`!=`",
-        TokenKind::And => "`&`",
-        TokenKind::DoubleAnd => "`&&`",
-        TokenKind::Pipe => "`|`",
-        TokenKind::DoublePipe => "`||`",
-        TokenKind::DoubleEquals => "`==`",
-        TokenKind::Tilde => "`~`",
-        TokenKind::Equals => "`=`",
-        TokenKind::Dot => "`.`",
-        TokenKind::Colon => "`:`",
-        TokenKind::Comma => "`,`",
-        TokenKind::Semicolon => "`;`",
-        TokenKind::Arrow => "`->`",
-        TokenKind::FatArrow => "`=>`",
-        TokenKind::Caret => "`^`",
-        TokenKind::Backtick => "'`'", // this one is a little weird lol
-        TokenKind::LParen => "`(`",
-        TokenKind::RParen => "`)`",
-        TokenKind::LBrack => "`[`",
-        TokenKind::RBrack => "`]`",
-        TokenKind::LBrace => "`{`",
-        TokenKind::RBrace => "`}`",
-        TokenKind::Whitespace => "whitespace",
-        TokenKind::NonBreakingSpace => "non-breaking space character",
-        TokenKind::CommentContents | TokenKind::CommentLeader => "comment",
-        TokenKind::Error => "an unrecognized token",
-    }
-}
+// fn format_kind(kind: TokenKind) -> &'static str {
+//     match kind {
+//         TokenKind::Ident => "identifier",
+//         TokenKind::As => "`as`",
+//         TokenKind::If => "`if`",
+//         TokenKind::Else => "`else`",
+//         TokenKind::While => "`while`",
+//         TokenKind::Loop => "`loop`",
+//         TokenKind::Switch => "`switch`",
+//         TokenKind::In => "`in`",
+//         TokenKind::Mut => "`mut`",
+//         TokenKind::Distinct => "`distinct`",
+//         TokenKind::Extern => "`extern`",
+//         TokenKind::Struct => "`struct`",
+//         TokenKind::Enum => "`enum`",
+//         TokenKind::Import => "`import`",
+//         TokenKind::Mod => "`mod`",
+//         TokenKind::Comptime => "`comptime`",
+//         TokenKind::Return => "`return`",
+//         TokenKind::Break => "`break`",
+//         TokenKind::Continue => "`continue`",
+//         TokenKind::Defer => "`defer`",
+//         TokenKind::Bool => "boolean",
+//         TokenKind::Int => "integer",
+//         TokenKind::Hex => "hex literal",
+//         TokenKind::Bin => "binary literal",
+//         TokenKind::Float => "float",
+//         TokenKind::SingleQuote => "`'`",
+//         TokenKind::DoubleQuote => "`\"`",
+//         TokenKind::Escape => "escape sequence",
+//         TokenKind::StringContents => "string",
+//         TokenKind::Plus => "`+`",
+//         TokenKind::Hyphen => "`-`",
+//         TokenKind::Asterisk => "`*`",
+//         TokenKind::Slash => "`/`",
+//         TokenKind::Percent => "`%`",
+//         TokenKind::Left => "`<`",
+//         TokenKind::DoubleLeft => "`<<`",
+//         TokenKind::LeftEquals => "`<=`",
+//         TokenKind::Right => "`>`",
+//         TokenKind::DoubleRight => "`>>`",
+//         TokenKind::RightEquals => "`>=`",
+//         TokenKind::Bang => "`!`",
+//         TokenKind::BangEquals => "`!=`",
+//         TokenKind::And => "`&`",
+//         TokenKind::DoubleAnd => "`&&`",
+//         TokenKind::Pipe => "`|`",
+//         TokenKind::DoublePipe => "`||`",
+//         TokenKind::DoubleEquals => "`==`",
+//         TokenKind::Tilde => "`~`",
+//         TokenKind::Equals => "`=`",
+//         TokenKind::Dot => "`.`",
+//         TokenKind::Ellipsis => "`...`",
+//         TokenKind::Colon => "`:`",
+//         TokenKind::Comma => "`,`",
+//         TokenKind::Semicolon => "`;`",
+//         TokenKind::Arrow => "`->`",
+//         TokenKind::FatArrow => "`=>`",
+//         TokenKind::Caret => "`^`",
+//         TokenKind::Backtick => "'`'", // this one is a little weird lol
+//         TokenKind::LParen => "`(`",
+//         TokenKind::RParen => "`)`",
+//         TokenKind::LBrack => "`[`",
+//         TokenKind::RBrack => "`]`",
+//         TokenKind::LBrace => "`{`",
+//         TokenKind::RBrace => "`}`",
+//         TokenKind::Whitespace => "whitespace",
+//         TokenKind::NonBreakingSpace => "non-breaking space character",
+//         TokenKind::CommentContents | TokenKind::CommentLeader => "comment",
+//         TokenKind::Error => "an unrecognized token",
+//     }
+// }
 
 fn format_node(kind: NodeKind) -> &'static str {
     // since this is only currently used for `array_size`, it's fine to just leave everything else

@@ -1,4 +1,4 @@
-use hir_ty::Ty;
+use hir_ty::{ParamTy, Ty};
 use internment::Intern;
 
 use crate::convert::GetFinalTy;
@@ -18,13 +18,13 @@ fn ty_to_passmode(ty: Intern<Ty>) -> Option<PassMode> {
     // TODO: vector types
 }
 
-pub fn fn_ty_to_abi((args, ret): (&[Intern<Ty>], Intern<Ty>)) -> FnAbi {
+pub fn fn_ty_to_abi((args, ret): (&[ParamTy], Intern<Ty>)) -> FnAbi {
     let mut sig = FnAbi::new();
     sig.ret = ty_to_passmode(ret);
     sig.simple_ret = true;
 
     for (idx, arg) in args.iter().enumerate() {
-        if let Some(arg) = ty_to_passmode(*arg) {
+        if let Some(arg) = ty_to_passmode(arg.ty) {
             sig.args.push((arg, idx as u16))
         }
     }

@@ -322,6 +322,10 @@ impl Param {
         token(self, tree)
     }
 
+    pub fn ellipsis(self, tree: &SyntaxTree) -> Option<Ellipsis> {
+        token(self, tree)
+    }
+
     pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
         node(self, tree)
     }
@@ -939,6 +943,7 @@ def_ast_token!(Hex);
 def_ast_token!(Bin);
 def_ast_token!(Float);
 def_ast_token!(Bool);
+def_ast_token!(Ellipsis);
 
 def_multi_token! {
     StringComponent:
@@ -2148,11 +2153,42 @@ mod tests {
 
         let param = params.next().unwrap();
         assert_eq!(param.name(&tree).unwrap().text(&tree), "x");
+        assert!(param.ellipsis(&tree).is_none());
         assert_eq!(param.ty(&tree).unwrap().text(&tree), "i32");
 
         let param = params.next().unwrap();
         assert_eq!(param.name(&tree).unwrap().text(&tree), "y");
+        assert!(param.ellipsis(&tree).is_none());
         assert_eq!(param.ty(&tree).unwrap().text(&tree), "i32");
+
+        assert!(params.next().is_none());
+    }
+
+    #[test]
+    fn get_variadic_lambda_params() {
+        let (tree, root) = parse("(x: i32, y: ...f32) {};");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let lambda = match expr {
+            Some(Expr::Lambda(lambda)) => lambda,
+            _ => unreachable!(),
+        };
+
+        let mut params = lambda.param_list(&tree).unwrap().params(&tree);
+
+        let param = params.next().unwrap();
+        assert_eq!(param.name(&tree).unwrap().text(&tree), "x");
+        assert!(param.ellipsis(&tree).is_none());
+        assert_eq!(param.ty(&tree).unwrap().text(&tree), "i32");
+
+        let param = params.next().unwrap();
+        assert_eq!(param.name(&tree).unwrap().text(&tree), "y");
+        assert!(param.ellipsis(&tree).is_some());
+        assert_eq!(param.ty(&tree).unwrap().text(&tree), "f32");
 
         assert!(params.next().is_none());
     }

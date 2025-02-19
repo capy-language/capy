@@ -14,7 +14,7 @@ my_global :: comptime {
 main :: () {
     core.println("Hello at runtime!");
 
-    io.label("that global was equal to ", my_global);
+    core.println("that global was equal to ", my_global);
 
     powers_of_two := comptime {
         core.println("Doing heavy calculation...");
@@ -34,11 +34,11 @@ main :: () {
         array
     };
 
-    io.label("2^0 = ", powers_of_two[0]);
-    io.label("2^1 = ", powers_of_two[1]);
-    io.label("2^2 = ", powers_of_two[2]);
-    io.label("2^3 = ", powers_of_two[3]);
-    io.label("2^4 = ", powers_of_two[4]);
-    io.label("2^5 = ", powers_of_two[5]);
+    core.println("2^0 = ", powers_of_two[0]);
+    core.println("2^1 = ", powers_of_two[1]);
+    core.println("2^2 = ", powers_of_two[2]);
+    core.println("2^3 = ", powers_of_two[3]);
+    core.println("2^4 = ", powers_of_two[4]);
+    core.println("2^5 = ", powers_of_two[5]);
 }
 
