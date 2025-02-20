@@ -1,16 +1,16 @@
 
 // this is all going to change.
 // `pub` is going to be added
-// after that, there will be a way to bypass it
 
 fmt :: import "fmt.capy";
 libc :: import "libc.capy";
-ptr :: import "ptr.capy";
 math :: import "math.capy";
+mem :: import "mem.capy";
 meta :: import "meta.capy";
+ptr :: import "ptr.capy";
 
-string_builder :: import "structs/string_builder.capy";
 list :: import "structs/list.capy";
+string_builder :: import "structs/string_builder.capy";
 
 // a builtin slice that gets populated with `argc` and `argv`
 // just before `main` gets called

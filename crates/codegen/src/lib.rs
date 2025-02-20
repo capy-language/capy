@@ -2541,7 +2541,7 @@ mod tests {
             "#,
             "main",
             true,
-            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            &[],
             expect![["
                 ()
                 { x = 25, y = 100 }
@@ -2573,7 +2573,7 @@ mod tests {
             "#,
             "main",
             true,
-            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            &[],
             expect![["
 
 "]],
@@ -2627,7 +2627,7 @@ mod tests {
             "#,
             "main",
             true,
-            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            &[],
             expect![["
             ()
 
@@ -2668,7 +2668,7 @@ mod tests {
             "#,
             "main",
             true,
-            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            &[],
             expect![["
             ()
 
@@ -2693,9 +2693,40 @@ mod tests {
             "#,
             "main",
             true,
-            &["hello", "world!", "wow look at this arg", "foo=bar"],
+            &[],
             expect![["
             [ 1, 2, 3 ]
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn float_to_bits() {
+        check_raw_with_args(
+            r#"
+                core :: mod "core";
+                fmt :: core.fmt;
+
+                main :: () {
+                    bits : u32 = core.mem.f32_to_bits(42.5);
+                    core.println(fmt.binary(bits));
+                    core.println(core.mem.f32_from_bits(bits));
+
+                    bits : u64 = core.mem.f64_to_bits(42.5);
+                    core.println(fmt.binary_unsigned(bits));
+                    core.println(core.mem.f64_from_bits(bits));
+                }
+            "#,
+            "main",
+            true,
+            &[],
+            expect![["
+            1000010001010100000000000000000
+            42.500
+            100000001000101010000000000000000000000000000000000000000000000
+            42.500
 
 "]],
             0,

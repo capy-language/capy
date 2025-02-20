@@ -1,0 +1,26 @@
+
+// for doing bit-twiddelling with f32s
+
+f32_to_bits :: (num: f32) -> u32 {
+    // I don't think there's a way to do this with a cranelift intrinsic,
+    // so pointer transmutation is the only option.
+    num := num;
+    (^u32).(rawptr.(^num))^
+}
+
+f32_from_bits :: (raw: u32) -> f32 {
+    raw := raw;
+    (^f32).(rawptr.(^raw))^
+}
+
+// for doing bit-twiddelling with f64s
+
+f64_to_bits :: (num: f64) -> u64 {
+    num := num;
+    (^u64).(rawptr.(^num))^
+}
+
+f64_from_bits :: (raw: u64) -> f64 {
+    raw := raw;
+    (^f64).(rawptr.(^raw))^
+}

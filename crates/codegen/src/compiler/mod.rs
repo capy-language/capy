@@ -303,8 +303,8 @@ impl Compiler<'_> {
                 BuiltinFunction::PtrBitcast => {
                     self.compile_bitcast_fn("ptr_bitcast", &mangled, sig, func_id, self.ptr_ty)
                 }
-                BuiltinFunction::I32Bitcast => {
-                    self.compile_bitcast_fn("i32_bitcast", &mangled, sig, func_id, types::I32)
+                BuiltinFunction::ConcreteBitcast(ty) => {
+                    self.compile_bitcast_fn(&format!("{ty}_bitcast"), &mangled, sig, func_id, ty)
                 }
             }
             return;
@@ -359,14 +359,12 @@ impl Compiler<'_> {
         // tell the builder that the block will have no further predecessors
         builder.seal_block(entry_block);
 
-        // this function literally just returns what it was given.
-        // the only purpose of this function is to bypass `hir_ty`.
-        // could we make calls to `ptr.from_raw()` or `ptr.to_raw()`
-        // just evaluate to the first argument? yes probably
-        // we probably only need to compile these builtin functions
-        // if they are used as first class functions
-        let arg_ptr = builder.append_block_param(entry_block, ty);
-        builder.ins().return_(&[arg_ptr]);
+        // This function literally just returns what it was given.
+        // Could we make calls to `ptr.from_raw()` or `ptr.to_raw()` noop?
+        // Yes, probably.
+        // TODO: Only compile these builtin functions if they are used as first class functions
+        let arg = builder.append_block_param(entry_block, ty);
+        builder.ins().return_(&[arg]);
 
         builder.seal_all_blocks();
         builder.finalize();

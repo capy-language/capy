@@ -34,26 +34,26 @@ pub(crate) enum BuiltinGlobal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinFunction {
     PtrBitcast,
-    I32Bitcast,
+    ConcreteBitcast(types::Type),
 }
 
 impl BuiltinFunction {
     pub(crate) fn to_sig_and_func_id(
         self,
         module: &mut dyn Module,
-        pointer_ty: types::Type,
+        ptr_ty: types::Type,
         mod_dir: &std::path::Path,
         interner: &Interner,
     ) -> (String, FinalSignature, FuncId) {
         let ftc = match self {
             BuiltinFunction::PtrBitcast => FinalSignature {
-                params: vec![AbiParam::new(pointer_ty)],
-                returns: vec![AbiParam::new(pointer_ty)],
+                params: vec![AbiParam::new(ptr_ty)],
+                returns: vec![AbiParam::new(ptr_ty)],
                 call_conv: module.target_config().default_call_conv,
             },
-            BuiltinFunction::I32Bitcast => FinalSignature {
-                params: vec![AbiParam::new(types::I32)],
-                returns: vec![AbiParam::new(types::I32)],
+            BuiltinFunction::ConcreteBitcast(ty) => FinalSignature {
+                params: vec![AbiParam::new(ty)],
+                returns: vec![AbiParam::new(ty)],
                 call_conv: module.target_config().default_call_conv,
             },
         };
@@ -148,7 +148,7 @@ pub(crate) fn as_compiler_defined_func(
         ("ptr.capy", "to_raw") => BuiltinFunction::PtrBitcast,
         ("ptr.capy", "const_from_raw") => BuiltinFunction::PtrBitcast,
         ("ptr.capy", "mut_from_raw") => BuiltinFunction::PtrBitcast,
-        ("meta.capy", "meta_to_raw") => BuiltinFunction::I32Bitcast,
+        ("meta.capy", "meta_to_raw") => BuiltinFunction::ConcreteBitcast(types::I32),
         _ => return None,
     })
 }
