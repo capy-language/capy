@@ -109,10 +109,8 @@ impl GlobalInferenceCtx<'_> {
     ) -> InferResult<Intern<Ty>> {
         self.infer_expr(body)?;
 
-        for (def, usages) in self.local_usages.clone().iter() {
-            self.local_usages.get_mut(def).unwrap().clear();
-
-            self.reinfer_usages(usages.clone());
+        for (_, usages) in self.local_usages.clone() {
+            self.reinfer_usages(usages);
         }
 
         let mut actual_ty = self.reinfer_expr(body);
@@ -779,24 +777,13 @@ impl GlobalInferenceCtx<'_> {
                             let lhs_ty = self.tys[self.file][*lhs];
                             let rhs_ty = self.tys[self.file][*rhs];
 
-                            let should_print = expr.into_raw().into_u32() == 265;
-                            if should_print {
-                                println!("#265 prev={:?}", self.tys[self.file][expr]);
-                                println!("#265 left={lhs_ty:?}, right={rhs_ty:?}");
-                            }
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
-                                if should_print {
-                                    println!("max = {output_ty:?}");
-                                }
                                 let max_ty = output_ty.max_ty.into();
                                 self.replace_weak_tys(*lhs, max_ty);
                                 self.replace_weak_tys(*rhs, max_ty);
 
                                 output_ty.final_output_ty.into()
                             } else {
-                                if should_print {
-                                    println!("default");
-                                }
                                 op.default_ty().into()
                             }
                         }
@@ -1288,11 +1275,6 @@ impl GlobalInferenceCtx<'_> {
                             let lhs_ty = self.tys[self.file][*lhs];
                             let rhs_ty = self.tys[self.file][*rhs];
 
-                            let should_print = expr.into_raw().into_u32() == 265;
-                            if should_print {
-                                println!("- #265 left={lhs_ty:?}, right={rhs_ty:?}");
-                            }
-
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
                                 if *lhs_ty != Ty::Unknown
                                     && *rhs_ty != Ty::Unknown
@@ -1309,10 +1291,6 @@ impl GlobalInferenceCtx<'_> {
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
                                     });
-                                }
-
-                                if should_print {
-                                    println!("- max={output_ty:?}");
                                 }
 
                                 let max_ty = output_ty.max_ty.into();
@@ -1334,13 +1312,7 @@ impl GlobalInferenceCtx<'_> {
                                     help: None,
                                 });
 
-                                let default = op.default_ty().into();
-
-                                if should_print {
-                                    println!("- default\n- new={default:?}");
-                                }
-
-                                default
+                                op.default_ty().into()
                             }
                         }
                         Expr::Unary { expr, op } => {

@@ -11653,4 +11653,52 @@ mod tests {
             |_| [],
         )
     }
+
+    #[test]
+    fn reinfer_final_usages() {
+        // check for https://github.com/capy-language/capy/issues/41
+        //
+        // this was essentially caused by the fact that `i` actually doesn't have a type until the
+        // very very end, where in `finish_body` it gets weak type replaced by u64--but what was
+        // going wrong was that before the type was getting weak type replaced, all the local
+        // usages were being cleared, making it impossible for them to ALSO get weak type replaced.
+        // this is fixed now.
+        check(
+            r#"
+                log2_u64 :: (n: u64) -> u64 {
+                    n := n;
+                    i := 0;
+                    while n != 0 {
+                        n = n << 1;
+                        i = i + 1;
+                    }
+                    i
+                }
+            "#,
+            expect![[r#"
+                main::log2_u64 : (u64) -> u64
+                2 : u64
+                3 : u64
+                4 : u64
+                5 : u64
+                6 : bool
+                7 : u64
+                8 : u64
+                9 : u64
+                10 : u64
+                11 : u64
+                12 : u64
+                13 : u64
+                14 : u64
+                15 : void
+                16 : void
+                17 : u64
+                18 : u64
+                19 : (u64) -> u64
+                l0 : u64
+                l1 : u64
+            "#]],
+            |_| [],
+        )
+    }
 }
