@@ -136,10 +136,18 @@ impl TyDiagnostic {
     }
 }
 
+/// Sometimes a specific type is expected, and sometimes it's something vague like "an enum"
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExpectedTy {
+    Concrete(Intern<Ty>),
+    Enum,
+    Variant,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TyDiagnosticKind {
     Mismatch {
-        expected: Intern<Ty>,
+        expected: ExpectedTy,
         found: Intern<Ty>,
     },
     Uncastable {
@@ -179,7 +187,7 @@ pub enum TyDiagnosticKind {
         found: Intern<Ty>,
     },
     MissingArg {
-        expected: Intern<Ty>,
+        expected: ExpectedTy,
     },
     CalledNonFunction {
         found: Intern<Ty>,
@@ -245,6 +253,13 @@ pub enum TyDiagnosticKind {
     ImpossibleToDifferentiateVarArgs {
         previous_ty: Intern<Ty>,
         current_ty: Intern<Ty>,
+    },
+    UnknownDirective {
+        name: Key,
+    },
+    UnwrapVariantMismatchEnum {
+        variant_ty: Intern<Ty>,
+        enum_ty: Intern<Ty>,
     },
 }
 
@@ -1260,7 +1275,7 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                numbers :: import "numbers.capy";
+                numbers :: #import("numbers.capy");
 
                 fun :: () -> numbers.imaginary {
                     foo : numbers.imaginary = 0;
@@ -1341,7 +1356,7 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                foo :: import "foo.capy";
+                foo :: #import("foo.capy");
 
                 Foo :: foo.Foo;
 
@@ -1379,7 +1394,7 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                foo :: import "foo.capy";
+                foo :: #import("foo.capy");
                 bar :: foo.bar;
 
                 fun :: () {
@@ -1410,7 +1425,7 @@ mod tests {
                             name: hir::Name(i.intern("bar")),
                         },
                     },
-                    65..72,
+                    67..74,
                     None,
                 )]
             },
@@ -1829,7 +1844,7 @@ mod tests {
             r#"
                 #- main.capy
 
-                other :: import "other.capy";
+                other :: #import("other.capy");
 
                 main :: () {
                     my_array : [other.size] bool = bool.[true, false];
@@ -1889,7 +1904,7 @@ mod tests {
             r#"
                 #- main.capy
 
-                other :: import "other.capy";
+                other :: #import("other.capy");
 
                 main :: () {
                     my_array : [other.size] bool = bool.[];
@@ -1913,7 +1928,7 @@ mod tests {
                   8 : () -> void
                   l0 : <unknown>
             "#]],
-            |_| [(TyDiagnosticKind::ArraySizeNotConst, 109..119, None)],
+            |_| [(TyDiagnosticKind::ArraySizeNotConst, 111..121, None)],
         );
     }
 
@@ -1970,7 +1985,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(u8::MAX).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(u8::MAX).into()),
                         found: Ty::Float(0).into(),
                     },
                     62..65,
@@ -2104,7 +2119,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(u8::MAX).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(u8::MAX).into()),
                         found: Ty::IInt(0).into(),
                     },
                     62..64,
@@ -2321,7 +2336,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(8).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(8).into()),
                         found: Ty::IInt(0).into(),
                     },
                     34..321,
@@ -2465,7 +2480,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(8).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(8).into()),
                         found: Ty::UInt(16).into(),
                     },
                     102..105,
@@ -2523,7 +2538,7 @@ mod tests {
                 // should fail due to loss of sign
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(16).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(16).into()),
                         found: Ty::IInt(8).into(),
                     },
                     103..108,
@@ -2556,7 +2571,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(16).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(16).into()),
                         found: Ty::IInt(16).into(),
                     },
                     104..108,
@@ -2589,7 +2604,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(8).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(8).into()),
                         found: Ty::IInt(16).into(),
                     },
                     102..105,
@@ -2824,7 +2839,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(8).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(8).into()),
                         found: Ty::IInt(0).into(),
                     },
                     33..39,
@@ -2886,7 +2901,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::String.into(),
+                        expected: ExpectedTy::Concrete(Ty::String.into()),
                         found: Ty::UInt(0).into(),
                     },
                     32..38,
@@ -2988,7 +3003,7 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: Ty::IInt(32).into(),
+                            expected: ExpectedTy::Concrete(Ty::IInt(32).into()),
                             found: Ty::Void.into(),
                         },
                         46..48,
@@ -2996,7 +3011,7 @@ mod tests {
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: Ty::IInt(32).into(),
+                            expected: ExpectedTy::Concrete(Ty::IInt(32).into()),
                             found: Ty::String.into(),
                         },
                         50..53,
@@ -3013,7 +3028,7 @@ mod tests {
             r#"
                 #- main.capy
                 a :: () -> str {
-                    greetings := import "greetings.capy";
+                    greetings := #import("greetings.capy");
 
                     greetings.informal(10)
                 };
@@ -3073,7 +3088,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::IInt(32).into(),
+                        expected: ExpectedTy::Concrete(Ty::IInt(32).into()),
                         found: Ty::String.into(),
                     },
                     59..150,
@@ -3108,7 +3123,7 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::IInt(32).into(),
+                        expected: ExpectedTy::Concrete(Ty::IInt(32).into()),
                         found: Ty::Distinct {
                             fqn: Some(hir::Fqn {
                                 file: hir::FileName(i.intern("main.capy")),
@@ -4683,7 +4698,7 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                other_file :: import "other_file.capy";
+                other_file :: #import("other_file.capy");
 
                 func :: () {
                     other_file.foo = 25;
@@ -4708,8 +4723,8 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::CannotMutate,
-                    106..126,
-                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 117..120)),
+                    108..128,
+                    Some((TyDiagnosticHelpKind::ImmutableGlobal, 119..122)),
                 )]
             },
         );
@@ -5019,11 +5034,13 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Pointer {
-                            mutable: true,
-                            sub_ty: Ty::IInt(32).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Pointer {
+                                mutable: true,
+                                sub_ty: Ty::IInt(32).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::Pointer {
                             mutable: false,
                             sub_ty: Ty::UInt(0).into(),
@@ -5074,22 +5091,24 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: Ty::Function {
-                                param_tys: vec![
-                                    ParamTy {
-                                        ty: *ty::F32,
-                                        varargs: false,
-                                        impossible_to_differentiate: false,
-                                    },
-                                    ParamTy {
-                                        ty: *ty::I8,
-                                        varargs: false,
-                                        impossible_to_differentiate: false,
-                                    },
-                                ],
-                                return_ty: Ty::String.into(),
-                            }
-                            .into(),
+                            expected: ExpectedTy::Concrete(
+                                Ty::Function {
+                                    param_tys: vec![
+                                        ParamTy {
+                                            ty: *ty::F32,
+                                            varargs: false,
+                                            impossible_to_differentiate: false,
+                                        },
+                                        ParamTy {
+                                            ty: *ty::I8,
+                                            varargs: false,
+                                            impossible_to_differentiate: false,
+                                        },
+                                    ],
+                                    return_ty: Ty::String.into(),
+                                }
+                                .into(),
+                            ),
                             found: Ty::Function {
                                 param_tys: vec![ParamTy {
                                     ty: *ty::I32,
@@ -5105,7 +5124,7 @@ mod tests {
                     ),
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: *ty::F32,
+                            expected: ExpectedTy::Concrete(*ty::F32),
                             found: *ty::I32,
                         },
                         88..89,
@@ -5113,7 +5132,7 @@ mod tests {
                     ),
                     (
                         TyDiagnosticKind::MissingArg {
-                            expected: Ty::IInt(8).into(),
+                            expected: ExpectedTy::Concrete(Ty::IInt(8).into()),
                         },
                         89..89,
                         None,
@@ -5143,7 +5162,7 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: *ty::I32,
+                            expected: ExpectedTy::Concrete(*ty::I32),
                             found: Ty::Function {
                                 param_tys: vec![ParamTy {
                                     ty: *ty::I32,
@@ -5471,7 +5490,7 @@ mod tests {
                 [
                     (
                         TyDiagnosticKind::Mismatch {
-                            expected: Ty::String.into(),
+                            expected: ExpectedTy::Concrete(Ty::String.into()),
                             found: Ty::Bool.into(),
                         },
                         216..221,
@@ -5734,7 +5753,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::MissingArg {
-                        expected: Ty::Bool.into(),
+                        expected: ExpectedTy::Concrete(Ty::Bool.into()),
                     },
                     130..130,
                     None,
@@ -5944,7 +5963,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::MissingArg {
-                        expected: Ty::IInt(64).into(),
+                        expected: ExpectedTy::Concrete(Ty::IInt(64).into()),
                     },
                     174..174,
                     None,
@@ -6217,25 +6236,27 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Struct {
-                            anonymous: false,
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Bar")),
-                            }),
-                            uid: 1,
-                            members: vec![
-                                MemberTy {
-                                    name: hir::Name(i.intern("a")),
-                                    ty: Ty::IInt(32).into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("b")),
-                                    ty: Ty::IInt(8).into(),
-                                },
-                            ],
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Struct {
+                                anonymous: false,
+                                fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Bar")),
+                                }),
+                                uid: 1,
+                                members: vec![
+                                    MemberTy {
+                                        name: hir::Name(i.intern("a")),
+                                        ty: Ty::IInt(32).into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("b")),
+                                        ty: Ty::IInt(8).into(),
+                                    },
+                                ],
+                            }
+                            .into(),
+                        ),
                         found: Ty::Struct {
                             anonymous: false,
                             fqn: Some(hir::Fqn {
@@ -6735,7 +6756,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Type.into(),
+                        expected: ExpectedTy::Concrete(Ty::Type.into()),
                         found: Ty::Function {
                             param_tys: vec![ParamTy {
                                 ty: Ty::String.into(),
@@ -6802,7 +6823,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Intern::new(Ty::String),
+                        expected: ExpectedTy::Concrete(Intern::new(Ty::String)),
                         found: Intern::new(Ty::UInt(0)),
                     },
                     61..123,
@@ -7170,11 +7191,13 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Pointer {
-                            mutable: false,
-                            sub_ty: Ty::IInt(32).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Pointer {
+                                mutable: false,
+                                sub_ty: Ty::IInt(32).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::RawPtr { mutable: false }.into(),
                     },
                     191..194,
@@ -7239,10 +7262,12 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Slice {
-                            sub_ty: Ty::IInt(32).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Slice {
+                                sub_ty: Ty::IInt(32).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::RawSlice.into(),
                     },
                     174..177,
@@ -7436,7 +7461,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(8).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(8).into()),
                         found: Ty::Char.into(),
                     },
                     98..105,
@@ -8205,7 +8230,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::UInt(0).into(),
+                        expected: ExpectedTy::Concrete(Ty::UInt(0).into()),
                         found: Ty::Void.into(),
                     },
                     116..118,
@@ -8319,7 +8344,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Void.into(),
+                        expected: ExpectedTy::Concrete(Ty::Void.into()),
                         found: Ty::UInt(0).into(),
                     },
                     109..111,
@@ -8360,7 +8385,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Void.into(),
+                        expected: ExpectedTy::Concrete(Ty::Void.into()),
                         found: Ty::UInt(0).into(),
                     },
                     177..179,
@@ -8402,7 +8427,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Bool.into(),
+                        expected: ExpectedTy::Concrete(Ty::Bool.into()),
                         found: Ty::UInt(0).into(),
                     },
                     76..200,
@@ -8474,7 +8499,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::String.into(),
+                        expected: ExpectedTy::Concrete(Ty::String.into()),
                         found: Ty::UInt(0).into(),
                     },
                     92..94,
@@ -8701,7 +8726,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Void.into(),
+                        expected: ExpectedTy::Concrete(Ty::Void.into()),
                         found: Ty::UInt(0).into(),
                     },
                     117..119,
@@ -8874,7 +8899,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::RawPtr { mutable: false }.into(),
+                        expected: ExpectedTy::Concrete(Ty::RawPtr { mutable: false }.into()),
                         found: Ty::Pointer {
                             mutable: false,
                             sub_ty: Ty::UInt(0).into(),
@@ -8993,12 +9018,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Array {
-                            anonymous: false,
-                            size: 3,
-                            sub_ty: Ty::IInt(32).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Array {
+                                anonymous: false,
+                                size: 3,
+                                sub_ty: Ty::IInt(32).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::Slice {
                             sub_ty: Ty::IInt(32).into(),
                         }
@@ -9111,7 +9138,7 @@ mod tests {
         check(
             r#"
                 #- main.capy
-                other :: import "other.capy";
+                other :: #import("other.capy");
 
                 foo : i32 : extern;
 
@@ -9304,7 +9331,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::IInt(32).into(),
+                        expected: ExpectedTy::Concrete(Ty::IInt(32).into()),
                         found: Ty::Array {
                             anonymous: true,
                             size: 0,
@@ -9337,7 +9364,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Type.into(),
+                        expected: ExpectedTy::Concrete(Ty::Type.into()),
                         found: Ty::UInt(0).into(),
                     },
                     53..55,
@@ -9832,29 +9859,31 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Struct {
-                            anonymous: false,
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Foo_Type")),
-                            }),
-                            uid: 0,
-                            members: vec![
-                                MemberTy {
-                                    name: hir::Name(i.intern("a")),
-                                    ty: Ty::UInt(8).into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("b")),
-                                    ty: Ty::String.into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("c")),
-                                    ty: Ty::Float(64).into(),
-                                },
-                            ],
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Struct {
+                                anonymous: false,
+                                fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Foo_Type")),
+                                }),
+                                uid: 0,
+                                members: vec![
+                                    MemberTy {
+                                        name: hir::Name(i.intern("a")),
+                                        ty: Ty::UInt(8).into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("b")),
+                                        ty: Ty::String.into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("c")),
+                                        ty: Ty::Float(64).into(),
+                                    },
+                                ],
+                            }
+                            .into(),
+                        ),
                         found: Ty::Struct {
                             anonymous: true,
                             fqn: None,
@@ -9914,29 +9943,31 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Struct {
-                            anonymous: false,
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Foo_Type")),
-                            }),
-                            uid: 0,
-                            members: vec![
-                                MemberTy {
-                                    name: hir::Name(i.intern("a")),
-                                    ty: Ty::UInt(8).into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("b")),
-                                    ty: Ty::String.into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("c")),
-                                    ty: Ty::Float(64).into(),
-                                },
-                            ],
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Struct {
+                                anonymous: false,
+                                fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Foo_Type")),
+                                }),
+                                uid: 0,
+                                members: vec![
+                                    MemberTy {
+                                        name: hir::Name(i.intern("a")),
+                                        ty: Ty::UInt(8).into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("b")),
+                                        ty: Ty::String.into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("c")),
+                                        ty: Ty::Float(64).into(),
+                                    },
+                                ],
+                            }
+                            .into(),
+                        ),
                         found: Ty::Struct {
                             anonymous: true,
                             fqn: None,
@@ -10002,29 +10033,31 @@ mod tests {
             |i| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Struct {
-                            anonymous: false,
-                            fqn: Some(hir::Fqn {
-                                file: hir::FileName(i.intern("main.capy")),
-                                name: hir::Name(i.intern("Foo_Type")),
-                            }),
-                            uid: 0,
-                            members: vec![
-                                MemberTy {
-                                    name: hir::Name(i.intern("a")),
-                                    ty: Ty::UInt(8).into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("b")),
-                                    ty: Ty::String.into(),
-                                },
-                                MemberTy {
-                                    name: hir::Name(i.intern("c")),
-                                    ty: Ty::Float(64).into(),
-                                },
-                            ],
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Struct {
+                                anonymous: false,
+                                fqn: Some(hir::Fqn {
+                                    file: hir::FileName(i.intern("main.capy")),
+                                    name: hir::Name(i.intern("Foo_Type")),
+                                }),
+                                uid: 0,
+                                members: vec![
+                                    MemberTy {
+                                        name: hir::Name(i.intern("a")),
+                                        ty: Ty::UInt(8).into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("b")),
+                                        ty: Ty::String.into(),
+                                    },
+                                    MemberTy {
+                                        name: hir::Name(i.intern("c")),
+                                        ty: Ty::Float(64).into(),
+                                    },
+                                ],
+                            }
+                            .into(),
+                        ),
                         found: Ty::Struct {
                             anonymous: true,
                             fqn: None,
@@ -10190,12 +10223,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Array {
-                            anonymous: false,
-                            size: 3,
-                            sub_ty: Ty::IInt(16).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Array {
+                                anonymous: false,
+                                size: 3,
+                                sub_ty: Ty::IInt(16).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::Array {
                             anonymous: true,
                             size: 4,
@@ -10231,12 +10266,14 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::Array {
-                            anonymous: false,
-                            size: 3,
-                            sub_ty: Ty::IInt(16).into(),
-                        }
-                        .into(),
+                        expected: ExpectedTy::Concrete(
+                            Ty::Array {
+                                anonymous: false,
+                                size: 3,
+                                sub_ty: Ty::IInt(16).into(),
+                            }
+                            .into(),
+                        ),
                         found: Ty::Array {
                             anonymous: true,
                             size: 2,
@@ -10407,7 +10444,7 @@ mod tests {
             |_| {
                 [(
                     TyDiagnosticKind::Mismatch {
-                        expected: Ty::IInt(0).into(),
+                        expected: ExpectedTy::Concrete(Ty::IInt(0).into()),
                         found: Ty::Bool.into(),
                     },
                     66..70,
@@ -11699,6 +11736,387 @@ mod tests {
                 l1 : u64
             "#]],
             |_| [],
+        )
+    }
+
+    #[test]
+    fn unwrap_directive() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap(clicked, Web_Event.Click);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : type
+                14 : type
+                15 : main::Web_Event.Click
+                16 : void
+                17 : () -> void
+                l0 : main::Web_Event
+                l1 : main::Web_Event.Click
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn unwrap_directive_no_arg() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap();
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : <unknown>
+                13 : void
+                14 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::MissingArg {
+                            expected: ExpectedTy::Enum,
+                        },
+                        529..529,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::MissingArg {
+                            expected: ExpectedTy::Concrete(Ty::Type.into()),
+                        },
+                        529..529,
+                        None,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn unwrap_directive_one_arg_incorrect() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap(5);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : {uint}
+                13 : <unknown>
+                14 : void
+                15 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ExpectedTy::Enum,
+                        found: Ty::UInt(0).into(),
+                    },
+                    529..530,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn unwrap_directive_two_args_incorrect() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap(clicked, 5);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : {uint}
+                14 : <unknown>
+                15 : void
+                16 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ExpectedTy::Concrete(Ty::Type.into()),
+                        found: Ty::UInt(0).into(),
+                    },
+                    538..539,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn unwrap_directive_two_args_non_variant() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap(clicked, i32);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : type
+                14 : <unknown>
+                15 : void
+                16 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::Mismatch {
+                        expected: ExpectedTy::Variant,
+                        found: Ty::IInt(32).into(),
+                    },
+                    538..541,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn unwrap_directive_extra_arg() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #unwrap(clicked, Web_Event.Click, 42, bool);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : type
+                14 : type
+                15 : {uint}
+                16 : type
+                17 : <unknown>
+                18 : void
+                19 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |_| {
+                [
+                    (
+                        TyDiagnosticKind::ExtraArg {
+                            found: Ty::UInt(0).into(),
+                        },
+                        538..553,
+                        None,
+                    ),
+                    (
+                        TyDiagnosticKind::ExtraArg {
+                            found: Ty::Type.into(),
+                        },
+                        538..553,
+                        None,
+                    ),
+                ]
+            },
+        )
+    }
+
+    #[test]
+    fn unknown_compiler_directive() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped := #foo(clicked, Web_Event.Click, 42, bool);
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : type
+                14 : type
+                15 : {uint}
+                16 : type
+                17 : <unknown>
+                18 : void
+                19 : () -> void
+                l0 : main::Web_Event
+                l1 : <unknown>
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::UnknownDirective {
+                        name: i.intern("foo"),
+                    },
+                    522..525,
+                    None,
+                )]
+            },
         )
     }
 }

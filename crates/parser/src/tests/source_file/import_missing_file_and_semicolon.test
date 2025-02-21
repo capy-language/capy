@@ -1,37 +1,53 @@
-foo :: import
+foo :: #import
 bar :: 32;
 baz :: 51;
+// todo: maybe parse this differently
 ===
-Root@0..35
-  Binding@0..17
+Root@0..74
+  Binding@0..25
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
     Colon@5..6 ":"
     Whitespace@6..7 " "
-    ImportExpr@7..17
-      Import@7..13 "import"
-      Whitespace@13..14 "\n"
-      Error@14..17
-        Ident@14..17 "bar"
-  Whitespace@17..18 " "
-  Binding@18..24
-    Colon@18..19 ":"
-    Colon@19..20 ":"
-    Whitespace@20..21 " "
-    IntLiteral@21..23
-      Int@21..23 "32"
-    Semicolon@23..24 ";"
-  Whitespace@24..25 "\n"
-  Binding@25..35
-    Ident@25..28 "baz"
-    Whitespace@28..29 " "
-    Colon@29..30 ":"
+    Directive@7..24
+      Hash@7..8 "#"
+      Ident@8..14 "import"
+      Whitespace@14..15 "\n"
+      ArgList@15..24
+        Arg@15..18
+          VarRef@15..18
+            Ident@15..18 "bar"
+        Whitespace@18..19 " "
+        Arg@19..20
+          Error@19..20
+            Colon@19..20 ":"
+        Arg@20..21
+          Error@20..21
+            Colon@20..21 ":"
+        Whitespace@21..22 " "
+        Arg@22..24
+          IntLiteral@22..24
+            Int@22..24 "32"
+    Semicolon@24..25 ";"
+  Whitespace@25..26 "\n"
+  Binding@26..36
+    Ident@26..29 "baz"
+    Whitespace@29..30 " "
     Colon@30..31 ":"
-    Whitespace@31..32 " "
-    IntLiteral@32..34
-      Int@32..34 "51"
-    Semicolon@34..35 ";"
-error at 14..17: expected file name string but found Ident
-error at 17: missing Semicolon
-error at 17: missing name
+    Colon@31..32 ":"
+    Whitespace@32..33 " "
+    IntLiteral@33..35
+      Int@33..35 "51"
+    Semicolon@35..36 ";"
+  Whitespace@36..37 "\n"
+  Comment@37..74
+    CommentLeader@37..39 "//"
+    CommentContents@39..74 " todo: maybe parse this differently"
+error at 14: missing LParen
+error at 18: missing Comma
+error at 19..20: expected argument but found Colon
+error at 20: missing Comma
+error at 20..21: expected argument but found Colon
+error at 21: missing Comma
+error at 24: missing RParen

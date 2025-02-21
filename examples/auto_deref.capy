@@ -1,5 +1,5 @@
-core :: mod "core";
-io :: import "io.capy";
+core :: #mod("core");
+io :: #import("io.capy");
 
 Foo :: struct {
     a: i32,

@@ -1,28 +1,32 @@
-foo :: import "foo.capy";
+foo :: #import("foo.capy");
 bar :: 32;
 ===
-Root@0..36
-  Binding@0..25
+Root@0..38
+  Binding@0..27
     Ident@0..3 "foo"
     Whitespace@3..4 " "
     Colon@4..5 ":"
     Colon@5..6 ":"
     Whitespace@6..7 " "
-    ImportExpr@7..24
-      Import@7..13 "import"
-      Whitespace@13..14 " "
-      StringLiteral@14..24
-        DoubleQuote@14..15 "\""
-        StringContents@15..23 "foo.capy"
-        DoubleQuote@23..24 "\""
-    Semicolon@24..25 ";"
-  Whitespace@25..26 "\n"
-  Binding@26..36
-    Ident@26..29 "bar"
-    Whitespace@29..30 " "
-    Colon@30..31 ":"
-    Colon@31..32 ":"
-    Whitespace@32..33 " "
-    IntLiteral@33..35
-      Int@33..35 "32"
-    Semicolon@35..36 ";"
+    Directive@7..26
+      Hash@7..8 "#"
+      Ident@8..14 "import"
+      ArgList@14..26
+        LParen@14..15 "("
+        Arg@15..25
+          StringLiteral@15..25
+            DoubleQuote@15..16 "\""
+            StringContents@16..24 "foo.capy"
+            DoubleQuote@24..25 "\""
+        RParen@25..26 ")"
+    Semicolon@26..27 ";"
+  Whitespace@27..28 "\n"
+  Binding@28..38
+    Ident@28..31 "bar"
+    Whitespace@31..32 " "
+    Colon@32..33 ":"
+    Colon@33..34 ":"
+    Whitespace@34..35 " "
+    IntLiteral@35..37
+      Int@35..37 "32"
+    Semicolon@37..38 ";"

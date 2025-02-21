@@ -1,4 +1,4 @@
-core :: mod "core";
+core :: #mod("core");
 libc :: core.libc;
 math :: core.math;
 ptr :: core.ptr;

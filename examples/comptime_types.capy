@@ -1,10 +1,10 @@
 
-core :: mod "core";
+core :: #mod("core");
 ptr :: core.ptr;
 libc :: core.libc;
 meta :: core.meta;
 
-io :: import "io.capy";
+io :: #import("io.capy");
 
 My_Type :: comptime {
     libc.puts("This is getting JIT'ed!");

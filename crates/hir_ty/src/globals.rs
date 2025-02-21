@@ -12,9 +12,9 @@ use topo::TopoSort;
 
 use crate::{
     ty::{self, BinaryOutput},
-    ComptimeResult, EvalComptimeFn, InferResult, Inferrable, InternTyExt, MemberTy, ParamTy,
-    ProjectInference, Ty, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind,
-    TypedOp, UnaryOutput,
+    ComptimeResult, EvalComptimeFn, ExpectedTy, InferResult, Inferrable, InternTyExt, MemberTy,
+    ParamTy, ProjectInference, Ty, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
+    TyDiagnosticKind, TypedOp, UnaryOutput,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1049,7 +1049,9 @@ impl GlobalInferenceCtx<'_> {
                                                         if !any_error {
                                                             self.diagnostics.push(TyDiagnostic {
                                                                 kind: TyDiagnosticKind::Mismatch {
-                                                                    expected: previous,
+                                                                    expected: ExpectedTy::Concrete(
+                                                                        previous,
+                                                                    ),
                                                                     found: item_ty,
                                                                 },
                                                                 file: self.file,
@@ -1879,13 +1881,13 @@ impl GlobalInferenceCtx<'_> {
                                                 .checked_sub(TextSize::new(1))
                                                 .unwrap_or(call_range.end());
 
-                                            // TODO: test this != Ty::Unknown
+                                            // TODO: add tests for this != Ty::Unknown
                                             if !param.impossible_to_differentiate
                                                 && *param_ty != Ty::Unknown
                                             {
                                                 self.diagnostics.push(TyDiagnostic {
                                                     kind: TyDiagnosticKind::MissingArg {
-                                                        expected: param_ty,
+                                                        expected: ExpectedTy::Concrete(param_ty),
                                                     },
                                                     file: self.file,
                                                     expr: Some(expr),
@@ -1932,7 +1934,7 @@ impl GlobalInferenceCtx<'_> {
                                             // this will just return an error
                                             self.diagnostics.push(TyDiagnostic {
                                                 kind: TyDiagnosticKind::Mismatch {
-                                                    expected: actual_sub_ty,
+                                                    expected: ExpectedTy::Concrete(actual_sub_ty),
                                                     found: arg_ty,
                                                 },
                                                 file: self.file,
@@ -2189,6 +2191,140 @@ impl GlobalInferenceCtx<'_> {
                             self.const_ty(expr)?;
                             Ty::Type.into()
                         }
+                        Expr::Directive { name, args } => match self.interner.lookup(name.name.0) {
+                            "unwrap" => 'blk: {
+                                let mut args = args.iter();
+
+                                let call_range = self.bodies.range_for_expr(expr);
+                                let call_end = call_range
+                                    .end()
+                                    .checked_sub(TextSize::new(1))
+                                    .unwrap_or(call_range.end());
+                                let call_end = TextRange::new(call_end, call_end);
+
+                                // first arg = enum to unwrap
+
+                                let Some(enum_val) = args.next() else {
+                                    let missing =
+                                        [ExpectedTy::Enum, ExpectedTy::Concrete(Ty::Type.into())];
+                                    for expected in missing {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg { expected },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                    }
+                                    break 'blk Ty::Unknown.into();
+                                };
+                                let enum_ty = self.tys[self.file][*enum_val];
+                                let Ty::Enum { uid, .. } = enum_ty.absolute_ty() else {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::Mismatch {
+                                            expected: ExpectedTy::Enum,
+                                            found: enum_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(*enum_val),
+                                        help: None,
+                                    });
+                                    break 'blk Ty::Unknown.into();
+                                };
+
+                                // second arg = variant type
+
+                                let Some(variant_ty_val) = args.next() else {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::MissingArg {
+                                            expected: ExpectedTy::Concrete(Ty::Type.into()),
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: call_end,
+                                        help: None,
+                                    });
+                                    break 'blk Ty::Unknown.into();
+                                };
+                                let variant_ty = self.tys[self.file][*variant_ty_val];
+                                if !matches!(variant_ty.absolute_ty(), Ty::Type) {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::Mismatch {
+                                            expected: ExpectedTy::Concrete(Ty::Type.into()),
+                                            found: variant_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(*variant_ty_val),
+                                        help: None,
+                                    });
+                                    break 'blk Ty::Unknown.into();
+                                };
+                                let variant_ty = self.const_ty(*variant_ty_val)?;
+
+                                let Ty::Variant { enum_uid, .. } =
+                                    variant_ty.absolute_ty_keep_variants()
+                                else {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::Mismatch {
+                                            expected: ExpectedTy::Variant,
+                                            found: variant_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(*variant_ty_val),
+                                        help: None,
+                                    });
+                                    break 'blk Ty::Unknown.into();
+                                };
+
+                                if enum_uid != uid {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::UnwrapVariantMismatchEnum {
+                                            variant_ty,
+                                            enum_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(*variant_ty_val),
+                                        help: None,
+                                    });
+                                    break 'blk Ty::Unknown.into();
+                                }
+
+                                let mut extra_args = false;
+                                for arg in args {
+                                    extra_args = true;
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::ExtraArg {
+                                            found: self.tys[self.file][*arg],
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(*variant_ty_val),
+                                        help: None,
+                                    });
+                                }
+
+                                if extra_args {
+                                    break 'blk Ty::Unknown.into();
+                                }
+
+                                variant_ty
+                            }
+                            _ => {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::UnknownDirective { name: name.name.0 },
+                                    file: self.file,
+                                    expr: Some(expr),
+                                    range: name.range,
+                                    help: None,
+                                });
+
+                                Ty::Unknown.into()
+                            }
+                        },
                         Expr::Import(file_name) => Ty::File(*file_name).into(),
                     };
 
@@ -2307,7 +2443,7 @@ impl GlobalInferenceCtx<'_> {
                                     if must_be_void && !value_ty.is_void() {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::Mismatch {
-                                                expected: Ty::Void.into(),
+                                                expected: ExpectedTy::Concrete(Ty::Void.into()),
                                                 found: value_ty,
                                             },
                                             file: self.file,
@@ -2370,7 +2506,7 @@ impl GlobalInferenceCtx<'_> {
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch {
-                    expected: block_ty,
+                    expected: ExpectedTy::Concrete(block_ty),
                     found: found_ty,
                 },
                 file: self.file,
@@ -2401,7 +2537,7 @@ impl GlobalInferenceCtx<'_> {
         } else if !expr_ty.is_unknown() {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch {
-                    expected: Ty::Type.into(),
+                    expected: ExpectedTy::Concrete(Ty::Type.into()),
                     found: expr_ty,
                 },
                 file: self.file,
@@ -2466,7 +2602,10 @@ impl GlobalInferenceCtx<'_> {
             };
 
             self.diagnostics.push(TyDiagnostic {
-                kind: TyDiagnosticKind::Mismatch { expected, found },
+                kind: TyDiagnosticKind::Mismatch {
+                    expected: ExpectedTy::Concrete(expected),
+                    found,
+                },
                 file: self.file,
                 expr: Some(expr),
                 range: self.bodies.range_for_expr(expr),
@@ -2516,7 +2655,7 @@ impl GlobalInferenceCtx<'_> {
                     if !ty.is_unknown() {
                         self.diagnostics.push(TyDiagnostic {
                             kind: TyDiagnosticKind::Mismatch {
-                                expected: Ty::Type.into(),
+                                expected: ExpectedTy::Concrete(Ty::Type.into()),
                                 found: ty,
                             },
                             file: self.file,
@@ -3545,6 +3684,7 @@ impl GlobalInferenceCtx<'_> {
                         Expr::EnumDecl { .. } => {}
                         Expr::StructLiteral { .. } => {}
                         Expr::Import(_) => {}
+                        Expr::Directive { .. } => {}
                     }
                 }
                 Descendant::Stmt(stmt) => match &self.world_bodies[file][stmt] {

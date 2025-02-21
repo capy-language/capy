@@ -1,4 +1,4 @@
-string_builder :: mod "core".string_builder;
+string_builder :: #mod("core").string_builder;
 
 main :: () {
     my_str := string_builder.make();

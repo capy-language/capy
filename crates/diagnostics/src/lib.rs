@@ -2,7 +2,7 @@ use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
 use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
-use hir_ty::{TyDiagnostic, TyDiagnosticHelp};
+use hir_ty::{ExpectedTy, TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
@@ -443,6 +443,22 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
+        LoweringDiagnosticKind::ImportMismatchedArgCount {
+            is_mod,
+            found_count,
+        } => {
+            if *found_count == 0 {
+                "expected an argument of type `str`".to_string()
+            } else {
+                format!(
+                    "`#{}(...)` expected only 1 argument, but found {found_count}",
+                    if *is_mod { "mod" } else { "import" }
+                )
+            }
+        }
+        LoweringDiagnosticKind::ImportNonStringArg { .. } => {
+            "this must be a string literal".to_string()
+        }
         LoweringDiagnosticKind::ModMustBeAlphanumeric => "modules must be alphanumeric".to_string(),
         LoweringDiagnosticKind::ModDoesNotExist { module, mod_dir } => {
             format!("a `{}` module could not be found in `{}`", module, mod_dir)
@@ -501,8 +517,8 @@ fn ty_diagnostic_message(
     match &d.kind {
         hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
             format!(
-                "expected `{}` but found `{}`",
-                expected.display(mod_dir, interner),
+                "expected {} but found `{}`",
+                format_expected_type(expected, mod_dir, interner),
                 found.display(mod_dir, interner)
             )
         }
@@ -595,7 +611,7 @@ fn ty_diagnostic_message(
             format!("found an extra argument of type `{}`", found.display(mod_dir, interner))
         }
         hir_ty::TyDiagnosticKind::MissingArg { expected } => {
-            format!("expected an argument of type `{}`", expected.display(mod_dir, interner))
+            format!("expected an argument of type {}", format_expected_type(expected, mod_dir, interner))
         }
         hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
             format!(
@@ -711,6 +727,8 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateVarArgs { previous_ty, current_ty } => {
             format!("the type of this parameter, `{}`, cannot be differentiated from the var arg parameter right behind it, `...{}`", current_ty.display(mod_dir, interner), previous_ty.display(mod_dir, interner))
         }
+        hir_ty::TyDiagnosticKind::UnwrapVariantMismatchEnum { variant_ty, enum_ty } => format!("the variant type `{}` is not a variant of `{}`", variant_ty.display(mod_dir, interner), enum_ty.display(mod_dir, interner)),
+        hir_ty::TyDiagnosticKind::UnknownDirective { name } => format!("there is no directive named `#{}`", interner.lookup(*name)),
     }
 }
 
@@ -835,5 +853,19 @@ fn format_node(kind: NodeKind) -> &'static str {
         NodeKind::ArraySize => "array size",
         NodeKind::CastExpr => "`as`",
         _ => unimplemented!(),
+    }
+}
+
+fn format_expected_type(
+    expected: &ExpectedTy,
+    mod_dir: &std::path::Path,
+    interner: &Interner,
+) -> String {
+    match expected {
+        hir_ty::ExpectedTy::Concrete(expected) => {
+            format!("`{}`", expected.display(mod_dir, interner))
+        }
+        hir_ty::ExpectedTy::Enum => "an enum".to_string(),
+        hir_ty::ExpectedTy::Variant => "a variant".to_string(),
     }
 }

@@ -5,7 +5,7 @@
 > A programming language made to explore [Compile-Time Execution](#Comptime) and [Runtime Reflection](#Reflection), largely inspired by Jai, Odin, and Zig.
 
 ```cpp
-core :: mod "core";
+core :: #mod("core");
 
 greeting :: "Hello, World!";
 
@@ -338,7 +338,7 @@ One of the most powerful parts of Capy is its arbitrary compile-time execution.
 This allows you to run *any* code at compile-time, returning whatever data you wish.
 
 ```cpp
-math :: mod "core".math;
+math :: #mod("core").math;
 
 powers_of_two := comptime {
     // array with default value (all zeros)
@@ -518,18 +518,30 @@ Lambdas, or anonymous functions, are extremely useful in many programming langua
 This one singular lambda syntax allows for far more consistency and easier code evolution
 than the two separate syntaxes for lambdas and functions many languages are forced to go with.
 
-### Imports
+### Compiler Directives
 
-Capy contains an `import` and `mod` expression. These are first class values that refer to other files in your program.
+Capy uses compiler directives to do special operations that couldn't be achieved with regular functions.
 
-An `import` refers to a source file, relative to the current file, whereas a `mod` refers to a specific `mod.capy` file in the global modules directory.
+`#import` and `#mod` are used to refer to other files in your program. Just like types, They are first-class values.
+`#import` refers to a source file, relative to the current file, whereas `#mod` refers to a specific module in the global modules directory.
 
 ```cpp
-my_file :: import "some_file.capy";
-core :: mod "core";
+my_file :: #import("some_file.capy");
+core    :: #mod("core");
 ```
 
 The modules directory can be changed via the `--mod-dir` flag, and if it lacks a "core" subfolder one will automatically be downloaded [from this repository](./core/).
+
+`#unwrap` asserts that an enum is a certain variant, and panics otherwise.
+
+```cpp
+clicked : Web_Event = Web_Event.Click.{
+    x = 20,
+    y = 80
+};
+
+unwrapped : Web_Event.Click = #unwrap(clicked, Web_Event.Click); 
+```
 
 The [`examples`](./examples/) folder contains a lot more, and it gives a much better idea of what the language looks like in practice.
 

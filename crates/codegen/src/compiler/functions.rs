@@ -2107,6 +2107,39 @@ impl FunctionCompiler<'_> {
             hir::Expr::StructDecl { .. } => None,
             hir::Expr::EnumDecl { .. } => None,
             hir::Expr::Import(_) => None,
+            hir::Expr::Directive { name, args } => match self.interner.lookup(name.name.0) {
+                "unwrap" => {
+                    let enum_val = self.compile_expr(args[0])?;
+                    let enum_ty = self.tys[self.file_name][args[0]];
+                    let enum_layout = enum_ty.enum_layout().unwrap();
+
+                    let variant_ty = self.tys[self.file_name].get_meta_ty(args[1]).unwrap();
+                    let variant_ty = variant_ty.absolute_ty_keep_variants();
+
+                    let Ty::Variant { discriminant, .. } = variant_ty else {
+                        unreachable!("the second arg of `#unwrap` should be a variant")
+                    };
+
+                    let discrim = self.builder.ins().load(
+                        types::I8,
+                        MemFlags::trusted(),
+                        enum_val,
+                        enum_layout.discriminant_offset() as i32,
+                    );
+
+                    let is_correct_discrim =
+                        self.builder
+                            .ins()
+                            .icmp_imm(IntCC::Equal, discrim, *discriminant as i64);
+
+                    self.builder
+                        .ins()
+                        .trapz(is_correct_discrim, TRAP_UNREACHABLE);
+
+                    Some(enum_val)
+                }
+                _ => unreachable!(),
+            },
             hir::Expr::Comptime(comptime) => {
                 let ctc = FQComptime {
                     file: self.file_name,

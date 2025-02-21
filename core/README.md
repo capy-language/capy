@@ -4,16 +4,16 @@ This contains the basic functionality needed for any good program. It will autom
 
 You can forcefully update your version of core with `--redownload-core`
 
-You can import any module with the `mod` keyword
+You can import any module with the `#mod` directive
 
 ```capy
-core :: mod "core";
+core :: #mod("core");
 ```
 
 It will search the modules directory for a folder named "core" which contains a `mod.capy`.
 
-Note the distinction between `mod` and `import`. `import` is specifically for local project files.
+Note the distinction between `#mod` and `#import`. `#import` is specifically for local project files.
 
 ```capy
-server :: import "server.capy";
+server :: #import("server.capy");
 ```

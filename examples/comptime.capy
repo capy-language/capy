@@ -1,6 +1,6 @@
-core :: mod "core";
-libc :: mod "core".libc;
-io :: import "io.capy";
+core :: #mod("core");
+libc :: #mod("core").libc;
+io :: #import("io.capy");
 
 // comptime blocks are JIT compiled and the bytes they return are baked into the data segment of the program
 my_global :: comptime {
@@ -19,7 +19,7 @@ main :: () {
     powers_of_two := comptime {
         core.println("Doing heavy calculation...");
 
-        math :: mod "core".math;
+        math :: #mod("core").math;
 
         array: [6]i32;
 

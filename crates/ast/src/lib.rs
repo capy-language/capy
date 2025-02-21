@@ -413,8 +413,8 @@ def_multi_node! {
     Switch -> SwitchExpr
     Distinct -> Distinct
     Lambda -> Lambda
-    Import -> ImportExpr
     Comptime -> ComptimeExpr
+    Directive -> Directive
     ;
     ;
 }
@@ -763,6 +763,18 @@ impl Call {
     }
 }
 
+def_ast_node!(Directive);
+
+impl Directive {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
+    }
+
+    pub fn arg_list(self, tree: &SyntaxTree) -> Option<ArgList> {
+        node(self, tree)
+    }
+}
+
 def_ast_node!(Path);
 
 impl Path {
@@ -787,18 +799,6 @@ def_ast_node!(Arg);
 
 impl Arg {
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
-        node(self, tree)
-    }
-}
-
-def_ast_node!(ImportExpr);
-
-impl ImportExpr {
-    pub fn r#mod(self, tree: &SyntaxTree) -> Option<Mod> {
-        token(self, tree)
-    }
-
-    pub fn file(self, tree: &SyntaxTree) -> Option<StringLiteral> {
         node(self, tree)
     }
 }
@@ -914,8 +914,6 @@ def_multi_token! {
 
 def_ast_token!(Mut);
 def_ast_token!(Extern);
-def_ast_token!(Import);
-def_ast_token!(Mod);
 def_ast_token!(Colon);
 def_ast_token!(Plus);
 def_ast_token!(Hyphen);
@@ -2442,33 +2440,6 @@ mod tests {
     }
 
     #[test]
-    fn import_get_file() {
-        let (tree, root) = parse(r#"foo :: import "foo.capy";"#);
-        let statement = root.stmts(&tree).next().unwrap();
-        let value = match statement {
-            Stmt::Define(define) => define.value(&tree),
-            _ => unreachable!(),
-        };
-
-        let import_expr = match value {
-            Some(Expr::Import(import_expr)) => import_expr,
-            _ => unreachable!(),
-        };
-
-        let string_lit = import_expr.file(&tree).unwrap();
-
-        let mut components = string_lit.components(&tree);
-
-        let text = match components.next() {
-            Some(StringComponent::Contents(contents)) => contents,
-            _ => unreachable!(),
-        };
-        assert_eq!(text.text(&tree), "foo.capy");
-
-        assert!(components.next().is_none());
-    }
-
-    #[test]
     fn comptime_get_block() {
         let (tree, root) = parse("comptime { 2 + 2 }");
         let statement = root.stmts(&tree).next().unwrap();
@@ -2579,5 +2550,28 @@ mod tests {
         };
 
         assert_eq!(var_ref.name(&tree).unwrap().text(&tree), "foo");
+    }
+
+    #[test]
+    fn compiler_directives() {
+        let (tree, root) = parse("#foo(10, 20);");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let directive = match expr {
+            Some(Expr::Directive(directive)) => directive,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(directive.name(&tree).unwrap().text(&tree), "foo");
+
+        let mut args = directive.arg_list(&tree).unwrap().args(&tree);
+
+        assert_eq!(args.next().unwrap().value(&tree).unwrap().text(&tree), "10");
+        assert_eq!(args.next().unwrap().value(&tree).unwrap().text(&tree), "20");
+        assert!(args.next().is_none());
     }
 }

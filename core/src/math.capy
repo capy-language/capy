@@ -69,7 +69,7 @@ exp :: (x: f64) -> f64 {
             // printf("m     = %lli\n", i64.(max_delta_double * scalar));
             // printf("d > m = %lli\n", i64.(d > max_delta_double));
             if d != d {
-                mod"core".libc.exit(1);
+                #mod("core").libc.exit(1);
             }
             d = x;
 

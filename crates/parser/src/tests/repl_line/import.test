@@ -1,0 +1,15 @@
+#import("hello.capy")
+===
+Root@0..21
+  ExprStmt@0..21
+    Directive@0..21
+      Hash@0..1 "#"
+      Ident@1..7 "import"
+      ArgList@7..21
+        LParen@7..8 "("
+        Arg@8..20
+          StringLiteral@8..20
+            DoubleQuote@8..9 "\""
+            StringContents@9..19 "hello.capy"
+            DoubleQuote@19..20 "\""
+        RParen@20..21 ")"

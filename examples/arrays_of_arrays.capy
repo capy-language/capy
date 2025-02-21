@@ -1,4 +1,4 @@
-core :: mod "core";
+core :: #mod("core");
 
 // with big nested arrays like this, it might be clearer to use `.[]` syntax instead like in `make_array`
 global :: ([3][3] i8).[

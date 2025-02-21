@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 list :: core.list;
 
 main :: () {

@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 get_user_input :: () -> i32 {
     buffer := char.['\0', '\0', '\0', '\0', '\0'];

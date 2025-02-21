@@ -137,10 +137,10 @@ fn parse_lhs(
         parse_ref(p, recovery_set)
     } else if p.at(TokenKind::Mut) {
         parse_mut(p, recovery_set)
+    } else if p.at(TokenKind::Hash) {
+        parse_directive(p)
     } else if p.at(TokenKind::Distinct) {
         parse_distinct(p, recovery_set)
-    } else if p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])) {
-        parse_import_or_mod(p)
     } else if p.at(TokenKind::Comptime) {
         parse_comptime(p)
     } else if p.at(TokenKind::Struct) {
@@ -433,28 +433,49 @@ fn parse_distinct(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
     m.complete(p, NodeKind::Distinct)
 }
 
-fn parse_import_or_mod(p: &mut Parser) -> CompletedMarker {
-    assert!(p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])));
-    let m = p.start();
-    p.bump();
-
-    if p.at(TokenKind::DoubleQuote) {
-        expr::parse_string_literal(p);
-    } else {
-        let _guard = p.expected_syntax_name("file name string");
-        p.error();
-    }
-
-    m.complete(p, NodeKind::ImportExpr)
-}
+// fn parse_import_or_mod(p: &mut Parser) -> CompletedMarker {
+//     assert!(p.at_set(TokenSet::new([TokenKind::Import, TokenKind::Mod])));
+//     let m = p.start();
+//     p.bump();
+//
+//     if p.at(TokenKind::DoubleQuote) {
+//         expr::parse_string_literal(p);
+//     } else {
+//         let _guard = p.expected_syntax_name("file name string");
+//         p.error();
+//     }
+//
+//     m.complete(p, NodeKind::ImportExpr)
+// }
 
 fn parse_var_ref(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(TokenKind::Ident));
     let m = p.start();
 
+    let start_idx = p.token_idx;
+
     p.bump();
 
-    m.complete(p, NodeKind::VarRef)
+    // this is to recover from the old import syntax
+    let name = p.text(p.token_idx - 1);
+    let is_import = name == "import";
+    let is_mod = name == "mod";
+
+    if (is_mod || is_import) && p.at(TokenKind::DoubleQuote) {
+        p.mark_old_missing(start_idx, ExpectedSyntax::Unnamed(TokenKind::Hash));
+        p.expect_with_no_skip(TokenKind::LParen);
+
+        let arg_list_m = p.start();
+        if let Some(arg_m) = expr::parse_expr(p, "argument") {
+            arg_m.precede(p).complete(p, NodeKind::Arg);
+        }
+        p.expect_with_no_skip(TokenKind::RParen);
+        arg_list_m.complete(p, NodeKind::ArgList);
+
+        m.complete(p, NodeKind::Directive)
+    } else {
+        m.complete(p, NodeKind::VarRef)
+    }
 }
 
 fn parse_prefix_expr(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
@@ -1138,4 +1159,40 @@ fn parse_block(
     p.expect_with_recovery_set(TokenKind::RBrace, recovery_set);
 
     m.complete(p, NodeKind::Block)
+}
+
+fn parse_directive(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(TokenKind::Hash));
+    let m = p.start();
+    p.bump();
+
+    p.expect_with_no_skip(TokenKind::Ident);
+
+    let arg_list_m = p.start();
+
+    p.expect_with_no_skip(TokenKind::LParen);
+
+    // collect arguments
+    loop {
+        if p.at(TokenKind::RParen) {
+            break;
+        }
+        if let Some(arg_m) = expr::parse_expr(p, "argument") {
+            arg_m.precede(p).complete(p, NodeKind::Arg);
+        }
+
+        if p.at_eof() || p.at_default_recovery_set() {
+            break;
+        }
+
+        if !p.at(TokenKind::RParen) {
+            p.expect_with_no_skip(TokenKind::Comma);
+        }
+    }
+
+    p.expect(TokenKind::RParen);
+
+    arg_list_m.complete(p, NodeKind::ArgList);
+
+    m.complete(p, NodeKind::Directive)
 }

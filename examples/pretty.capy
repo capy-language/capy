@@ -1,4 +1,4 @@
-core :: mod "core";
+core :: #mod("core");
 
 main :: () {
     // These are the same as odin

@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 // returns the underlying bit representation of the type id.
 meta_to_raw :: (ty: type) -> u32 extern; // builtin
@@ -326,8 +326,8 @@ Type_Info :: enum {
     Function    | function_discriminant,
     // the file type
     //
-    // when `mod "core"`, or `import "file.capy"` are used as values, their type is `file`.
-    // no two `file` types are the same, `import "a.capy"` and `import "b.capy"` are really two unique types.
+    // when `#mod("core")`, or `#import("file.capy")` are used as values, their type is `file`.
+    // no two `file` types are the same, `#import("a.capy")` and `#import("b.capy")` are really two unique types.
     //
     // If you're saying "this is a strange way to implement first-class imports", then you're probably right :)
     File        | file_discriminant,

@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 main :: () {
     x := 5; // to get a `^mut` to x, x must be mutable `:=` instead of immutable `::`

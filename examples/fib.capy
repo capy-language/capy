@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 target :: 28;
 repeat :: 5;
@@ -14,7 +14,7 @@ fib :: (n: i32) -> i32 {
 }
 
 main :: () {
-    io :: import "io.capy";
+    io :: #import("io.capy");
     
     core.println("Running Fibonacci #", target);
     core.println("Ready... Go!");

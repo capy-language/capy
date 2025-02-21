@@ -46,6 +46,7 @@ pub enum NodeKind {
     Call,
     ArgList,
     Arg,
+    Directive,
     ArrayDecl,
     ArraySize,
     ArrayLiteral,

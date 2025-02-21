@@ -1,8 +1,8 @@
-core :: mod "core";
+core :: #mod("core");
 meta :: core.meta;
 fmt  :: core.fmt; 
 
-io   :: import "io.capy";
+io   :: #import("io.capy");
 
 imaginary :: distinct i32;
 

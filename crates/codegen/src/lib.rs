@@ -1604,7 +1604,7 @@ mod tests {
     fn control_flow() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 fib :: (n: i32) -> i32 {
                     if n <= 1 {
@@ -2261,7 +2261,7 @@ mod tests {
     fn default_values() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Foo :: distinct distinct struct {
                     a: [2][4]u8,
@@ -2292,7 +2292,7 @@ mod tests {
     fn i128_literals() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 main :: () {
                     x: i128 = 1_234;
@@ -2314,7 +2314,7 @@ mod tests {
     fn anon_struct_reorder_fields() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Foo :: struct {
                     a: u128,
@@ -2346,7 +2346,7 @@ mod tests {
     fn advanced_struct_cast() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Foo :: struct {
                     a: i32,
@@ -2392,7 +2392,7 @@ mod tests {
     fn advanced_array_cast() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 main :: () {
                     list : [3]u32 = .[1, 2, 3];
@@ -2419,7 +2419,7 @@ mod tests {
     fn advanced_array_of_structs_cast() {
         check_raw(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Foo :: struct {
                     a: i32,
@@ -2467,7 +2467,7 @@ mod tests {
     fn commandline_args() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 main :: () {
                     idx := 0;
@@ -2483,7 +2483,7 @@ mod tests {
             &["hello", "world!", "wow look at this arg", "foo=bar"],
             if cfg!(windows) {
                 expect![["
-                arg(0) = test-temp\\14e703d.exe
+                arg(0) = test-temp\\3bc1b3a.exe
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2492,7 +2492,7 @@ mod tests {
 "]]
             } else {
                 expect![["
-                arg(0) = test-temp/14e703d
+                arg(0) = test-temp/3bc1b3a
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2508,7 +2508,7 @@ mod tests {
     fn enum_variants() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Message :: enum {
                     Quit,
@@ -2605,7 +2605,7 @@ mod tests {
     fn if_autocast_variant_to_enum() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 Animal :: enum {
                     Dog,
@@ -2640,7 +2640,7 @@ mod tests {
     fn switch_autocast_variant_to_enum() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 State :: enum {
                     A,
@@ -2681,7 +2681,7 @@ mod tests {
     fn autocast_array_to_slice() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
 
                 main :: () {
                     foo := .[1, 2, 3];
@@ -2706,7 +2706,7 @@ mod tests {
     fn float_to_bits() {
         check_raw_with_args(
             r#"
-                core :: mod "core";
+                core :: #mod("core");
                 fmt :: core.fmt;
 
                 main :: () {
@@ -2727,6 +2727,46 @@ mod tests {
             42.500
             100000001000101010000000000000000000000000000000000000000000000
             42.500
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn unwrap_directive() {
+        check_raw_with_args(
+            r#"
+                core :: #mod("core");
+
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                main :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    unwrapped : Web_Event.Click = #unwrap(clicked, Web_Event.Click);
+
+                    core.assert(core.type_of(unwrapped) == Web_Event.Click);
+                    core.println(unwrapped);
+                }
+            "#,
+            "main",
+            true,
+            &[],
+            expect![["
+            { x = 20, y = 80 }
 
 "]],
             0,

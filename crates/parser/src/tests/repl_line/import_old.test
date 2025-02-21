@@ -1,0 +1,16 @@
+import "hello.capy"
+===
+Root@0..19
+  ExprStmt@0..19
+    Directive@0..19
+      Ident@0..6 "import"
+      Whitespace@6..7 " "
+      ArgList@7..19
+        Arg@7..19
+          StringLiteral@7..19
+            DoubleQuote@7..8 "\""
+            StringContents@8..18 "hello.capy"
+            DoubleQuote@18..19 "\""
+error at 0: missing Hash
+error at 6: missing LParen
+error at 19: missing RParen

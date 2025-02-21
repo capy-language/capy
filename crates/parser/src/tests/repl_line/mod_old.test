@@ -1,0 +1,16 @@
+mod "core"
+===
+Root@0..10
+  ExprStmt@0..10
+    Directive@0..10
+      Ident@0..3 "mod"
+      Whitespace@3..4 " "
+      ArgList@4..10
+        Arg@4..10
+          StringLiteral@4..10
+            DoubleQuote@4..5 "\""
+            StringContents@5..9 "core"
+            DoubleQuote@9..10 "\""
+error at 0: missing Hash
+error at 3: missing LParen
+error at 10: missing RParen

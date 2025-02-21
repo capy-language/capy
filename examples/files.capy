@@ -1,5 +1,5 @@
 
-libc :: mod "core".libc;
+libc :: #mod("core").libc;
 
 write_to_file :: (filename: str) {
     my_file := libc.fopen("hello.txt", "w");

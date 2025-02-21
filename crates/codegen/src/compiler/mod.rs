@@ -854,6 +854,8 @@ fn cast_into_memory(
         }
     }
 
+    let cast_from_original = cast_from;
+
     let mut cast_from = cast_from.absolute_intern_ty(false);
     let cast_to = cast_to.absolute_intern_ty(true);
 
@@ -941,7 +943,7 @@ fn cast_into_memory(
             let rawptr_align = rawptr_size.min(8);
             let rawptr_offset = typeid_size + layout::padding_needed_for(typeid_size, rawptr_align);
 
-            let typeid = cast_from.to_type_id(meta_tys, ptr_ty) as i64;
+            let typeid = cast_from_original.to_type_id(meta_tys, ptr_ty) as i64;
             let typeid = builder.ins().iconst(types::I32, typeid);
             any_mem.store(builder, typeid, typeid_offset);
 

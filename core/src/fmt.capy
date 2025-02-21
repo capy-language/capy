@@ -2,7 +2,7 @@
 // todo: I want to do smth more like zig's `allocPrint` and `bufPrint`
 // https://github.com/ziglang/zig/blob/905c85be968e6823305887474d2a821dac82f16c/lib/std/fmt.zig#L1436
 
-core :: mod "core";
+core :: #mod("core");
 ptr :: core.ptr;
 math :: core.math;
 string_builder :: core.string_builder;

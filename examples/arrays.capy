@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 main :: () {
     my_array : [6]i32 = build_array();

@@ -1,5 +1,5 @@
 
-core :: mod "core";
+core :: #mod("core");
 
 Animal :: enum {
     Dog: str,

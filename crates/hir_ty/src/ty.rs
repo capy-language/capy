@@ -225,8 +225,6 @@ impl Ty {
 
     /// Returns the "absolute" type.
     /// If the type is distinct, it will return the true underlying type.
-    /// If `unwrap_variants` is true, then this function will also return the
-    /// underlying type of `Ty::Variant`s
     pub fn absolute_ty(&self) -> &Self {
         let mut curr_ty = self;
 
@@ -234,6 +232,17 @@ impl Ty {
             match curr_ty {
                 Ty::Variant { sub_ty, .. } => curr_ty = sub_ty.absolute_ty(),
                 Ty::Distinct { sub_ty, .. } => curr_ty = sub_ty.absolute_ty(),
+                _ => return curr_ty,
+            }
+        }
+    }
+
+    pub fn absolute_ty_keep_variants(&self) -> &Self {
+        let mut curr_ty = self;
+
+        loop {
+            match curr_ty {
+                Ty::Distinct { sub_ty, .. } => curr_ty = sub_ty.absolute_ty_keep_variants(),
                 _ => return curr_ty,
             }
         }

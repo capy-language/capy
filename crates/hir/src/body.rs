@@ -207,6 +207,10 @@ pub enum Expr {
         uid: u32,
         variants: Vec<VariantDecl>,
     },
+    Directive {
+        name: NameWithRange,
+        args: Vec<Idx<Expr>>,
+    },
     Import(FileName),
 }
 
@@ -450,6 +454,8 @@ pub enum LoweringDiagnosticKind {
     TooManyCharsInCharLiteral,
     EmptyCharLiteral,
     NonU8CharLiteral,
+    ImportMismatchedArgCount { is_mod: bool, found_count: usize },
+    ImportNonStringArg { is_mod: bool },
     ModMustBeAlphanumeric,
     ModDoesNotExist { module: String, mod_dir: String },
     ModDoesNotContainModFile { module: String, mod_dir: String },
@@ -971,8 +977,8 @@ impl<'a> Ctx<'a> {
                 ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
                 ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
                 ast::Expr::EnumDecl(enum_decl) => self.lower_enum_declaration(enum_decl),
-                ast::Expr::Import(import_expr) => self.lower_import(import_expr),
                 ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
+                ast::Expr::Directive(directive) => self.lower_directive(directive),
             },
             None,
         )
@@ -1102,118 +1108,6 @@ impl<'a> Ctx<'a> {
             uid: self.uid_gen.generate_unique_id(),
             variants,
         }
-    }
-
-    fn lower_import(&mut self, import: ast::ImportExpr) -> Expr {
-        let file_name = match import.file(self.tree) {
-            Some(file_name) => file_name,
-            None => return Expr::Missing,
-        };
-        let old_diags_len = self.diagnostics.len();
-        let file = match self.lower_string_literal(file_name) {
-            Expr::StringLiteral(text) => text.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR),
-            _ => unreachable!(),
-        };
-        if self.diagnostics.len() != old_diags_len {
-            return Expr::Missing;
-        }
-
-        if import.r#mod(self.tree).is_some() {
-            if !file.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ModMustBeAlphanumeric,
-                    range: file_name.range(self.tree),
-                });
-                return Expr::Missing;
-            }
-
-            let mod_folder_path = self.mod_dir.join(&file).join("src");
-
-            if !self.fake_file_system && !mod_folder_path.is_dir() {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ModDoesNotExist {
-                        module: file,
-                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
-                    },
-                    range: file_name.range(self.tree),
-                });
-                return Expr::Missing;
-            }
-
-            let mod_file_path = mod_folder_path.join("mod.capy").clean();
-
-            if !self.fake_file_system && !mod_file_path.is_file() {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ModDoesNotContainModFile {
-                        module: file,
-                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
-                    },
-                    range: file_name.range(self.tree),
-                });
-                return Expr::Missing;
-            }
-
-            let mod_file_name = FileName(self.interner.intern(&mod_file_path.to_string_lossy()));
-
-            // println!("{}", mod_file_path.display());
-            // println!("{}", mod_file_name.0.to_raw());
-
-            self.bodies.imports.insert(mod_file_name);
-            return Expr::Import(mod_file_name);
-        }
-
-        if !file.ends_with(".capy") {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::ImportMustEndInDotCapy,
-                range: file_name.range(self.tree),
-            });
-            return Expr::Missing;
-        }
-
-        let file = if !self.fake_file_system {
-            let file = std::path::Path::new(&file);
-
-            let file = env::current_dir()
-                .unwrap()
-                .join(self.file_name)
-                .join("..")
-                .join(file)
-                .clean();
-
-            if !file.is_file() {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ImportDoesNotExist {
-                        file: file.to_string_lossy().to_string(),
-                    },
-                    range: file_name.range(self.tree),
-                });
-                return Expr::Missing;
-            }
-
-            if !file.is_sub_dir_of(self.mod_dir)
-                && !file.is_sub_dir_of(&env::current_dir().unwrap())
-            {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ImportOutsideCWD {
-                        file: file.to_string_lossy().to_string(),
-                    },
-                    range: file_name.range(self.tree),
-                });
-                return Expr::Missing;
-            }
-
-            file
-        } else {
-            file.into()
-        };
-
-        let file_name = FileName(self.interner.intern(&file.to_string_lossy()));
-
-        // println!("{}", file.display());
-        // println!("{}", file_name.0.to_raw());
-
-        self.bodies.imports.insert(file_name);
-        Expr::Import(file_name)
     }
 
     fn lower_binary_expr(&mut self, binary_expr: ast::BinaryExpr) -> Expr {
@@ -1496,6 +1390,178 @@ impl<'a> Ctx<'a> {
         }
 
         Expr::Call { callee, args }
+    }
+
+    fn lower_directive(&mut self, directive: ast::Directive) -> Expr {
+        let name = match directive.name(self.tree) {
+            Some(name) => name,
+            None => return Expr::Missing,
+        };
+        let name_text = name.text(self.tree);
+        let is_import = name_text == "import";
+        let is_mod = name_text == "mod";
+        if is_import || is_mod {
+            return self.lower_import(directive, is_mod);
+        }
+        let name_text = self.interner.intern(name_text);
+
+        let mut args = Vec::new();
+
+        if let Some(arg_list) = directive.arg_list(self.tree) {
+            for arg in arg_list.args(self.tree) {
+                let expr = self.lower_expr(arg.value(self.tree));
+                args.push(expr);
+            }
+        }
+
+        Expr::Directive {
+            name: NameWithRange {
+                name: Name(name_text),
+                range: name.range(self.tree),
+            },
+            args,
+        }
+    }
+
+    fn lower_import(&mut self, directive: ast::Directive, is_mod: bool) -> Expr {
+        let Some(arg_list) = directive.arg_list(self.tree) else {
+            return Expr::Missing;
+        };
+
+        let args = arg_list.args(self.tree).collect::<Vec<_>>();
+        if args.len() != 1 {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::ImportMismatchedArgCount {
+                    is_mod,
+                    found_count: args.len(),
+                },
+                range: arg_list.range(self.tree),
+            });
+            return Expr::Missing;
+        }
+
+        let Some(arg) = args[0].value(self.tree) else {
+            unreachable!()
+        };
+
+        let old_diags_len = self.diagnostics.len();
+        let file = match arg {
+            ast::Expr::StringLiteral(string_literal) => {
+                match self.lower_string_literal(string_literal) {
+                    Expr::StringLiteral(text) => {
+                        text.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ImportNonStringArg { is_mod },
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+        };
+        if self.diagnostics.len() != old_diags_len {
+            return Expr::Missing;
+        }
+
+        if is_mod {
+            if !file.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModMustBeAlphanumeric,
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_folder_path = self.mod_dir.join(&file).join("src");
+
+            if !self.fake_file_system && !mod_folder_path.is_dir() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModDoesNotExist {
+                        module: file,
+                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
+                    },
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_file_path = mod_folder_path.join("mod.capy").clean();
+
+            if !self.fake_file_system && !mod_file_path.is_file() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ModDoesNotContainModFile {
+                        module: file,
+                        mod_dir: self.mod_dir.to_string_lossy().to_string(),
+                    },
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            let mod_file_name = FileName(self.interner.intern(&mod_file_path.to_string_lossy()));
+
+            // println!("{}", mod_file_path.display());
+            // println!("{}", mod_file_name.0.to_raw());
+
+            self.bodies.imports.insert(mod_file_name);
+            return Expr::Import(mod_file_name);
+        }
+
+        if !file.ends_with(".capy") {
+            self.diagnostics.push(LoweringDiagnostic {
+                kind: LoweringDiagnosticKind::ImportMustEndInDotCapy,
+                range: arg.range(self.tree),
+            });
+            return Expr::Missing;
+        }
+
+        let file = if !self.fake_file_system {
+            let file = std::path::Path::new(&file);
+
+            let file = env::current_dir()
+                .unwrap()
+                .join(self.file_name)
+                .join("..")
+                .join(file)
+                .clean();
+
+            if !file.is_file() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ImportDoesNotExist {
+                        file: file.to_string_lossy().to_string(),
+                    },
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            if !file.is_sub_dir_of(self.mod_dir)
+                && !file.is_sub_dir_of(&env::current_dir().unwrap())
+            {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::ImportOutsideCWD {
+                        file: file.to_string_lossy().to_string(),
+                    },
+                    range: arg.range(self.tree),
+                });
+                return Expr::Missing;
+            }
+
+            file
+        } else {
+            file.into()
+        };
+
+        let file_name = FileName(self.interner.intern(&file.to_string_lossy()));
+
+        // println!("{}", file.display());
+        // println!("{}", file_name.0.to_raw());
+
+        self.bodies.imports.insert(file_name);
+        Expr::Import(file_name)
     }
 
     fn lower_index_expr(&mut self, index_expr: ast::IndexExpr) -> Expr {
@@ -2221,6 +2287,11 @@ impl Iterator for Descendants<'_> {
                                     .flatten(),
                             );
                         }
+                        Expr::Directive { args, .. } => self.todo.extend(
+                            args.into_iter()
+                                .rev()
+                                .map(|expr| PossibleDescendant::expr(expr, actually_return)),
+                        ),
                         Expr::Import(_) => {}
                     }
                 }
@@ -3036,6 +3107,29 @@ impl Bodies {
                     s.push(')');
                 }
 
+                Expr::Directive { name, args } => {
+                    s.push('#');
+                    s.push_str(interner.lookup(name.name.0));
+                    s.push('(');
+                    for (idx, arg) in args.iter().enumerate() {
+                        if idx != 0 {
+                            s.push_str(", ");
+                        }
+
+                        write_expr(
+                            s,
+                            *arg,
+                            with_color,
+                            show_idx,
+                            bodies,
+                            mod_dir,
+                            interner,
+                            indentation,
+                        );
+                    }
+                    s.push(')');
+                }
+
                 Expr::LocalGlobal(name) => s.push_str(interner.lookup(name.name.0)),
 
                 Expr::Member {
@@ -3286,7 +3380,7 @@ impl Bodies {
                 }
 
                 Expr::Import(file_name) => {
-                    s.push_str(&format!(r#"import "{}""#, interner.lookup(file_name.0)))
+                    s.push_str(&format!(r#"#import("{}")"#, interner.lookup(file_name.0)))
                 }
             }
 
@@ -3589,6 +3683,26 @@ mod tests {
     fn import() {
         check(
             r#"
+                other_file :: #import("other_file.capy");
+
+                foo :: () {
+                    other_file.global;
+                }
+            "#,
+            expect![[r#"
+                main::other_file :: #import("other_file.capy");
+                main::foo :: () {
+                    other_file.global;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn import_old_syntax() {
+        check(
+            r#"
                 other_file :: import "other_file.capy";
 
                 foo :: () {
@@ -3596,7 +3710,7 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::other_file :: import "other_file.capy";
+                main::other_file :: #import("other_file.capy");
                 main::foo :: () {
                     other_file.global;
                 };
