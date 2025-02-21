@@ -62,7 +62,7 @@ exp :: (x: f64) -> f64 {
         n : i32 = 2;
         d : f64 = 0;
         res := 1 + x;
-        `l loop {
+        `l: loop {
             scalar :: 1_000_000_000_000;
             // mod"core".libc.puts("exp iter");
             // printf("delta = %lli\n", i64.(d * scalar));
@@ -83,7 +83,7 @@ exp :: (x: f64) -> f64 {
             n = n + 1;
 
             if d < max_delta_double {
-                break l` res;
+                break `l res;
             }
         }
     }

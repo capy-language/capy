@@ -177,6 +177,8 @@ fn parse_lhs(
         let _guard = p.expected_syntax_name("label name");
         p.expect_with_no_skip(TokenKind::Ident);
 
+        p.expect_with_no_skip(TokenKind::Colon);
+
         let label = label.complete(p, NodeKind::LabelDecl);
 
         if p.at_set(LOOP_TOKENS) {

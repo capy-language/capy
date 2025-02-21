@@ -25,13 +25,20 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
         let m = p.start();
         p.bump();
 
-        if !at_return
-            && p.at(TokenKind::Ident)
-            && p.at_ahead(1, TokenSet::new([TokenKind::Backtick]))
-        {
+        let old_label_syntax =
+            p.at(TokenKind::Ident) && p.at_ahead(1, TokenSet::new([TokenKind::Backtick]));
+        let new_label_syntax = p.at(TokenKind::Backtick)
+            && p.at_ahead(1, TokenSet::new([TokenKind::Ident]))
+            && !p.at_ahead(2, TokenSet::new([TokenKind::Colon]));
+
+        if !at_return && (old_label_syntax || new_label_syntax) {
             let label = p.start();
-            p.bump();
-            p.bump();
+            p.expect_with_no_skip(TokenKind::Backtick);
+            p.expect_with_no_skip(TokenKind::Ident);
+            if old_label_syntax && p.at(TokenKind::Backtick) {
+                let _guard = p.expected_syntax_name("nothing");
+                p.error_with_skip();
+            }
             label.complete(p, NodeKind::LabelRef);
         }
 

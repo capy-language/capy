@@ -8339,9 +8339,9 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `blk {
+                    `blk: {
                         {
-                            break blk` {};
+                            break `blk {};
                         }
 
                         42
@@ -8363,12 +8363,12 @@ mod tests {
                         expected: Ty::Void.into(),
                         found: Ty::UInt(0).into(),
                     },
-                    176..178,
+                    177..179,
                     Some((
                         TyDiagnosticHelpKind::BreakHere {
                             break_ty: Ty::Void.into(),
                         },
-                        110..124,
+                        111..125,
                     )),
                 )]
             },
@@ -8380,9 +8380,9 @@ mod tests {
         check(
             r#"
             foo :: () -> i32 {
-                `blk {
+                `blk: {
                     {
-                        break blk` true;
+                        break `blk true;
                         break 5;
                         42
                     }
@@ -8405,12 +8405,12 @@ mod tests {
                         expected: Ty::Bool.into(),
                         found: Ty::UInt(0).into(),
                     },
-                    75..199,
+                    76..200,
                     Some((
                         TyDiagnosticHelpKind::BreakHere {
                             break_ty: Ty::Bool.into(),
                         },
-                        101..117,
+                        102..118,
                     )),
                 )]
             },
@@ -8422,7 +8422,7 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    break blk` 42;
+                    break `blk 42;
                 }
             "#,
             expect![[r#"
@@ -8550,8 +8550,8 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `my_loop loop {
-                        break my_loop`;
+                    `my_loop: loop {
+                        break `my_loop;
                     }
                 }
             "#,
@@ -8571,8 +8571,8 @@ mod tests {
         check(
             r#"
                 foo :: () -> i32 {
-                    `my_loop loop {
-                        break my_loop` 42;
+                    `my_loop: loop {
+                        break `my_loop 42;
                     }
                 }
             "#,
@@ -8627,8 +8627,8 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `my_loop while 2 + 2 == 4 {
-                        break my_loop`;
+                    `my_loop: while 2 + 2 == 4 {
+                        break `my_loop;
                     }
                 }
             "#,
@@ -8653,8 +8653,8 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `my_loop while 2 + 2 == 4 {
-                        break my_loop` {};
+                    `my_loop: while 2 + 2 == 4 {
+                        break `my_loop {};
                     }
                 }
             "#,
@@ -8680,8 +8680,8 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `my_loop while 2 + 2 == 4 {
-                        break my_loop` 42;
+                    `my_loop: while 2 + 2 == 4 {
+                        break `my_loop 42;
                     }
                 }
             "#,
@@ -8704,7 +8704,7 @@ mod tests {
                         expected: Ty::Void.into(),
                         found: Ty::UInt(0).into(),
                     },
-                    116..118,
+                    117..119,
                     None,
                 )]
             },

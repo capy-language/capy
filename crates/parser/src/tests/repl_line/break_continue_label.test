@@ -1,52 +1,54 @@
-`outer_loop loop {
-  `inner_loop while true {
-    break outer_loop`;
-    continue inner_loop`;
+`outer_loop: loop {
+  `inner_loop: while true {
+    break `outer_loop;
+    continue `inner_loop;
   }
 }
 ===
-Root@0..100
-  ExprStmt@0..100
-    WhileExpr@0..100
-      LabelDecl@0..11
+Root@0..102
+  ExprStmt@0..102
+    WhileExpr@0..102
+      LabelDecl@0..12
         Backtick@0..1 "`"
         Ident@1..11 "outer_loop"
-      Whitespace@11..12 " "
-      Loop@12..16 "loop"
-      Whitespace@16..17 " "
-      Block@17..100
-        LBrace@17..18 "{"
-        Whitespace@18..21 "\n  "
-        WhileExpr@21..98
-          LabelDecl@21..32
-            Backtick@21..22 "`"
-            Ident@22..32 "inner_loop"
-          Whitespace@32..33 " "
-          While@33..38 "while"
-          Whitespace@38..39 " "
-          Condition@39..43
-            BoolLiteral@39..43
-              Bool@39..43 "true"
-          Whitespace@43..44 " "
-          Block@44..98
-            LBrace@44..45 "{"
-            Whitespace@45..50 "\n    "
-            BreakStmt@50..68
-              Break@50..55 "break"
-              Whitespace@55..56 " "
-              LabelRef@56..67
-                Ident@56..66 "outer_loop"
-                Backtick@66..67 "`"
-              Semicolon@67..68 ";"
-            Whitespace@68..73 "\n    "
-            ContinueStmt@73..94
-              Continue@73..81 "continue"
-              Whitespace@81..82 " "
-              LabelRef@82..93
-                Ident@82..92 "inner_loop"
-                Backtick@92..93 "`"
-              Semicolon@93..94 ";"
-            Whitespace@94..97 "\n  "
-            RBrace@97..98 "}"
-        Whitespace@98..99 "\n"
-        RBrace@99..100 "}"
+        Colon@11..12 ":"
+      Whitespace@12..13 " "
+      Loop@13..17 "loop"
+      Whitespace@17..18 " "
+      Block@18..102
+        LBrace@18..19 "{"
+        Whitespace@19..22 "\n  "
+        WhileExpr@22..100
+          LabelDecl@22..34
+            Backtick@22..23 "`"
+            Ident@23..33 "inner_loop"
+            Colon@33..34 ":"
+          Whitespace@34..35 " "
+          While@35..40 "while"
+          Whitespace@40..41 " "
+          Condition@41..45
+            BoolLiteral@41..45
+              Bool@41..45 "true"
+          Whitespace@45..46 " "
+          Block@46..100
+            LBrace@46..47 "{"
+            Whitespace@47..52 "\n    "
+            BreakStmt@52..70
+              Break@52..57 "break"
+              Whitespace@57..58 " "
+              LabelRef@58..69
+                Backtick@58..59 "`"
+                Ident@59..69 "outer_loop"
+              Semicolon@69..70 ";"
+            Whitespace@70..75 "\n    "
+            ContinueStmt@75..96
+              Continue@75..83 "continue"
+              Whitespace@83..84 " "
+              LabelRef@84..95
+                Backtick@84..85 "`"
+                Ident@85..95 "inner_loop"
+              Semicolon@95..96 ";"
+            Whitespace@96..99 "\n  "
+            RBrace@99..100 "}"
+        Whitespace@100..101 "\n"
+        RBrace@101..102 "}"

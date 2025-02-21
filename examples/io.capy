@@ -16,7 +16,7 @@ get_user_input :: () -> i32 {
     result := 0;
     idx := 0;
 
-    `main_loop while idx < buffer.len {
+    `main_loop: while idx < buffer.len {
         ch := buffer[usize.(idx)];
 
         digit := if ch == '0' {
@@ -40,7 +40,7 @@ get_user_input :: () -> i32 {
         } else if ch == '9' {
             9
         } else {
-            break main_loop`;
+            break `main_loop;
         };
 
         j : isize = 0;

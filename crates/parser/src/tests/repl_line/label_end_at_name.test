@@ -4,5 +4,6 @@ Root@0..9
   LabelDecl@0..9
     Backtick@0..1 "`"
     Ident@1..9 "my_label"
+error at 9: missing Colon
 error at 9: missing block
 error at 9: missing statement

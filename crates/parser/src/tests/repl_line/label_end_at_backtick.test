@@ -4,5 +4,6 @@ Root@0..1
   LabelDecl@0..1
     Backtick@0..1 "`"
 error at 1: missing label name
+error at 1: missing Colon
 error at 1: missing block
 error at 1: missing statement

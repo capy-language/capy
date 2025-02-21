@@ -1,41 +1,42 @@
-`my_loop while x > 0 {
+`my_loop: while x > 0 {
   print("Hello!");
 }
 ===
-Root@0..43
-  ExprStmt@0..43
-    WhileExpr@0..43
-      LabelDecl@0..8
+Root@0..44
+  ExprStmt@0..44
+    WhileExpr@0..44
+      LabelDecl@0..9
         Backtick@0..1 "`"
         Ident@1..8 "my_loop"
-      Whitespace@8..9 " "
-      While@9..14 "while"
-      Whitespace@14..15 " "
-      Condition@15..20
-        BinaryExpr@15..20
-          VarRef@15..16
-            Ident@15..16 "x"
-          Whitespace@16..17 " "
-          Right@17..18 ">"
-          Whitespace@18..19 " "
-          IntLiteral@19..20
-            Int@19..20 "0"
-      Whitespace@20..21 " "
-      Block@21..43
-        LBrace@21..22 "{"
-        Whitespace@22..25 "\n  "
-        ExprStmt@25..41
-          Call@25..40
-            VarRef@25..30
-              Ident@25..30 "print"
-            ArgList@30..40
-              LParen@30..31 "("
-              Arg@31..39
-                StringLiteral@31..39
-                  DoubleQuote@31..32 "\""
-                  StringContents@32..38 "Hello!"
-                  DoubleQuote@38..39 "\""
-              RParen@39..40 ")"
-          Semicolon@40..41 ";"
-        Whitespace@41..42 "\n"
-        RBrace@42..43 "}"
+        Colon@8..9 ":"
+      Whitespace@9..10 " "
+      While@10..15 "while"
+      Whitespace@15..16 " "
+      Condition@16..21
+        BinaryExpr@16..21
+          VarRef@16..17
+            Ident@16..17 "x"
+          Whitespace@17..18 " "
+          Right@18..19 ">"
+          Whitespace@19..20 " "
+          IntLiteral@20..21
+            Int@20..21 "0"
+      Whitespace@21..22 " "
+      Block@22..44
+        LBrace@22..23 "{"
+        Whitespace@23..26 "\n  "
+        ExprStmt@26..42
+          Call@26..41
+            VarRef@26..31
+              Ident@26..31 "print"
+            ArgList@31..41
+              LParen@31..32 "("
+              Arg@32..40
+                StringLiteral@32..40
+                  DoubleQuote@32..33 "\""
+                  StringContents@33..39 "Hello!"
+                  DoubleQuote@39..40 "\""
+              RParen@40..41 ")"
+          Semicolon@41..42 ";"
+        Whitespace@42..43 "\n"
+        RBrace@43..44 "}"

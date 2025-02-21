@@ -71,6 +71,7 @@ _CommentLeader                  |=> 'comment'
 _CommentContents                |=> 'comment'
 Colon = ':'
 Semicolon = ';'
+Hash = '#'
 Error                           |=> 'an unrecognized token'
 // The string/char doesn't have to end on a quote, this results in better error messages
 // this will internally get replaced by _SingleQuote, _Escape, and _StringContents

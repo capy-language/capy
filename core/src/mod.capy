@@ -521,7 +521,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
 
     // unwrap distincts
     expected := expected;
-    `l loop {
+    `l: loop {
         switch info in meta.get_type_info(expected) {
             Distinct => {
                 expected = info.sub_ty;
@@ -531,7 +531,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
             }
             _ => {
                 // todo break expressions
-                break l`;
+                break `l;
             },
         }
     }

@@ -1,37 +1,38 @@
-`my_if if true {
+`my_if: if true {
   12
 } else {
   42
 }
 ===
-Root@0..37
-  LabelDecl@0..6
+Root@0..38
+  LabelDecl@0..7
     Backtick@0..1 "`"
     Ident@1..6 "my_if"
-  Whitespace@6..7 " "
-  ExprStmt@7..37
-    IfExpr@7..37
-      If@7..9 "if"
-      Whitespace@9..10 " "
-      BoolLiteral@10..14
-        Bool@10..14 "true"
-      Whitespace@14..15 " "
-      Block@15..23
-        LBrace@15..16 "{"
-        Whitespace@16..19 "\n  "
-        IntLiteral@19..21
-          Int@19..21 "12"
-        Whitespace@21..22 "\n"
-        RBrace@22..23 "}"
-      Whitespace@23..24 " "
-      ElseBranch@24..37
-        Else@24..28 "else"
-        Whitespace@28..29 " "
-        Block@29..37
-          LBrace@29..30 "{"
-          Whitespace@30..33 "\n  "
-          IntLiteral@33..35
-            Int@33..35 "42"
-          Whitespace@35..36 "\n"
-          RBrace@36..37 "}"
-error at 6: missing block
+    Colon@6..7 ":"
+  Whitespace@7..8 " "
+  ExprStmt@8..38
+    IfExpr@8..38
+      If@8..10 "if"
+      Whitespace@10..11 " "
+      BoolLiteral@11..15
+        Bool@11..15 "true"
+      Whitespace@15..16 " "
+      Block@16..24
+        LBrace@16..17 "{"
+        Whitespace@17..20 "\n  "
+        IntLiteral@20..22
+          Int@20..22 "12"
+        Whitespace@22..23 "\n"
+        RBrace@23..24 "}"
+      Whitespace@24..25 " "
+      ElseBranch@25..38
+        Else@25..29 "else"
+        Whitespace@29..30 " "
+        Block@30..38
+          LBrace@30..31 "{"
+          Whitespace@31..34 "\n  "
+          IntLiteral@34..36
+            Int@34..36 "42"
+          Whitespace@36..37 "\n"
+          RBrace@37..38 "}"
+error at 7: missing block

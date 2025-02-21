@@ -1,0 +1,9 @@
+`my_label:
+===
+Root@0..10
+  LabelDecl@0..10
+    Backtick@0..1 "`"
+    Ident@1..9 "my_label"
+    Colon@9..10 ":"
+error at 10: missing block
+error at 10: missing statement
