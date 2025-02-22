@@ -50,11 +50,11 @@ print_array_by_value :: (arr: [3][3][3]i8, name: str) {
             z : usize = 0;
             while z < 3 {
                 core.println(name, "[", x, "][", y, "][", z, "] = ", arr[x][y][z]);
-                z = z + 1;
+                z += 1;
             }
-            y = y + 1;
+            y += 1;
         }
-        x = x + 1;
+        x += 1;
     }
 }
 
@@ -66,10 +66,10 @@ print_array_by_ref :: (arr: ^[3][3][3]i8, name: str) {
             z : usize = 0;
             while z < 3 {
                 core.println(name, "[", x, "][", y, "][", z, "] = ", arr[x][y][z]);
-                z = z + 1;
+                z += 1;
             }
-            y = y + 1;
+            y += 1;
         }
-        x = x + 1;
+        x += 1;
     }
 }

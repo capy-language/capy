@@ -39,7 +39,7 @@ main :: () {
     idx := 0;
     while idx < 3 {
         print_person_by_ref(^my_company.employees[idx]);
-        idx = idx + 1;
+        idx += 1;
     }
 
     libc.puts("\nsome_guy:");

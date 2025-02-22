@@ -89,7 +89,7 @@ int_string_len :: (n: Number_Formatting) -> usize {
     };
 
     if negative {
-        digits = digits + 1; // +1 for minus sign
+        digits += 1; // +1 for minus sign
     }
 
     digits
@@ -161,8 +161,8 @@ dec_part :: (val: f64) -> i64 {
     val := val;
 
     while math.floor(val) != math.ceil(val) {
-        mult = mult * 10;
-        val = val * 10;
+        mult *= mult;
+        val *= val;
     }
 
     i64.(math.floor(val)) - mult
@@ -203,14 +203,14 @@ float_to_string :: (n: f64) -> StringBuilder {
 
 
     fpart := n - f64.(ipart);
-    fpart = fpart * f64.(math.pow_i32(10, i32.(afterpoint)));
+    fpart *= f64.(math.pow_i32(10, i32.(afterpoint)));
     fpart := decimal(i64.(fpart));
 
     digits := int_string_len(fpart);
 
     while afterpoint - digits > 0 {
         string_builder.append_char(^mut res, '0');
-        digits = digits + 1;
+        digits += 1;
     }
 
     decimal := int_to_string(fpart);

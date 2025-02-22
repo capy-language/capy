@@ -9,8 +9,8 @@ pow_i32 :: (base: i32, exp: i32) -> i32 {
 
     i := 0;
     while i < exp {
-        result = result * base;
-        i = i + 1;
+        result *= base;
+        i += 1;
     }
 
     result
@@ -47,8 +47,8 @@ exp :: (x: f64) -> f64 {
 
         i := 0;
         while i < power {
-            result = result * base;
-            i = i + 1;
+            result *= base;
+            i += 1;
         }
 
         result
@@ -75,12 +75,12 @@ exp :: (x: f64) -> f64 {
 
             i := 2;
             while i <= n {
-                d = d * (x / i);
-                i = i + 1;
+                d *= x / i;
+                i += 1;
             }
 
-            res = res + d;
-            n = n + 1;
+            res += d;
+            n += 1;
 
             if d < max_delta_double {
                 break `l res;
@@ -99,24 +99,24 @@ ln :: (x: f64) -> f64 {
 
     power_adjust := 0;
     while x > 1 {
-        x = x / euler_const;
-        power_adjust = power_adjust + 1;
+        x /= euler_const;
+        power_adjust += 1;
     }
     while x < .25 {
-        x = x * euler_const;
-        power_adjust = power_adjust - 1;
+        x *= euler_const;
+        power_adjust -= 1;
     }
 
-    x = x - 1;
+    x -= 1;
     t := 0;
     s := 1;
     z := x;
     k := 1;
     while k <= taylor_iterations {
-        t = t + z * s / k;
-        z = z * x;
+        t += z * s / k;
+        z *= x;
         s = -s;
-        k = k + 1;
+        k += 1;
     }
 
     t + power_adjust

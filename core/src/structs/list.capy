@@ -95,7 +95,7 @@ print :: (list: ^List) {
             list.ty,
         ));
 
-        idx = idx + 1;
+        idx += 1;
         
         if idx < list.len {
             core.print(", ");

@@ -31,7 +31,7 @@ assert :: (condition: bool, message: ...any) {
             idx := 0;
             while idx < message.len {
                 print(message[idx]);
-                idx = idx + 1;
+                idx += 1;
             }
         }
         libc.putchar('\n');
@@ -50,7 +50,7 @@ panic :: (message: ...any) {
         idx := 0;
         while idx < message.len {
             print(message[idx]);
-            idx = idx + 1;
+            idx += 1;
         }
     }
     libc.putchar('\n');
@@ -68,7 +68,7 @@ unreachable :: (message: ...any) {
         idx := 0;
         while idx < message.len {
             print(message[idx]);
-            idx = idx + 1;
+            idx += 1;
         }
     }
     libc.putchar('\n');
@@ -86,7 +86,7 @@ todo :: (message: ...any) {
         idx := 0;
         while idx < message.len {
             print(message[idx]);
-            idx = idx + 1;
+            idx += 1;
         }
     }
     libc.putchar('\n');
@@ -115,7 +115,7 @@ println :: (values: ...any) {
     val_idx := 0;
     while val_idx < values.len {
         print(values[val_idx]);
-        val_idx = val_idx + 1;
+        val_idx += 1;
     }
     libc.putchar('\n');
 }
@@ -133,7 +133,7 @@ _print_str :: (text: str) {
 
         libc.putchar(ch);
 
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -228,7 +228,7 @@ print :: (values: ...any) {
                         _print_str(", ");
                     }
                     
-                    idx = idx + 1;
+                    idx += 1;
                 }
 
                 _print_str(" ]");
@@ -251,7 +251,7 @@ print :: (values: ...any) {
                         _print_str(", ");
                     }
 
-                    idx = idx + 1;
+                    idx += 1;
                 }
 
                 _print_str(" ]");
@@ -290,7 +290,7 @@ print :: (values: ...any) {
                     if idx < info.members.len - 1 {
                         _print_str(", ");
                     }
-                    idx = idx + 1;
+                    idx += 1;
                 }
 
                 _print_str(" }");
@@ -315,7 +315,7 @@ print :: (values: ...any) {
                         break;
                     }
 
-                    idx = idx + 1;
+                    idx += 1;
                 }
             }
             Variant => {
@@ -341,7 +341,7 @@ print :: (values: ...any) {
             Void => _print_str("()"),
         }
 
-        val_idx = val_idx + 1;
+        val_idx += 1;
     }
 }
 
@@ -410,7 +410,7 @@ print_type_info :: (ty: type) {
                 if idx < info.members.len - 1 {
                     _print_str(", ");
                 }
-                idx = idx + 1;
+                idx += 1;
             }
 
             _print_str(" }");
@@ -428,7 +428,7 @@ print_type_info :: (ty: type) {
                 if idx < info.variants.len - 1 {
                     _print_str(", ");
                 }
-                idx = idx + 1;
+                idx += 1;
             }
 
             _print_str(" }");
@@ -469,7 +469,7 @@ str_len :: (s: str) -> usize {
 
         if ch == 0 { break; }
 
-        idx = idx + 1;
+        idx += 1;
     }
 
     idx
@@ -493,7 +493,7 @@ str_eq :: (first: str, second: str) -> bool {
 	    return first_ch == second_ch;
 	}
 
-        idx = idx + 1;
+        idx += 1;
     }
 
     true

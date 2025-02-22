@@ -579,7 +579,15 @@ impl FunctionCompiler<'_> {
 
                 let dest_ty = &self.tys[self.file_name][assign_body.dest];
 
-                self.compile_and_cast_into_memory(assign_body.value, *dest_ty, dest);
+                if let Some(op) = assign_body.quick_assign_op {
+                    let res = self.compile_binary(assign_body.dest, assign_body.value, op);
+
+                    assert!(!dest_ty.is_aggregate());
+
+                    dest.write(res, *dest_ty, self.module, &mut self.builder);
+                } else {
+                    self.compile_and_cast_into_memory(assign_body.value, *dest_ty, dest);
+                }
             }
             hir::Stmt::Break {
                 label: Some(label),
@@ -1065,183 +1073,7 @@ impl FunctionCompiler<'_> {
                 lhs: lhs_expr,
                 rhs: rhs_expr,
                 op,
-            } => {
-                match op {
-                    hir::BinaryOp::LAnd => {
-                        let rhs_block = self.builder.create_block();
-                        let exit_block = self.builder.create_block();
-
-                        // if lhs is true, test the rhs
-                        // if lhs is false, exit early
-                        let lhs = self.compile_expr(lhs_expr).unwrap();
-                        self.builder
-                            .ins()
-                            .brif(lhs, rhs_block, &[], exit_block, &[lhs]);
-
-                        self.builder.switch_to_block(rhs_block);
-                        self.builder.seal_block(rhs_block);
-
-                        let rhs = self.compile_expr(rhs_expr).unwrap();
-                        self.builder.ins().jump(exit_block, &[rhs]);
-
-                        self.builder.switch_to_block(exit_block);
-                        self.builder.seal_block(exit_block);
-                        let result = self.builder.append_block_param(exit_block, types::I8);
-
-                        return Some(result);
-                    }
-                    hir::BinaryOp::LOr => {
-                        let rhs_block = self.builder.create_block();
-                        let exit_block = self.builder.create_block();
-
-                        // if the lhs is true, exit early
-                        // if the lhs is false, test the rhs
-                        let lhs = self.compile_expr(lhs_expr).unwrap();
-                        self.builder
-                            .ins()
-                            .brif(lhs, exit_block, &[lhs], rhs_block, &[]);
-
-                        self.builder.switch_to_block(rhs_block);
-                        self.builder.seal_block(rhs_block);
-
-                        let rhs = self.compile_expr(rhs_expr).unwrap();
-                        self.builder.ins().jump(exit_block, &[rhs]);
-
-                        self.builder.switch_to_block(exit_block);
-                        self.builder.seal_block(exit_block);
-                        let result = self.builder.append_block_param(exit_block, types::I8);
-
-                        return Some(result);
-                    }
-                    _ => {}
-                }
-
-                let lhs = self.compile_expr(lhs_expr).unwrap();
-                let rhs = self.compile_expr(rhs_expr).unwrap_or_else(|| {
-                    println!("{:#?}", self.world_bodies[self.file_name][rhs_expr].clone());
-                    panic!(
-                        "{}#{} is None",
-                        self.interner.lookup(self.file_name.0),
-                        rhs_expr.into_raw()
-                    );
-                });
-
-                let lhs_ty = self.tys[self.file_name][lhs_expr]
-                    .get_final_ty()
-                    .into_number_type()
-                    .unwrap();
-                let rhs_ty = self.tys[self.file_name][rhs_expr]
-                    .get_final_ty()
-                    .into_number_type()
-                    .unwrap();
-
-                let max_ty = lhs_ty.max(rhs_ty);
-
-                // we need to make sure that both types are the same before we can do any operations on them
-                let lhs = super::cast_num(&mut self.builder, lhs, lhs_ty, max_ty);
-                let rhs = super::cast_num(&mut self.builder, rhs, rhs_ty, max_ty);
-
-                if max_ty.float {
-                    Some(match op {
-                        hir::BinaryOp::Add => self.builder.ins().fadd(lhs, rhs),
-                        hir::BinaryOp::Sub => self.builder.ins().fsub(lhs, rhs),
-                        hir::BinaryOp::Mul => self.builder.ins().fmul(lhs, rhs),
-                        hir::BinaryOp::Div => self.builder.ins().fdiv(lhs, rhs),
-                        hir::BinaryOp::Mod => unreachable!(),
-                        hir::BinaryOp::Lt => self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
-                        hir::BinaryOp::Gt => {
-                            self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs)
-                        }
-                        hir::BinaryOp::Le => {
-                            self.builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs)
-                        }
-                        hir::BinaryOp::Ge => {
-                            self.builder
-                                .ins()
-                                .fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs)
-                        }
-                        hir::BinaryOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
-                        hir::BinaryOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
-                        hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
-                        hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
-                        hir::BinaryOp::LShift | hir::BinaryOp::RShift => unreachable!(),
-                        hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
-                    })
-                } else {
-                    Some(match op {
-                        hir::BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
-                        hir::BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
-                        hir::BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
-                        hir::BinaryOp::Div => {
-                            if max_ty.signed {
-                                self.builder.ins().sdiv(lhs, rhs)
-                            } else {
-                                self.builder.ins().udiv(lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Mod => {
-                            if max_ty.signed {
-                                self.builder.ins().srem(lhs, rhs)
-                            } else {
-                                self.builder.ins().urem(lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Lt => {
-                            if max_ty.signed {
-                                self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
-                            } else {
-                                self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Gt => {
-                            if max_ty.signed {
-                                self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
-                            } else {
-                                self.builder
-                                    .ins()
-                                    .icmp(IntCC::UnsignedGreaterThan, lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Le => {
-                            if max_ty.signed {
-                                self.builder
-                                    .ins()
-                                    .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
-                            } else {
-                                self.builder
-                                    .ins()
-                                    .icmp(IntCC::UnsignedLessThanOrEqual, lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Ge => {
-                            if max_ty.signed {
-                                self.builder
-                                    .ins()
-                                    .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
-                            } else {
-                                self.builder
-                                    .ins()
-                                    .icmp(IntCC::UnsignedGreaterThanOrEqual, lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
-                        hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
-                        hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
-                        hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
-                        hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
-                        hir::BinaryOp::LShift => self.builder.ins().ishl(lhs, rhs),
-                        hir::BinaryOp::RShift => {
-                            if max_ty.signed {
-                                self.builder.ins().sshr(lhs, rhs)
-                            } else {
-                                self.builder.ins().ushr(lhs, rhs)
-                            }
-                        }
-                        hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
-                    })
-                }
-            }
+            } => self.compile_binary(lhs_expr, rhs_expr, op),
             hir::Expr::Unary { expr, op } => {
                 let expr_ty = self.tys[self.file_name][expr]
                     .get_final_ty()
@@ -2298,6 +2130,184 @@ impl FunctionCompiler<'_> {
                     }
                 }
             }
+        }
+    }
+
+    fn compile_binary(
+        &mut self,
+        lhs_expr: Idx<hir::Expr>,
+        rhs_expr: Idx<hir::Expr>,
+        op: hir::BinaryOp,
+    ) -> Option<Value> {
+        match op {
+            hir::BinaryOp::LAnd => {
+                let rhs_block = self.builder.create_block();
+                let exit_block = self.builder.create_block();
+
+                // if lhs is true, test the rhs
+                // if lhs is false, exit early
+                let lhs = self.compile_expr(lhs_expr).unwrap();
+                self.builder
+                    .ins()
+                    .brif(lhs, rhs_block, &[], exit_block, &[lhs]);
+
+                self.builder.switch_to_block(rhs_block);
+                self.builder.seal_block(rhs_block);
+
+                let rhs = self.compile_expr(rhs_expr).unwrap();
+                self.builder.ins().jump(exit_block, &[rhs]);
+
+                self.builder.switch_to_block(exit_block);
+                self.builder.seal_block(exit_block);
+                let result = self.builder.append_block_param(exit_block, types::I8);
+
+                return Some(result);
+            }
+            hir::BinaryOp::LOr => {
+                let rhs_block = self.builder.create_block();
+                let exit_block = self.builder.create_block();
+
+                // if the lhs is true, exit early
+                // if the lhs is false, test the rhs
+                let lhs = self.compile_expr(lhs_expr).unwrap();
+                self.builder
+                    .ins()
+                    .brif(lhs, exit_block, &[lhs], rhs_block, &[]);
+
+                self.builder.switch_to_block(rhs_block);
+                self.builder.seal_block(rhs_block);
+
+                let rhs = self.compile_expr(rhs_expr).unwrap();
+                self.builder.ins().jump(exit_block, &[rhs]);
+
+                self.builder.switch_to_block(exit_block);
+                self.builder.seal_block(exit_block);
+                let result = self.builder.append_block_param(exit_block, types::I8);
+
+                return Some(result);
+            }
+            _ => {}
+        }
+
+        let lhs = self.compile_expr(lhs_expr).unwrap();
+        let rhs = self.compile_expr(rhs_expr).unwrap_or_else(|| {
+            println!("{:#?}", self.world_bodies[self.file_name][rhs_expr].clone());
+            panic!(
+                "{}#{} is None",
+                self.interner.lookup(self.file_name.0),
+                rhs_expr.into_raw()
+            );
+        });
+
+        let lhs_ty = self.tys[self.file_name][lhs_expr]
+            .get_final_ty()
+            .into_number_type()
+            .unwrap();
+        let rhs_ty = self.tys[self.file_name][rhs_expr]
+            .get_final_ty()
+            .into_number_type()
+            .unwrap();
+
+        let max_ty = lhs_ty.max(rhs_ty);
+
+        // we need to make sure that both types are the same before we can do any operations on them
+        let lhs = super::cast_num(&mut self.builder, lhs, lhs_ty, max_ty);
+        let rhs = super::cast_num(&mut self.builder, rhs, rhs_ty, max_ty);
+
+        if max_ty.float {
+            Some(match op {
+                hir::BinaryOp::Add => self.builder.ins().fadd(lhs, rhs),
+                hir::BinaryOp::Sub => self.builder.ins().fsub(lhs, rhs),
+                hir::BinaryOp::Mul => self.builder.ins().fmul(lhs, rhs),
+                hir::BinaryOp::Div => self.builder.ins().fdiv(lhs, rhs),
+                hir::BinaryOp::Mod => unreachable!(),
+                hir::BinaryOp::Lt => self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
+                hir::BinaryOp::Gt => self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs),
+                hir::BinaryOp::Le => self.builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs),
+                hir::BinaryOp::Ge => self
+                    .builder
+                    .ins()
+                    .fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs),
+                hir::BinaryOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
+                hir::BinaryOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
+                hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
+                hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
+                hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
+                hir::BinaryOp::LShift | hir::BinaryOp::RShift => unreachable!(),
+                hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
+            })
+        } else {
+            Some(match op {
+                hir::BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
+                hir::BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
+                hir::BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
+                hir::BinaryOp::Div => {
+                    if max_ty.signed {
+                        self.builder.ins().sdiv(lhs, rhs)
+                    } else {
+                        self.builder.ins().udiv(lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Mod => {
+                    if max_ty.signed {
+                        self.builder.ins().srem(lhs, rhs)
+                    } else {
+                        self.builder.ins().urem(lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Lt => {
+                    if max_ty.signed {
+                        self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
+                    } else {
+                        self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Gt => {
+                    if max_ty.signed {
+                        self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
+                    } else {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::UnsignedGreaterThan, lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Le => {
+                    if max_ty.signed {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
+                    } else {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::UnsignedLessThanOrEqual, lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Ge => {
+                    if max_ty.signed {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
+                    } else {
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::UnsignedGreaterThanOrEqual, lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::Eq => self.builder.ins().icmp(IntCC::Equal, lhs, rhs),
+                hir::BinaryOp::Ne => self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
+                hir::BinaryOp::BAnd => self.builder.ins().band(lhs, rhs),
+                hir::BinaryOp::BOr => self.builder.ins().bor(lhs, rhs),
+                hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
+                hir::BinaryOp::LShift => self.builder.ins().ishl(lhs, rhs),
+                hir::BinaryOp::RShift => {
+                    if max_ty.signed {
+                        self.builder.ins().sshr(lhs, rhs)
+                    } else {
+                        self.builder.ins().ushr(lhs, rhs)
+                    }
+                }
+                hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
+            })
         }
     }
 

@@ -57,6 +57,13 @@ fn parse_expr_bp(
     loop {
         lhs = parse_post_operators(p, recovery_set, lhs, false, false);
 
+        if p.at_set(stmt::QUICK_ASSIGN_OPERATORS)
+            && p.at_ahead(1, TokenSet::new([TokenKind::Equals]))
+        {
+            // don't parse +=, -=, etc. as expressions, and let `stmt.rs` handle those
+            break;
+        }
+
         let (left_bp, right_bp) = if p.at(TokenKind::DoublePipe) {
             (1, 2)
         } else if p.at(TokenKind::DoubleAnd) {

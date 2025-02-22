@@ -26,7 +26,7 @@ main :: () {
         idx := 0;
         while idx < array.len {
             array[idx] = math.pow_i32(2, i32.(idx));
-            idx = idx + 1;
+            idx += 1;
         }
 
         core.println("Finished heavy calculation :)");

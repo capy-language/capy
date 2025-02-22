@@ -724,6 +724,9 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::SwitchDoesNotCoverVariant { ty  } => {
             format!("this switch statement does not have an arm for `{}`", ty.display(mod_dir, interner))
         }
+        hir_ty::TyDiagnosticKind::SwitchAlreadyCoversVariant { ty  } => {
+            format!("this switch statement already has an arm for `{}`", ty.display(mod_dir, interner))
+        }
         hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateVarArgs { previous_ty, current_ty } => {
             format!("the type of this parameter, `{}`, cannot be differentiated from the var arg parameter right behind it, `...{}`", current_ty.display(mod_dir, interner), previous_ty.display(mod_dir, interner))
         }

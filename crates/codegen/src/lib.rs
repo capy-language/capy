@@ -1626,7 +1626,7 @@ mod tests {
                                     core.println("fib(", x, ") = ", res);
                                     break x;
                                 }
-                                x = x + 1;
+                                x += 1;
                             };
                             puts("after break");
                             42
@@ -1703,7 +1703,7 @@ mod tests {
                             break;
                         }
                         putchar(ch);
-                        idx = idx + 1;
+                        idx += 1;
                     }
 
                     iprint(n);
@@ -1721,7 +1721,7 @@ mod tests {
                     if n > 9 {
                         a := n / 10;
 
-                        n = n - 10 * a;
+                        n -= 10 * a;
                         iprint(a);
                     }
                     putchar(char.(u8.('0') + n));
@@ -1824,7 +1824,7 @@ mod tests {
                 main :: () {
                     i := 0;
                     loop {
-                        i = i + 1;
+                        i += 1;
                 
                         if i == 10 {
                             break;
@@ -2076,7 +2076,7 @@ mod tests {
 
                         putchar(ch);
 
-                        i = i + 1;
+                        i += 1;
                     }
                 }
 
@@ -2091,7 +2091,7 @@ mod tests {
                     if n > 9 {
                         a := n / 10;
 
-                        n = n - 10 * a;
+                        n -= 10 * a;
                         iprint(a);
                     }
                     putchar(char.(u8.('0') + n));
@@ -2240,7 +2240,7 @@ mod tests {
                     if n > 9 {
                         a := n / 10;
 
-                        n = n - 10 * a;
+                        n -= 10 * a;
                         iprint(a);
                     }
                     putchar(char.(u8.('0') + n));
@@ -2474,7 +2474,7 @@ mod tests {
                     while idx < core.args.len {
                         core.println("arg(", idx, ") = ", core.args[idx]);
 
-                        idx = idx + 1;
+                        idx += 1;
                     }
                 }
             "#,
@@ -2483,7 +2483,7 @@ mod tests {
             &["hello", "world!", "wow look at this arg", "foo=bar"],
             if cfg!(windows) {
                 expect![["
-                arg(0) = test-temp\\3bc1b3a.exe
+                arg(0) = test-temp\\cf932d9.exe
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2492,7 +2492,7 @@ mod tests {
 "]]
             } else {
                 expect![["
-                arg(0) = test-temp/3bc1b3a
+                arg(0) = test-temp/cf932d9
                 arg(1) = hello
                 arg(2) = world!
                 arg(3) = wow look at this arg
@@ -2767,6 +2767,59 @@ mod tests {
             &[],
             expect![["
             { x = 20, y = 80 }
+
+"]],
+            0,
+        )
+    }
+
+    #[test]
+    fn quick_assign_ret() {
+        check_raw_with_args(
+            r#"
+                main :: () -> u64 {
+                    foo := 5;
+
+                    foo += 25; // foo = 30
+                    foo *= 2;  // foo = 60
+                    foo -= 4;  // foo = 56
+                    foo /= 2;  // foo = 28
+
+                    foo
+                }
+            "#,
+            "main",
+            false,
+            &[],
+            expect![["
+
+"]],
+            28,
+        )
+    }
+
+    #[test]
+    fn quick_assign_print() {
+        check_raw_with_args(
+            r#"
+                core :: #mod("core");
+
+                main :: () {
+                    foo : i64 = 5;
+
+                    foo += 25;      // foo = 30
+                    foo *= 2;       // foo = 60
+                    foo -= u8.(4);  // foo = 56
+                    foo /= 2;       // foo = 28
+
+                    core.println(foo);
+                }
+            "#,
+            "main",
+            true,
+            &[],
+            expect![["
+            28
 
 "]],
             0,

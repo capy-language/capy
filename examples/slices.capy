@@ -27,7 +27,7 @@ print_int_slice :: (slice: [] i32) {
             core.print(", ");
         }
 
-        idx = idx + 1;
+        idx += 1;
     }
     core.print(" ]\n");
 };
@@ -42,7 +42,7 @@ print_int_array :: (arr: [6] i32) {
             core.print(", ");
         }
 
-        idx = idx + 1;
+        idx += 1;
     }
     core.print(" ]\n");
 };

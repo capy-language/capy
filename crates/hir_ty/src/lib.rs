@@ -250,6 +250,9 @@ pub enum TyDiagnosticKind {
     SwitchDoesNotCoverVariant {
         ty: Intern<Ty>,
     },
+    SwitchAlreadyCoversVariant {
+        ty: Intern<Ty>,
+    },
     ImpossibleToDifferentiateVarArgs {
         previous_ty: Intern<Ty>,
         current_ty: Intern<Ty>,
@@ -11289,6 +11292,111 @@ mod tests {
     }
 
     #[test]
+    fn switch_duplicate_arms() {
+        check(
+            r#"
+                Web_Event :: enum {
+                    Page_Load,
+                    Page_Unload,
+                    Key_Press: char,
+                    Paste: str,
+                    Click: struct {
+                        x: i64,
+                        y: i64,
+                    },
+                };
+
+                foo :: () {
+                    clicked : Web_Event = Web_Event.Click.{
+                        x = 20,
+                        y = 80
+                    };
+
+                    switch e in clicked {
+                        Page_Load => {
+                            e;
+                            1; // this is done so that the `e`s are clearly visible below
+                        },
+                        Page_Unload => {
+                            e;
+                            true;
+                        },
+                        Key_Press => {
+                            e;
+                            "";
+                        },
+                        Paste => {
+                            e;
+                            ' ';
+                        }
+                        Click => {
+                            e;
+                            e.x;
+                        }
+                        Page_Unload => {
+                            e;
+                            0;
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::Web_Event : type
+                main::foo : () -> void
+                5 : type
+                7 : type
+                9 : i64
+                10 : i64
+                11 : main::Web_Event.Click
+                12 : main::Web_Event
+                13 : main::Web_Event.Page_Load
+                14 : {uint}
+                15 : void
+                16 : main::Web_Event.Page_Unload
+                17 : bool
+                18 : void
+                19 : main::Web_Event.Key_Press
+                20 : str
+                21 : void
+                22 : main::Web_Event.Paste
+                23 : char
+                24 : void
+                25 : main::Web_Event.Click
+                26 : main::Web_Event.Click
+                27 : i64
+                28 : void
+                29 : main::Web_Event.Page_Unload
+                30 : {uint}
+                31 : void
+                32 : void
+                33 : void
+                34 : () -> void
+                l0 : main::Web_Event
+            "#]],
+            |i| {
+                [(
+                    TyDiagnosticKind::SwitchAlreadyCoversVariant {
+                        ty: Ty::Variant {
+                            enum_fqn: Some(hir::Fqn {
+                                file: hir::FileName(i.intern("main.capy")),
+                                name: hir::Name(i.intern("Web_Event")),
+                            }),
+                            enum_uid: 6,
+                            variant_name: hir::Name(i.intern("Page_Unload")),
+                            uid: 1,
+                            sub_ty: Ty::Void.into(),
+                            discriminant: 1,
+                        }
+                        .into(),
+                    },
+                    1253..1264,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
     fn switch_default() {
         check(
             r#"
@@ -12114,6 +12222,161 @@ mod tests {
                         name: i.intern("foo"),
                     },
                     522..525,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn quick_assign() {
+        check(
+            r#"
+                main :: () {
+                    foo := 5;
+
+                    foo += 1;
+                    foo -= 2;
+                    foo *= 3;
+                    foo /= 4;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : {uint}
+                7 : {uint}
+                8 : {uint}
+                9 : void
+                10 : () -> void
+                l0 : {uint}
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn quick_assign_reinfer() {
+        check(
+            r#"
+                main :: () {
+                    foo := 5;
+
+                    foo += 1 + 2;
+                    foo -= 2 + 3;
+                    foo *= u64.(3);
+                    foo /= 4;
+                }
+            "#,
+            // todo: there shouldn't be a uint
+            expect![[r#"
+                main::main : () -> void
+                0 : u64
+                1 : u64
+                2 : u64
+                3 : u64
+                4 : u64
+                5 : u64
+                6 : u64
+                7 : u64
+                8 : u64
+                9 : u64
+                10 : u64
+                12 : u64
+                13 : u64
+                14 : u64
+                15 : void
+                16 : () -> void
+                l0 : u64
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn quick_assign_cannot_perform() {
+        check(
+            r#"
+                main :: () {
+                    foo := 5;
+
+                    foo += 1;
+                    foo -= 2;
+                    foo *= false;
+                    foo /= 4;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                0 : {uint}
+                1 : {uint}
+                2 : {uint}
+                3 : {uint}
+                4 : {uint}
+                5 : {uint}
+                6 : bool
+                7 : {uint}
+                8 : {uint}
+                9 : void
+                10 : () -> void
+                l0 : {uint}
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::BinaryOpMismatch {
+                        op: hir::BinaryOp::Mul,
+                        first: Ty::UInt(0).into(),
+                        second: Ty::Bool.into(),
+                    },
+                    141..154,
+                    None,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn quick_assign_mismatch() {
+        check(
+            r#"
+                main :: () {
+                    foo : u64 = 5;
+
+                    foo += 1;
+                    foo -= 2;
+                    foo *= i64.(3);
+                    foo /= 4;
+                }
+            "#,
+            expect![[r#"
+                main::main : () -> void
+                1 : u64
+                2 : u64
+                3 : u64
+                4 : u64
+                5 : u64
+                6 : u64
+                7 : i64
+                9 : i64
+                10 : u64
+                11 : u64
+                12 : void
+                13 : () -> void
+                l0 : u64
+            "#]],
+            |_| {
+                [(
+                    TyDiagnosticKind::BinaryOpMismatch {
+                        op: hir::BinaryOp::Mul,
+                        first: Ty::UInt(64).into(),
+                        second: Ty::IInt(64).into(),
+                    },
+                    146..161,
                     None,
                 )]
             },

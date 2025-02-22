@@ -302,6 +302,10 @@ impl Assign {
         node(self, tree)
     }
 
+    pub fn quick_assign_op(self, tree: &SyntaxTree) -> Option<BinaryOp> {
+        token(self, tree)
+    }
+
     pub fn value(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
     }
@@ -1222,6 +1226,27 @@ mod tests {
             _ => unreachable!(),
         };
 
+        assert!(matches!(assign.value(&tree), Some(Expr::IntLiteral(_))));
+    }
+
+    #[test]
+    fn get_operator_of_quick_assign() {
+        let (tree, root) = parse("baz[0] /= 2;");
+        let statement = root.stmts(&tree).next().unwrap();
+
+        let assign = match statement {
+            Stmt::Assign(var_set) => var_set,
+            _ => unreachable!(),
+        };
+
+        assert!(matches!(
+            assign.source(&tree).unwrap().value(&tree),
+            Some(Expr::IndexExpr(_))
+        ));
+        assert!(matches!(
+            assign.quick_assign_op(&tree),
+            Some(BinaryOp::Div(_))
+        ));
         assert!(matches!(assign.value(&tree), Some(Expr::IntLiteral(_))));
     }
 

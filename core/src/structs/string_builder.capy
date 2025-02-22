@@ -109,8 +109,8 @@ reverse :: (self: ^mut StringBuilder) {
         temp = ptr.read(self.buf, i);
         ptr.write(self.buf, ptr.read(self.buf, j), i);
         ptr.write(self.buf, temp, j);
-        i = i + 1;
-        j = j - 1;
+        i += 1;
+        j -= 1;
     }
 }
 
@@ -123,7 +123,7 @@ print :: (self: ^StringBuilder) {
     while idx < self.len {
         ch := char.(ptr.read(self.buf, idx));
         libc.putchar(ch);
-        idx = idx + 1;
+        idx += 1;
     }
 }
 

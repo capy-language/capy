@@ -4,6 +4,21 @@ use crate::token_set::TokenSet;
 
 use super::*;
 
+// this is not a list of ALL the binary operators,
+// just the ones that work with quick assignment
+pub(crate) const QUICK_ASSIGN_OPERATORS: TokenSet = TokenSet::new([
+    TokenKind::Plus,
+    TokenKind::Hyphen,
+    TokenKind::Pipe,
+    TokenKind::Tilde,
+    TokenKind::Asterisk,
+    TokenKind::Slash,
+    TokenKind::Percent,
+    TokenKind::And,
+    TokenKind::DoubleLeft,
+    TokenKind::DoubleRight,
+]);
+
 /// this function would only be called in a REPL or code block
 pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> {
     while p.at(TokenKind::Semicolon) {
@@ -99,10 +114,17 @@ pub(crate) fn parse_stmt(p: &mut Parser, repl: bool) -> Option<CompletedMarker> 
 
     let m = expr_cm.precede(p);
 
-    let res = if p.at(TokenKind::Equals) {
+    let quick_assign =
+        p.at_set(QUICK_ASSIGN_OPERATORS) && p.at_ahead(1, TokenSet::new([TokenKind::Equals]));
+    let regular_assign = p.at(TokenKind::Equals);
+    let res = if quick_assign || regular_assign {
         // make the other expression a source, and then surround it with an assignment
         let m = m.complete(p, NodeKind::Source).precede(p);
 
+        if quick_assign {
+            // bump the operator
+            p.bump();
+        }
         p.bump();
 
         expr::parse_expr(p, "value");

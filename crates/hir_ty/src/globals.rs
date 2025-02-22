@@ -161,8 +161,46 @@ impl GlobalInferenceCtx<'_> {
                 hir::Stmt::Assign(assign) => {
                     let assign_body = &self.bodies[assign];
 
-                    self.reinfer_expr(assign_body.dest);
-                    self.reinfer_expr(assign_body.value);
+                    let dest_ty = self.reinfer_expr(assign_body.dest);
+                    let value_ty = self.reinfer_expr(assign_body.value);
+
+                    // this has to be done because in the following example:
+                    // ```
+                    // main::main :: (() ({
+                    //     l0 := (5 #0);
+                    //     (l0 #1) += ((1 #2) + (2 #3) #4);
+                    //     (l0 #5) -= ((2 #6) + (3 #7) #8);
+                    //     (l0 #9) *= ((i64 #11).((3 #10)) #12);
+                    //     (l0 #13) /= (4 #14);
+                    // } #15) #16);
+                    // ```
+                    // the statement at #9 will try to `replace_weak_tys` on the value and the dest
+                    // with u64, and this `replace_weak_tys` call will eventually call `reinfer_usages`
+                    // on the statements at #1, and #2, but while the dest's of these statements (#1
+                    // and #2) will get replaced with u64 as expected, their values (#4 and #8)
+                    // won't because they never get weak type replaced.
+                    //
+                    // TODO: this will probably create an infinite loop if the value of the assign
+                    // is the variable.
+                    match assign_body
+                        .quick_assign_op
+                        .map(|op| (op, op.get_possible_output_ty(&dest_ty, &value_ty)))
+                    {
+                        Some((_, Some(output_ty))) => {
+                            let max_ty = output_ty.max_ty.into();
+
+                            self.replace_weak_tys(assign_body.dest, max_ty);
+                            self.replace_weak_tys(assign_body.value, max_ty);
+                        }
+                        Some((_, None)) => {}
+                        None => {
+                            if dest_ty.is_weak_replaceable_by(&value_ty) {
+                                self.replace_weak_tys(assign_body.dest, value_ty);
+                            } else if value_ty.can_fit_into(&dest_ty) {
+                                self.replace_weak_tys(assign_body.value, value_ty);
+                            }
+                        }
+                    }
                 }
                 hir::Stmt::Expr(expr) => {
                     self.reinfer_expr(expr);
@@ -1538,6 +1576,11 @@ impl GlobalInferenceCtx<'_> {
                                 break 'switch Ty::Unknown.into();
                             };
 
+                            struct VariantToCheck {
+                                variant_ty: Intern<Ty>,
+                                included_in_switch: bool,
+                            }
+
                             // this is an index map because later errors are reported while looping
                             // over this map
                             let mut variants: IndexMap<_, _> = variants
@@ -1547,7 +1590,13 @@ impl GlobalInferenceCtx<'_> {
                                         unreachable!("all variants should be `Ty::Variant`")
                                     };
 
-                                    (*variant_name, (*v, false))
+                                    (
+                                        *variant_name,
+                                        VariantToCheck {
+                                            variant_ty: *v,
+                                            included_in_switch: false,
+                                        },
+                                    )
                                 })
                                 .collect();
 
@@ -1572,10 +1621,22 @@ impl GlobalInferenceCtx<'_> {
                                     });
                                     continue;
                                 };
-                                // mark that this variant is covered by the switch statement
-                                // later, if any variants haven't been covered an error will be
-                                // reported.
-                                variant.1 = true;
+
+                                if variant.included_in_switch {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::SwitchAlreadyCoversVariant {
+                                            ty: variant.variant_ty,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: variant_name.range,
+                                        help: None, // todo: show the previous arm
+                                    });
+                                } else {
+                                    // later, if any variants haven't been covered an error will be
+                                    // reported.
+                                    variant.included_in_switch = true;
+                                }
 
                                 let found_arm_ty = self.tys[self.file][arm.body];
 
@@ -1636,7 +1697,11 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                 }
                             } else {
-                                for (variant_ty, included_in_switch) in variants.values() {
+                                for VariantToCheck {
+                                    variant_ty,
+                                    included_in_switch,
+                                } in variants.values()
+                                {
                                     if *included_in_switch {
                                         continue;
                                     }
@@ -2385,26 +2450,78 @@ impl GlobalInferenceCtx<'_> {
                         Stmt::Assign(assign) => {
                             let assign_body = &self.bodies[assign];
 
-                            let source_ty = self.tys[self.file][assign_body.dest];
-                            let value_ty = self.tys[self.file][assign_body.value];
-
-                            let help = self
+                            let non_mut_help = self
                                 .get_mutability(assign_body.dest, true, false)
                                 .into_diagnostic();
 
-                            if help.is_some() {
+                            if non_mut_help.is_some() {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::CannotMutate,
                                     file: self.file,
-                                    // making expr the source isn't technically correct, but it works
+                                    // making expr the dest isn't technically correct, but it works
                                     expr: Some(assign_body.dest),
                                     range: assign_body.range,
-                                    help,
-                                })
-                            } else if source_ty.is_weak_replaceable_by(&value_ty) {
-                                self.replace_weak_tys(assign_body.dest, source_ty);
-                            } else if self.expect_match(value_ty, source_ty, assign_body.value) {
-                                self.replace_weak_tys(assign_body.value, source_ty);
+                                    help: non_mut_help,
+                                });
+                                continue;
+                            }
+
+                            let source_ty = self.tys[self.file][assign_body.dest];
+                            let value_ty = self.tys[self.file][assign_body.value];
+
+                            match assign_body
+                                .quick_assign_op
+                                .map(|op| (op, op.get_possible_output_ty(&source_ty, &value_ty)))
+                            {
+                                Some((op, Some(output_ty))) => {
+                                    if *source_ty != Ty::Unknown
+                                        && *value_ty != Ty::Unknown
+                                        && !op.can_perform(&output_ty.max_ty)
+                                    {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::BinaryOpMismatch {
+                                                op,
+                                                first: source_ty,
+                                                second: value_ty,
+                                            },
+                                            file: self.file,
+                                            // making expr the dest isn't technically correct, but it works
+                                            expr: Some(assign_body.dest),
+                                            range: assign_body.range,
+                                            help: None,
+                                        });
+                                    }
+
+                                    let max_ty = output_ty.max_ty.into();
+
+                                    self.replace_weak_tys(assign_body.dest, max_ty);
+                                    self.replace_weak_tys(assign_body.value, max_ty);
+                                }
+                                Some((op, None)) => {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::BinaryOpMismatch {
+                                            op,
+                                            first: source_ty,
+                                            second: value_ty,
+                                        },
+                                        file: self.file,
+                                        // making expr the dest isn't technically correct, but it works
+                                        expr: Some(assign_body.dest),
+                                        range: assign_body.range,
+                                        help: None,
+                                    });
+                                }
+                                None => {
+                                    if source_ty.is_weak_replaceable_by(&value_ty) {
+                                        self.replace_weak_tys(assign_body.dest, value_ty);
+                                    } else if self.expect_match(
+                                        value_ty,
+                                        source_ty,
+                                        assign_body.value,
+                                    ) {
+                                        self.replace_weak_tys(assign_body.value, value_ty);
+                                    }
+                                }
                             }
 
                             self.find_usages(&[assign_body.dest, assign_body.value], stmt);

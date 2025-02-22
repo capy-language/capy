@@ -8,11 +8,6 @@ get_user_input :: () -> i32 {
 
     len := isize.(core.str_len(str.(buffer)));
 
-    idx := 0;
-    while idx < buffer.len {
-        idx = idx + 1;
-    }
-
     result := 0;
     idx := 0;
 
@@ -46,14 +41,14 @@ get_user_input :: () -> i32 {
         j : isize = 0;
 
         while j < len - 1 {
-            digit = digit * 10;
-            j = j + 1;
+            digit *= 10;
+            j += 1;
         }
-        len = len - 1;
+        len -= 1;
 
-        result = result + digit;
+        result += digit;
 
-        idx = idx + 1;
+        idx += 1;
     }
 
     result

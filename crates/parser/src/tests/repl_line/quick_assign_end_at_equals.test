@@ -1,0 +1,18 @@
+bar[5] *=
+===
+Root@0..9
+  Assign@0..9
+    Source@0..6
+      IndexExpr@0..6
+        Source@0..3
+          VarRef@0..3
+            Ident@0..3 "bar"
+        LBrack@3..4 "["
+        Index@4..5
+          IntLiteral@4..5
+            Int@4..5 "5"
+        RBrack@5..6 "]"
+    Whitespace@6..7 " "
+    Asterisk@7..8 "*"
+    Equals@8..9 "="
+error at 9: missing value

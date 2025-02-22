@@ -38,7 +38,7 @@ main :: () {
     while idx < 3 {
         core.println("ptr^[", idx, "] ", ptr^[idx]);
         core.println("ptr[", idx, "]  ", ptr[idx]);
-        idx = idx + 1;
+        idx += 1;
     }
 
     ptr_ptr := ^^my_array;
@@ -47,7 +47,7 @@ main :: () {
         core.println("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
         core.println("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
         core.println("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
-        idx = idx + 1;
+        idx += 1;
     }
 
     core.println("  give:");
@@ -67,6 +67,6 @@ give_array :: (ptr_ptr: ^^[6] i32) {
         core.println("ptr_ptr^^[", idx, "] ", ptr_ptr^^[idx]);
         core.println("ptr_ptr^[", idx, "]  ", ptr_ptr^[idx]);
         core.println("ptr_ptr[", idx, "]   ", ptr_ptr[idx]);
-        idx = idx + 1;
+        idx += 1;
     }
 }

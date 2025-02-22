@@ -384,6 +384,7 @@ pub struct SwitchLocal {
 pub struct Assign {
     pub dest: Idx<Expr>,
     pub value: Idx<Expr>,
+    pub quick_assign_op: Option<BinaryOp>,
     pub range: TextRange,
     pub ast: ast::Assign,
 }
@@ -423,6 +424,31 @@ pub enum BinaryOp {
     // logical operations
     LAnd,
     LOr,
+}
+
+impl BinaryOp {
+    fn to_str(self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Mod => "%",
+            BinaryOp::Lt => "<",
+            BinaryOp::Gt => ">",
+            BinaryOp::Le => "<=",
+            BinaryOp::Ge => ">=",
+            BinaryOp::Eq => "==",
+            BinaryOp::Ne => "!=",
+            BinaryOp::BAnd => "&",
+            BinaryOp::BOr => "|",
+            BinaryOp::Xor => "~",
+            BinaryOp::LShift => "<<",
+            BinaryOp::RShift => ">>",
+            BinaryOp::LAnd => "&&",
+            BinaryOp::LOr => "||",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -912,9 +938,12 @@ impl<'a> Ctx<'a> {
         let dest = self.lower_expr(assign.source(self.tree).unwrap().value(self.tree));
         let value = self.lower_expr(assign.value(self.tree));
 
+        let quick_assign_op = self.lower_binary_op(assign.quick_assign_op(self.tree));
+
         let id = self.bodies.assigns.alloc(Assign {
             dest,
             value,
+            quick_assign_op,
             range: assign.range(self.tree),
             ast: assign,
         });
@@ -1114,29 +1143,35 @@ impl<'a> Ctx<'a> {
         let lhs = self.lower_expr(binary_expr.lhs(self.tree));
         let rhs = self.lower_expr(binary_expr.rhs(self.tree));
 
-        let op = match binary_expr.op(self.tree) {
-            Some(ast::BinaryOp::Add(_)) => BinaryOp::Add,
-            Some(ast::BinaryOp::Sub(_)) => BinaryOp::Sub,
-            Some(ast::BinaryOp::Mul(_)) => BinaryOp::Mul,
-            Some(ast::BinaryOp::Div(_)) => BinaryOp::Div,
-            Some(ast::BinaryOp::Mod(_)) => BinaryOp::Mod,
-            Some(ast::BinaryOp::Lt(_)) => BinaryOp::Lt,
-            Some(ast::BinaryOp::Gt(_)) => BinaryOp::Gt,
-            Some(ast::BinaryOp::Le(_)) => BinaryOp::Le,
-            Some(ast::BinaryOp::Ge(_)) => BinaryOp::Ge,
-            Some(ast::BinaryOp::Eq(_)) => BinaryOp::Eq,
-            Some(ast::BinaryOp::Ne(_)) => BinaryOp::Ne,
-            Some(ast::BinaryOp::BAnd(_)) => BinaryOp::BAnd,
-            Some(ast::BinaryOp::BOr(_)) => BinaryOp::BOr,
-            Some(ast::BinaryOp::Xor(_)) => BinaryOp::Xor,
-            Some(ast::BinaryOp::LShift(_)) => BinaryOp::LShift,
-            Some(ast::BinaryOp::RShift(_)) => BinaryOp::RShift,
-            Some(ast::BinaryOp::LAnd(_)) => BinaryOp::LAnd,
-            Some(ast::BinaryOp::LOr(_)) => BinaryOp::LOr,
-            None => return Expr::Missing,
+        let Some(op) = self.lower_binary_op(binary_expr.op(self.tree)) else {
+            return Expr::Missing;
         };
 
         Expr::Binary { lhs, rhs, op }
+    }
+
+    fn lower_binary_op(&mut self, binary_op: Option<ast::BinaryOp>) -> Option<BinaryOp> {
+        match binary_op {
+            Some(ast::BinaryOp::Add(_)) => Some(BinaryOp::Add),
+            Some(ast::BinaryOp::Sub(_)) => Some(BinaryOp::Sub),
+            Some(ast::BinaryOp::Mul(_)) => Some(BinaryOp::Mul),
+            Some(ast::BinaryOp::Div(_)) => Some(BinaryOp::Div),
+            Some(ast::BinaryOp::Mod(_)) => Some(BinaryOp::Mod),
+            Some(ast::BinaryOp::Lt(_)) => Some(BinaryOp::Lt),
+            Some(ast::BinaryOp::Gt(_)) => Some(BinaryOp::Gt),
+            Some(ast::BinaryOp::Le(_)) => Some(BinaryOp::Le),
+            Some(ast::BinaryOp::Ge(_)) => Some(BinaryOp::Ge),
+            Some(ast::BinaryOp::Eq(_)) => Some(BinaryOp::Eq),
+            Some(ast::BinaryOp::Ne(_)) => Some(BinaryOp::Ne),
+            Some(ast::BinaryOp::BAnd(_)) => Some(BinaryOp::BAnd),
+            Some(ast::BinaryOp::BOr(_)) => Some(BinaryOp::BOr),
+            Some(ast::BinaryOp::Xor(_)) => Some(BinaryOp::Xor),
+            Some(ast::BinaryOp::LShift(_)) => Some(BinaryOp::LShift),
+            Some(ast::BinaryOp::RShift(_)) => Some(BinaryOp::RShift),
+            Some(ast::BinaryOp::LAnd(_)) => Some(BinaryOp::LAnd),
+            Some(ast::BinaryOp::LOr(_)) => Some(BinaryOp::LOr),
+            None => None,
+        }
     }
 
     fn lower_unary_expr(&mut self, unary_expr: ast::UnaryExpr) -> Expr {
@@ -2746,28 +2781,7 @@ impl Bodies {
                     );
 
                     s.push(' ');
-
-                    match op {
-                        BinaryOp::Add => s.push('+'),
-                        BinaryOp::Sub => s.push('-'),
-                        BinaryOp::Mul => s.push('*'),
-                        BinaryOp::Div => s.push('/'),
-                        BinaryOp::Mod => s.push('%'),
-                        BinaryOp::Lt => s.push('<'),
-                        BinaryOp::Gt => s.push('>'),
-                        BinaryOp::Le => s.push_str("<="),
-                        BinaryOp::Ge => s.push_str(">="),
-                        BinaryOp::Eq => s.push_str("=="),
-                        BinaryOp::Ne => s.push_str("!="),
-                        BinaryOp::BAnd => s.push('&'),
-                        BinaryOp::BOr => s.push('|'),
-                        BinaryOp::Xor => s.push('~'),
-                        BinaryOp::LShift => s.push_str("<<"),
-                        BinaryOp::RShift => s.push_str(">>"),
-                        BinaryOp::LAnd => s.push_str("&&"),
-                        BinaryOp::LOr => s.push_str("||"),
-                    }
-
+                    s.push_str(op.to_str());
                     s.push(' ');
 
                     write_expr(
@@ -3470,7 +3484,11 @@ impl Bodies {
                         interner,
                         indentation,
                     );
-                    s.push_str(" = ");
+                    s.push(' ');
+                    if let Some(op) = bodies[*local_set_id].quick_assign_op {
+                        s.push_str(op.to_str());
+                    }
+                    s.push_str("= ");
                     write_expr(
                         s,
                         bodies[*local_set_id].value,
@@ -5259,6 +5277,32 @@ mod tests {
                 main::bar :: () {
                     l0 := i32;
                     l1 : ^mut l0 = ^mut 42;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn quick_assign() {
+        check(
+            r#"
+                bar :: () {
+                    foo := 5;
+
+                    foo += 5;
+                    foo -= 5;
+                    foo *= 5;
+                    foo /= 5;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := 5;
+                    l0 += 5;
+                    l0 -= 5;
+                    l0 *= 5;
+                    l0 /= 5;
                 };
             "#]],
             |_| [],

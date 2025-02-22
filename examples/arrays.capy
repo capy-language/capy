@@ -9,7 +9,7 @@ main :: () {
     idx := 0;
     while idx < 6 {
         core.println(my_array_ptr[idx]);
-        idx = idx + 1;
+        idx += 1;
     }
 }
 
