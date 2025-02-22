@@ -174,7 +174,7 @@ gandalf := Person.{
 gandalf.age = gandalf.age + 1;
 ```
 
-Types can also be created with the `distinct` keyword, which creates a new type with the same underlying semantics of it's sub type.
+Types can also be created with the `distinct` keyword, which creates a new type with the same underlying semantics of its sub type.
 
 ```cpp
 Seconds :: distinct i32;
@@ -302,7 +302,10 @@ Error :: enum {
 }
 ```
 
-*See [`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) for more*
+In memory, the discriminant is always a u8 that comes after the payload of the enum itself.
+Reflection can be used to see what the byte offset of the discriminant is. [`core/meta.capy`](./core/src/meta.capy)
+
+*[`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) contains more examples*
 
 </details>
 
@@ -334,7 +337,7 @@ which contains [reflection](#Reflection) related code and documentation for all 
 
 ### Comptime
 
-One of the most powerful parts of Capy is its arbitrary compile-time execution.
+One of the most powerful features of Capy is its arbitrary compile-time execution.
 This allows you to run *any* code at compile-time, returning whatever data you wish.
 
 ```cpp
@@ -352,7 +355,7 @@ powers_of_two := comptime {
 };
 ```
 
-One of the most sacred promises Capy tries it's best to keep is *any code that can be run at runtime, can also be run at compile-time*.
+One of the most sacred promises Capy tries its best to keep is *any code that can be run at runtime, can also be run at compile-time*.
 There are no special `const` functions to be found here. Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
 Or at least, that's the end goal. A few wrinkles haven't been fully ironed out yet, like returning pointers and functions from `comptime` blocks.
 
@@ -440,7 +443,7 @@ core.println(should_start);
 core.println(greeting);
 ```
 
-`any` internally contains a type ID and a rawptr. `core.println` uses a lot of reflection on this type ID to determine how to display the pointer.
+`any` is a reference type, and internally contains a type ID and a rawptr. Using reflection on the type ID is what allows functions like `core.println` to know what to do with the given pointer.
 
 Reflection is extremely useful, and allows for things like a `debug` function that doesn't need to be implemented manually for all types (like Rust), or making it easy to
 serialize and deserialize structs.

@@ -60,6 +60,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
             | Ty::UInt(_)
             | Ty::Bool
             | Ty::Pointer { .. }
+            | Ty::RawPtr { .. }
             | Ty::Function { .. }
             | Ty::File(_) => {
                 classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Int);
@@ -82,7 +83,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                     }
                 }
             }
-            Ty::Slice { .. } => {
+            Ty::Slice { .. } | Ty::RawSlice { .. } | Ty::Any => {
                 classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Int);
                 classes[offset / 8 + 1] = classes[offset / 8 + 1].merge_eigthbyte(Int)
             }
@@ -93,6 +94,16 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                 {
                     classify_eight_byte(members[field].ty, classes, offset + field_off as usize)
                 }
+            }
+            // todo: what to do for enums?
+            Ty::Enum { variants, .. } => {
+                let enum_layout = ty.enum_layout().unwrap();
+                for variant_ty in variants {
+                    // todo: idk if doing this over the same offset will break anything
+                    classify_eight_byte(variant_ty, classes, offset);
+                }
+                let discrim_offset = offset + enum_layout.discriminant_offset() as usize;
+                classes[discrim_offset / 8] = classes[discrim_offset / 8].merge_eigthbyte(Int);
             }
             _ => {}
         };
@@ -134,10 +145,14 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
 
 fn reg_component(cls: &[Class], i: &mut usize, size: usize) -> Option<ir::Type> {
     if *i >= cls.len() {
+        println!("i > len");
         return None;
     }
     match cls[*i] {
-        Class::NoClass => None,
+        Class::NoClass => {
+            println!("no class");
+            None
+        }
         Class::Int => {
             *i += 1;
             if size < 8 {
@@ -167,6 +182,7 @@ fn reg_component(cls: &[Class], i: &mut usize, size: usize) -> Option<ir::Type> 
 
 pub fn split_aggregate(aggr: Intern<Ty>, cls: &[Class]) -> ArrayVec<[Type; 4]> {
     let mut i = 0;
+    println!("split_aggregate - {aggr:?}");
     let lo = reg_component(cls, &mut i, aggr.size() as usize).unwrap();
     let off = i * 8;
     let mut tys = array_vec!();
