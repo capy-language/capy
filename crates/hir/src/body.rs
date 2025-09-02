@@ -7,7 +7,7 @@ use std::{
     vec,
 };
 
-use ast::{AstNode, AstToken};
+use ast::{AstNode, AstToken, SwitchArmVariant};
 use interner::{Interner, Key};
 use la_arena::{Arena, ArenaMap, Idx};
 use path_clean::PathClean;
@@ -72,6 +72,7 @@ impl WorldBodies {
                             *body,
                             DescentOpts::All {
                                 include_lambdas: true,
+                                include_post_stmts: false,
                             },
                         )
                         .filter_map(|desc| match desc {
@@ -94,7 +95,7 @@ impl WorldBodies {
 #[derive(Debug, Clone)]
 pub struct Bodies {
     local_defs: Arena<LocalDef>,
-    switch_locals: Arena<SwitchLocal>,
+    switch_locals: Arena<SwitchArg>,
     assigns: Arena<Assign>,
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
@@ -103,7 +104,7 @@ pub struct Bodies {
     global_bodies: FxHashMap<Name, Idx<Expr>>,
     global_externs: FxHashSet<Name>,
     scope_decls: bimap::BiMap<ScopeId, Idx<Expr>>,
-    scope_usages: FxHashMap<ScopeId, Vec<Idx<Stmt>>>,
+    scope_usages: FxHashMap<ScopeId, Vec<ScopeUsage>>,
     lambdas: Arena<Lambda>,
     comptimes: Arena<Comptime>,
     imports: FxHashSet<FileName>,
@@ -115,7 +116,7 @@ pub enum Expr {
     IntLiteral(u64),
     FloatLiteral(f64),
     BoolLiteral(bool),
-    StringLiteral(String),
+    StringLiteral(Key),
     CharLiteral(u8),
     Cast {
         ty: Idx<Expr>,
@@ -165,13 +166,13 @@ pub enum Expr {
     },
     Switch {
         // todo: add label like While statements
-        variable_name: Option<NameWithRange>,
+        argument: Option<NameWithRange>,
         scrutinee: Idx<Expr>,
         arms: Vec<SwitchArm>,
         default: Option<SwitchArm>,
     },
     Local(Idx<LocalDef>),
-    SwitchLocal(Idx<SwitchLocal>),
+    SwitchArgument(Idx<SwitchArg>),
     LocalGlobal(NameWithRange),
     Param {
         idx: u32,
@@ -207,12 +208,29 @@ pub enum Expr {
         uid: u32,
         variants: Vec<VariantDecl>,
     },
+    Nil,
+    OptionalDecl {
+        ty: Idx<Expr>,
+    },
+    ErrorUnionDecl {
+        error_ty: Idx<Expr>,
+        payload_ty: Idx<Expr>,
+    },
+    Propagate {
+        label: Option<ScopeId>,
+        expr: Idx<Expr>,
+        // this is just the range of the `try` part
+        try_range: TextRange,
+    },
     Directive {
         name: NameWithRange,
         args: Vec<Idx<Expr>>,
     },
     Import(FileName),
 }
+
+// TODO: use this
+pub struct Type(pub Idx<Expr>);
 
 /// HIR representation of a member declaration
 ///
@@ -273,16 +291,50 @@ pub struct VariantDecl {
 /// For example:
 /// ```text
 /// switch foo in my_cool_awesome_cake_enum {
-///     Red_Velvet => {} // switch arm
-///     Chocolate => {} // switch arm
-///     Cheesecake => {} // switch arm
+///     .Red_Velvet => {} // switch arm
+///     .Chocolate => {} // switch arm
+///     .Cheesecake => {} // switch arm
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwitchArm {
-    pub variant_name: Option<NameWithRange>,
+    /// This is `None` for the default arm or when there's an error
+    pub variant: Option<ArmVariant>,
+    pub variant_range: TextRange,
     pub body: Idx<Expr>,
-    pub switch_local: Option<Idx<SwitchLocal>>,
+    pub switch_arg: Option<Idx<SwitchArg>>,
+}
+
+/// A switch arm can either have a shorthand variant name:
+/// ```text
+/// switch foo in my_cool_awesome_cake_enum {
+///     .Red_Velvet => {}
+///     .Chocolate => {}
+///     .Cheesecake => {}
+/// }
+/// ```
+/// or it can fully qualify the variant type:
+/// ```text
+/// switch foo in my_cool_awesome_cake_enum {
+///     Cakes.Red_Velvet => {}
+///     Cakes.Chocolate => {}
+///     Cakes.Cheesecake => {}
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVariant {
+    Shorthand(NameWithRange),
+    FullyQualified(Idx<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LambdaBody {
+    Block(Idx<Expr>),
+    Extern,
+    Builtin { name: Key, literal_range: TextRange },
+    // Note: LambdaBody::Empty without a return type is an error which will be reported in the
+    // parser
+    Empty,
 }
 
 #[derive(Debug, Clone)]
@@ -290,8 +342,7 @@ pub struct Lambda {
     pub params: Vec<Param>,
     pub params_range: TextRange,
     pub return_ty: Option<Idx<Expr>>,
-    pub body: Idx<Expr>,
-    pub is_extern: bool,
+    pub body: LambdaBody,
 }
 
 #[derive(Debug, Clone)]
@@ -336,13 +387,15 @@ pub enum Stmt {
     LocalDef(Idx<LocalDef>),
     Assign(Idx<Assign>),
     Break {
-        // `None` only for errors
+        /// A label of `None` means there was an error
         label: Option<ScopeId>,
         value: Option<Idx<Expr>>,
         range: TextRange,
+        /// `is_return` is just used for better errors
+        is_return: bool,
     },
     Continue {
-        // `None` only for errors
+        /// A label of `None` means there was an error
         label: Option<ScopeId>,
         range: TextRange,
     },
@@ -355,7 +408,7 @@ pub enum Stmt {
 #[derive(Clone, Copy)]
 enum Local {
     Def(Idx<LocalDef>),
-    SwitchArm(Idx<SwitchLocal>),
+    SwitchArm(Idx<SwitchArg>),
 }
 
 #[derive(Clone)]
@@ -368,15 +421,15 @@ pub struct LocalDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct SwitchLocal {
+pub struct SwitchArg {
     /// The scrutinee is included so that hir_ty can figure out the type of this local.
     /// It has to be done in a weird way because hir_ty doesn't use recursion,
     /// the locals are type checked before the whole switch expression itself.
     /// I couldn't really figure out a better way to do this, although there might be one
     pub scrutinee: Idx<Expr>,
-    pub variant_name: Option<NameWithRange>,
+    pub variant: Option<ArmVariant>,
     /// if the current arm is a default arm `_ => {}`
-    pub default: bool,
+    pub is_default: bool,
     pub range: TextRange,
 }
 
@@ -397,7 +450,17 @@ impl std::fmt::Debug for LocalDef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// examples:
+/// `break`
+/// `continue`
+/// `foo.!`
+#[derive(Debug, Clone, Copy)]
+pub enum ScopeUsage {
+    Expr(Idx<Expr>),
+    Stmt(Idx<Stmt>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // math operations
     Add,
@@ -451,7 +514,7 @@ impl BinaryOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     // math operations
     Pos,
@@ -470,6 +533,12 @@ pub struct LoweringDiagnostic {
     pub range: TextRange,
 }
 
+impl LoweringDiagnostic {
+    pub fn is_error(&self) -> bool {
+        !matches!(self.kind, LoweringDiagnosticKind::UsingBreakInsteadOfReturn)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweringDiagnosticKind {
     OutOfRangeIntLiteral,
@@ -480,22 +549,26 @@ pub enum LoweringDiagnosticKind {
     TooManyCharsInCharLiteral,
     EmptyCharLiteral,
     NonU8CharLiteral,
-    ImportMismatchedArgCount { is_mod: bool, found_count: usize },
-    ImportNonStringArg { is_mod: bool },
+    // todo: make import errors work the same as other compiler directives
+    DirectiveMismatchedArgCount { found_count: usize },
+    DirectiveNonStringArg,
     ModMustBeAlphanumeric,
     ModDoesNotExist { module: String, mod_dir: String },
     ModDoesNotContainModFile { module: String, mod_dir: String },
     ImportMustEndInDotCapy,
     ImportDoesNotExist { file: String },
     ImportOutsideCWD { file: String },
+    NonBuiltinLambdaBody,
     ContinueNonLoop { name: Option<Key> },
     ReturnFromDefer,
+    PropagateFromDefer,
     BreakFromDefer,
     ContinueFromDefer,
+    UsingBreakInsteadOfReturn,
     MultipleDefaultArms,
+    RegularArmAfterDefault,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn lower(
     root: ast::Root,
     tree: &SyntaxTree,
@@ -616,6 +689,8 @@ impl<'a> Ctx<'a> {
             None => return,
         };
 
+        // todo: should self.label_kinds be made empty here?
+
         // if we’ve already seen a global with this name,
         // we ignore all other globals with that name
         //
@@ -702,7 +777,89 @@ impl<'a> Ctx<'a> {
         let old_params = mem::replace(&mut self.params, param_keys);
         let old_scopes = mem::take(&mut self.scopes);
 
-        let body = self.lower_expr(lambda.body(self.tree));
+        let body = lambda.body(self.tree);
+
+        let is_directive = matches!(body, Some(ast::Expr::Directive(_)));
+        let is_block = matches!(body, Some(ast::Expr::Block(_)));
+        if body.is_some() {
+            assert!(
+                is_directive || is_block,
+                "{body:?} is not a directive, block, or extern"
+            );
+        }
+
+        let body = if let Some(ast::Expr::Directive(directive)) = body {
+            'builtin: {
+                let Some(arg_list) = directive.arg_list(self.tree) else {
+                    // return with a missing body
+                    break 'builtin LambdaBody::Block(self.lower_expr(None));
+                };
+
+                let name = match directive.name(self.tree) {
+                    Some(name) => name,
+                    None => break 'builtin LambdaBody::Block(self.lower_expr(None)),
+                };
+                let name_text = name.text(self.tree);
+                if name_text != "builtin" {
+                    // todo: test for this error
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::NonBuiltinLambdaBody,
+                        range: arg_list.range(self.tree),
+                    });
+                    break 'builtin LambdaBody::Block(self.lower_expr(None));
+                }
+
+                let args = arg_list.args(self.tree).collect::<Vec<_>>();
+                if args.len() != 1 {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::DirectiveMismatchedArgCount {
+                            found_count: args.len(),
+                        },
+                        range: arg_list.range(self.tree),
+                    });
+                    break 'builtin LambdaBody::Block(self.lower_expr(None));
+                }
+
+                let Some(builtin_name) = args[0].value(self.tree) else {
+                    unreachable!()
+                };
+
+                let literal_range = builtin_name.range(self.tree);
+
+                let old_diags_len = self.diagnostics.len();
+                let builtin_name = match builtin_name {
+                    ast::Expr::StringLiteral(string_literal) => {
+                        match self.lower_string_literal(string_literal) {
+                            Expr::StringLiteral(text) => text,
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::DirectiveNonStringArg,
+                            range: builtin_name.range(self.tree),
+                        });
+                        break 'builtin LambdaBody::Block(self.lower_expr(None));
+                    }
+                };
+                if self.diagnostics.len() != old_diags_len {
+                    break 'builtin LambdaBody::Block(self.lower_expr(None));
+                }
+
+                LambdaBody::Builtin {
+                    name: builtin_name,
+                    literal_range,
+                }
+            }
+        } else if lambda.r#extern(self.tree).is_some() {
+            LambdaBody::Extern
+        } else if body.is_some() {
+            assert!(matches!(body, Some(ast::Expr::Block(_))));
+            let body = self.lower_expr(body);
+            LambdaBody::Block(body)
+        } else {
+            LambdaBody::Empty
+        };
 
         self.params = old_params;
         self.scopes = old_scopes;
@@ -712,7 +869,6 @@ impl<'a> Ctx<'a> {
             params,
             params_range: lambda.param_list(self.tree).unwrap().range(self.tree),
             return_ty,
-            is_extern: lambda.r#extern(self.tree).is_some(),
             body,
         }))
     }
@@ -745,65 +901,43 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_return(&mut self, return_stmt: ast::ReturnStmt) -> Stmt {
-        let mut label_kinds = self.label_kinds.iter().rev();
-
-        let mut passed_defer = false;
-        let label = label_kinds.next().map(|mut last_kind| loop {
-            let kind = label_kinds.next();
-
-            match kind {
-                Some(new_kind) => {
-                    last_kind = new_kind;
-
-                    if matches!(new_kind, ScopeKind::Defer) {
-                        passed_defer = true;
-                    }
-                }
-                None => {
-                    break match last_kind {
-                        ScopeKind::Block((_, id)) => *id,
-                        ScopeKind::Loop((_, id)) => *id,
-                        _ => unreachable!(),
-                    };
-                }
-            }
-        });
-
-        if passed_defer {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::ReturnFromDefer,
-                range: return_stmt.range(self.tree),
-            });
-        }
-
         Stmt::Break {
-            label,
+            label: self.resolve_first_label(
+                return_stmt.range(self.tree),
+                PassedDeferErr::Err(LoweringDiagnosticKind::ReturnFromDefer),
+            ),
             value: return_stmt
                 .value(self.tree)
                 .map(|value| self.lower_expr(Some(value))),
             range: return_stmt.range(self.tree),
+            is_return: true,
         }
     }
 
     fn lower_break(&mut self, break_stmt: ast::BreakStmt) -> Stmt {
         Stmt::Break {
-            label: self.resolve_label(
+            label: self.resolve_last_label(
                 break_stmt.range(self.tree),
                 break_stmt.label(self.tree),
+                PassedDeferErr::Err(LoweringDiagnosticKind::BreakFromDefer),
+                NoScopeFoundErr::DefaultToFirstLabel,
                 false,
             ),
             value: break_stmt
                 .value(self.tree)
                 .map(|value| self.lower_expr(Some(value))),
             range: break_stmt.range(self.tree),
+            is_return: false,
         }
     }
 
     fn lower_continue(&mut self, continue_stmt: ast::ContinueStmt) -> Stmt {
         Stmt::Continue {
-            label: self.resolve_label(
+            label: self.resolve_last_label(
                 continue_stmt.range(self.tree),
                 continue_stmt.label(self.tree),
+                PassedDeferErr::Err(LoweringDiagnosticKind::ContinueFromDefer),
+                NoScopeFoundErr::Err(LoweringDiagnosticKind::ContinueNonLoop { name: None }),
                 true,
             ),
             range: continue_stmt.range(self.tree),
@@ -821,92 +955,6 @@ impl<'a> Ctx<'a> {
             expr,
             range: defer_stmt.range(self.tree),
         }
-    }
-
-    fn resolve_label(
-        &mut self,
-        whole_range: TextRange,
-        label: Option<ast::LabelRef>,
-        require_loop: bool,
-    ) -> Option<ScopeId> {
-        let label_name = label
-            .and_then(|label| label.name(self.tree))
-            .map(|name| name.text(self.tree))
-            .map(|name| self.interner.intern(name));
-
-        if let Some(label_name) = label_name {
-            let mut passed_defer = false;
-
-            let result = self.label_kinds.iter().rev().find_map(|scope| match scope {
-                ScopeKind::Block((Some(name), id)) if *name == label_name => {
-                    if require_loop {
-                        self.diagnostics.push(LoweringDiagnostic {
-                            kind: LoweringDiagnosticKind::ContinueNonLoop { name: Some(*name) },
-                            range: label.unwrap().range(self.tree),
-                        });
-                    }
-
-                    Some(*id)
-                }
-                ScopeKind::Loop((Some(name), id)) if *name == label_name => Some(*id),
-                ScopeKind::Defer => {
-                    passed_defer = true;
-                    None
-                }
-                _ => None,
-            });
-
-            if result.is_none() {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::UndefinedLabel { name: label_name },
-                    range: label.unwrap().range(self.tree),
-                });
-            } else if passed_defer {
-                self.diagnostics.push(LoweringDiagnostic {
-                    kind: if require_loop {
-                        LoweringDiagnosticKind::ContinueFromDefer
-                    } else {
-                        LoweringDiagnosticKind::BreakFromDefer
-                    },
-                    range: whole_range,
-                });
-            }
-
-            return result;
-        }
-
-        let mut passed_defer = false;
-        let result = self.label_kinds.iter().rev().find_map(|kind| match kind {
-            ScopeKind::Block((_, id)) if !require_loop => Some(*id),
-            ScopeKind::Loop((_, id)) => Some(*id),
-            ScopeKind::Defer => {
-                passed_defer = true;
-                None
-            }
-            _ => None,
-        });
-
-        if result.is_none() {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: if require_loop {
-                    LoweringDiagnosticKind::ContinueNonLoop { name: None }
-                } else {
-                    unreachable!("breaks (statements) should only be inside blocks")
-                },
-                range: whole_range,
-            });
-        } else if passed_defer {
-            self.diagnostics.push(LoweringDiagnostic {
-                kind: if require_loop {
-                    LoweringDiagnosticKind::ContinueFromDefer
-                } else {
-                    LoweringDiagnosticKind::BreakFromDefer
-                },
-                range: whole_range,
-            });
-        }
-
-        result
     }
 
     fn lower_local_define(&mut self, local_def: ast::Define) -> Stmt {
@@ -961,8 +1009,21 @@ impl<'a> Ctx<'a> {
 
         let (expr, scope_id) = self.lower_expr_raw(expr_ast);
 
+        let label_id = match expr {
+            Expr::Propagate { label, .. } => label,
+            _ => None,
+        };
+
         let id = self.bodies.exprs.alloc(expr);
         self.bodies.expr_ranges.insert(id, range);
+
+        if let Some(label_id) = label_id {
+            self.bodies
+                .scope_usages
+                .entry(label_id)
+                .or_default()
+                .push(ScopeUsage::Expr(id));
+        }
 
         if scope_id.is_some_and(|id| self.bodies.scope_usages.contains_key(&id)) {
             self.bodies.scope_decls.insert(scope_id.unwrap(), id);
@@ -1006,6 +1067,13 @@ impl<'a> Ctx<'a> {
                 ast::Expr::StructDecl(struct_decl) => self.lower_struct_declaration(struct_decl),
                 ast::Expr::StructLiteral(struct_lit) => self.lower_struct_literal(struct_lit),
                 ast::Expr::EnumDecl(enum_decl) => self.lower_enum_declaration(enum_decl),
+                ast::Expr::OptionalDecl(optional_decl) => {
+                    self.lower_optional_declaration(optional_decl)
+                }
+                ast::Expr::ErrorUnionDecl(optional_decl) => {
+                    self.lower_error_union_declaration(optional_decl)
+                }
+                ast::Expr::Propagate(propagate_expr) => self.lower_propagate_expr(propagate_expr),
                 ast::Expr::Comptime(comptime_expr) => self.lower_comptime(comptime_expr),
                 ast::Expr::Directive(directive) => self.lower_directive(directive),
             },
@@ -1054,6 +1122,30 @@ impl<'a> Ctx<'a> {
         let pointer = self.lower_expr(deref_expr.pointer(self.tree));
 
         Expr::Deref { pointer }
+    }
+
+    fn lower_propagate_expr(&mut self, propagate_expr: ast::PropagateExpr) -> Expr {
+        Expr::Propagate {
+            label: self.resolve_first_label(
+                propagate_expr.range(self.tree),
+                PassedDeferErr::Err(LoweringDiagnosticKind::PropagateFromDefer),
+            ),
+            expr: self.lower_expr(propagate_expr.expr(self.tree)),
+            try_range: {
+                // this uses the range of `try` by default but will try to extend that to the
+                // entire range of `.try` if it can
+                let try_token_range = propagate_expr
+                    .r#try(self.tree)
+                    .expect("there should always be a `try` token")
+                    .range(self.tree);
+
+                propagate_expr
+                    .dot(self.tree)
+                    .map_or(try_token_range, |dot_token| {
+                        try_token_range.cover(dot_token.range(self.tree))
+                    })
+            },
+        }
     }
 
     fn lower_distinct(&mut self, distinct: ast::Distinct) -> Expr {
@@ -1188,6 +1280,44 @@ impl<'a> Ctx<'a> {
         Expr::Unary { expr, op }
     }
 
+    fn lower_optional_declaration(&mut self, optional_decl: ast::OptionalDecl) -> Expr {
+        let ty = self.lower_expr(
+            optional_decl
+                .ty(self.tree)
+                .and_then(|ty| ty.expr(self.tree)),
+        );
+
+        Expr::OptionalDecl { ty }
+    }
+
+    // This only catches error union declarations where the error type is known.
+    // `!u64` is turned into an `Expr::Unary`
+    fn lower_error_union_declaration(&mut self, error_union_decl: ast::ErrorUnionDecl) -> Expr {
+        let error_ty = self.lower_expr(
+            error_union_decl
+                .error_ty(self.tree)
+                .map(|ty| {
+                    ty.ty(self.tree)
+                        .expect("if error_ty is some, then ty should be")
+                })
+                .and_then(|ty| ty.expr(self.tree)),
+        );
+        let payload_ty = self.lower_expr(
+            error_union_decl
+                .payload_ty(self.tree)
+                .map(|ty| {
+                    ty.ty(self.tree)
+                        .expect("if payload_ty is some, then ty should be")
+                })
+                .and_then(|ty| ty.expr(self.tree)),
+        );
+
+        Expr::ErrorUnionDecl {
+            error_ty,
+            payload_ty,
+        }
+    }
+
     fn lower_array_decl(&mut self, array_decl: ast::ArrayDecl) -> Expr {
         let size = array_decl
             .size(self.tree)
@@ -1257,7 +1387,7 @@ impl<'a> Ctx<'a> {
                     .scope_usages
                     .entry(label_id)
                     .or_default()
-                    .push(stmt_id);
+                    .push(ScopeUsage::Stmt(stmt_id));
             }
         }
 
@@ -1336,12 +1466,10 @@ impl<'a> Ctx<'a> {
     }
 
     fn lower_switch(&mut self, switch_expr: ast::SwitchExpr) -> Expr {
-        let variable_name = switch_expr
-            .variable_name(self.tree)
-            .map(|name| NameWithRange {
-                name: Name(self.interner.intern(name.text(self.tree))),
-                range: name.range(self.tree),
-            });
+        let argument = switch_expr.argument(self.tree).map(|name| NameWithRange {
+            name: Name(self.interner.intern(name.text(self.tree))),
+            range: name.range(self.tree),
+        });
         let scrutinee = self.lower_expr(switch_expr.scrutinee(self.tree));
 
         let mut default = None;
@@ -1349,28 +1477,44 @@ impl<'a> Ctx<'a> {
         let arms = switch_expr
             .arms(self.tree)
             .filter_map(|arm| {
-                let variant_name = arm.variant_name(self.tree).map(|name| NameWithRange {
-                    name: Name(self.interner.intern(name.text(self.tree))),
-                    range: name.range(self.tree),
-                });
+                let mut is_default = false;
 
-                let is_default =
-                    variant_name.is_some_and(|n| self.interner.lookup(n.name.0) == "_");
+                let variant = match arm.variant(self.tree) {
+                    Some(SwitchArmVariant::Default(_)) => {
+                        is_default = true;
+                        None
+                    }
+                    Some(SwitchArmVariant::Shorthand(shorthand)) => {
+                        shorthand.name(self.tree).map(|name| {
+                            ArmVariant::Shorthand(NameWithRange {
+                                name: Name(self.interner.intern(name.text(self.tree))),
+                                range: shorthand.range(self.tree),
+                            })
+                        })
+                    }
+                    Some(SwitchArmVariant::FullyQualified(ty)) => Some(ArmVariant::FullyQualified(
+                        self.lower_expr(ty.expr(self.tree)),
+                    )),
+                    None => None,
+                };
 
-                let switch_local = if let Some(variable_name) = variable_name {
-                    let switch_local = self.bodies.switch_locals.alloc(SwitchLocal {
+                let variant_range = arm.variant(self.tree).map_or_else(
+                    || {
+                        let start = arm.range(self.tree).start();
+                        TextRange::new(start, start)
+                    },
+                    |v| v.range(self.tree),
+                );
+
+                let switch_local = if let Some(argument) = argument {
+                    let switch_local = self.bodies.switch_locals.alloc(SwitchArg {
                         scrutinee,
-                        variant_name,
-                        default: is_default,
-                        range: variant_name
-                            .map(|v| v.range)
-                            .unwrap_or(arm.range(self.tree)),
+                        variant,
+                        is_default,
+                        range: argument.range,
                     });
 
-                    self.insert_into_current_scope(
-                        variable_name.name.0,
-                        Local::SwitchArm(switch_local),
-                    );
+                    self.insert_into_current_scope(argument.name.0, Local::SwitchArm(switch_local));
 
                     Some(switch_local)
                 } else {
@@ -1380,32 +1524,36 @@ impl<'a> Ctx<'a> {
                 let body = self.lower_expr(arm.body(self.tree));
 
                 let arm = SwitchArm {
-                    variant_name,
+                    variant,
+                    variant_range,
                     body,
-                    switch_local,
+                    switch_arg: switch_local,
                 };
 
                 if is_default {
                     if default.is_some() {
                         self.diagnostics.push(LoweringDiagnostic {
                             kind: LoweringDiagnosticKind::MultipleDefaultArms,
-                            range: variant_name
-                                .expect(
-                                    "`is_default` can only be true if `variant_name` has a value",
-                                )
-                                .range,
+                            range: variant_range,
                         });
                     }
                     default = Some(arm);
                     None
                 } else {
+                    if default.is_some() {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::RegularArmAfterDefault,
+                            range: variant_range,
+                        });
+                    }
+
                     Some(arm)
                 }
             })
             .collect();
 
         Expr::Switch {
-            variable_name,
+            argument,
             scrutinee,
             arms,
             default,
@@ -1466,8 +1614,7 @@ impl<'a> Ctx<'a> {
         let args = arg_list.args(self.tree).collect::<Vec<_>>();
         if args.len() != 1 {
             self.diagnostics.push(LoweringDiagnostic {
-                kind: LoweringDiagnosticKind::ImportMismatchedArgCount {
-                    is_mod,
+                kind: LoweringDiagnosticKind::DirectiveMismatchedArgCount {
                     found_count: args.len(),
                 },
                 range: arg_list.range(self.tree),
@@ -1483,15 +1630,16 @@ impl<'a> Ctx<'a> {
         let file = match arg {
             ast::Expr::StringLiteral(string_literal) => {
                 match self.lower_string_literal(string_literal) {
-                    Expr::StringLiteral(text) => {
-                        text.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)
-                    }
+                    Expr::StringLiteral(text) => self
+                        .interner
+                        .lookup(text)
+                        .replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR),
                     _ => unreachable!(),
                 }
             }
             _ => {
                 self.diagnostics.push(LoweringDiagnostic {
-                    kind: LoweringDiagnosticKind::ImportNonStringArg { is_mod },
+                    kind: LoweringDiagnosticKind::DirectiveNonStringArg,
                     range: arg.range(self.tree),
                 });
                 return Expr::Missing;
@@ -1642,7 +1790,7 @@ impl<'a> Ctx<'a> {
 
         match self.look_up_in_current_scope(ident_name) {
             Some(Local::Def(local_def)) => return Expr::Local(local_def),
-            Some(Local::SwitchArm(local_arm_var)) => return Expr::SwitchLocal(local_arm_var),
+            Some(Local::SwitchArm(local_arm_var)) => return Expr::SwitchArgument(local_arm_var),
             None => {}
         }
 
@@ -1665,6 +1813,10 @@ impl<'a> Ctx<'a> {
             PrimitiveTy::parse(Some(ast::Expr::VarRef(var_ref)), self.interner, self.tree)
         {
             return Expr::PrimitiveTy(ty);
+        }
+
+        if ident_name == Key::nil() {
+            return Expr::Nil;
         }
 
         self.diagnostics.push(LoweringDiagnostic {
@@ -1811,7 +1963,7 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        Expr::StringLiteral(text)
+        Expr::StringLiteral(self.interner.intern(&text))
     }
 
     fn lower_char_literal(&mut self, char_literal: ast::CharLiteral) -> Expr {
@@ -1899,6 +2051,153 @@ impl<'a> Ctx<'a> {
         Expr::CharLiteral(ch)
     }
 
+    /// Used for `return` and `.try`
+    fn resolve_first_label(
+        &mut self,
+        whole_range: TextRange,
+        passed_defer_err: PassedDeferErr,
+    ) -> Option<ScopeId> {
+        let mut label_kinds = self.label_kinds.iter().rev();
+
+        let mut passed_defer = false;
+        let mut last_kind = None;
+        let label = loop {
+            let kind = label_kinds.next();
+
+            match kind {
+                Some(new_kind) => {
+                    last_kind = Some(new_kind);
+
+                    if matches!(new_kind, ScopeKind::Defer) {
+                        passed_defer = true;
+                    }
+                }
+                None => match last_kind {
+                    Some(ScopeKind::Block((_, id))) => break Some(*id),
+                    Some(ScopeKind::Loop((_, id))) => break Some(*id),
+                    Some(ScopeKind::Defer) => unreachable!(),
+                    None => break None,
+                },
+            }
+        };
+
+        if passed_defer {
+            match passed_defer_err {
+                PassedDeferErr::Err(err) => self.diagnostics.push(LoweringDiagnostic {
+                    kind: err,
+                    range: whole_range,
+                }),
+                PassedDeferErr::Ignore => {}
+            }
+
+            None
+        } else {
+            label
+        }
+    }
+
+    /// Used for `break` and `continue`
+    ///
+    /// `must_be_to_a_loop` is used by `continue`
+    fn resolve_last_label(
+        &mut self,
+        whole_range: TextRange,
+        expected_label: Option<ast::LabelRef>,
+        passed_defer_err: PassedDeferErr,
+        no_scope_found_err: NoScopeFoundErr,
+        must_be_to_a_loop: bool,
+    ) -> Option<ScopeId> {
+        let expected_label_name = expected_label
+            .and_then(|label| label.name(self.tree))
+            .map(|name| name.text(self.tree))
+            .map(|name| self.interner.intern(name));
+
+        if let Some(expected_label_name) = expected_label_name {
+            let mut passed_defer = false;
+
+            let result = self.label_kinds.iter().rev().find_map(|scope| match scope {
+                ScopeKind::Block((Some(name), id)) if *name == expected_label_name => {
+                    if must_be_to_a_loop {
+                        self.diagnostics.push(LoweringDiagnostic {
+                            kind: LoweringDiagnosticKind::ContinueNonLoop { name: Some(*name) },
+                            range: expected_label.unwrap().range(self.tree),
+                        });
+                    }
+
+                    Some(*id)
+                }
+                ScopeKind::Loop((Some(name), id)) if *name == expected_label_name => Some(*id),
+                ScopeKind::Defer => {
+                    passed_defer = true;
+                    None
+                }
+                _ => None,
+            });
+
+            if result.is_none() {
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::UndefinedLabel {
+                        name: expected_label_name,
+                    },
+                    range: expected_label.unwrap().range(self.tree),
+                });
+            } else if passed_defer {
+                match passed_defer_err {
+                    PassedDeferErr::Err(err) => self.diagnostics.push(LoweringDiagnostic {
+                        kind: err,
+                        range: whole_range,
+                    }),
+                    PassedDeferErr::Ignore => {}
+                }
+                return None;
+            }
+
+            return result;
+        }
+
+        // there was no expected label name, and we should just break to the last labelled block
+
+        let mut passed_defer = false;
+        let result = self.label_kinds.iter().rev().find_map(|kind| match kind {
+            ScopeKind::Block((Some(_), id)) if !must_be_to_a_loop => Some(*id),
+            ScopeKind::Loop((_, id)) => Some(*id),
+            ScopeKind::Defer => {
+                passed_defer = true;
+                None
+            }
+            _ => None,
+        });
+
+        if result.is_none() {
+            match no_scope_found_err {
+                NoScopeFoundErr::Err(err) => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: err,
+                        range: whole_range,
+                    });
+                }
+                NoScopeFoundErr::DefaultToFirstLabel => {
+                    self.diagnostics.push(LoweringDiagnostic {
+                        kind: LoweringDiagnosticKind::UsingBreakInsteadOfReturn,
+                        range: whole_range,
+                    });
+                    return self.resolve_first_label(whole_range, PassedDeferErr::Ignore);
+                }
+            }
+        } else if passed_defer {
+            match passed_defer_err {
+                PassedDeferErr::Err(err) => self.diagnostics.push(LoweringDiagnostic {
+                    kind: err,
+                    range: whole_range,
+                }),
+                PassedDeferErr::Ignore => {}
+            }
+            return None;
+        }
+
+        result
+    }
+
     fn insert_into_current_scope(&mut self, name: Key, local: Local) {
         let last_scope = self.scopes.last_mut().unwrap();
         last_scope.insert(name, local);
@@ -1927,10 +2226,21 @@ impl<'a> Ctx<'a> {
     }
 }
 
+enum NoScopeFoundErr {
+    Err(LoweringDiagnosticKind),
+    DefaultToFirstLabel,
+}
+
+enum PassedDeferErr {
+    Err(LoweringDiagnosticKind),
+    Ignore,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Descendant {
     Expr(Idx<Expr>),
-    Stmt(Idx<Stmt>),
+    PreStmt(Idx<Stmt>),
+    PostStmt(Idx<Stmt>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1954,9 +2264,16 @@ impl PossibleDescendant {
         })
     }
 
-    fn stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
+    fn pre_stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
         Self {
-            descendant: Descendant::Stmt(stmt),
+            descendant: Descendant::PreStmt(stmt),
+            actually_return,
+        }
+    }
+
+    fn post_stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
+        Self {
+            descendant: Descendant::PostStmt(stmt),
             actually_return,
         }
     }
@@ -1967,7 +2284,17 @@ pub enum DescentOpts<'a> {
     /// Doesn't include anything within lambdas.
     /// Doesn't forcefully include local def values
     /// Includes statements.
-    Infer,
+    ///
+    /// `include_post_statements` will include a copy of each statement *after* all its inner
+    /// subexpressions.
+    ///
+    /// The only exception is that post statements will still come *after* type annotations.
+    /// This is so any code you write using these post statements will still be able to use the
+    /// type annotations of those statements as well.
+    ///
+    /// Note that if you reverse the descent tree, these "post" statements will actually come
+    /// *before* the inner subexpressions.
+    Infer { include_post_stmts: bool },
     /// Includes parameters and return type of lambdas.
     /// Will include the value of a referred local if a filter returns true.
     /// Doesn't include blocks.
@@ -1981,7 +2308,10 @@ pub enum DescentOpts<'a> {
     /// Doesn't forcefully include the values of local defs.
     /// Still won't pass `Inferrable` boundaries. You can set `include_lambdas`
     /// to true but you'd still need to manually include referenced global bodies
-    All { include_lambdas: bool },
+    All {
+        include_lambdas: bool,
+        include_post_stmts: bool,
+    },
 }
 
 /// A block will go through this function and end up like this:
@@ -2021,12 +2351,24 @@ impl Iterator for Descendants<'_> {
         loop {
             let PossibleDescendant {
                 descendant: next,
-                actually_return,
+                actually_return: actually_ret,
             } = self.todo.pop()?;
+
+            // println!("  n={{{:?}, {actually_ret}}}", next);
+            // println!("  t={:?}", self.todo);
 
             let include_eval = matches!(
                 self.opts,
-                DescentOpts::Infer | DescentOpts::Reinfer | DescentOpts::All { .. }
+                DescentOpts::Infer { .. } | DescentOpts::Reinfer | DescentOpts::All { .. }
+            );
+            let include_post_stmts = matches!(
+                self.opts,
+                DescentOpts::Infer {
+                    include_post_stmts: true
+                } | DescentOpts::All {
+                    include_post_stmts: true,
+                    ..
+                }
             );
             let include_types = matches!(
                 self.opts,
@@ -2035,338 +2377,364 @@ impl Iterator for Descendants<'_> {
             let is_all = matches!(self.opts, DescentOpts::All { .. });
 
             match next {
-                Descendant::Expr(expr) => {
-                    match self.bodies[expr].clone() {
-                        Expr::Missing => {}
-                        Expr::IntLiteral(_) => {}
-                        Expr::FloatLiteral(_) => {}
-                        Expr::BoolLiteral(_) => {}
-                        Expr::StringLiteral(_) => {}
-                        Expr::CharLiteral(_) => {}
-                        Expr::ArrayDecl { size, ty } => {
-                            if include_eval {
-                                if let Some(size) = size {
-                                    self.todo.push(PossibleDescendant::expr(size, true));
+                Descendant::Expr(expr) => match self.bodies[expr].clone() {
+                    Expr::Missing => {}
+                    Expr::IntLiteral(_) => {}
+                    Expr::FloatLiteral(_) => {}
+                    Expr::BoolLiteral(_) => {}
+                    Expr::StringLiteral(_) => {}
+                    Expr::CharLiteral(_) => {}
+                    Expr::ArrayDecl { size, ty } => {
+                        if include_eval {
+                            if let Some(size) = size {
+                                self.todo.push(PossibleDescendant::expr(size, true));
+                            }
+                        }
+
+                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                    }
+                    Expr::ArrayLiteral { ty, items } => {
+                        if let Some(ty) = ty {
+                            self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        }
+
+                        if include_eval {
+                            self.todo.extend(
+                                items
+                                    .into_iter()
+                                    .rev()
+                                    .map(|expr| PossibleDescendant::expr(expr, true)),
+                            );
+                        }
+                    }
+                    Expr::Index { source, index } => {
+                        self.todo
+                            .push(PossibleDescendant::expr(source, actually_ret));
+                        self.todo
+                            .push(PossibleDescendant::expr(index, actually_ret));
+                    }
+                    Expr::Ref { expr, .. } => {
+                        self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                    }
+                    Expr::Cast { expr: None, .. } => {}
+                    Expr::Cast {
+                        expr: Some(expr),
+                        ty,
+                    } => {
+                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+
+                        if include_eval {
+                            self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                        }
+                    }
+                    Expr::Deref { pointer: expr } | Expr::Unary { expr, .. } => {
+                        if include_eval {
+                            self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                        }
+                    }
+                    Expr::Member { previous, .. } => {
+                        if include_eval {
+                            self.todo.push(PossibleDescendant::expr(previous, true));
+                        }
+                    }
+                    Expr::Binary { lhs, rhs, .. } => {
+                        self.todo.push(PossibleDescendant::expr(lhs, actually_ret));
+                        self.todo.push(PossibleDescendant::expr(rhs, actually_ret));
+                    }
+                    Expr::Paren(Some(expr)) => {
+                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
+                    }
+                    Expr::Paren(None) => {}
+                    Expr::Block { stmts, tail_expr } => {
+                        match self.opts {
+                            DescentOpts::Infer { .. } | DescentOpts::All { .. } => {
+                                if include_post_stmts {
+                                    self.todo.extend(stmts.into_iter().flat_map(|stmt| {
+                                        [
+                                            PossibleDescendant::post_stmt(stmt, actually_ret),
+                                            PossibleDescendant::pre_stmt(stmt, actually_ret),
+                                        ]
+                                    }));
+                                } else {
+                                    self.todo.extend(stmts.into_iter().map(|stmt| {
+                                        PossibleDescendant::pre_stmt(stmt, actually_ret)
+                                    }));
                                 }
-                            }
-
-                            self.todo.push(PossibleDescendant::expr(ty, include_types));
-                        }
-                        Expr::ArrayLiteral { ty, items } => {
-                            if let Some(ty) = ty {
-                                self.todo.push(PossibleDescendant::expr(ty, include_types));
-                            }
-
-                            if include_eval {
-                                self.todo.extend(
-                                    items
-                                        .into_iter()
-                                        .rev()
-                                        .map(|expr| PossibleDescendant::expr(expr, true)),
-                                );
-                            }
-                        }
-                        Expr::Index { source, index } => {
-                            self.todo
-                                .push(PossibleDescendant::expr(source, actually_return));
-                            self.todo
-                                .push(PossibleDescendant::expr(index, actually_return));
-                        }
-                        Expr::Ref { expr, .. } => {
-                            self.todo
-                                .push(PossibleDescendant::expr(expr, actually_return));
-                        }
-                        Expr::Cast { expr: None, .. } => {}
-                        Expr::Cast {
-                            expr: Some(expr),
-                            ty,
-                        } => {
-                            self.todo.push(PossibleDescendant::expr(ty, include_types));
-
-                            if include_eval {
-                                self.todo
-                                    .push(PossibleDescendant::expr(expr, actually_return));
-                            }
-                        }
-                        Expr::Deref { pointer: expr } | Expr::Unary { expr, .. } => {
-                            if include_eval {
-                                self.todo
-                                    .push(PossibleDescendant::expr(expr, actually_return));
-                            }
-                        }
-                        Expr::Member { previous, .. } => {
-                            if include_eval {
-                                self.todo.push(PossibleDescendant::expr(previous, true));
-                            }
-                        }
-                        Expr::Binary { lhs, rhs, .. } => {
-                            self.todo
-                                .push(PossibleDescendant::expr(lhs, actually_return));
-                            self.todo
-                                .push(PossibleDescendant::expr(rhs, actually_return));
-                        }
-                        Expr::Paren(Some(expr)) => self
-                            .todo
-                            .push(PossibleDescendant::expr(expr, actually_return)),
-                        Expr::Paren(None) => {}
-                        Expr::Block { stmts, tail_expr } => match self.opts {
-                            DescentOpts::Infer | DescentOpts::All { .. } => {
-                                self.todo.extend(
-                                    stmts.into_iter().map(|stmt| {
-                                        PossibleDescendant::stmt(stmt, actually_return)
-                                    }),
-                                );
 
                                 if let Some(tail_expr) = tail_expr {
                                     self.todo
-                                        .push(PossibleDescendant::expr(tail_expr, actually_return));
+                                        .push(PossibleDescendant::expr(tail_expr, actually_ret));
                                 }
                             }
                             DescentOpts::Reinfer => {
                                 if let Some(id) = self.bodies.block_to_scope_id(expr) {
                                     self.todo.extend(
                                         self.bodies.scope_id_usages(id).iter().copied().map(
-                                            |stmt| PossibleDescendant::stmt(stmt, actually_return),
+                                            |usage| match usage {
+                                                ScopeUsage::Expr(expr) => {
+                                                    PossibleDescendant::expr(expr, actually_ret)
+                                                }
+                                                ScopeUsage::Stmt(stmt) => {
+                                                    PossibleDescendant::pre_stmt(stmt, actually_ret)
+                                                }
+                                            },
                                         ),
                                     )
                                 }
 
                                 if let Some(tail_expr) = tail_expr {
                                     self.todo
-                                        .push(PossibleDescendant::expr(tail_expr, actually_return));
+                                        .push(PossibleDescendant::expr(tail_expr, actually_ret));
                                 }
                             }
                             DescentOpts::Types { .. } => {}
-                        },
-                        Expr::If {
-                            condition,
-                            body,
-                            else_branch,
-                        } => {
-                            self.todo
-                                .push(PossibleDescendant::expr(condition, actually_return));
-                            self.todo
-                                .push(PossibleDescendant::expr(body, actually_return));
-                            if let Some(else_branch) = else_branch {
-                                self.todo
-                                    .push(PossibleDescendant::expr(else_branch, actually_return));
-                            }
                         }
-                        Expr::While { condition, body } => match self.opts {
-                            DescentOpts::Infer | DescentOpts::All { .. } => {
-                                if let Some(condition) = condition {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(condition, actually_return));
-                                }
+                    }
+                    Expr::If {
+                        condition,
+                        body,
+                        else_branch,
+                    } => {
+                        self.todo
+                            .push(PossibleDescendant::expr(condition, actually_ret));
+                        self.todo.push(PossibleDescendant::expr(body, actually_ret));
+                        if let Some(else_branch) = else_branch {
+                            self.todo
+                                .push(PossibleDescendant::expr(else_branch, actually_ret));
+                        }
+                    }
+                    Expr::While { condition, body } => match self.opts {
+                        DescentOpts::Infer { .. } | DescentOpts::All { .. } => {
+                            if let Some(condition) = condition {
                                 self.todo
-                                    .push(PossibleDescendant::expr(body, actually_return));
+                                    .push(PossibleDescendant::expr(condition, actually_ret));
                             }
-                            DescentOpts::Reinfer => {
-                                if condition.is_none() {
-                                    if let Some(id) = self.bodies.block_to_scope_id(expr) {
-                                        self.todo.extend(
-                                            self.bodies.scope_id_usages(id).iter().copied().map(
-                                                |stmt| {
-                                                    PossibleDescendant::stmt(stmt, actually_return)
-                                                },
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                            DescentOpts::Types { .. } => {}
-                        },
-                        Expr::Switch {
-                            scrutinee,
-                            arms,
-                            default,
-                            ..
-                        } => match self.opts {
-                            DescentOpts::Infer | DescentOpts::All { .. } => {
-                                self.todo
-                                    .push(PossibleDescendant::expr(scrutinee, actually_return));
-                                for arm in arms {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(arm.body, actually_return));
-                                }
-                                // TODO: this might cause unexpected behavior where the default is written
-                                // first but it is processed by hir_ty last.
-                                if let Some(default) = default {
-                                    self.todo.push(PossibleDescendant::expr(
-                                        default.body,
-                                        actually_return,
-                                    ));
-                                }
-                            }
-                            DescentOpts::Reinfer => {
-                                // todo: maybe don't do this
-                                self.todo
-                                    .push(PossibleDescendant::expr(scrutinee, actually_return));
-                                for arm in arms {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(arm.body, actually_return));
-                                }
-                                if let Some(default) = default {
-                                    self.todo.push(PossibleDescendant::expr(
-                                        default.body,
-                                        actually_return,
-                                    ));
-                                }
-                            }
-                            DescentOpts::Types { .. } => {}
-                        },
-                        Expr::Local(local_def) => {
-                            if let DescentOpts::Types {
-                                include_local_value,
-                            } = self.opts
-                            {
-                                if include_local_value(local_def) {
-                                    let local_def = &self.bodies[local_def];
-
-                                    if let Some(value) = local_def.value {
-                                        self.todo
-                                            .push(PossibleDescendant::expr(value, actually_return));
-                                    }
+                            self.todo.push(PossibleDescendant::expr(body, actually_ret));
+                        }
+                        DescentOpts::Reinfer => {
+                            if condition.is_none() {
+                                if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                                    self.todo.extend(
+                                        self.bodies.scope_id_usages(id).iter().copied().map(
+                                            |usage| match usage {
+                                                ScopeUsage::Expr(expr) => {
+                                                    PossibleDescendant::expr(expr, actually_ret)
+                                                }
+                                                ScopeUsage::Stmt(stmt) => {
+                                                    PossibleDescendant::pre_stmt(stmt, actually_ret)
+                                                }
+                                            },
+                                        ),
+                                    );
                                 }
                             }
                         }
-                        Expr::SwitchLocal(_) => {}
-                        Expr::Param { .. } => {}
-                        Expr::LocalGlobal(_) => {}
-                        Expr::Call { callee, args } => {
+                        DescentOpts::Types { .. } => {}
+                    },
+                    Expr::Switch {
+                        scrutinee,
+                        arms,
+                        default,
+                        ..
+                    } => {
+                        if !matches!(self.opts, DescentOpts::Types { .. }) {
+                            // todo: maybe don't return the scrutinee on Reinfer
                             self.todo
-                                .push(PossibleDescendant::expr(callee, actually_return));
-                            self.todo.extend(
-                                args.into_iter()
-                                    .rev()
-                                    .map(|expr| PossibleDescendant::expr(expr, actually_return)),
-                            );
-                        }
-                        Expr::Lambda(lambda) => {
-                            let lambda = &self.bodies[lambda];
+                                .push(PossibleDescendant::expr(scrutinee, actually_ret));
 
-                            self.todo.extend(
-                                lambda
-                                    .params
-                                    .iter()
-                                    .rev()
-                                    .map(|param| PossibleDescendant::expr(param.ty, include_types)),
-                            );
-
-                            if let Some(return_ty) = lambda.return_ty {
-                                self.todo
-                                    .push(PossibleDescendant::expr(return_ty, include_types));
-                            }
-
-                            let is_type = !lambda.is_extern
-                                && lambda.return_ty.is_some()
-                                && self.bodies[lambda.body] == Expr::Missing;
-
-                            if matches!(
-                                self.opts,
-                                DescentOpts::All {
-                                    include_lambdas: true
-                                }
-                            ) && !lambda.is_extern
-                                && !is_type
+                            if let Some(default) = default
+                                && !matches!(self.opts, DescentOpts::Types { .. })
                             {
                                 self.todo
-                                    .push(PossibleDescendant::expr(lambda.body, include_types));
+                                    .push(PossibleDescendant::expr(default.body, actually_ret));
                             }
-                        }
-                        Expr::Comptime(comptime) => {
-                            if include_eval {
-                                let comptime = self.bodies[comptime];
 
+                            for arm in arms {
                                 self.todo
-                                    .push(PossibleDescendant::expr(comptime.body, actually_return));
-                            }
-                        }
-                        Expr::StructLiteral { ty, members, .. } => {
-                            if let Some(ty) = ty {
-                                self.todo.push(PossibleDescendant::expr(ty, is_all));
-                            }
+                                    .push(PossibleDescendant::expr(arm.body, actually_ret));
 
-                            self.todo.extend(members.into_iter().rev().map(
-                                |MemberLiteral { value, .. }| {
-                                    PossibleDescendant::expr(value, actually_return)
-                                },
-                            ));
+                                if let Some(ArmVariant::FullyQualified(ty)) = arm.variant {
+                                    self.todo.push(PossibleDescendant::expr(ty, actually_ret));
+                                }
+                            }
                         }
-                        Expr::Distinct { ty, .. } => {
-                            self.todo.push(PossibleDescendant::expr(ty, include_types));
+                    }
+                    Expr::Local(local_def) => {
+                        if let DescentOpts::Types {
+                            include_local_value,
+                        } = self.opts
+                        {
+                            if include_local_value(local_def) {
+                                let local_def = &self.bodies[local_def];
+
+                                if let Some(value) = local_def.value {
+                                    self.todo
+                                        .push(PossibleDescendant::expr(value, actually_ret));
+                                }
+                            }
                         }
-                        Expr::PrimitiveTy(_) => {}
-                        Expr::StructDecl { members, .. } => {
-                            self.todo.extend(members.into_iter().map(
-                                |MemberDecl { ty, .. }| PossibleDescendant::expr(ty, include_types),
-                            ));
-                        }
-                        Expr::EnumDecl { variants, .. } => {
-                            self.todo.extend(
-                                variants
-                                    .into_iter()
-                                    .flat_map(
-                                        |VariantDecl {
-                                             ty, discriminant, ..
-                                         }| {
-                                            [
-                                                PossibleDescendant::maybe_expr(ty, include_types),
-                                                PossibleDescendant::maybe_expr(
-                                                    discriminant,
-                                                    include_eval,
-                                                ),
-                                            ]
-                                        },
-                                    )
-                                    .flatten(),
-                            );
-                        }
-                        Expr::Directive { args, .. } => self.todo.extend(
+                    }
+                    Expr::SwitchArgument(_) => {}
+                    Expr::Param { .. } => {}
+                    Expr::LocalGlobal(_) => {}
+                    Expr::Call { callee, args } => {
+                        self.todo
+                            .push(PossibleDescendant::expr(callee, actually_ret));
+                        self.todo.extend(
                             args.into_iter()
                                 .rev()
-                                .map(|expr| PossibleDescendant::expr(expr, actually_return)),
-                        ),
-                        Expr::Import(_) => {}
+                                .map(|expr| PossibleDescendant::expr(expr, actually_ret)),
+                        );
                     }
-                }
-                Descendant::Stmt(stmt) => match self.bodies[stmt] {
+                    Expr::Lambda(lambda) => {
+                        let lambda = &self.bodies[lambda];
+
+                        self.todo.extend(
+                            lambda
+                                .params
+                                .iter()
+                                .rev()
+                                .map(|param| PossibleDescendant::expr(param.ty, include_types)),
+                        );
+
+                        if let Some(return_ty) = lambda.return_ty {
+                            self.todo
+                                .push(PossibleDescendant::expr(return_ty, include_types));
+                        }
+
+                        let is_type =
+                            lambda.body == LambdaBody::Empty && lambda.return_ty.is_some();
+
+                        if matches!(
+                            self.opts,
+                            DescentOpts::All {
+                                include_lambdas: true,
+                                include_post_stmts: false,
+                            }
+                        ) && let LambdaBody::Block(block) = lambda.body
+                        {
+                            assert!(!is_type);
+                            self.todo
+                                .push(PossibleDescendant::expr(block, include_types));
+                        }
+                    }
+                    Expr::Comptime(comptime) => {
+                        if include_eval {
+                            let comptime = self.bodies[comptime];
+
+                            self.todo
+                                .push(PossibleDescendant::expr(comptime.body, actually_ret));
+                        }
+                    }
+                    Expr::StructLiteral { ty, members, .. } => {
+                        if let Some(ty) = ty {
+                            self.todo.push(PossibleDescendant::expr(ty, is_all));
+                        }
+
+                        self.todo.extend(members.into_iter().rev().map(
+                            |MemberLiteral { value, .. }| {
+                                PossibleDescendant::expr(value, actually_ret)
+                            },
+                        ));
+                    }
+                    Expr::Distinct { ty, .. } => {
+                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                    }
+                    Expr::PrimitiveTy(_) => {}
+                    Expr::StructDecl { members, .. } => {
+                        self.todo
+                            .extend(members.into_iter().map(|MemberDecl { ty, .. }| {
+                                PossibleDescendant::expr(ty, include_types)
+                            }));
+                    }
+                    Expr::EnumDecl { variants, .. } => {
+                        self.todo.extend(
+                            variants
+                                .into_iter()
+                                .flat_map(
+                                    |VariantDecl {
+                                         ty, discriminant, ..
+                                     }| {
+                                        [
+                                            PossibleDescendant::maybe_expr(ty, include_types),
+                                            PossibleDescendant::maybe_expr(
+                                                discriminant,
+                                                include_eval,
+                                            ),
+                                        ]
+                                    },
+                                )
+                                .flatten(),
+                        );
+                    }
+                    Expr::Nil => {}
+                    Expr::OptionalDecl { ty } => {
+                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                    }
+                    Expr::ErrorUnionDecl {
+                        error_ty,
+                        payload_ty,
+                    } => {
+                        self.todo
+                            .push(PossibleDescendant::expr(error_ty, include_types));
+                        self.todo
+                            .push(PossibleDescendant::expr(payload_ty, include_types));
+                    }
+                    Expr::Propagate { expr, .. } => {
+                        self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                    }
+                    Expr::Directive { args, .. } => self.todo.extend(
+                        args.into_iter()
+                            .rev()
+                            .map(|expr| PossibleDescendant::expr(expr, actually_ret)),
+                    ),
+                    Expr::Import(_) => {}
+                },
+                Descendant::PreStmt(stmt) => match self.bodies[stmt] {
                     Stmt::LocalDef(local_def) => {
                         let local_def = &self.bodies[local_def];
 
-                        if let Some(ty) = local_def.ty {
+                        if !include_post_stmts && let Some(ty) = local_def.ty {
                             self.todo.push(PossibleDescendant::expr(ty, is_all));
                         }
 
                         if let Some(value) = local_def.value {
                             self.todo
-                                .push(PossibleDescendant::expr(value, actually_return));
+                                .push(PossibleDescendant::expr(value, actually_ret));
                         }
                     }
                     Stmt::Assign(assign) => {
                         let assign = &self.bodies[assign];
                         self.todo
-                            .push(PossibleDescendant::expr(assign.dest, actually_return));
+                            .push(PossibleDescendant::expr(assign.dest, actually_ret));
                         self.todo
-                            .push(PossibleDescendant::expr(assign.value, actually_return));
+                            .push(PossibleDescendant::expr(assign.value, actually_ret));
                     }
-                    Stmt::Expr(expr) => self
-                        .todo
-                        .push(PossibleDescendant::expr(expr, actually_return)),
+                    Stmt::Expr(expr) => {
+                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
+                    }
                     Stmt::Break {
                         value: Some(value), ..
                     } => self
                         .todo
-                        .push(PossibleDescendant::expr(value, actually_return)),
+                        .push(PossibleDescendant::expr(value, actually_ret)),
                     Stmt::Break { value: None, .. } => {}
                     Stmt::Continue { .. } => {}
-                    Stmt::Defer { expr, .. } => self
-                        .todo
-                        .push(PossibleDescendant::expr(expr, actually_return)),
+                    Stmt::Defer { expr, .. } => {
+                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
+                    }
                 },
+                Descendant::PostStmt(stmt) => {
+                    // post expressions will still come before type annotations
+                    if let Stmt::LocalDef(local_def) = self.bodies[stmt]
+                        && let Some(ty) = self.bodies[local_def].ty
+                    {
+                        self.todo.push(PossibleDescendant::expr(ty, is_all));
+                    }
+                }
             }
 
-            if actually_return {
+            if actually_ret {
                 return Some(next);
             }
         }
@@ -2448,7 +2816,7 @@ impl Bodies {
     }
 
     // a `ScopeId` will only be stored if it has usages
-    pub fn scope_id_usages(&self, id: ScopeId) -> &Vec<Idx<Stmt>> {
+    pub fn scope_id_usages(&self, id: ScopeId) -> &[ScopeUsage] {
         self.scope_usages.get(&id).unwrap()
     }
 
@@ -2494,10 +2862,10 @@ impl std::ops::Index<Idx<LocalDef>> for Bodies {
     }
 }
 
-impl std::ops::Index<Idx<SwitchLocal>> for Bodies {
-    type Output = SwitchLocal;
+impl std::ops::Index<Idx<SwitchArg>> for Bodies {
+    type Output = SwitchArg;
 
-    fn index(&self, id: Idx<SwitchLocal>) -> &Self::Output {
+    fn index(&self, id: Idx<SwitchArg>) -> &Self::Output {
         &self.switch_locals[id]
     }
 }
@@ -2584,7 +2952,6 @@ impl Bodies {
 
         return s;
 
-        #[allow(clippy::too_many_arguments)]
         fn write_expr(
             s: &mut String,
             idx: Idx<Expr>,
@@ -2614,7 +2981,9 @@ impl Bodies {
 
                 Expr::BoolLiteral(b) => s.push_str(&format!("{}", b)),
 
-                Expr::StringLiteral(content) => s.push_str(&format!("{content:?}")),
+                Expr::StringLiteral(content) => {
+                    s.push_str(&format!("{:?}", interner.lookup(*content)))
+                }
 
                 Expr::CharLiteral(char) => s.push_str(&format!("{:?}", Into::<char>::into(*char))),
 
@@ -2849,7 +3218,7 @@ impl Bodies {
                     if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
-                        s.push(' ');
+                        s.push_str(": ");
                     }
 
                     let mut inner = String::new();
@@ -2884,13 +3253,14 @@ impl Bodies {
                     }
                 }
 
+                // the above arms were just for when there are no statements
                 Expr::Block { stmts, tail_expr } => {
                     indentation += 4;
 
                     if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
-                        s.push(' ');
+                        s.push_str(": ");
                     }
 
                     s.push_str("{\n");
@@ -2977,7 +3347,7 @@ impl Bodies {
                     if let Some(label_id) = bodies.scope_decls.get_by_right(&idx) {
                         s.push('`');
                         s.push_str(&label_id.to_string());
-                        s.push(' ');
+                        s.push_str(": ");
                     }
 
                     if let Some(condition) = condition {
@@ -3009,7 +3379,7 @@ impl Bodies {
                 }
 
                 Expr::Switch {
-                    variable_name,
+                    argument: variable_name,
                     scrutinee,
                     arms,
                     default,
@@ -3036,12 +3406,24 @@ impl Bodies {
                     indentation += 4;
                     for arm in arms {
                         s.push_str(&" ".repeat(indentation));
-                        if let Some(variant_name) = arm.variant_name {
-                            s.push_str(interner.lookup(variant_name.name.0));
-                        } else {
-                            s.push('?');
+                        match arm.variant {
+                            Some(ArmVariant::Shorthand(variant_name)) => {
+                                s.push('.');
+                                s.push_str(interner.lookup(variant_name.name.0))
+                            }
+                            Some(ArmVariant::FullyQualified(ty)) => write_expr(
+                                s,
+                                ty,
+                                with_color,
+                                show_idx,
+                                bodies,
+                                mod_dir,
+                                interner,
+                                indentation,
+                            ),
+                            None => s.push('?'),
                         }
-                        if let Some(switch_local) = arm.switch_local {
+                        if let Some(switch_local) = arm.switch_arg {
                             s.push_str(&format!(" (s{})", switch_local.into_raw()));
                         }
                         s.push_str(" => ");
@@ -3061,7 +3443,7 @@ impl Bodies {
                     if let Some(default) = default {
                         s.push_str(&" ".repeat(indentation));
                         s.push('_');
-                        if let Some(switch_local) = default.switch_local {
+                        if let Some(switch_local) = default.switch_arg {
                             s.push_str(&format!(" (s{})", switch_local.into_raw()));
                         }
                         s.push_str(" => ");
@@ -3085,7 +3467,7 @@ impl Bodies {
 
                 Expr::Local(id) => s.push_str(&format!("l{}", id.into_raw())),
 
-                Expr::SwitchLocal(id) => s.push_str(&format!("s{}", id.into_raw())),
+                Expr::SwitchArgument(id) => s.push_str(&format!("s{}", id.into_raw())),
 
                 Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
@@ -3172,7 +3554,6 @@ impl Bodies {
                         params,
                         return_ty,
                         body,
-                        is_extern,
                         ..
                     } = &bodies.lambdas[*lambda];
 
@@ -3220,19 +3601,26 @@ impl Bodies {
                         s.push(' ');
                     }
 
-                    if *is_extern {
-                        s.push_str("extern");
-                    } else {
-                        write_expr(
-                            s,
-                            *body,
-                            with_color,
-                            show_idx,
-                            bodies,
-                            mod_dir,
-                            interner,
-                            indentation,
-                        );
+                    match body {
+                        LambdaBody::Extern => s.push_str("extern"),
+                        LambdaBody::Builtin { name, .. } => {
+                            s.push_str("#builtin(\"");
+                            s.push_str(interner.lookup(*name));
+                            s.push_str("\")");
+                        }
+                        LambdaBody::Block(block) => {
+                            write_expr(
+                                s,
+                                *block,
+                                with_color,
+                                show_idx,
+                                bodies,
+                                mod_dir,
+                                interner,
+                                indentation,
+                            );
+                        }
+                        LambdaBody::Empty => {}
                     }
                 }
 
@@ -3393,6 +3781,72 @@ impl Bodies {
                     s.push('}');
                 }
 
+                Expr::Nil => s.push_str("nil"),
+
+                Expr::OptionalDecl { ty } => {
+                    s.push('?');
+                    write_expr(
+                        s,
+                        *ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
+                }
+
+                Expr::ErrorUnionDecl {
+                    error_ty,
+                    payload_ty,
+                } => {
+                    write_expr(
+                        s,
+                        *error_ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
+                    s.push('!');
+                    write_expr(
+                        s,
+                        *payload_ty,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
+                }
+
+                Expr::Propagate { expr, label, .. } => {
+                    write_expr(
+                        s,
+                        *expr,
+                        with_color,
+                        show_idx,
+                        bodies,
+                        mod_dir,
+                        interner,
+                        indentation,
+                    );
+
+                    s.push_str(".try (`");
+
+                    if let Some(label) = label {
+                        s.push_str(&label.to_string());
+                    } else {
+                        s.push_str("<unknown>");
+                    }
+
+                    s.push(')');
+                }
+
                 Expr::Import(file_name) => {
                     s.push_str(&format!(r#"#import("{}")"#, interner.lookup(file_name.0)))
                 }
@@ -3411,7 +3865,6 @@ impl Bodies {
             }
         }
 
-        #[allow(clippy::too_many_arguments)]
         fn write_stmt(
             s: &mut String,
             expr: Idx<Stmt>,
@@ -3502,13 +3955,12 @@ impl Bodies {
                     s.push(';');
                 }
                 Stmt::Break { label, value, .. } => {
-                    s.push_str("break ");
+                    s.push_str("break `");
                     if let Some(label) = label {
                         s.push_str(&label.to_string());
                     } else {
                         s.push_str("<unknown>");
                     }
-                    s.push('`');
                     if let Some(value) = value {
                         s.push(' ');
                         write_expr(
@@ -3525,13 +3977,12 @@ impl Bodies {
                     s.push(';');
                 }
                 Stmt::Continue { label, .. } => {
-                    s.push_str("continue ");
+                    s.push_str("continue `");
                     if let Some(label) = label {
                         s.push_str(&label.to_string());
                     } else {
                         s.push_str("<unknown>")
                     }
-                    s.push('`');
                     s.push(';');
                 }
                 Stmt::Defer { expr, .. } => {
@@ -3557,7 +4008,9 @@ impl Bodies {
 mod tests {
     use super::*;
     use expect_test::{expect, Expect};
+    use line_index::LineIndex;
 
+    #[track_caller]
     fn check<const N: usize>(
         input: &str,
         expect: Expect,
@@ -3600,7 +4053,60 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(expected_diagnostics, actual_diagnostics);
+        let line_index = LineIndex::new(input);
+        println!("EXPECTED DIAGNOSTICS:");
+        if expected_diagnostics.is_empty() {
+            println!("(no expected diagnostics)");
+        }
+        let res = std::panic::catch_unwind(|| {
+            for d in &expected_diagnostics {
+                println!(
+                    "{}",
+                    diagnostics::Diagnostic::from_lowering(unsafe {
+                        // transmute is needed to get around cyclic dependencies
+                        #[allow(clippy::missing_transmute_annotations)]
+                        std::mem::transmute(d.clone())
+                    })
+                    .display(
+                        "main.capy",
+                        input,
+                        Path::new(""),
+                        &interner,
+                        &line_index,
+                        true,
+                    )
+                    .join("\n")
+                );
+            }
+        });
+        if res.is_err() {
+            println!("(panic while printing diagnostics)");
+        }
+        println!("ACTUAL DIAGNOSTICS:");
+        if actual_diagnostics.is_empty() {
+            println!("(no actual diagnostics)");
+        }
+        for d in &actual_diagnostics {
+            println!(
+                "{}",
+                diagnostics::Diagnostic::from_lowering(unsafe {
+                    // transmute is needed to get around cyclic dependencies
+                    #[allow(clippy::missing_transmute_annotations)]
+                    std::mem::transmute(d.clone())
+                })
+                .display(
+                    "main.capy",
+                    input,
+                    Path::new(""),
+                    &interner,
+                    &line_index,
+                    true,
+                )
+                .join("\n")
+            );
+        }
+
+        pretty_assertions::assert_eq!(expected_diagnostics, actual_diagnostics);
     }
 
     #[test]
@@ -4346,6 +4852,66 @@ mod tests {
     }
 
     #[test]
+    fn builtin_lambda() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    puts := (s: str) #builtin("hello");
+                }
+            "#,
+            expect![[r#"
+                main::main :: () -> i32 {
+                    l0 := (p0: str) #builtin("hello");
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn builtin_function() {
+        check(
+            r#"
+                puts :: (s: str) -> i32 #builtin("hi");
+            "#,
+            expect![[r#"
+                main::puts :: (p0: str) -> i32 #builtin("hi");
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn wrong_directive_lambda() {
+        check(
+            r#"
+                main :: () -> i32 {
+                    puts := (s: str) #foo("bar");
+                }
+            "#,
+            expect![[r#"
+                main::main :: () -> i32 {
+                    l0 := (p0: str) <missing>;
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::NonBuiltinLambdaBody, 78..85)],
+        )
+    }
+
+    #[test]
+    fn wrong_directive_function() {
+        check(
+            r#"
+                puts :: (s: str) -> i32 #bar("baz");
+            "#,
+            expect![[r#"
+                main::puts :: (p0: str) -> i32 <missing>;
+            "#]],
+            |_| [(LoweringDiagnosticKind::NonBuiltinLambdaBody, 45..52)],
+        )
+    }
+
+    #[test]
     fn scoped_local() {
         check(
             r#"
@@ -4632,7 +5198,7 @@ mod tests {
     }
 
     #[test]
-    fn break_block() {
+    fn break_unexplicit_blocks_without_labels() {
         check(
             r#"
                 foo :: () {
@@ -4644,9 +5210,83 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () { { `2 {
-                            break 2`;
+                main::foo :: () `0: { { {
+                            break `0;
                         } } };
+            "#]],
+            |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 105..111)],
+        )
+    }
+
+    #[test]
+    fn break_unexplicit_blocks_one_label() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        `blk: {
+                            {
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    {
+                        `2: { { {
+                                    break `2;
+                                } } }
+                    }
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn break_unexplicit_blocks_two_labels() {
+        check(
+            r#"
+                foo :: () {
+                    {
+                        `blk1: {
+                            {
+                                {
+                                    `blk2: {
+                                        {
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    {
+                        {
+                            {
+                                {
+                                    `5: {
+                                        {
+                                            {
+                                                break `5;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
             "#]],
             |_| [],
         )
@@ -4665,8 +5305,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () { { `2 loop {
-                            break 2`;
+                main::foo :: () { { `2: loop {
+                            break `2;
                         } } };
             "#]],
             |_| [],
@@ -4678,16 +5318,16 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `blk {
+                    `blk: {
                         {
-                            break blk`;
+                            break `blk;
                         }
                     }
                 }
             "#,
             expect![[r#"
-                main::foo :: () { `1 { {
-                            break 1`;
+                main::foo :: () { `1: { {
+                            break `1;
                         } } };
             "#]],
             |_| [],
@@ -4701,14 +5341,14 @@ mod tests {
                 foo :: () {
                     {
                         {
-                            break blk`;
+                            break `blk;
                         }
                     }
                 }
             "#,
             expect![[r#"
                 main::foo :: () { { {
-                            break <unknown>`;
+                            break `<unknown>;
                         } } };
             "#]],
             |i| {
@@ -4727,16 +5367,16 @@ mod tests {
         check(
             r#"
                 foo :: () -> i32 {
-                    `blk {
+                    `blk: {
                         {
-                            break blk` 1 + 1;
+                            break `blk 1 + 1;
                         }
                     }
                 }
             "#,
             expect![[r#"
-                main::foo :: () -> i32 { `1 { {
-                            break 1` 1 + 1;
+                main::foo :: () -> i32 { `1: { {
+                            break `1 1 + 1;
                         } } };
             "#]],
             |_| [],
@@ -4744,7 +5384,7 @@ mod tests {
     }
 
     #[test]
-    fn break_if() {
+    fn break_if_without_label() {
         check(
             r#"
                 foo :: () -> i32 {
@@ -4758,10 +5398,38 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () -> i32 {
-                    `1 {
+                main::foo :: () -> i32 `0: {
+                    {
                         if true {
-                            break 1` true;
+                            break `0 true;
+                        };
+                        1 + 1
+                    }
+                };
+            "#]],
+            |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 120..131)],
+        )
+    }
+
+    #[test]
+    fn break_unexplicit_if_with_label() {
+        check(
+            r#"
+                foo :: () -> i32 {
+                    {
+                        `if_blk: if true {
+                            break true;
+                        }
+
+                        1 + 1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () -> i32 {
+                    `1: {
+                        if true {
+                            break `1 true;
                         };
                         1 + 1
                     }
@@ -4788,8 +5456,8 @@ mod tests {
             expect![[r#"
                 main::foo :: () {
                     loop {
-                        `2 while false { {
-                                continue 2`;
+                        `2: while false { {
+                                continue `2;
                             } }
                     }
                 };
@@ -4803,10 +5471,10 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `outer loop {
+                    `outer: loop {
                         while false {
                             {
-                                continue outer`;
+                                continue `outer;
                             }
                         }
                     }
@@ -4814,8 +5482,8 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () {
-                    `1 loop { while false { {
-                                continue 1`;
+                    `1: loop { while false { {
+                                continue `1;
                             } } }
                 };
             "#]],
@@ -4828,10 +5496,10 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    `blk {
+                    `blk: {
                         while false {
                             {
-                                continue blk`;
+                                continue `blk;
                             }
                         }
                     }
@@ -4839,8 +5507,8 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () {
-                    `1 { while false { {
-                                continue 1`;
+                    `1: { while false { {
+                                continue `1;
                             } } }
                 };
             "#]],
@@ -4849,7 +5517,7 @@ mod tests {
                     LoweringDiagnosticKind::ContinueNonLoop {
                         name: Some(i.intern("blk")),
                     },
-                    165..169,
+                    166..170,
                 )]
             },
         )
@@ -4869,7 +5537,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () { { {
-                            continue <unknown>`;
+                            continue `<unknown>;
                         } } };
             "#]],
             |_| {
@@ -4890,11 +5558,11 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () -> i32 `0 {
-                    break 0` 5;
+                main::foo :: () -> i32 `0: {
+                    break `0 5;
                 };
             "#]],
-            |_| [],
+            |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 56..64)],
         )
     }
 
@@ -4907,8 +5575,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () -> i32 `0 {
-                    break 0` 5;
+                main::foo :: () -> i32 `0: {
+                    break `0 5;
                 };
             "#]],
             |_| [],
@@ -4926,8 +5594,8 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::foo :: () -> i32 `0 { {
-                        break 0` 5;
+                main::foo :: () -> i32 `0: { {
+                        break `0 5;
                     } };
             "#]],
             |_| [],
@@ -4943,8 +5611,8 @@ mod tests {
                 };
             "#,
             expect![[r#"
-                main::foo :: `0 {
-                    break 0` 5;
+                main::foo :: `0: {
+                    break `0 5;
                 };
             "#]],
             |_| [],
@@ -5005,8 +5673,8 @@ mod tests {
             r#"
                 bar :: () {
                     defer { return };
-                    `blk {
-                        defer { break blk` };
+                    `blk: {
+                        defer { break `blk };
                     };
                     loop {
                         defer {
@@ -5016,18 +5684,18 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::bar :: () `0 {
+                main::bar :: () {
                     defer {
-                        break 0`;
+                        break `<unknown>;
                     };
-                    `2 {
+                    {
                         defer {
-                            break 2`;
+                            break `<unknown>;
                         };
                     };
-                    `4 loop {
+                    loop {
                         defer {
-                            continue 4`;
+                            continue `<unknown>;
                         };
                     }
                 };
@@ -5035,8 +5703,8 @@ mod tests {
             |_| {
                 [
                     (LoweringDiagnosticKind::ReturnFromDefer, 57..63),
-                    (LoweringDiagnosticKind::BreakFromDefer, 126..136),
-                    (LoweringDiagnosticKind::ContinueFromDefer, 250..259),
+                    (LoweringDiagnosticKind::BreakFromDefer, 127..137),
+                    (LoweringDiagnosticKind::ContinueFromDefer, 251..260),
                 ]
             },
         )
@@ -5047,10 +5715,10 @@ mod tests {
         check(
             r#"
                 bar :: () {
-                    defer { break; };
+                    defer `blk: { break `blk; };
                     defer {
-                        `blk {
-                            break blk`;
+                        `blk: {
+                            break `blk;
                         };
                     };
                     defer {
@@ -5062,16 +5730,16 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    defer `1 {
-                        break 1`;
+                    defer `1: {
+                        break `1;
                     };
                     defer {
-                        `3 {
-                            break 3`;
+                        `3: {
+                            break `3;
                         };
                     };
-                    defer { `5 loop {
-                            continue 5`;
+                    defer { `5: loop {
+                            continue `5;
                         } };
                 };
             "#]],
@@ -5091,11 +5759,11 @@ mod tests {
                 }
             "#,
             expect![[r#"
-                main::bar :: () `0 {
+                main::bar :: () `0: {
                     defer {
-                        break 0`;
+                        break `<unknown>;
                     };
-                    break 0`;
+                    break `0;
                 };
             "#]],
             |_| [(LoweringDiagnosticKind::ReturnFromDefer, 81..88)],
@@ -5156,7 +5824,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_statement() {
+    fn switch_statement_shorthand() {
         check(
             r#"
                 bar :: () {
@@ -5170,12 +5838,12 @@ mod tests {
                     my_qux : Foo.Qux = Foo.Qux.(42);
 
                     switch f in my_qux {
-                        Bar => 10,
-                        Baz => {
+                        .Bar => 10,
+                        .Baz => {
                             take(f);
-                        }
-                        Qux => take(f),
-                        Quux => {}
+                        },
+                        .Qux => take(f),
+                        .Quux => {}
                     }
                 }
 
@@ -5186,12 +5854,12 @@ mod tests {
                     l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Qux.(42);
                     switch f in l1 {
-                        Bar (s0) => 10,
-                        Baz (s1) => {
+                        .Bar (s0) => 10,
+                        .Baz (s1) => {
                             take(s1);
                         },
-                        Qux (s2) => take(s2),
-                        Quux (s3) => {},
+                        .Qux (s2) => take(s2),
+                        .Quux (s3) => {},
                     }
                 };
                 main::take :: (p0: void) {};
@@ -5201,7 +5869,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_statement_with_default() {
+    fn switch_statement_shorthand_with_default() {
         check(
             r#"
                 bar :: () {
@@ -5215,10 +5883,10 @@ mod tests {
                     my_qux : Foo.Qux = Foo.Quux.(true);
 
                     switch f in my_qux {
-                        Bar => 10,
-                        Baz => {
+                        .Bar => 10,
+                        .Baz => {
                             take(f);
-                        }
+                        },
                         _ => take(f),
                     }
                 }
@@ -5230,8 +5898,8 @@ mod tests {
                     l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Quux.(true);
                     switch f in l1 {
-                        Bar (s0) => 10,
-                        Baz (s1) => {
+                        .Bar (s0) => 10,
+                        .Baz (s1) => {
                             take(s1);
                         },
                         _ (s2) => take(s2),
@@ -5240,6 +5908,153 @@ mod tests {
                 main::take :: (p0: void) {};
             "#]],
             |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_statement_fully_qualified() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = Foo.Qux.(42);
+
+                    switch f in my_qux {
+                        Foo.Bar => 10,
+                        Foo.Baz => {
+                            take(f);
+                        },
+                        Foo.Qux => take(f),
+                        Foo.Quux => {},
+                    }
+                }
+
+                take :: (x: void) {}
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = l0.Qux.(42);
+                    switch f in l1 {
+                        l0.Bar (s0) => 10,
+                        l0.Baz (s1) => {
+                            take(s1);
+                        },
+                        l0.Qux (s2) => take(s2),
+                        l0.Quux (s3) => {},
+                    }
+                };
+                main::take :: (p0: void) {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_statement_fully_qualified_with_default() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = Foo.Quux.(true);
+
+                    switch f in my_qux {
+                        Foo.Bar => 10,
+                        Foo.Baz => {
+                            take(f);
+                        },
+                        _ => take(f),
+                    }
+                }
+
+                take :: (x: void) {}
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = l0.Quux.(true);
+                    switch f in l1 {
+                        l0.Bar (s0) => 10,
+                        l0.Baz (s1) => {
+                            take(s1);
+                        },
+                        _ (s2) => take(s2),
+                    }
+                };
+                main::take :: (p0: void) {};
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn switch_statement_shorthand_with_multiple_defaults() {
+        check(
+            r#"
+                bar :: () {
+                    Foo :: enum {
+                        Bar,
+                        Baz | 5,
+                        Qux: i32,
+                        Quux: bool | 1000,
+                    };
+
+                    my_qux : Foo.Qux = Foo.Quux.(true);
+
+                    switch f in my_qux {
+                        .Bar => 10,
+                        _ => {
+                            // do nothing
+                        },
+                        .Baz => {
+                            take(f);
+                        },
+                        _ => take(f),
+                        _ => {
+                            x := 5;
+                            x
+                        },
+                    }
+                }
+
+                take :: (x: void) {}
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l1 : l0.Qux = l0.Quux.(true);
+                    switch f in l1 {
+                        .Bar (s0) => 10,
+                        .Baz (s2) => {
+                            take(s2);
+                        },
+                        _ (s4) => {
+                            l2 := 5;
+                            l2
+                        },
+                    }
+                };
+                main::take :: (p0: void) {};
+            "#]],
+            |_| {
+                [
+                    (LoweringDiagnosticKind::RegularArmAfterDefault, 484..488),
+                    (LoweringDiagnosticKind::MultipleDefaultArms, 582..583),
+                    (LoweringDiagnosticKind::MultipleDefaultArms, 620..621),
+                ]
+            },
         )
     }
 
@@ -5303,6 +6118,100 @@ mod tests {
                     l0 -= 5;
                     l0 *= 5;
                     l0 /= 5;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn optional() {
+        check(
+            r#"
+                bar :: () {
+                    foo: ?u64 = 42;
+
+                    foo = nil;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 : ?u64 = 42;
+                    l0 = nil;
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn error_union() {
+        check(
+            r#"
+                bar :: () {
+                    foo : str!u64 = "there was an error!";
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 : str!u64 = "there was an error!";
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn inferred_error_union() {
+        check(
+            r#"
+                bar :: () {
+                    foo : !u64 = "there was an error!";
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () {
+                    l0 : !u64 = "there was an error!";
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn r#try() {
+        check(
+            r#"
+                bar :: () {
+                    foo : str!u64 = "there was an error!";
+
+                    foo.try;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: () `0: {
+                    l0 : str!u64 = "there was an error!";
+                    l0.try (`0);
+                };
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn r#try_global() {
+        check(
+            r#"
+                bar :: {
+                    foo : str!u64 = "there was an error!";
+
+                    foo.try;
+                }
+            "#,
+            expect![[r#"
+                main::bar :: `0: {
+                    l0 : str!u64 = "there was an error!";
+                    l0.try (`0);
                 };
             "#]],
             |_| [],

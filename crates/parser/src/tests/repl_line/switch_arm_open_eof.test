@@ -1,9 +1,9 @@
 switch foo in get_enum() {
-    Apples => {
+    .Apples => {
 ===
-Root@0..42
-  ExprStmt@0..42
-    SwitchExpr@0..42
+Root@0..43
+  ExprStmt@0..43
+    SwitchExpr@0..43
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -19,12 +19,14 @@ Root@0..42
       Whitespace@24..25 " "
       LBrace@25..26 "{"
       Whitespace@26..31 "\n    "
-      SwitchArm@31..42
-        Ident@31..37 "Apples"
-        Whitespace@37..38 " "
-        FatArrow@38..40 "=>"
-        Whitespace@40..41 " "
-        Block@41..42
-          LBrace@41..42 "{"
-error at 42: missing RBrace
-error at 42: missing RBrace
+      SwitchArm@31..43
+        VariantShorthand@31..38
+          Dot@31..32 "."
+          Ident@32..38 "Apples"
+        Whitespace@38..39 " "
+        FatArrow@39..41 "=>"
+        Whitespace@41..42 " "
+        Block@42..43
+          LBrace@42..43 "{"
+error at 43: missing RBrace
+error at 43: missing RBrace

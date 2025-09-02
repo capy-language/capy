@@ -1,0 +1,12 @@
+foo.bar.try
+===
+Root@0..11
+  ExprStmt@0..11
+    PropagateExpr@0..11
+      Path@0..7
+        VarRef@0..3
+          Ident@0..3 "foo"
+        Dot@3..4 "."
+        Ident@4..7 "bar"
+      Dot@7..8 "."
+      Try@8..11 "try"

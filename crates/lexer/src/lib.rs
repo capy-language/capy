@@ -27,7 +27,7 @@ pub fn lex(text: &str) -> Tokens {
             Ok(kind) => {
                 let transmuted = unsafe { mem::transmute::<LexerTokenKind, TokenKind>(kind) };
                 // we compare the debug names of the two values to ensure that no transmutation bugs occurred
-                debug_assert_eq!(format!("{:?}", kind), format!("{:?}", transmuted));
+                debug_assert_eq!(format!("{kind:?}"), format!("{transmuted:?}"));
                 handler(transmuted, start)
             }
             // todo: make sure this actually works as it did before

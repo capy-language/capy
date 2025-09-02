@@ -1,13 +1,21 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::too_many_arguments)]
+
 use std::vec;
 
 use ast::validation::{ValidationDiagnostic, ValidationDiagnosticKind};
 use hir::{IndexingDiagnostic, IndexingDiagnosticKind, LoweringDiagnostic, LoweringDiagnosticKind};
-use hir_ty::{ExpectedTy, TyDiagnostic, TyDiagnosticHelp};
+use hir_ty::{ExpectedTy, InternTyDisplay, TyDiagnostic, TyDiagnosticHelp};
 use interner::Interner;
 use line_index::{ColNr, LineIndex, LineNr};
 use parser::{ExpectedSyntax, SyntaxError, SyntaxErrorKind};
 use syntax::NodeKind;
 use text_size::{TextRange, TextSize};
+
+#[cfg(feature = "expose_hir_ty")]
+pub use hir_ty;
+
+const NOT_STRING_LIT: &str = "this must be a string literal";
 
 pub struct Diagnostic(Repr);
 
@@ -161,7 +169,13 @@ impl Diagnostic {
             Repr::Syntax(_) => Severity::Error,
             Repr::Validation(_) => Severity::Warning,
             Repr::Indexing(_) => Severity::Error,
-            Repr::Lowering(_) => Severity::Error,
+            Repr::Lowering(d) => {
+                if d.is_error() {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                }
+            }
             Repr::Ty(d) => {
                 if d.is_error() {
                     Severity::Error
@@ -221,7 +235,6 @@ impl HelpDiagnostic<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn input_snippet(
     filename: &str,
     input: &str,
@@ -443,22 +456,14 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
             "non-global functions cannot be extern".to_string()
         }
         LoweringDiagnosticKind::InvalidEscape => "invalid escape".to_string(),
-        LoweringDiagnosticKind::ImportMismatchedArgCount {
-            is_mod,
-            found_count,
-        } => {
+        LoweringDiagnosticKind::DirectiveMismatchedArgCount { found_count } => {
             if *found_count == 0 {
                 "expected an argument of type `str`".to_string()
             } else {
-                format!(
-                    "`#{}(...)` expected only 1 argument, but found {found_count}",
-                    if *is_mod { "mod" } else { "import" }
-                )
+                "expected only 1 argument, but found {found_count}".to_string()
             }
         }
-        LoweringDiagnosticKind::ImportNonStringArg { .. } => {
-            "this must be a string literal".to_string()
-        }
+        LoweringDiagnosticKind::DirectiveNonStringArg => NOT_STRING_LIT.to_string(),
         LoweringDiagnosticKind::ModMustBeAlphanumeric => "modules must be alphanumeric".to_string(),
         LoweringDiagnosticKind::ModDoesNotExist { module, mod_dir } => {
             format!("a `{}` module could not be found in `{}`", module, mod_dir)
@@ -477,6 +482,9 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         }
         LoweringDiagnosticKind::ImportOutsideCWD { file } => {
             format!("`{}` is outside the current working module", file)
+        }
+        LoweringDiagnosticKind::NonBuiltinLambdaBody => {
+            "you can only use `#builtin(...)` for function bodies".to_string()
         }
         LoweringDiagnosticKind::TooManyCharsInCharLiteral => {
             "character literals can only contain one character".to_string()
@@ -497,14 +505,24 @@ fn lowering_diagnostic_message(d: &LoweringDiagnostic, interner: &Interner) -> S
         LoweringDiagnosticKind::ReturnFromDefer => {
             "cannot `return` from within a `defer`".to_string()
         }
+        LoweringDiagnosticKind::PropagateFromDefer => {
+            "cannot use `.try` from within a `defer`".to_string()
+        }
         LoweringDiagnosticKind::BreakFromDefer => {
             "cannot `break` to an outer block from within a `defer`".to_string()
         }
         LoweringDiagnosticKind::ContinueFromDefer => {
             "cannot `continue` an outer loop from within a `defer`".to_string()
         }
+        LoweringDiagnosticKind::UsingBreakInsteadOfReturn => {
+            "this is actually a `break` to the first block, consider using `return` instead"
+                .to_string()
+        }
         LoweringDiagnosticKind::MultipleDefaultArms => {
-            "a switch statement cannot have multiple default arms `_ => {}`".to_string()
+            "a switch statement cannot have multiple default arms".to_string()
+        }
+        LoweringDiagnosticKind::RegularArmAfterDefault => {
+            "this arm comes after the default arm `_`, which must be last".to_string()
         }
     }
 }
@@ -516,23 +534,28 @@ fn ty_diagnostic_message(
 ) -> String {
     match &d.kind {
         hir_ty::TyDiagnosticKind::Mismatch { expected, found } => {
+            let show_ids = expected
+                .get_concrete()
+                .is_some_and(|e| e.is_similar_to(found));
             format!(
                 "expected {} but found `{}`",
-                format_expected_type(expected, mod_dir, interner),
-                found.display(mod_dir, interner)
+                format_expected_type("a", "value", false, expected, mod_dir, interner, show_ids),
+                found.named_display(mod_dir, interner, show_ids)
             )
         }
         hir_ty::TyDiagnosticKind::Uncastable { from, to } => {
+            let show_ids = from.is_similar_to(to);
             format!(
                 "cannot cast `{}` to `{}`",
-                from.display(mod_dir, interner),
-                to.display(mod_dir, interner)
+                from.named_display(mod_dir, interner, show_ids),
+                to.named_display(mod_dir, interner, show_ids)
             )
         }
         hir_ty::TyDiagnosticKind::BinaryOpMismatch { op, first, second } => {
+            let show_ids = first.is_similar_to(second);
             format!(
                 "`{}` cannot be {} `{}`",
-                first.display(mod_dir, interner),
+                first.named_display(mod_dir, interner, show_ids),
                 match op {
                     hir::BinaryOp::Add => "added to",
                     hir::BinaryOp::Sub => "subtracted by",
@@ -549,11 +572,11 @@ fn ty_diagnostic_message(
                     | hir::BinaryOp::Le
                     | hir::BinaryOp::Ge
                     | hir::BinaryOp::Eq
-                    | hir::BinaryOp::Ne
-                    | hir::BinaryOp::LAnd
-                    | hir::BinaryOp::LOr => "compared to",
+                    | hir::BinaryOp::Ne => "comapred to",
+                    hir::BinaryOp::LAnd => "and'd with",
+                    hir::BinaryOp::LOr => "or'd with",
                 },
-                second.display(mod_dir, interner)
+                second.named_display(mod_dir, interner, show_ids)
             )
         }
         hir_ty::TyDiagnosticKind::UnaryOpMismatch { op, ty } => {
@@ -565,75 +588,87 @@ fn ty_diagnostic_message(
                     hir::UnaryOp::BNot => '~',
                     hir::UnaryOp::LNot => '!',
                 },
-                ty.display(mod_dir, interner)
+                ty.named_display(mod_dir, interner, false)
             )
         }
         hir_ty::TyDiagnosticKind::IfMismatch { first, second } => {
+            let show_ids = first.is_similar_to(second);
             format!(
                 "the first branch is `{}` but the second branch is `{}`. they must be the same",
-                first.display(mod_dir, interner),
-                second.display(mod_dir, interner),
+                first.named_display(mod_dir, interner, show_ids),
+                second.named_display(mod_dir, interner, show_ids),
             )
         }
-        hir_ty::TyDiagnosticKind::SwitchMismatch { first, second } => {
+        hir_ty::TyDiagnosticKind::SwitchMismatch {
+            first,
+            other,
+        } => {
+            let show_ids = first.is_similar_to(other);
             format!(
-                "the first branch is `{}` but this branch is `{}`. they must be the same",
-                first.display(mod_dir, interner),
-                second.display(mod_dir, interner),
+                "this branch has a type of `{}` but the first branch has a type of `{}`. they must be the same",
+                other.named_display(mod_dir, interner, show_ids),
+                first.named_display(mod_dir, interner, show_ids),
             )
         }
-                hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
+        hir_ty::TyDiagnosticKind::IndexNonArray { found } => {
             format!(
-                "tried indexing `[]` a non-array, `{}`",
-                found.display(mod_dir, interner)
+                "tried indexing a non-array, `{}`",
+                found.named_display(mod_dir, interner, false)
             )
         }
         hir_ty::TyDiagnosticKind::IndexOutOfBounds {
             index,
             actual_size,
             array_ty,
-        } => {
-            match actual_size.checked_sub(1) {
-                Some(up_to) => format!(
-                    "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
-                    index,
-                    array_ty.display(mod_dir, interner),
-                    up_to,
-                ),
-                None => format!(
-                    "index `[{}]` is too big for `{}`",
-                    index,
-                    array_ty.display(mod_dir, interner),
-                )
-            }
-        }
+        } => match actual_size.checked_sub(1) {
+            Some(up_to) => format!(
+                "index `[{}]` is too big, `{}` can only be indexed up to `[{}]`",
+                index,
+                array_ty.named_display(mod_dir, interner, false),
+                up_to,
+            ),
+            None => format!(
+                "index `[{}]` is too big for `{}`",
+                index,
+                array_ty.named_display(mod_dir, interner, false),
+            ),
+        },
         hir_ty::TyDiagnosticKind::ExtraArg { found } => {
-            format!("found an extra argument of type `{}`", found.display(mod_dir, interner))
+            format!(
+                "found an extra argument of type `{}`",
+                found.named_display(mod_dir, interner, false)
+            )
         }
         hir_ty::TyDiagnosticKind::MissingArg { expected } => {
-            format!("expected an argument of type {}", format_expected_type(expected, mod_dir, interner))
+            format!(
+                "expected {}",
+                format_expected_type("an", "argument", true, expected, mod_dir, interner, false)
+            )
         }
         hir_ty::TyDiagnosticKind::CalledNonFunction { found } => {
             format!(
                 "expected a function, but found {}",
-                found.display(mod_dir, interner),
+                found.named_display(mod_dir, interner, false),
             )
         }
         hir_ty::TyDiagnosticKind::DerefNonPointer { found } => {
             format!(
-                "tried dereferencing `^` a non-pointer, `{}`",
-                found.display(mod_dir, interner)
+                "tried dereferencing a non-pointer, `{}`",
+                found.named_display(mod_dir, interner, false)
             )
         }
         hir_ty::TyDiagnosticKind::DerefRaw => {
-            "tried dereferencing `^` a pointer to `any`. try casting it to a different pointer type first".to_string()
+            "tried dereferencing a `rawptr`. try casting it to a different pointer type first"
+                .to_string()
         }
-        hir_ty::TyDiagnosticKind::IndexRaw { size: Some(size) } => format!("tried indexing `[]` an array of `[{size}] any`. try casting it to a different array type first"),
-        hir_ty::TyDiagnosticKind::IndexRaw { size: None } => "tried indexing `[]` a slice of `[] any`. try casting it to a different slice type first".to_string(),
+        hir_ty::TyDiagnosticKind::IndexRaw => {
+            "tried indexing a `rawslice`. try casting it to a different slice type first"
+                .to_string()
+        }
         hir_ty::TyDiagnosticKind::MissingElse { expected } => {
             format!(
                 "this `if` is missing an `else` with type `{}`",
-                expected.display(mod_dir, interner)
+                expected.named_display(mod_dir, interner, false)
             )
         }
         hir_ty::TyDiagnosticKind::NotYetResolved { fqn } => {
@@ -655,7 +690,7 @@ fn ty_diagnostic_message(
             format!(
                 "integer literal `{}` is too big for `{}`, which can only hold up to {}",
                 found,
-                ty.display(mod_dir, interner),
+                ty.named_display(mod_dir, interner, false),
                 max
             )
         }
@@ -673,16 +708,27 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::NonExistentMember { member, found_ty } => format!(
             "there is no member named `{}` within `{}`",
             interner.lookup(*member),
-            found_ty.display(mod_dir, interner)
+            found_ty.named_display(mod_dir, interner, false)
         ),
-        hir_ty::TyDiagnosticKind::NonExistentVariant { variant_name, enum_ty: scrutinee_ty } => format!(
+        hir_ty::TyDiagnosticKind::NotAShorthandVariantOfSumType {
+            ty,
+            sum_ty: scrutinee_ty,
+        } => format!(
             "there is no variant named `{}` within `{}`",
-            interner.lookup(*variant_name),
-            scrutinee_ty.display(mod_dir, interner),
+            interner.lookup(*ty),
+            scrutinee_ty.named_display(mod_dir, interner, false),
         ),
-        hir_ty::TyDiagnosticKind::StructLiteralMissingMember { member: field, expected_ty } => format!(
+        hir_ty::TyDiagnosticKind::NotAVariantOfSumType { ty, sum_ty } => format!(
+            "the type `{}` is not a variant of `{}`",
+            ty.named_display(mod_dir, interner, false),
+            sum_ty.named_display(mod_dir, interner, false)
+        ),
+        hir_ty::TyDiagnosticKind::StructLiteralMissingMember {
+            member: field,
+            expected_ty,
+        } => format!(
             "`{}` struct literal is missing the member `{}`",
-            expected_ty.display(mod_dir, interner),
+            expected_ty.named_display(mod_dir, interner, false),
             interner.lookup(*field)
         ),
         hir_ty::TyDiagnosticKind::ComptimePointer => {
@@ -700,9 +746,7 @@ fn ty_diagnostic_message(
         hir_ty::TyDiagnosticKind::EntryBadReturn => {
             "the entry point must either return `{int}` or `void`".to_string()
         }
-        hir_ty::TyDiagnosticKind::ArraySizeNotInt => {
-            "array size must be an integer".to_string()
-        }
+        hir_ty::TyDiagnosticKind::ArraySizeNotInt => "array size must be an integer".to_string(),
         hir_ty::TyDiagnosticKind::ArraySizeNotConst => {
             "array size must be known at compile-time".to_string()
         }
@@ -716,22 +760,82 @@ fn ty_diagnostic_message(
             format!("you've already used `{value}` as a discriminant")
         }
         hir_ty::TyDiagnosticKind::ExternGlobalMissingTy => {
-            "external globals must have a type annotation".to_string()
+            "external globals must have type annotations".to_string()
+        }
+        hir_ty::TyDiagnosticKind::ExternVarargs => {
+            "vararg parameters in Capy are internally represented by slices, and they are not compatable with variadic functions in C"
+                .to_string()
         }
         hir_ty::TyDiagnosticKind::DeclTypeHasNoDefault { ty } => {
-            format!("`{}` does not have a default value. one must be supplied", ty.display(mod_dir, interner))
+            format!(
+                "`{}` does not have a default value. one must be supplied",
+                ty.named_display(mod_dir, interner, false)
+            )
         }
-        hir_ty::TyDiagnosticKind::SwitchDoesNotCoverVariant { ty  } => {
-            format!("this switch statement does not have an arm for `{}`", ty.display(mod_dir, interner))
+        hir_ty::TyDiagnosticKind::SwitchDoesNotCoverVariant { ty } => {
+            format!(
+                "this switch statement does not have an arm for `{}`",
+                ty.named_display(mod_dir, interner, false)
+            )
         }
-        hir_ty::TyDiagnosticKind::SwitchAlreadyCoversVariant { ty  } => {
-            format!("this switch statement already has an arm for `{}`", ty.display(mod_dir, interner))
+        hir_ty::TyDiagnosticKind::SwitchAlreadyCoversVariant { ty } => {
+            format!(
+                "this switch statement already has an arm for `{}`",
+                ty.named_display(mod_dir, interner, false)
+            )
         }
-        hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateVarArgs { previous_ty, current_ty } => {
-            format!("the type of this parameter, `{}`, cannot be differentiated from the var arg parameter right behind it, `...{}`", current_ty.display(mod_dir, interner), previous_ty.display(mod_dir, interner))
+        hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
+            previous_ty,
+            current_ty,
+        } => {
+            let show_ids = previous_ty.is_similar_to(current_ty);
+            format!(
+                "the type of this parameter, `{}`, cannot be differentiated from the var arg parameter right behind it, `...{}`",
+                current_ty.named_display(mod_dir, interner, show_ids),
+                previous_ty.named_display(mod_dir, interner, show_ids)
+            )
         }
-        hir_ty::TyDiagnosticKind::UnwrapVariantMismatchEnum { variant_ty, enum_ty } => format!("the variant type `{}` is not a variant of `{}`", variant_ty.display(mod_dir, interner), enum_ty.display(mod_dir, interner)),
-        hir_ty::TyDiagnosticKind::UnknownDirective { name } => format!("there is no directive named `#{}`", interner.lookup(*name)),
+        hir_ty::TyDiagnosticKind::ImpossibleToDifferentiateErrorUnion {
+            error_ty,
+            payload_ty,
+        } => {
+            let show_ids = error_ty.is_similar_to(payload_ty);
+            format!(
+                "the error type, `{}`, is too similar to the payload type, `{}`",
+                error_ty.named_display(mod_dir, interner, show_ids),
+                payload_ty.named_display(mod_dir, interner, show_ids)
+            )
+        }
+        hir_ty::TyDiagnosticKind::UnknownDirective { name } => format!(
+            "there is no compiler directive named `#{}`",
+            interner.lookup(*name)
+        ),
+        hir_ty::TyDiagnosticKind::PropagateNonPropagatable { found } => {
+            format!(
+                "can only use `.try` on optionals or error unions. this is `{}`",
+                found.named_display(mod_dir, interner, false)
+            )
+        }
+        hir_ty::TyDiagnosticKind::NotABuiltin { name } => {
+            format!(
+                "`{}` is not a compiler built-in value or function",
+                interner.lookup(*name)
+            )
+        }
+        hir_ty::TyDiagnosticKind::NotStringLit => NOT_STRING_LIT.to_string(),
+        hir_ty::TyDiagnosticKind::BuiltinFunctionMismatch {
+            builtin_name,
+            expected,
+            found,
+        } => {
+            let show_ids = expected.is_similar_to(found);
+            format!(
+                "`#builtin(\"{}\")` has a type of `{}` but this function is `{}`",
+                interner.lookup(*builtin_name),
+                expected.named_display(mod_dir, interner, show_ids),
+                found.named_display(mod_dir, interner, show_ids)
+            )
+        }
     }
 }
 
@@ -740,9 +844,10 @@ fn ty_diagnostic_help_message(
     mod_dir: &std::path::Path,
     interner: &Interner,
 ) -> String {
+    // todo: if the regular message showed ids, the help message should as well
     match &d.kind {
-        hir_ty::TyDiagnosticHelpKind::FoundToBeImmutable => {
-            "this is found to be immutable".to_string()
+        hir_ty::TyDiagnosticHelpKind::CannotMutateExpr => {
+            "this expression cannot be mutated".to_string()
         }
         hir_ty::TyDiagnosticHelpKind::ImmutableBinding => {
             "`::` bindings are immutable. consider changing it to `:=`".to_string()
@@ -762,16 +867,37 @@ fn ty_diagnostic_help_message(
                 .to_string()
         }
         hir_ty::TyDiagnosticHelpKind::IfReturnsTypeHere { found } => {
-            format!("here, the `if` returns a {}", found.display(mod_dir, interner))
+            format!("here, the `if` returns a `{}`", found.named_display(mod_dir, interner, false))
         }
         hir_ty::TyDiagnosticHelpKind::MutableVariable => {
-            "`:=` bindings are immutable. consider changing it to `::`".to_string()
+            "`:=` bindings are mutable. consider changing it to `::`".to_string()
         }
         hir_ty::TyDiagnosticHelpKind::TailExprReturnsHere => {
             "this is the actual value that is being returned".to_string()
         }
-        hir_ty::TyDiagnosticHelpKind::BreakHere { break_ty } => {
-            format!("expected because this break returns a `{}`", break_ty.display(mod_dir, interner))
+        hir_ty::TyDiagnosticHelpKind::BreakHere { ty, is_default: false } => {
+            format!("a value of `{}` was expected because of this earlier break", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::ReturnHere { ty, is_default: false } => {
+            format!("a value of `{}` was expected because of this earlier return", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::BreakHere { ty, is_default: true } => {
+            format!("`{}` was expected because this earlier break didn't have a value", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::ReturnHere { ty, is_default: true } => {
+            format!("`{}` was expected because this earlier return didn't have a value", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::PropagateHere { ty } => {
+            format!("a value of `{}` was expected because it might be returned by this earlier `.try`", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::AnnotationHere { ty } => {
+            format!("a value of `{}` was expected because of this annotation", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::ReturnTyHere { ty, is_default: false } => {
+            format!("a value of `{}` was expected because of this return type", ty.named_display(mod_dir, interner, false))
+        }
+        hir_ty::TyDiagnosticHelpKind::ReturnTyHere { ty, is_default: true } => {
+            format!("`{}` was expected expected because there is no return type", ty.named_display(mod_dir, interner, false))
         }
     }
 }
@@ -860,15 +986,27 @@ fn format_node(kind: NodeKind) -> &'static str {
 }
 
 fn format_expected_type(
+    article: &str,
+    name: &str,
+    add_type: bool,
     expected: &ExpectedTy,
     mod_dir: &std::path::Path,
     interner: &Interner,
+    show_ids: bool,
 ) -> String {
     match expected {
         hir_ty::ExpectedTy::Concrete(expected) => {
-            format!("`{}`", expected.display(mod_dir, interner))
+            format!(
+                "{article} {name} of {}`{}`",
+                if add_type || **expected == hir_ty::Ty::Type {
+                    "type "
+                } else {
+                    ""
+                },
+                expected.named_display(mod_dir, interner, show_ids),
+            )
         }
         hir_ty::ExpectedTy::Enum => "an enum".to_string(),
-        hir_ty::ExpectedTy::Variant => "a variant".to_string(),
+        hir_ty::ExpectedTy::SumType => "an enum, optional, or error union".to_string(),
     }
 }

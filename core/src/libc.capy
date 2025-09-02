@@ -1,21 +1,29 @@
 
 // in the future, you wouldn't call `malloc` directly, you'd use an Allocator abstraction
 
-// allocates size bytes of memory. make sure to free() the pointer after your done.
-malloc :: (size: usize) -> mut rawptr extern;
-// allocates len * size bytes, all the bits are set to 0
-calloc :: (len: usize, size: usize) -> mut rawptr extern;
+// allocates `size` bytes of memory. make sure to free() the pointer after your done.
+malloc :: (size: usize) -> ?mut rawptr extern;
+// allocates `len * size` bytes of memory, all the bytes are set to 0
+calloc :: (len: usize, size: usize) -> ?mut rawptr extern;
 // frees allocated memory
-free :: (ptr: rawptr) extern;
+free :: (ptr: ?mut rawptr) extern;
 // reallocates already allocated memory
-realloc :: (ptr: mut rawptr, size: usize) -> mut rawptr extern;
-// copies len bytes from dst to src
-memcpy :: (dst: mut rawptr, src: rawptr, len: usize) extern;
+realloc :: (ptr: ?mut rawptr, size: usize) -> ?mut rawptr extern;
+
+// compares the memory of `left` to `right` and returns an integer less than, equal to, or greater than zero
+// if the first `len` bytes of `left` is found to be less than, equal to, or greater than the first `len` bytes of `right`
+memcmp :: (left: rawptr, right: rawptr, len: usize) -> i32 extern;
+// copies `len` bytes from `src` to `dest`. the memory areas must not overlap
+memcpy :: (dest: mut rawptr, src: rawptr, len: usize) -> mut rawptr extern;
+// copies `len` bytes from `src` to `dest`. the memory areas may overlap
+memmove :: (dest: mut rawptr, src: rawptr, len: usize) -> mut rawptr extern;
+// fills all `len` bytes in `dest` with the byte `val`
+memset :: (dest: mut rawptr, val: i32, len: usize) -> mut rawptr extern;
 
 // prints a string to the screen, adds a newline at the end
-puts :: (text: str) extern;
+puts :: (text: str) -> i32 extern;
 // prints a char to the screen
-putchar :: (ch: char) extern;
+putchar :: (ch: char) -> i32 extern;
 
 // a file descriptor is an integer that represents an open file
 File_Desc :: distinct i32;

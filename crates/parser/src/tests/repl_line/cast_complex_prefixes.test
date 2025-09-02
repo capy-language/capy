@@ -1,0 +1,25 @@
+^[]^?foo.(hello)
+===
+Root@0..16
+  ExprStmt@0..16
+    CastExpr@0..16
+      Ty@0..8
+        RefExpr@0..8
+          Caret@0..1 "^"
+          ArrayDecl@1..8
+            ArraySize@1..3
+              LBrack@1..2 "["
+              RBrack@2..3 "]"
+            Ty@3..8
+              RefExpr@3..8
+                Caret@3..4 "^"
+                OptionalDecl@4..8
+                  Question@4..5 "?"
+                  Ty@5..8
+                    VarRef@5..8
+                      Ident@5..8 "foo"
+      Dot@8..9 "."
+      LParen@9..10 "("
+      VarRef@10..15
+        Ident@10..15 "hello"
+      RParen@15..16 ")"

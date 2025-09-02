@@ -1,0 +1,35 @@
+^foo.bar.(^baz.qux.(^quux.corge))
+===
+Root@0..33
+  ExprStmt@0..33
+    CastExpr@0..33
+      Ty@0..8
+        RefExpr@0..8
+          Caret@0..1 "^"
+          Path@1..8
+            VarRef@1..4
+              Ident@1..4 "foo"
+            Dot@4..5 "."
+            Ident@5..8 "bar"
+      Dot@8..9 "."
+      LParen@9..10 "("
+      CastExpr@10..32
+        Ty@10..18
+          RefExpr@10..18
+            Caret@10..11 "^"
+            Path@11..18
+              VarRef@11..14
+                Ident@11..14 "baz"
+              Dot@14..15 "."
+              Ident@15..18 "qux"
+        Dot@18..19 "."
+        LParen@19..20 "("
+        RefExpr@20..31
+          Caret@20..21 "^"
+          Path@21..31
+            VarRef@21..25
+              Ident@21..25 "quux"
+            Dot@25..26 "."
+            Ident@26..31 "corge"
+        RParen@31..32 ")"
+      RParen@32..33 ")"

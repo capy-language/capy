@@ -1,0 +1,11 @@
+Error_Type!
+===
+Root@0..11
+  ExprStmt@0..11
+    ErrorUnionDecl@0..11
+      ErrorTy@0..10
+        Ty@0..10
+          VarRef@0..10
+            Ident@0..10 "Error_Type"
+      Bang@10..11 "!"
+error at 11: missing payload type

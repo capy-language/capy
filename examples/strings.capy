@@ -1,3 +1,4 @@
+core :: #mod("core");
 string_builder :: #mod("core").string_builder;
 
 main :: () {

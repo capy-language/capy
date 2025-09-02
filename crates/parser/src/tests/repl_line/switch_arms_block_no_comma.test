@@ -1,12 +1,12 @@
 switch foo in animal_enum {
-    Dog => {}
-    Cat => {}
-    Turtle => {}
+    .Dog => {}
+    .Cat => {}
+    .Turtle => {}
 }
 ===
-Root@0..74
-  ExprStmt@0..74
-    SwitchExpr@0..74
+Root@0..77
+  ExprStmt@0..77
+    SwitchExpr@0..77
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -18,31 +18,41 @@ Root@0..74
       Whitespace@25..26 " "
       LBrace@26..27 "{"
       Whitespace@27..32 "\n    "
-      SwitchArm@32..41
-        Ident@32..35 "Dog"
-        Whitespace@35..36 " "
-        FatArrow@36..38 "=>"
-        Whitespace@38..39 " "
-        Block@39..41
-          LBrace@39..40 "{"
-          RBrace@40..41 "}"
-      Whitespace@41..46 "\n    "
-      SwitchArm@46..55
-        Ident@46..49 "Cat"
-        Whitespace@49..50 " "
-        FatArrow@50..52 "=>"
-        Whitespace@52..53 " "
-        Block@53..55
-          LBrace@53..54 "{"
-          RBrace@54..55 "}"
-      Whitespace@55..60 "\n    "
-      SwitchArm@60..72
-        Ident@60..66 "Turtle"
-        Whitespace@66..67 " "
-        FatArrow@67..69 "=>"
-        Whitespace@69..70 " "
-        Block@70..72
-          LBrace@70..71 "{"
-          RBrace@71..72 "}"
-      Whitespace@72..73 "\n"
-      RBrace@73..74 "}"
+      SwitchArm@32..51
+        VariantShorthand@32..36
+          Dot@32..33 "."
+          Ident@33..36 "Dog"
+        Whitespace@36..37 " "
+        FatArrow@37..39 "=>"
+        Whitespace@39..40 " "
+        Path@40..51
+          Block@40..42
+            LBrace@40..41 "{"
+            RBrace@41..42 "}"
+          Whitespace@42..47 "\n    "
+          Dot@47..48 "."
+          Ident@48..51 "Cat"
+      Whitespace@51..52 " "
+      SwitchArm@52..69
+        FatArrow@52..54 "=>"
+        Whitespace@54..55 " "
+        Path@55..69
+          Block@55..57
+            LBrace@55..56 "{"
+            RBrace@56..57 "}"
+          Whitespace@57..62 "\n    "
+          Dot@62..63 "."
+          Ident@63..69 "Turtle"
+      Whitespace@69..70 " "
+      SwitchArm@70..75
+        FatArrow@70..72 "=>"
+        Whitespace@72..73 " "
+        Block@73..75
+          LBrace@73..74 "{"
+          RBrace@74..75 "}"
+      Whitespace@75..76 "\n"
+      RBrace@76..77 "}"
+error at 51: missing Comma
+error at 51: missing variant
+error at 69: missing Comma
+error at 69: missing variant

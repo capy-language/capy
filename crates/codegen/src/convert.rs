@@ -26,28 +26,6 @@ impl NumberType {
     pub(crate) fn bit_width(&self) -> u8 {
         self.ty.bits() as u8
     }
-
-    pub(crate) fn max(&self, other: NumberType) -> NumberType {
-        let max_bit_width = self.bit_width().max(other.bit_width());
-
-        let max_ty = match (self.float || other.float, max_bit_width) {
-            (true, 32) => types::F32,
-            (true, 64) => types::F64,
-            (true, _) => unreachable!(),
-            (false, 8) => types::I8,
-            (false, 16) => types::I16,
-            (false, 32) => types::I32,
-            (false, 64) => types::I64,
-            (false, 128) => types::I128,
-            (false, _) => unreachable!(),
-        };
-
-        NumberType {
-            ty: max_ty,
-            float: self.float || other.float,
-            signed: self.signed || other.signed,
-        }
-    }
 }
 
 impl FinalTy {
@@ -211,7 +189,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             signed: false,
         }),
         hir_ty::Ty::String => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Array { sub_ty, .. } => {
+        hir_ty::Ty::AnonArray { sub_ty, .. } | hir_ty::Ty::ConcreteArray { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
@@ -237,7 +215,7 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             calc_single(*return_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Struct { members, .. } => {
+        hir_ty::Ty::AnonStruct { members } | hir_ty::Ty::ConcreteStruct { members, .. } => {
             for member in members {
                 calc_single(member.ty, ptr_ty);
             }
@@ -249,10 +227,25 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             }
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Variant { sub_ty, .. } => {
+        hir_ty::Ty::EnumVariant { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             sub_ty.get_final_ty()
         }
+        hir_ty::Ty::Optional { sub_ty } => {
+            calc_single(*sub_ty, ptr_ty);
+            // if this is an optional pointer, the final type will be pointer
+            // and if this is a normal optional, the final type will be an enum (so, a pointer)
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::ErrorUnion {
+            error_ty,
+            payload_ty,
+        } => {
+            calc_single(*error_ty, ptr_ty);
+            calc_single(*payload_ty, ptr_ty);
+            FinalTy::Pointer(ptr_ty)
+        }
+        hir_ty::Ty::Nil => FinalTy::Void,
         hir_ty::Ty::Type => FinalTy::Number(NumberType {
             ty: types::I32,
             float: false,
@@ -260,9 +253,9 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
         }),
         hir_ty::Ty::Any => FinalTy::Pointer(ptr_ty),
         hir_ty::Ty::RawPtr { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::RawSlice { .. } => FinalTy::Pointer(ptr_ty),
+        hir_ty::Ty::RawSlice => FinalTy::Pointer(ptr_ty),
         hir_ty::Ty::Void => FinalTy::Void,
-        hir_ty::Ty::NoEval => FinalTy::Void,
+        hir_ty::Ty::AlwaysJumps => FinalTy::Void,
         hir_ty::Ty::File(_) => FinalTy::Void,
     };
 
@@ -284,6 +277,8 @@ pub(crate) const ANY_DISCRIMINANT: u32 = 8;
 pub(crate) const FILE_DISCRIMINANT: u32 = 9;
 pub(crate) const RAW_PTR_DISCRIMINANT: u32 = 10;
 pub(crate) const RAW_SLICE_DISCRIMINANT: u32 = 11;
+pub(crate) const NIL_DISCRIMINANT: u32 = 12;
+pub(crate) const NO_RETURN_DISCRIMINANT: u32 = 13;
 
 pub(crate) const STRUCT_DISCRIMINANT: u32 = 16;
 pub(crate) const DISTINCT_DISCRIMINANT: u32 = 17;
@@ -293,6 +288,8 @@ pub(crate) const POINTER_DISCRIMINANT: u32 = 20;
 pub(crate) const FUNCTION_DISCRIMINANT: u32 = 21;
 pub(crate) const ENUM_DISCRIMINANT: u32 = 22;
 pub(crate) const VARIANT_DISCRIMINANT: u32 = 23;
+pub(crate) const OPTIONAL_DISCRIMINANT: u32 = 24;
+pub(crate) const ERROR_UNION_DISCRIMINANT: u32 = 25;
 
 fn simple_id(discriminant: u32, bit_width: u32, signed: bool) -> u32 {
     let size = bit_width / 8;
@@ -327,22 +324,16 @@ impl ToTyId for Intern<Ty> {
         if let Some(id) = meta_tys
             .type_ids
             .iter()
-            .find(|(ty, _)| ty.is_equal_to(&self))
+            .find(|(ty, _)| *ty == self)
             .map(|(_, id)| *id)
         {
-            assert!(meta_tys
-                .tys_to_compile
-                .iter()
-                .any(|ty| ty.is_equal_to(&self)));
+            assert!(meta_tys.tys_to_compile.contains(&self));
             return id;
         }
 
         // println!("{self:?}");
 
-        assert!(!meta_tys
-            .tys_to_compile
-            .iter()
-            .any(|ty| ty.is_equal_to(&self)));
+        assert!(!meta_tys.tys_to_compile.contains(&self));
 
         let id = match self.as_ref() {
             Ty::NotYetResolved | Ty::Unknown => simple_id(VOID_DISCRIMINANT, 0, false),
@@ -383,8 +374,9 @@ impl ToTyId for Intern<Ty> {
                 false,
             ),
             Ty::File(_) => simple_id(FILE_DISCRIMINANT, 0, false),
-            Ty::Void | Ty::NoEval => simple_id(VOID_DISCRIMINANT, 0, false),
-            Ty::Array { sub_ty, .. } => {
+            Ty::Void => simple_id(VOID_DISCRIMINANT, 0, false),
+            Ty::AlwaysJumps => simple_id(NO_RETURN_DISCRIMINANT, 0, false),
+            Ty::AnonArray { sub_ty, .. } | Ty::ConcreteArray { sub_ty, .. } => {
                 let id = ARRAY_DISCRIMINANT << 26;
 
                 // make sure to compile the sub type too
@@ -431,7 +423,7 @@ impl ToTyId for Intern<Ty> {
 
                 id | list_id
             }
-            Ty::Struct { members, .. } => {
+            Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let id = STRUCT_DISCRIMINANT << 26;
 
                 // make sure to compile the member types too
@@ -455,13 +447,38 @@ impl ToTyId for Intern<Ty> {
 
                 id | list_id
             }
-            Ty::Variant { sub_ty, .. } => {
+            Ty::EnumVariant { sub_ty, .. } => {
                 let id = VARIANT_DISCRIMINANT << 26;
 
                 // make sure to compile the sub type too
                 sub_ty.to_type_id(meta_tys, pointer_ty);
 
                 let list_id = meta_tys.variant_uid_gen.generate_unique_id();
+
+                id | list_id
+            }
+            Ty::Nil => simple_id(NIL_DISCRIMINANT, 0, false),
+            Ty::Optional { sub_ty } => {
+                let id = OPTIONAL_DISCRIMINANT << 26;
+
+                // make sure to compile the sub type too
+                sub_ty.to_type_id(meta_tys, pointer_ty);
+
+                let list_id = meta_tys.optional_uid_gen.generate_unique_id();
+
+                id | list_id
+            }
+            Ty::ErrorUnion {
+                error_ty,
+                payload_ty,
+            } => {
+                let id = ERROR_UNION_DISCRIMINANT << 26;
+
+                // make sure to compile the sub types too
+                error_ty.to_type_id(meta_tys, pointer_ty);
+                payload_ty.to_type_id(meta_tys, pointer_ty);
+
+                let list_id = meta_tys.error_union_uid_gen.generate_unique_id();
 
                 id | list_id
             }
@@ -479,7 +496,7 @@ impl ToTyId for Intern<Ty> {
         meta_tys
             .type_ids
             .iter()
-            .find(|(ty, _)| ty.is_equal_to(&self))
+            .find(|(ty, _)| *ty == self)
             .map(|(_, id)| *id)
             .expect("to_previous_type_id can only be called on types that have already been compiled to id's")
     }

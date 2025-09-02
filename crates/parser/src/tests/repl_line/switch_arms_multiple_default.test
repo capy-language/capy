@@ -1,0 +1,80 @@
+switch foo in animal_enum {
+    .Dog => {},
+    _ => {},
+    .Cat => {},
+    .Turtle => {},
+    _ => {}
+}
+===
+Root@0..105
+  ExprStmt@0..105
+    SwitchExpr@0..105
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..25
+        Ident@14..25 "animal_enum"
+      Whitespace@25..26 " "
+      LBrace@26..27 "{"
+      Whitespace@27..32 "\n    "
+      SwitchArm@32..42
+        VariantShorthand@32..36
+          Dot@32..33 "."
+          Ident@33..36 "Dog"
+        Whitespace@36..37 " "
+        FatArrow@37..39 "=>"
+        Whitespace@39..40 " "
+        Block@40..42
+          LBrace@40..41 "{"
+          RBrace@41..42 "}"
+      Comma@42..43 ","
+      Whitespace@43..48 "\n    "
+      SwitchArm@48..55
+        DefaultArm@48..49
+          Ident@48..49 "_"
+        Whitespace@49..50 " "
+        FatArrow@50..52 "=>"
+        Whitespace@52..53 " "
+        Block@53..55
+          LBrace@53..54 "{"
+          RBrace@54..55 "}"
+      Comma@55..56 ","
+      Whitespace@56..61 "\n    "
+      SwitchArm@61..71
+        VariantShorthand@61..65
+          Dot@61..62 "."
+          Ident@62..65 "Cat"
+        Whitespace@65..66 " "
+        FatArrow@66..68 "=>"
+        Whitespace@68..69 " "
+        Block@69..71
+          LBrace@69..70 "{"
+          RBrace@70..71 "}"
+      Comma@71..72 ","
+      Whitespace@72..77 "\n    "
+      SwitchArm@77..90
+        VariantShorthand@77..84
+          Dot@77..78 "."
+          Ident@78..84 "Turtle"
+        Whitespace@84..85 " "
+        FatArrow@85..87 "=>"
+        Whitespace@87..88 " "
+        Block@88..90
+          LBrace@88..89 "{"
+          RBrace@89..90 "}"
+      Comma@90..91 ","
+      Whitespace@91..96 "\n    "
+      SwitchArm@96..103
+        DefaultArm@96..97
+          Ident@96..97 "_"
+        Whitespace@97..98 " "
+        FatArrow@98..100 "=>"
+        Whitespace@100..101 " "
+        Block@101..103
+          LBrace@101..102 "{"
+          RBrace@102..103 "}"
+      Whitespace@103..104 "\n"
+      RBrace@104..105 "}"

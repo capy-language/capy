@@ -1,0 +1,9 @@
+?foo
+===
+Root@0..4
+  ExprStmt@0..4
+    OptionalDecl@0..4
+      Question@0..1 "?"
+      Ty@1..4
+        VarRef@1..4
+          Ident@1..4 "foo"

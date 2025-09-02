@@ -60,7 +60,10 @@ fn define_slice(
         module.isa().endianness(),
     );
     // zeroed-out pointer, this will be written over later
-    bytes.extend(std::iter::repeat(0).take(module.target_config().pointer_bytes() as usize));
+    bytes.extend(std::iter::repeat_n(
+        0,
+        module.target_config().pointer_bytes() as usize,
+    ));
 
     data_desc.define(bytes.into_boxed_slice());
     data_desc.set_align(module.target_config().pointer_bytes().min(8) as u64);
@@ -123,8 +126,7 @@ impl DataArray {
         }
 
         let padding = layout::padding_needed_for(current_offset, target_align);
-        self.bytes
-            .extend(std::iter::repeat(0).take(padding as usize));
+        self.bytes.extend(std::iter::repeat_n(0, padding as usize));
 
         self.bytes
             .extend((num as u64).into_bytes(self.endianness, target_bit_width))
@@ -142,8 +144,10 @@ impl DataArray {
 
         let reloc_offset = self.bytes.len() + padding;
 
-        self.bytes
-            .extend(std::iter::repeat(0).take(padding + (ptr_bit_width / 8) as usize));
+        self.bytes.extend(std::iter::repeat_n(
+            0,
+            padding + (ptr_bit_width / 8) as usize,
+        ));
 
         self.relocs.push(Reloc {
             reloc_offset: reloc_offset as u32,
@@ -160,8 +164,7 @@ impl DataArray {
     fn finish_array_item(&mut self) {
         let current_offset = self.bytes.len() as u32;
         let padding = layout::padding_needed_for(current_offset, self.max_align);
-        self.bytes
-            .extend(std::iter::repeat(0).take(padding as usize));
+        self.bytes.extend(std::iter::repeat_n(0, padding as usize));
 
         self.count += 1;
     }
@@ -216,14 +219,18 @@ fn compile_memory_layouts(compiler: &mut Compiler) {
     let mut struct_mem_data = DataArray::new(ptr_align, endianness);
     let mut enum_mem_data = DataArray::new(ptr_align, endianness);
     let mut variant_mem_data = DataArray::new(ptr_align, endianness);
+    let mut optional_mem_data = DataArray::new(ptr_align, endianness);
+    let mut error_union_mem_data = DataArray::new(ptr_align, endianness);
 
     for ty in &compiler.meta_tys.tys_to_compile {
         let data = match ty.as_ref() {
-            Ty::Array { .. } => &mut array_mem_data,
+            Ty::AnonArray { .. } | Ty::ConcreteArray { .. } => &mut array_mem_data,
             Ty::Distinct { .. } => &mut distinct_mem_data,
-            Ty::Struct { .. } => &mut struct_mem_data,
+            Ty::AnonStruct { .. } | Ty::ConcreteStruct { .. } => &mut struct_mem_data,
             Ty::Enum { .. } => &mut enum_mem_data,
-            Ty::Variant { .. } => &mut variant_mem_data,
+            Ty::EnumVariant { .. } => &mut variant_mem_data,
+            Ty::Optional { .. } => &mut optional_mem_data,
+            Ty::ErrorUnion { .. } => &mut error_union_mem_data,
             _ => continue,
         };
 
@@ -267,6 +274,18 @@ fn compile_memory_layouts(compiler: &mut Compiler) {
         layout_arrays.variant_layout_array,
         layout_arrays.variant_layout_slice,
     );
+    optional_mem_data.define_array_and_slice(
+        compiler.module,
+        &mut compiler.data_desc,
+        layout_arrays.optional_layout_array,
+        layout_arrays.optional_layout_slice,
+    );
+    error_union_mem_data.define_array_and_slice(
+        compiler.module,
+        &mut compiler.data_desc,
+        layout_arrays.error_union_layout_array,
+        layout_arrays.error_union_layout_slice,
+    );
 
     // pointer layout is just a single struct
 
@@ -298,6 +317,8 @@ fn compile_type_info(compiler: &mut Compiler) {
     let mut variant_info_data = DataArray::new(ptr_align, endianness);
     let mut struct_info_data = DataArray::new(ptr_align, endianness);
     let mut enum_info_data = DataArray::new(ptr_align, endianness);
+    let mut optional_info_data = DataArray::new(ptr_align, endianness);
+    let mut error_union_info_data = DataArray::new(ptr_align, endianness);
 
     let mut member_name_str_uid_gen = UIDGenerator::default();
     let member_info_id = declare(
@@ -317,7 +338,7 @@ fn compile_type_info(compiler: &mut Compiler) {
 
     for ty in &compiler.meta_tys.tys_to_compile {
         match ty.as_ref() {
-            Ty::Array { size, sub_ty, .. } => {
+            Ty::AnonArray { size, sub_ty } | Ty::ConcreteArray { size, sub_ty, .. } => {
                 array_info_data.push_num(*size as u32, ptr_bit_width);
                 array_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 array_info_data.finish_array_item();
@@ -326,22 +347,14 @@ fn compile_type_info(compiler: &mut Compiler) {
                 slice_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 slice_info_data.finish_array_item();
             }
-            Ty::Pointer { sub_ty, .. } => {
+            Ty::Pointer { sub_ty, mutable } => {
                 pointer_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
+                pointer_info_data.push_num(*mutable as u32, 8);
                 pointer_info_data.finish_array_item();
             }
             Ty::Distinct { sub_ty, .. } => {
                 distinct_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
                 distinct_info_data.finish_array_item();
-            }
-            Ty::Variant {
-                sub_ty,
-                discriminant,
-                ..
-            } => {
-                variant_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
-                variant_info_data.push_num(*discriminant as u32, 32);
-                variant_info_data.finish_array_item();
             }
             Ty::Enum { variants, .. } => {
                 let starting_offset = variant_enum_ty_data.len();
@@ -368,7 +381,45 @@ fn compile_type_info(compiler: &mut Compiler) {
 
                 enum_info_data.finish_array_item();
             }
-            Ty::Struct { members, .. } => {
+            Ty::EnumVariant {
+                sub_ty,
+                discriminant,
+                ..
+            } => {
+                variant_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
+                variant_info_data.push_num(*discriminant as u32, 32);
+                variant_info_data.finish_array_item();
+            }
+            Ty::Optional { sub_ty } => {
+                optional_info_data.push_num(sub_ty.to_previous_type_id(&compiler.meta_tys), 32);
+                if let Some(enum_layout) = ty.enum_layout() {
+                    // `is_non_zero`
+                    optional_info_data.push_num(0, 8);
+                    // `discriminant_offset`
+                    optional_info_data.push_num(enum_layout.discriminant_offset(), ptr_bit_width);
+                } else {
+                    // `is_non_zero`
+                    optional_info_data.push_num(1, 8);
+                    // `discriminant_offset`
+                    optional_info_data.push_num(0, ptr_bit_width);
+                }
+                optional_info_data.finish_array_item();
+            }
+            Ty::ErrorUnion {
+                error_ty,
+                payload_ty,
+            } => {
+                error_union_info_data
+                    .push_num(error_ty.to_previous_type_id(&compiler.meta_tys), 32);
+                error_union_info_data
+                    .push_num(payload_ty.to_previous_type_id(&compiler.meta_tys), 32);
+                let enum_layout = ty
+                    .enum_layout()
+                    .expect("error unions should always have an enum layout");
+                error_union_info_data.push_num(enum_layout.discriminant_offset(), ptr_bit_width);
+                error_union_info_data.finish_array_item();
+            }
+            Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let member_offsets = ty.struct_layout().unwrap();
                 let member_offsets = member_offsets.offsets();
 
@@ -467,6 +518,18 @@ fn compile_type_info(compiler: &mut Compiler) {
         &mut compiler.data_desc,
         info_arrays.enum_info_array,
         info_arrays.enum_info_slice,
+    );
+    optional_info_data.define_array_and_slice(
+        compiler.module,
+        &mut compiler.data_desc,
+        info_arrays.optional_info_array,
+        info_arrays.optional_info_slice,
+    );
+    error_union_info_data.define_array_and_slice(
+        compiler.module,
+        &mut compiler.data_desc,
+        info_arrays.error_union_info_array,
+        info_arrays.error_union_info_slice,
     );
 
     member_info_data.define_array(compiler.module, &mut compiler.data_desc, member_info_id);

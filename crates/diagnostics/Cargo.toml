@@ -1,7 +1,7 @@
 [package]
 name = "diagnostics"
 version = "0.1.0-alpha.1"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,3 +18,7 @@ pathdiff = "0.2.1"
 
 [dev-dependencies]
 expect-test = "1.1"
+
+[features]
+default = []
+expose_hir_ty = []

@@ -1,13 +1,12 @@
 use cranelift::{
     codegen::{
-        entity::EntityRef,
         ir::{
             AbiParam, ArgumentPurpose, Inst, InstBuilder, MemFlags, Signature, StackSlotData,
             StackSlotKind, Type, Value,
         },
         isa::{CallConv, TargetFrontendConfig},
     },
-    frontend::{FunctionBuilder, Variable},
+    frontend::FunctionBuilder,
 };
 use hir_ty::{ParamTy, Ty};
 use internment::Intern;
@@ -258,6 +257,7 @@ impl FnAbi {
     ) {
         // Create the entry block, to start emitting code in.
         let entry_block = func_cmplr.builder.create_block();
+        func_cmplr.func_writer[entry_block] = "entry".into();
 
         func_cmplr
             .builder
@@ -272,8 +272,6 @@ impl FnAbi {
         for (arg, idx) in &self.args {
             let param = *idx + idx_off;
 
-            let var = Variable::new(func_cmplr.var_id_gen.generate_unique_id() as usize);
-            func_cmplr.params.insert(*idx as u64, var);
             let (val, val_ty) = match arg {
                 PassMode::Cast { tys, orig, .. } => {
                     let stack_slot = func_cmplr.builder.create_sized_stack_slot(StackSlotData {
@@ -352,9 +350,11 @@ impl FnAbi {
                     )
                 }
             };
-            func_cmplr.builder.declare_var(var, val_ty);
 
-            func_cmplr.builder.def_var(var, val);
+            let arg = func_cmplr.builder.declare_var(val_ty);
+            func_cmplr.params.insert(*idx as u64, arg);
+
+            func_cmplr.builder.def_var(arg, val);
         }
 
         if let Some(ret) = self.ret {

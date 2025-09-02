@@ -1,3 +1,6 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::too_many_arguments)]
+
 mod git;
 mod source;
 
@@ -26,7 +29,7 @@ use path_clean::PathClean;
 use platform_dirs::AppDirs;
 use rustc_hash::FxHashMap;
 use std::fs;
-use target_lexicon::Triple;
+use target_lexicon::{OperatingSystem, Triple};
 use uid_gen::UIDGenerator;
 
 use crate::source::SourceFile;
@@ -342,7 +345,6 @@ const ANSI_GREEN: &str = "\x1B[1;92m";
 const ANSI_WHITE: &str = "\x1B[1;97m";
 const ANSI_RESET: &str = "\x1B[0m";
 
-#[allow(clippy::too_many_arguments)]
 fn compile_file(mut config: FinalConfig) -> io::Result<()> {
     if config.verbose_all {
         if config.verbose_ast.is_none() {
@@ -585,7 +587,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
             &mod_dir,
             &interner.borrow(),
             config.verbose_types == VerboseScope::All,
-            true,
+            with_color,
         );
         println!("=== types ===\n");
         println!("{}", debug);
@@ -764,7 +766,12 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         return Ok(());
     }
 
-    let exec = match codegen::link_to_exec(&object_file, target, &config.libs) {
+    println!(
+        "{ansi_green}Linking{ansi_reset}    (compiler took {:.2}s)",
+        compilation_start.elapsed().as_secs_f32()
+    );
+
+    let exec = match codegen::link_to_exec(&object_file, &target, &config.libs) {
         Ok(exec) => {
             println!(
                 "{ansi_green}Finished{ansi_reset}   {} ({}) in {:.2}s",
@@ -775,7 +782,9 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
             exec
         }
         Err(codegen::LinkingErr::NoCommand) => {
-            println!("{ansi_red}error{ansi_white}: capy requires either `zig` or `gcc` in order to link to an executable. use --no-exec if you only want the .o file");
+            println!(
+                "{ansi_red}error{ansi_white}: capy requires either `zig` or `gcc` in order to link to an executable. use --no-exec if you only want the .o file"
+            );
             exit(1)
         }
         Err(codegen::LinkingErr::IO(why)) => {
@@ -809,7 +818,30 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
 
     match std::process::Command::new(exec).args(args).status() {
         Ok(status) => {
-            println!("\nProcess exited with {}", status);
+            print!("\nProcess exited with {}", status);
+
+            if let Some(code) = status.code() {
+                let code = code as u32;
+
+                // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
+                match (target.operating_system, code) {
+                    (OperatingSystem::Windows, 0xC00000FD) => {
+                        print!(" STATUS_STACK_OVERFLOW")
+                    }
+                    (OperatingSystem::Windows, 0xC000001D) => {
+                        print!(" STATUS_ILLEGAL_INSTRUCTION")
+                    }
+                    (OperatingSystem::Windows, 0xC0000005) => {
+                        print!(" STATUS_ACCESS_VIOLATION")
+                    }
+                    (OperatingSystem::Windows, _) if code & 0x80000000 != 0 => {
+                        print!(" (unknown error code)");
+                    }
+                    _ => {}
+                }
+            }
+
+            println!();
         }
         Err(why) => {
             println!("\nProcess exited early: {}", why);

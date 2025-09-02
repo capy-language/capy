@@ -1,7 +1,7 @@
 [package]
 name = "codegen"
 version = "0.1.0-alpha.1"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,18 +11,19 @@ la-arena = "0.3"
 hir = { path = "../hir" }
 hir_ty = { path = "../hir_ty" }
 rustc-hash = "2.1"
-cranelift = "0.116"
-cranelift-module = "0.116"
-cranelift-jit = "0.116"
-cranelift-native = "0.116"
-cranelift-object = "0.116"
+cranelift = "0.122"
+cranelift-module = "0.122"
+cranelift-jit = "0.122"
+cranelift-native = "0.122"
+cranelift-object = "0.122"
 target-lexicon = "0.13"
 internment = "0.8.3"
 uid_gen = { path = "../uid_gen" }
 num-traits = "0.2.16"
 glob = "0.3.1"
 tinyvec = { version = "1.6.1", features = ["tinyvec_macros"] }
-which = "7.0.2"
+which = "8.0"
+itertools = "0.14"
 
 [dev-dependencies]
 ast = { path = "../ast" }

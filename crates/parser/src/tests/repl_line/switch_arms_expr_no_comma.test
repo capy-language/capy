@@ -1,12 +1,12 @@
 switch foo in animal_enum {
-    Dog => foo
-    Cat => "hello"
-    Turtle => 2 * 10
+    .Dog => foo
+    .Cat => "hello"
+    .Turtle => 2 * 10
 }
 ===
-Root@0..84
-  ExprStmt@0..84
-    SwitchExpr@0..84
+Root@0..87
+  ExprStmt@0..87
+    SwitchExpr@0..87
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -18,38 +18,46 @@ Root@0..84
       Whitespace@25..26 " "
       LBrace@26..27 "{"
       Whitespace@27..32 "\n    "
-      SwitchArm@32..42
-        Ident@32..35 "Dog"
-        Whitespace@35..36 " "
-        FatArrow@36..38 "=>"
-        Whitespace@38..39 " "
-        VarRef@39..42
-          Ident@39..42 "foo"
-      Whitespace@42..47 "\n    "
-      SwitchArm@47..61
-        Ident@47..50 "Cat"
-        Whitespace@50..51 " "
-        FatArrow@51..53 "=>"
-        Whitespace@53..54 " "
-        StringLiteral@54..61
-          DoubleQuote@54..55 "\""
-          StringContents@55..60 "hello"
-          DoubleQuote@60..61 "\""
-      Whitespace@61..66 "\n    "
-      SwitchArm@66..82
-        Ident@66..72 "Turtle"
-        Whitespace@72..73 " "
-        FatArrow@73..75 "=>"
-        Whitespace@75..76 " "
-        BinaryExpr@76..82
-          IntLiteral@76..77
-            Int@76..77 "2"
-          Whitespace@77..78 " "
-          Asterisk@78..79 "*"
-          Whitespace@79..80 " "
-          IntLiteral@80..82
-            Int@80..82 "10"
-      Whitespace@82..83 "\n"
-      RBrace@83..84 "}"
-error at 42: missing Comma
-error at 61: missing Comma
+      SwitchArm@32..52
+        VariantShorthand@32..36
+          Dot@32..33 "."
+          Ident@33..36 "Dog"
+        Whitespace@36..37 " "
+        FatArrow@37..39 "=>"
+        Whitespace@39..40 " "
+        Path@40..52
+          VarRef@40..43
+            Ident@40..43 "foo"
+          Whitespace@43..48 "\n    "
+          Dot@48..49 "."
+          Ident@49..52 "Cat"
+      Whitespace@52..53 " "
+      SwitchArm@53..75
+        FatArrow@53..55 "=>"
+        Whitespace@55..56 " "
+        Path@56..75
+          StringLiteral@56..63
+            DoubleQuote@56..57 "\""
+            StringContents@57..62 "hello"
+            DoubleQuote@62..63 "\""
+          Whitespace@63..68 "\n    "
+          Dot@68..69 "."
+          Ident@69..75 "Turtle"
+      Whitespace@75..76 " "
+      SwitchArm@76..85
+        FatArrow@76..78 "=>"
+        Whitespace@78..79 " "
+        BinaryExpr@79..85
+          IntLiteral@79..80
+            Int@79..80 "2"
+          Whitespace@80..81 " "
+          Asterisk@81..82 "*"
+          Whitespace@82..83 " "
+          IntLiteral@83..85
+            Int@83..85 "10"
+      Whitespace@85..86 "\n"
+      RBrace@86..87 "}"
+error at 52: missing Comma
+error at 52: missing variant
+error at 75: missing Comma
+error at 75: missing variant

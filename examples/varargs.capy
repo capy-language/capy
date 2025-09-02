@@ -1,0 +1,18 @@
+
+core :: #mod("core");
+
+do_stuff :: (text: str, numbers: ...i32, condition: bool, rest: ...str) {
+    // todo: implement vararg splatting
+    core.println(text);
+    core.println(numbers);
+    core.println(condition);
+    core.println(rest);
+}
+
+main :: () {
+    do_stuff("hello, world", 1, 2, 3, 4, 5, 6, 7, 10, true, "hello", "hi", "what's up");
+
+    // core.println takes in `...any`
+    core.println("hello = ", 5, ", world = ", true);
+}
+

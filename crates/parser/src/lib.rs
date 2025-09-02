@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)]
+
 mod error;
 mod event;
 mod grammar;
@@ -52,7 +54,7 @@ impl fmt::Debug for Parse {
         write!(f, "{}", &tree[0..tree.len() - 1])?;
 
         for error in &self.errors {
-            write!(f, "\n{:?}", error)?;
+            write!(f, "\n{error:?}")?;
         }
 
         Ok(())

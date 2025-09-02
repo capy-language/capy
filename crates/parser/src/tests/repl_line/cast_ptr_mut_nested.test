@@ -1,0 +1,43 @@
+^mut foo.(^mut bar.(^mut baz.(^mut qux)))
+===
+Root@0..41
+  ExprStmt@0..41
+    CastExpr@0..41
+      Ty@0..8
+        RefExpr@0..8
+          Caret@0..1 "^"
+          Mut@1..4 "mut"
+          Whitespace@4..5 " "
+          VarRef@5..8
+            Ident@5..8 "foo"
+      Dot@8..9 "."
+      LParen@9..10 "("
+      CastExpr@10..40
+        Ty@10..18
+          RefExpr@10..18
+            Caret@10..11 "^"
+            Mut@11..14 "mut"
+            Whitespace@14..15 " "
+            VarRef@15..18
+              Ident@15..18 "bar"
+        Dot@18..19 "."
+        LParen@19..20 "("
+        CastExpr@20..39
+          Ty@20..28
+            RefExpr@20..28
+              Caret@20..21 "^"
+              Mut@21..24 "mut"
+              Whitespace@24..25 " "
+              VarRef@25..28
+                Ident@25..28 "baz"
+          Dot@28..29 "."
+          LParen@29..30 "("
+          RefExpr@30..38
+            Caret@30..31 "^"
+            Mut@31..34 "mut"
+            Whitespace@34..35 " "
+            VarRef@35..38
+              Ident@35..38 "qux"
+          RParen@38..39 ")"
+        RParen@39..40 ")"
+      RParen@40..41 ")"

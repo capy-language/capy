@@ -1,5 +1,3 @@
-use std::mem;
-
 use drop_bomb::DropBomb;
 use syntax::NodeKind;
 
@@ -24,7 +22,7 @@ impl Marker {
 
     pub(crate) fn complete(mut self, p: &mut Parser<'_>, kind: NodeKind) -> CompletedMarker {
         self.bomb.defuse();
-        let old_event = mem::replace(&mut p.events[self.pos], Some(Event::StartNode { kind }));
+        let old_event = p.events[self.pos].replace(Event::StartNode { kind });
         debug_assert!(old_event.is_none());
         p.events.push(Some(Event::FinishNode));
 

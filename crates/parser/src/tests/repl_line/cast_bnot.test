@@ -1,0 +1,15 @@
+~u64.(bar)
+===
+Root@0..10
+  ExprStmt@0..10
+    UnaryExpr@0..10
+      Tilde@0..1 "~"
+      CastExpr@1..10
+        Ty@1..4
+          VarRef@1..4
+            Ident@1..4 "u64"
+        Dot@4..5 "."
+        LParen@5..6 "("
+        VarRef@6..9
+          Ident@6..9 "bar"
+        RParen@9..10 ")"

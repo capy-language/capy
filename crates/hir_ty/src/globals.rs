@@ -1,6 +1,9 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, str::FromStr};
 
-use hir::{Descendant, Expr, FQComptime, FQLambda, LocalDef, MemberLiteral, ScopeId, Stmt};
+use hir::{
+    ArmVariant, Descendant, Expr, FQComptime, FQLambda, LocalDef, MemberLiteral, ScopeId,
+    ScopeUsage, Stmt,
+};
 use indexmap::IndexMap;
 use interner::Interner;
 use internment::Intern;
@@ -11,10 +14,11 @@ use text_size::{TextRange, TextSize};
 use topo::TopoSort;
 
 use crate::{
+    set_type_name,
     ty::{self, BinaryOutput},
-    ComptimeResult, EvalComptimeFn, ExpectedTy, InferResult, Inferrable, InternTyExt, MemberTy,
-    ParamTy, ProjectInference, Ty, TyDiagnostic, TyDiagnosticHelp, TyDiagnosticHelpKind,
-    TyDiagnosticKind, TypedOp, UnaryOutput,
+    BuiltinKind, ComptimeResult, EvalComptimeFn, ExpectedTy, FileInference, InferResult,
+    Inferrable, InternTyExt, MemberTy, ParamTy, ProjectInference, Ty, TyDiagnostic,
+    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TyName, TypedOp, UnaryOutput,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +50,14 @@ enum ExprMutability {
     ImmutableRef(TextRange),
     ImmutableParam(TextRange, bool),
     ImmutableGlobal(TextRange),
-    CannotMutate(TextRange),
+    CannotMutateExpr(TextRange),
 }
 
 impl ExprMutability {
     fn into_diagnostic(self) -> Option<TyDiagnosticHelp> {
         match self {
-            ExprMutability::CannotMutate(range) => Some(TyDiagnosticHelp {
-                kind: TyDiagnosticHelpKind::FoundToBeImmutable,
+            ExprMutability::CannotMutateExpr(range) => Some(TyDiagnosticHelp {
+                kind: TyDiagnosticHelpKind::CannotMutateExpr,
                 range,
             }),
             ExprMutability::ImmutableBinding(range) => Some(TyDiagnosticHelp {
@@ -81,6 +85,18 @@ impl ExprMutability {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExprExpected {
+    pub(crate) expected_ty: Intern<Ty>,
+    pub(crate) annotation_range: TextRange,
+    pub(crate) is_return_ty: bool,
+    /// this might be true for the `void` return type of `() {}`
+    /// but would be false for the `i32` return type of `() -> i32 {}`
+    ///
+    /// this only works if `is_return_ty` is true
+    pub(crate) is_default: bool,
+}
+
 pub(crate) struct GlobalInferenceCtx<'a> {
     pub(crate) file: hir::FileName,
     pub(crate) currently_inferring: Inferrable,
@@ -88,6 +104,11 @@ pub(crate) struct GlobalInferenceCtx<'a> {
     pub(crate) world_bodies: &'a hir::WorldBodies,
     pub(crate) bodies: &'a hir::Bodies,
     pub(crate) interner: &'a Interner,
+    // This is used primarily by blocks so that e.g. if a block is not expected to be anything,
+    // returned values of `str` and `u64` will cause a type mismatch error to be reported.
+    // But if a block is expected to be `str!u64` (via a type annotation or return type),
+    // returned values of `str` and `u64` will combine to `str!u64` and there will be no error
+    pub(crate) expected_tys: ArenaMap<Idx<hir::Expr>, ExprExpected>,
     // todo: what happens to this when an uninferred global is reached?
     // should this be stored in `InferenceCtx`?
     pub(crate) local_usages: ArenaMap<Idx<hir::LocalDef>, FxHashSet<Idx<hir::Stmt>>>,
@@ -104,9 +125,13 @@ impl GlobalInferenceCtx<'_> {
     pub(crate) fn finish_body(
         &mut self,
         body: Idx<Expr>,
-        expected_ty: Option<Intern<Ty>>,
+        expected_ty: Option<ExprExpected>,
         global: bool,
     ) -> InferResult<Intern<Ty>> {
+        if let Some(expected_ty) = expected_ty {
+            self.expected_tys.insert(body, expected_ty);
+        }
+
         self.infer_expr(body)?;
 
         for (_, usages) in self.local_usages.clone() {
@@ -115,18 +140,28 @@ impl GlobalInferenceCtx<'_> {
 
         let mut actual_ty = self.reinfer_expr(body);
 
-        if let Some(expected_ty) = expected_ty {
-            self.expect_match(actual_ty, expected_ty, body);
-            self.replace_weak_tys(body, expected_ty);
+        let ty_i32 = Ty::IInt(32).into();
+        let ty_f64 = Ty::Float(64).into();
 
-            actual_ty = expected_ty;
-        } else if global && self.replace_weak_tys(body, *ty::I32) {
-            actual_ty = *ty::I32;
-        } else if global && self.replace_weak_tys(body, *ty::F64) {
-            actual_ty = *ty::F64;
+        if let Some(expected) = expected_ty {
+            self.expect_match(actual_ty, ExpectedTy::Concrete(expected.expected_ty), body);
+
+            actual_ty = expected.expected_ty;
+        } else if global && self.replace_weak_tys(body, ty_i32) {
+            actual_ty = ty_i32;
+        } else if global && self.replace_weak_tys(body, ty_f64) {
+            actual_ty = ty_f64;
         }
 
-        if global && self.get_const(body).should_report_not_const() {
+        // builtin bodies are allowed.
+        // I'm not sure if they should be added to `get_const`
+        let is_builtin = if let hir::Expr::Directive { name, .. } = self.bodies[body] {
+            self.interner.lookup(name.name.0) == "builtin"
+        } else {
+            false
+        };
+
+        if global && self.get_const(body).should_report_not_const() && !is_builtin {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::GlobalNotConst,
                 file: self.file,
@@ -176,8 +211,8 @@ impl GlobalInferenceCtx<'_> {
                     // ```
                     // the statement at #9 will try to `replace_weak_tys` on the value and the dest
                     // with u64, and this `replace_weak_tys` call will eventually call `reinfer_usages`
-                    // on the statements at #1, and #2, but while the dest's of these statements (#1
-                    // and #2) will get replaced with u64 as expected, their values (#4 and #8)
+                    // on the statements at #1, and #5, but while the dest's of these statements (#1
+                    // and #5) will get replaced with u64 as expected, their values (#4 and #8)
                     // won't because they never get weak type replaced.
                     //
                     // TODO: this will probably create an infinite loop if the value of the assign
@@ -229,7 +264,7 @@ impl GlobalInferenceCtx<'_> {
     ///
     /// ```text
     /// x := 42;            // x is a weak {uint}
-    /// if x > 10 { ... }   // the type of x here is {uint}
+    /// if x > 10 { ... }   // the type of x and 10 here is {uint}
     /// y : u16 = x;        // not only is x's type changed, but the above if condition is changed
     /// ```
     ///
@@ -237,37 +272,52 @@ impl GlobalInferenceCtx<'_> {
     ///
     /// Also when `.[]` gets replaced by a slice, it doesn't actually replace it with the slice,
     /// it will replace it with an array instead. In these cases it will return false.
-    fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, new_ty: Intern<Ty>) -> bool {
+    fn replace_weak_tys(&mut self, expr: Idx<hir::Expr>, mut new_ty: Intern<Ty>) -> bool {
         let expr_body = &self.bodies[expr];
         if matches!(expr_body, Expr::Missing) {
             return false;
         }
 
         let found_ty = self.tys[self.file].expr_tys[expr];
+
+        let mut really_replaced = true;
+
         if !found_ty.is_weak_replaceable_by(&new_ty) {
             return false;
         }
 
-        let (new_ty, really_replaced) = match (found_ty.as_ref(), new_ty.as_ref()) {
-            (
-                Ty::Array {
-                    anonymous: true,
-                    size,
-                    sub_ty: _,
-                },
-                Ty::Slice { sub_ty: new_sub_ty },
-            ) => (
-                Ty::Array {
-                    anonymous: false,
-                    size: *size,
-                    sub_ty: *new_sub_ty,
-                }
-                .into(),
-                false,
-            ),
-            _ => (new_ty, true),
-        };
+        assert!(
+            found_ty.can_fit_into(&new_ty),
+            "`is_weak_replaceable_by` is not a subset of `can_fit_into` for `{}` -> `{}`\n(`is_weak_replaceable_by` returned true but `can_fit_into` returned false)",
+            found_ty.simple_display(self.interner, true),
+            new_ty.simple_display(self.interner, true),
+        );
 
+        // if we're trying to replace {uint} with ?u64,
+        // what we *should* do is replace {uint} with u64.
+        if !found_ty.is_optional()
+            && let Ty::Optional { sub_ty } = new_ty.absolute_ty()
+        {
+            new_ty = *sub_ty;
+            really_replaced = false;
+        }
+
+        // println!(
+        //     "{} #{} : WEAK TYPE {found_ty:?} -> {new_ty:?}",
+        //     self.file.debug(self.interner),
+        //     expr.into_raw(),
+        // );
+
+        if let (Ty::AnonArray { size, sub_ty: _ }, Ty::Slice { sub_ty: new_sub_ty }) =
+            (found_ty.as_ref(), new_ty.as_ref())
+        {
+            new_ty = Ty::ConcreteArray {
+                size: *size,
+                sub_ty: *new_sub_ty,
+            }
+            .into();
+            really_replaced = false;
+        }
         let expr_body = expr_body.clone();
 
         self.tys[self.file].expr_tys.insert(expr, new_ty);
@@ -291,14 +341,13 @@ impl GlobalInferenceCtx<'_> {
                 }
             }
             Expr::ArrayLiteral { ty: None, items } => match new_ty.as_ref() {
-                Ty::Array { sub_ty, .. } => {
+                Ty::ConcreteArray { sub_ty, .. } => {
                     for item in items {
                         self.replace_weak_tys(item, *sub_ty);
                     }
                 }
                 Ty::Slice { sub_ty } => {
-                    let new_ty = Ty::Array {
-                        anonymous: false,
+                    let new_ty = Ty::ConcreteArray {
                         size: items.len() as u64,
                         sub_ty: *sub_ty,
                     }
@@ -318,11 +367,22 @@ impl GlobalInferenceCtx<'_> {
             Expr::Block { tail_expr, .. } => {
                 if let Some(scope_id) = self.bodies.block_to_scope_id(expr) {
                     for usage in self.bodies.scope_id_usages(scope_id) {
-                        if let hir::Stmt::Break {
-                            value: Some(value), ..
-                        } = self.bodies[*usage]
-                        {
-                            self.replace_weak_tys(value, new_ty);
+                        match usage {
+                            ScopeUsage::Expr(expr) => {
+                                assert!(matches!(self.bodies[*expr], hir::Expr::Propagate { .. }));
+                                // `.try` resolves to the type of its inner payload, and it doesn't
+                                // matter what we resolve to, it won't change the type of the `.try`
+                                //
+                                // so we don't have to do anything.
+                            }
+                            ScopeUsage::Stmt(stmt) => {
+                                if let hir::Stmt::Break {
+                                    value: Some(value), ..
+                                } = self.bodies[*stmt]
+                                {
+                                    self.replace_weak_tys(value, new_ty);
+                                }
+                            }
                         }
                     }
                 }
@@ -344,11 +404,19 @@ impl GlobalInferenceCtx<'_> {
             } => {
                 if let Some(scope_id) = self.bodies.block_to_scope_id(expr) {
                     for usage in self.bodies.scope_id_usages(scope_id) {
-                        if let hir::Stmt::Break {
-                            value: Some(value), ..
-                        } = self.bodies[*usage]
-                        {
-                            self.replace_weak_tys(value, new_ty);
+                        match usage {
+                            ScopeUsage::Expr(expr) => {
+                                assert!(matches!(self.bodies[*expr], hir::Expr::Propagate { .. }));
+                                // we don't have to weak type replace this
+                            }
+                            ScopeUsage::Stmt(stmt) => {
+                                if let hir::Stmt::Break {
+                                    value: Some(value), ..
+                                } = self.bodies[*stmt]
+                                {
+                                    self.replace_weak_tys(value, new_ty);
+                                }
+                            }
                         }
                     }
                 }
@@ -415,19 +483,19 @@ impl GlobalInferenceCtx<'_> {
                     }
                 }
 
-                // now get everything that used this variable and make sure the types are correct for those things
-                let usages = self
-                    .local_usages
-                    .get(local_def)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // now that we have the usages, clear them so no nasty recursion takes place
-                if let Some(usages) = self.local_usages.get_mut(local_def) {
-                    usages.clear();
-                }
-
-                self.reinfer_usages(usages);
+                // // now get everything that used this variable and make sure the types are correct for those things
+                // let usages = self
+                //     .local_usages
+                //     .get(local_def)
+                //     .cloned()
+                //     .unwrap_or_default();
+                //
+                // // now that we have the usages, clear them so no nasty recursion takes place
+                // if let Some(usages) = self.local_usages.get_mut(local_def) {
+                //     usages.clear();
+                // }
+                //
+                // self.reinfer_usages(usages);
 
                 // self.reinfer_expr(self.bodies[local_def].value);
             }
@@ -452,6 +520,7 @@ impl GlobalInferenceCtx<'_> {
         really_replaced
     }
 
+    // `get_const` determines whether or not `const_data` can be called
     fn get_const(&self, expr: Idx<Expr>) -> ExprIsConst {
         let mut to_check = vec![(self.file, expr)];
 
@@ -679,6 +748,11 @@ impl GlobalInferenceCtx<'_> {
             Expr::Cast { .. } if deref => {
                 let ty = self.tys[self.file][expr];
 
+                let ty = match ty.absolute_ty() {
+                    Ty::Optional { sub_ty } => *sub_ty,
+                    _ => ty,
+                };
+
                 match ty.as_pointer() {
                     Some((mutable, _)) if deref => {
                         if mutable {
@@ -697,11 +771,17 @@ impl GlobalInferenceCtx<'_> {
                             ExprMutability::ImmutableRef(self.bodies.range_for_expr(expr))
                         }
                     }
-                    _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
+                    _ => ExprMutability::CannotMutateExpr(self.bodies.range_for_expr(expr)),
                 }
             }
             Expr::Paren(Some(expr)) => self.get_mutability(*expr, assignment, deref),
-            _ => ExprMutability::CannotMutate(self.bodies.range_for_expr(expr)),
+            Expr::Directive { name, args } => {
+                match (self.interner.lookup(name.name.0), args.first()) {
+                    ("unwrap", Some(arg)) => self.get_mutability(*arg, assignment, deref),
+                    _ => ExprMutability::CannotMutateExpr(self.bodies.range_for_expr(expr)),
+                }
+            }
+            _ => ExprMutability::CannotMutateExpr(self.bodies.range_for_expr(expr)),
         }
     }
 
@@ -732,7 +812,8 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Local(local) => Some(local),
                         _ => None,
                     },
-                    Descendant::Stmt(_) => None,
+                    Descendant::PreStmt(_) => None,
+                    Descendant::PostStmt(_) => unreachable!(),
                 }),
         );
     }
@@ -745,19 +826,40 @@ impl GlobalInferenceCtx<'_> {
 
         fn all_usages_ty(ctx: &mut GlobalInferenceCtx, label_id: ScopeId) -> Intern<Ty> {
             let usages = ctx.bodies.scope_id_usages(label_id);
+            let block_expr = ctx.bodies.scope_id_to_block(label_id);
 
-            let mut max_ty: Option<Intern<Ty>> = None;
+            // this is so e.g. if a block lacks an annotation, results of `u64` and `str` should
+            // result in errors, but if a block has an annotation of `u64!str`, it becomes legal
+            let mut max_ty: Option<Intern<Ty>> =
+                ctx.expected_tys.get(block_expr).map(|e| e.expected_ty);
+
             for usage in usages.iter() {
-                let ty = match ctx.bodies[*usage] {
-                    hir::Stmt::Break {
-                        value: Some(value), ..
-                    } => ctx.tys[ctx.file][value],
-                    hir::Stmt::Break { value: None, .. } => Ty::Void.into(),
-                    _ => continue,
+                let ty = match usage {
+                    ScopeUsage::Expr(expr) => match ctx.bodies[*expr] {
+                        hir::Expr::Propagate { expr, .. } => ctx.tys[ctx.file][expr]
+                            .propagated_ty()
+                            .expect("there should be a propagated type"),
+                        _ => unreachable!(),
+                    },
+                    ScopeUsage::Stmt(stmt) => match ctx.bodies[*stmt] {
+                        hir::Stmt::Break {
+                            value: Some(value), ..
+                        } => ctx.tys[ctx.file][value],
+                        hir::Stmt::Break { value: None, .. } => Ty::Void.into(),
+                        _ => continue,
+                    },
                 };
 
-                if let Some(max) = max_ty {
-                    max_ty = max.max(&ty).map(|ty| ty.into());
+                if let Some(old_max) = max_ty {
+                    match old_max.max(&ty) {
+                        Some(new_max) => max_ty = Some(new_max.into()),
+                        None => {
+                            // unreachable!(
+                            //     "we should've already skipped the expressions that were Ty::Unknown"
+                            // );
+                            return Ty::Unknown.into();
+                        }
+                    }
                 } else {
                     max_ty = Some(ty);
                 }
@@ -766,18 +868,131 @@ impl GlobalInferenceCtx<'_> {
             max_ty.unwrap_or_else(|| Ty::Void.into())
         }
 
+        #[track_caller]
+        fn should_actually_replace(
+            ctx: &mut GlobalInferenceCtx,
+            expr: Idx<Expr>,
+            previous_ty: Intern<Ty>,
+            new_ty: Intern<Ty>,
+        ) -> bool {
+            // loss of distinction might not be accounted for if it happens due to some random
+            // annotation somewhere else
+            let loss_of_distinct = previous_ty.is_distinct()
+                && !new_ty.is_distinct()
+                && new_ty.can_fit_into(&previous_ty);
+
+            let array_to_slice = matches!(
+                (previous_ty.as_ref(), new_ty.as_ref()),
+                (
+                    Ty::Slice {
+                        sub_ty: previous_sub_ty
+                    },
+                    Ty::ConcreteArray {
+                        sub_ty: new_sub_ty,
+                        ..
+                    }
+                ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
+                    || previous_sub_ty == new_sub_ty
+            );
+            // this might happen in the following case:
+            // ```
+            // x : u64 = 1;
+            // y : i64 = 2;
+            //
+            // z : i64 = x + y;
+            // ```
+            // 1. since `u64 + i64` is invalid, the output of `x + y` is {uint} (the
+            //    default type of addition).
+            // 2. since the value of z is {uint}, it gets weak type replaced by {i64}.
+            // 3. reinfer_expr doesn't know about the weak type replacement, so it
+            //    attempts to panic here.
+            let strong_int_to_weak_int = matches!(
+                (previous_ty.as_ref(), new_ty.as_ref()),
+                (Ty::UInt(strong_bit_width) | Ty::IInt(strong_bit_width), Ty::UInt(0) | Ty::IInt(0))
+                if *strong_bit_width != 0
+            );
+
+            // let upgraded_to_error_union = matches!(
+            //     (previous_ty.as_ref(), new_ty.as_ref()),
+            //     (Ty::ErrorUnion { error_ty, payload_ty }, other)
+            //     if error_ty.is_equal_to(other) || payload_ty.is_equal_to(other)
+            // );
+
+            let prev_is_expected = ctx
+                .expected_tys
+                .get(expr)
+                .is_some_and(|e| e.expected_ty == previous_ty);
+
+            if !loss_of_distinct && !array_to_slice && !strong_int_to_weak_int && !prev_is_expected
+            {
+                if (previous_ty != new_ty && !previous_ty.is_weak_replaceable_by(&new_ty))
+                    || (new_ty.is_unknown() && !previous_ty.is_unknown())
+                {
+                    // let's say the previous type of the variable `x` was i32 (due to the type
+                    // annotation)
+                    //
+                    // the "new" type we just got is {uint} (we've re-reviewed all the internal
+                    // expressions inside the value of `x` and it results in {uint})
+                    //
+                    // the previous type doesn't fit into the new type, but that's okay.
+                    // the new type *does* fit into the old type.
+                    // because of that, we're not gonna panic and we're not gonna replace the type
+                    //
+                    // we only panic just in case the `reinfer_expr` logic is bad and we get
+                    // something completely weird.
+                    if new_ty.is_weak_replaceable_by(&previous_ty) {
+                        return false;
+                    }
+
+                    panic!(
+                        "{} #{} : `{}` is not weak replaceable by `{}`",
+                        ctx.file.debug(ctx.interner),
+                        expr.into_raw(),
+                        previous_ty.simple_display(ctx.interner, true),
+                        new_ty.simple_display(ctx.interner, true)
+                    );
+                }
+
+                // println!(
+                //     "{} #{} : replacing {:?} with {:?}",
+                //     self.file.debug(self.interner),
+                //     expr.into_raw(),
+                //     previous_ty,
+                //     new_ty
+                // );
+                return true;
+            }
+
+            false
+        }
+
         for next in self
             .bodies
-            .descendants(expr, hir::DescentOpts::Infer)
+            .descendants(
+                expr,
+                hir::DescentOpts::Infer {
+                    include_post_stmts: false,
+                },
+            )
             .collect_vec()
             .into_iter()
             .rev()
         {
             match next {
                 Descendant::Expr(expr) => {
-                    let previous_ty = self.tys[self.file][expr];
+                    let previous_ty = self.tys[self.file]
+                        .expr_tys
+                        .get(expr)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{} #{} : TYPE DOES NOT EXIST",
+                                self.file.debug(self.interner),
+                                expr.into_raw()
+                            );
+                        });
 
-                    if *previous_ty == Ty::Unknown || *previous_ty == Ty::NoEval {
+                    if *previous_ty == Ty::Unknown || *previous_ty == Ty::AlwaysJumps {
                         continue;
                     }
 
@@ -854,6 +1069,11 @@ impl GlobalInferenceCtx<'_> {
 
                                 if let Some(new_tail) = tail_ty {
                                     usages_ty.max(&new_tail).unwrap_or(Ty::Unknown).into()
+                                } else if usages_ty.is_nil() {
+                                    usages_ty
+                                        .max(&Ty::Void)
+                                        .expect("max should always work")
+                                        .into()
                                 } else {
                                     usages_ty
                                 }
@@ -870,7 +1090,7 @@ impl GlobalInferenceCtx<'_> {
                                 let new_else = self.tys[self.file][*else_branch];
 
                                 body_ty.max(&new_else).unwrap_or(Ty::Unknown).into()
-                            } else if *body_ty == Ty::NoEval {
+                            } else if *body_ty == Ty::AlwaysJumps {
                                 Ty::Void.into()
                             } else {
                                 body_ty
@@ -886,60 +1106,73 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Local(local) => self.tys[self.file].local_tys[*local],
+                        Expr::Member {
+                            previous,
+                            name: field,
+                        } => {
+                            // make sure this matches up with the one in infer_expr
+                            let super_ty = self.tys[self.file][*previous];
+                            match super_ty.as_ref() {
+                                Ty::File(_) => continue,
+                                Ty::Type => continue,
+                                _ => {
+                                    // because it's annoying to do `foo^.bar`, this code lets you do `foo.bar`
+                                    let mut deref_ty = super_ty;
+                                    while let Some((_, sub_ty)) = deref_ty.as_pointer() {
+                                        deref_ty = sub_ty;
+                                    }
+                                    deref_ty = deref_ty.absolute_intern_ty(true);
+
+                                    let field_name = self.interner.lookup(field.name.0);
+
+                                    match (deref_ty.as_ref(), field_name) {
+                                        (
+                                            Ty::AnonStruct { members }
+                                            | Ty::ConcreteStruct { members, .. },
+                                            _,
+                                        ) => {
+                                            if let Some(matching_member) = members
+                                                .iter()
+                                                .find(|member_ty| member_ty.name == field.name)
+                                            {
+                                                matching_member.ty
+                                            } else {
+                                                unreachable!("previous_ty would've been unknown")
+                                            }
+                                        }
+                                        (Ty::Slice { .. }, "len") => continue,
+                                        (Ty::Slice { sub_ty }, "ptr") => Ty::Pointer {
+                                            mutable: false,
+                                            sub_ty: *sub_ty,
+                                        }
+                                        .into(),
+                                        (Ty::RawSlice, "len") => continue,
+                                        (Ty::RawSlice, "ptr") => continue,
+                                        (Ty::Any, "ty") => continue,
+                                        (Ty::Any, "ptr") => continue,
+                                        (
+                                            Ty::AnonArray { .. } | Ty::ConcreteArray { .. },
+                                            "len",
+                                        ) => continue,
+                                        _ => {
+                                            unreachable!(
+                                                "previous_ty would've been Ty::Unknown if this was true"
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         _ => {
                             continue;
                         }
                     };
 
-                    let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
-                        && new_ty.is_functionally_equivalent_to(&previous_ty, false);
-                    let array_to_slice = matches!(
-                        (previous_ty.as_ref(), new_ty.as_ref()),
-                        (
-                            Ty::Slice {
-                                sub_ty: previous_sub_ty
-                            },
-                            Ty::Array {
-                                sub_ty: new_sub_ty,
-                                ..
-                            }
-                        ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
-                            || previous_sub_ty.is_equal_to(new_sub_ty)
-                    );
-                    // this might happen in the following case:
-                    // ```
-                    // x : u64 = 1;
-                    // y : i64 = 2;
-                    //
-                    // z : i64 = x + y;
-                    // ```
-                    // 1. since `u64 + i64` is invalid, the output of `x + y` is {uint} (the
-                    //    default type of addition).
-                    // 2. since the value of z is {uint}, it gets weak type replaced by {i64}.
-                    // 3. reinfer_expr doesn't know about the weak type replacement, so it
-                    //    attempts to panic here.
-                    let strong_int_to_weak_int = matches!((previous_ty.as_ref(), new_ty.as_ref()), (Ty::UInt(strong_bit_width) | Ty::IInt(strong_bit_width), Ty::UInt(0) | Ty::IInt(0)) if *strong_bit_width != 0);
-
-                    if previous_ty != new_ty
-                        && !(previous_ty.is_weak_replaceable_by(&new_ty)
-                            || loss_of_distinct
-                            || array_to_slice
-                            || strong_int_to_weak_int)
-                    {
-                        panic!(
-                            "{} #{} : {:?} is not weak replaceable by {:?}",
-                            self.file.debug(self.interner),
-                            expr.into_raw(),
-                            previous_ty,
-                            new_ty
-                        );
-                    }
-
-                    if !loss_of_distinct && !array_to_slice && !strong_int_to_weak_int {
+                    if should_actually_replace(self, expr, previous_ty, new_ty) {
                         self.tys[self.file].expr_tys.insert(expr, new_ty);
                     }
                 }
-                Descendant::Stmt(stmt) => match &self.bodies[stmt] {
+                Descendant::PreStmt(stmt) => match &self.bodies[stmt] {
                     Stmt::Expr(_) => {}
                     Stmt::LocalDef(local_def) => {
                         let def_body = &self.bodies[*local_def];
@@ -957,51 +1190,7 @@ impl GlobalInferenceCtx<'_> {
                         let previous_ty = self.tys[self.file][*local_def];
                         let new_ty = self.tys[self.file][value];
 
-                        let loss_of_distinct = matches!(previous_ty.as_ref(), Ty::Distinct { .. })
-                            && new_ty.is_functionally_equivalent_to(&previous_ty, false);
-                        let array_to_slice = matches!(
-                            (previous_ty.as_ref(), new_ty.as_ref()),
-                            (
-                                Ty::Slice {
-                                    sub_ty: previous_sub_ty
-                                },
-                                Ty::Array {
-                                    sub_ty: new_sub_ty,
-                                    ..
-                                }
-                            ) if previous_sub_ty.is_weak_replaceable_by(new_sub_ty)
-                                || previous_sub_ty.is_equal_to(new_sub_ty)
-                        );
-                        // this might happen in the following case:
-                        // ```
-                        // x : u64 = 1;
-                        // y : i64 = 2;
-                        //
-                        // z : i64 = x + y;
-                        // ```
-                        // 1. since `u64 + i64` is invalid, the output of `x + y` is {uint} (the
-                        //    default type of addition).
-                        // 2. since the value of z is {uint}, it gets weak type replaced by {i64}.
-                        // 3. reinfer_expr doesn't know about the weak type replacement, so it
-                        //    attempts to panic here.
-                        let strong_int_to_weak_int = matches!((previous_ty.as_ref(), new_ty.as_ref()), (Ty::UInt(strong_bit_width) | Ty::IInt(strong_bit_width), Ty::UInt(0) | Ty::IInt(0)) if *strong_bit_width != 0);
-
-                        if previous_ty != new_ty
-                            && !(previous_ty.is_weak_replaceable_by(&new_ty)
-                                || loss_of_distinct
-                                || array_to_slice
-                                || strong_int_to_weak_int)
-                        {
-                            panic!(
-                                "{} #{} : {:?} is not weak replaceable by {:?}",
-                                self.file.debug(self.interner),
-                                expr.into_raw(),
-                                previous_ty,
-                                new_ty
-                            );
-                        }
-
-                        if !loss_of_distinct && !array_to_slice && !strong_int_to_weak_int {
+                        if should_actually_replace(self, expr, previous_ty, new_ty) {
                             self.tys[self.file].local_tys.insert(*local_def, new_ty);
                         }
                     }
@@ -1010,6 +1199,7 @@ impl GlobalInferenceCtx<'_> {
                     Stmt::Continue { .. } => {}
                     Stmt::Defer { .. } => {}
                 },
+                Descendant::PostStmt(_) => unreachable!(),
             }
         }
 
@@ -1027,12 +1217,15 @@ impl GlobalInferenceCtx<'_> {
 
         let descendants = self
             .bodies
-            .descendants(expr, hir::DescentOpts::Infer)
+            .descendants(
+                expr,
+                hir::DescentOpts::Infer {
+                    include_post_stmts: true,
+                },
+            )
             .collect_vec();
 
-        // println!("INFER EXPR\n{descendants:#?}");
-
-        // This all works because children will ALWAYS come before parents
+        // This works without recursion because children will ALWAYS come before parents
         for descendant in descendants.into_iter().rev() {
             match descendant {
                 Descendant::Expr(expr) => {
@@ -1060,11 +1253,10 @@ impl GlobalInferenceCtx<'_> {
                             let sub_ty = self.const_ty(*ty)?;
                             for item in items {
                                 let item_ty = self.tys[self.file][*item];
-                                self.expect_match(item_ty, sub_ty, *item);
+                                self.expect_match(item_ty, ExpectedTy::Concrete(sub_ty), *item);
                             }
 
-                            Ty::Array {
-                                anonymous: false,
+                            Ty::ConcreteArray {
                                 size: items.len() as u64,
                                 sub_ty,
                             }
@@ -1123,8 +1315,7 @@ impl GlobalInferenceCtx<'_> {
                                 max_ty.unwrap_or_else(|| Ty::Void.into())
                             };
 
-                            Ty::Array {
-                                anonymous: true,
+                            Ty::AnonArray {
                                 size: items.len() as u64,
                                 sub_ty,
                             }
@@ -1140,15 +1331,17 @@ impl GlobalInferenceCtx<'_> {
 
                             let index_ty = self.tys[self.file][*index];
 
-                            if self.expect_match(index_ty, Ty::UInt(u8::MAX).into(), *index) {
-                                self.replace_weak_tys(*index, Ty::UInt(u8::MAX).into());
-                            }
+                            self.expect_match(
+                                index_ty,
+                                ExpectedTy::Concrete(Ty::UInt(u8::MAX).into()),
+                                *index,
+                            );
 
                             if *deref_source_ty == Ty::Unknown {
                                 Ty::Unknown.into()
                             } else if *deref_source_ty == Ty::RawSlice {
                                 self.diagnostics.push(TyDiagnostic {
-                                    kind: TyDiagnosticKind::IndexRaw { size: None },
+                                    kind: TyDiagnosticKind::IndexRaw,
                                     file: self.file,
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
@@ -1216,33 +1409,36 @@ impl GlobalInferenceCtx<'_> {
                             ty,
                             expr: Some(sub_expr),
                         } => {
-                            let expr_ty = self.tys[self.file][*sub_expr];
+                            let cast_from = self.tys[self.file][*sub_expr];
 
-                            if *expr_ty == Ty::Unknown {
+                            if *cast_from == Ty::Unknown {
                                 Ty::Unknown.into()
                             } else {
-                                let cast_ty = self.const_ty(*ty)?;
+                                let cast_to = self.const_ty(*ty)?;
 
-                                if cast_ty.is_unknown() {
+                                if cast_to.is_unknown() {
                                     Ty::Unknown.into()
                                 } else {
-                                    if !expr_ty.can_cast_to(&cast_ty) {
+                                    if !cast_from.can_cast_to(&cast_to) {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::Uncastable {
-                                                from: expr_ty,
-                                                to: cast_ty,
+                                                from: cast_from,
+                                                to: cast_to,
                                             },
                                             file: self.file,
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(expr),
                                             help: None,
                                         });
+                                    } else if let Ty::EnumVariant { sub_ty, .. } =
+                                        cast_to.absolute_ty_keep_variants()
+                                    {
+                                        self.replace_weak_tys(*sub_expr, *sub_ty);
+                                    } else {
+                                        self.replace_weak_tys(*sub_expr, cast_to);
                                     }
 
-                                    // replacing the existing type with the casted type
-                                    self.replace_weak_tys(*sub_expr, cast_ty);
-
-                                    cast_ty
+                                    cast_to
                                 }
                             }
                         }
@@ -1278,6 +1474,7 @@ impl GlobalInferenceCtx<'_> {
                                 .into()
                             }
                         }
+
                         Expr::Deref { pointer } => {
                             let deref_ty = self.tys[self.file][*pointer];
 
@@ -1340,6 +1537,7 @@ impl GlobalInferenceCtx<'_> {
 
                                 output_ty.final_output_ty.into()
                             } else {
+                                println!("no max");
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::BinaryOpMismatch {
                                         op: *op,
@@ -1358,7 +1556,11 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Unary { expr, op } => {
                             let expr_ty = self.tys[self.file][*expr];
 
-                            if !op.can_perform(&expr_ty) {
+                            if *op == hir::UnaryOp::BNot && *expr_ty == Ty::Type {
+                                // this transforms expressions like `!u64` into error unions
+                                self.const_ty(*expr)?;
+                                Ty::Type.into()
+                            } else if !op.can_perform(&expr_ty) {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::UnaryOpMismatch {
                                         op: *op,
@@ -1393,7 +1595,7 @@ impl GlobalInferenceCtx<'_> {
                                     Stmt::Break { .. } | Stmt::Continue { .. } => no_eval = true,
                                     Stmt::Expr(expr)
                                         if label.is_none()
-                                            && *self.tys[self.file][*expr] == Ty::NoEval =>
+                                            && *self.tys[self.file][*expr] == Ty::AlwaysJumps =>
                                     {
                                         no_eval = true
                                     }
@@ -1410,33 +1612,62 @@ impl GlobalInferenceCtx<'_> {
                                     // there also could've been breaks within the tail expression,
                                     // so we have to get this here, after we processed the statements and the
                                     // tail
-                                    let previous_ty =
-                                        self.tys[self.file].expr_tys.get(expr).copied();
+                                    let previous_ty = self.try_get_previous_ty(expr);
 
                                     match previous_ty {
                                         Some(previous_ty) => {
+                                            // if there were no type errors and the block has a
+                                            // scope id (if it has a scope id then that means we
+                                            // should replace the weak types of the people who use
+                                            // that scope id)
                                             if let Some(max) = self.expect_block_match(
                                                 Some(*tail),
                                                 tail_ty,
+                                                self.bodies.range_for_expr(*tail),
                                                 expr,
                                                 previous_ty,
+                                                true,
                                             ) {
-                                                // if there was a previous_ty, then there must've been a break,
-                                                // and so this block must have a scope id
-                                                let id =
-                                                    self.bodies.block_to_scope_id(expr).unwrap();
-                                                for usage in self.bodies.scope_id_usages(id) {
-                                                    if let hir::Stmt::Break {
-                                                        value: Some(value),
-                                                        ..
-                                                    } = self.bodies[*usage]
-                                                    {
-                                                        self.replace_weak_tys(value, max);
+                                                // todo: this is wayyyyy to many indents
+                                                for usage in self
+                                                    .bodies
+                                                    .block_to_scope_id(expr)
+                                                    .map(|id| {
+                                                        self.bodies.scope_id_usages(id).iter()
+                                                    })
+                                                    .into_iter()
+                                                    .flatten()
+                                                {
+                                                    match usage {
+                                                        ScopeUsage::Expr(expr) => {
+                                                            // these don't need to be
+                                                            // weak_type_replaced because the max
+                                                            // type of the block doesn't affect
+                                                            // them.
+                                                            assert!(matches!(
+                                                                self.bodies[*expr],
+                                                                hir::Expr::Propagate { .. }
+                                                            ));
+                                                        }
+                                                        ScopeUsage::Stmt(stmt) => {
+                                                            if let hir::Stmt::Break {
+                                                                value: Some(value),
+                                                                ..
+                                                            } = self.bodies[*stmt]
+                                                            {
+                                                                self.replace_weak_tys(value, max);
+                                                            }
+                                                        }
                                                     }
                                                 }
 
                                                 max
                                             } else {
+                                                // println!(
+                                                //     "{} #{} : prev_ty={previous_ty:?}, tail_ty={tail_ty:?}",
+                                                //     self.file.debug(self.interner),
+                                                //     expr.into_raw(),
+                                                // );
                                                 Ty::Unknown.into()
                                             }
                                         }
@@ -1444,29 +1675,35 @@ impl GlobalInferenceCtx<'_> {
                                     }
                                 }
                                 None if no_eval => {
-                                    let previous_ty =
-                                        self.tys[self.file].expr_tys.get(expr).copied();
+                                    // todo: maybe this shouldn't use try_get_previous_ty?
+                                    // it might be better to check if we have a scope id
+                                    let previous_ty = self.try_get_previous_ty(expr);
 
                                     // if there is no previous type but this block always breaks
                                     // it is 100% certain that the break was for an upper block.
                                     // it is then safe to say this block is "noeval"
                                     // (meaning that it never reaches it's own end)
-                                    previous_ty.unwrap_or_else(|| Ty::NoEval.into())
+                                    previous_ty.unwrap_or_else(|| Ty::AlwaysJumps.into())
                                 }
                                 None => {
                                     // if there were no breaks, Void,
                                     // if there was a break, make sure it's Void
-                                    if let Some(previous_ty) =
-                                        self.tys[self.file].expr_tys.get(expr).copied()
-                                    {
+                                    if let Some(previous_ty) = self.try_get_previous_ty(expr) {
                                         if let Some(max) = self.expect_block_match(
                                             Some(expr),
                                             Ty::Void.into(),
+                                            self.bodies.range_for_expr(expr),
                                             expr,
                                             previous_ty,
+                                            true,
                                         ) {
                                             max
                                         } else {
+                                            // println!(
+                                            //     "{} #{} : prev_ty={previous_ty:?}",
+                                            //     self.file.debug(self.interner),
+                                            //     expr.into_raw(),
+                                            // );
                                             Ty::Unknown.into()
                                         }
                                     } else {
@@ -1481,7 +1718,11 @@ impl GlobalInferenceCtx<'_> {
                             else_branch,
                         } => {
                             let cond_ty = self.tys[self.file][*condition];
-                            self.expect_match(cond_ty, Ty::Bool.into(), *condition);
+                            self.expect_match(
+                                cond_ty,
+                                ExpectedTy::Concrete(Ty::Bool.into()),
+                                *condition,
+                            );
 
                             let body_ty = self.tys[self.file][*body];
 
@@ -1510,7 +1751,7 @@ impl GlobalInferenceCtx<'_> {
                                     Ty::Unknown.into()
                                 }
                             } else {
-                                if *body_ty != Ty::NoEval
+                                if *body_ty != Ty::AlwaysJumps
                                     && !body_ty.is_void()
                                     && !body_ty.is_unknown()
                                 {
@@ -1538,7 +1779,7 @@ impl GlobalInferenceCtx<'_> {
                                     });
                                 }
 
-                                if *body_ty == Ty::NoEval {
+                                if *body_ty == Ty::AlwaysJumps {
                                     // if the body is noeval, but there isn't an else block,
                                     // it's uncertain whether or not the noeval will actually be
                                     // reached.
@@ -1553,10 +1794,18 @@ impl GlobalInferenceCtx<'_> {
                         Expr::While { condition, body } => {
                             if let Some(condition) = condition {
                                 let cond_ty = self.tys[self.file][*condition];
-                                self.expect_match(cond_ty, Ty::Bool.into(), *condition);
+                                self.expect_match(
+                                    cond_ty,
+                                    ExpectedTy::Concrete(Ty::Bool.into()),
+                                    *condition,
+                                );
                             }
                             let body_ty = self.tys[self.file][*body];
-                            self.expect_match(body_ty, Ty::Void.into(), *body);
+                            self.expect_match(
+                                body_ty,
+                                ExpectedTy::Concrete(Ty::Void.into()),
+                                *body,
+                            );
 
                             if let Some(previous_ty) = self.tys[self.file].expr_tys.get(expr) {
                                 *previous_ty
@@ -1572,70 +1821,159 @@ impl GlobalInferenceCtx<'_> {
                         } => 'switch: {
                             let scrutinee_ty = self.tys[self.file][*scrutinee];
 
-                            let Ty::Enum { variants, .. } = scrutinee_ty.as_ref() else {
+                            if !self.expect_match(scrutinee_ty, ExpectedTy::SumType, *scrutinee) {
                                 break 'switch Ty::Unknown.into();
-                            };
+                            }
+
+                            // resolve all arm types beforehand
+                            let mut type_resolution_error = false;
+                            for arm in arms {
+                                match arm.variant {
+                                    Some(ArmVariant::FullyQualified(ty)) => {
+                                        if !self.expect_match(
+                                            self.tys[self.file][ty],
+                                            ExpectedTy::Concrete(Ty::Type.into()),
+                                            ty,
+                                        ) {
+                                            type_resolution_error = true;
+                                            continue;
+                                        }
+
+                                        let ty = self.const_ty(ty)?;
+
+                                        if !scrutinee_ty.has_sum_variant(&ty) {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::NotAVariantOfSumType {
+                                                    ty,
+                                                    sum_ty: scrutinee_ty,
+                                                },
+                                                file: self.file,
+                                                expr: Some(arm.body),
+                                                range: arm.variant_range,
+                                                help: None,
+                                            });
+                                            type_resolution_error = true;
+                                        }
+                                    }
+                                    Some(ArmVariant::Shorthand(name)) => {
+                                        // todo: include tests for this
+                                        if !self.expect_match(
+                                            scrutinee_ty,
+                                            ExpectedTy::Enum,
+                                            *scrutinee,
+                                        ) {
+                                            type_resolution_error = true;
+                                            continue;
+                                        }
+
+                                        let Ty::Enum { ref variants, .. } = *scrutinee_ty else {
+                                            unreachable!();
+                                        };
+
+                                        if !variants.iter().any(|v| {
+                                            let Ty::EnumVariant { variant_name, .. } = **v else {
+                                                unreachable!()
+                                            };
+
+                                            variant_name == name.name
+                                        }) {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::NotAShorthandVariantOfSumType {
+                                                    ty: name.name.0,
+                                                    sum_ty: scrutinee_ty,
+                                                },
+                                                file: self.file,
+                                                expr: Some(arm.body),
+                                                range: arm.variant_range,
+                                                help: None,
+                                            });
+                                            type_resolution_error = true;
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                            if type_resolution_error {
+                                break 'switch Ty::Unknown.into();
+                            }
 
                             struct VariantToCheck {
                                 variant_ty: Intern<Ty>,
                                 included_in_switch: bool,
                             }
 
-                            // this is an index map because later errors are reported while looping
-                            // over this map
-                            let mut variants: IndexMap<_, _> = variants
-                                .iter()
-                                .map(|v| {
-                                    let Ty::Variant { variant_name, .. } = v.as_ref() else {
-                                        unreachable!("all variants should be `Ty::Variant`")
-                                    };
+                            impl VariantToCheck {
+                                fn matches_arm(
+                                    &self,
+                                    tys: &FileInference,
+                                    variant: ArmVariant,
+                                ) -> bool {
+                                    match variant {
+                                        ArmVariant::FullyQualified(ty) => {
+                                            self.variant_ty == tys.get_meta_ty(ty).expect("all the arms should be resolved before calling `matches_arm`")
+                                        }
+                                        ArmVariant::Shorthand(name) => {
+                                            let Ty::EnumVariant { variant_name, .. } = *self.variant_ty else {
+                                                unreachable!()
+                                            };
 
-                                    (
-                                        *variant_name,
-                                        VariantToCheck {
-                                            variant_ty: *v,
-                                            included_in_switch: false,
-                                        },
-                                    )
-                                })
-                                .collect();
+                                            variant_name == name.name
+                                        }
+                                    }
+                                }
+                            }
+
+                            impl From<Intern<Ty>> for VariantToCheck {
+                                fn from(variant_ty: Intern<Ty>) -> Self {
+                                    Self {
+                                        variant_ty,
+                                        included_in_switch: false,
+                                    }
+                                }
+                            }
+
+                            let mut variants: Vec<VariantToCheck> = match *scrutinee_ty {
+                                Ty::Optional { sub_ty } => {
+                                    vec![sub_ty.into(), Intern::new(Ty::Nil).into()]
+                                }
+                                Ty::ErrorUnion {
+                                    error_ty,
+                                    payload_ty,
+                                } => vec![error_ty.into(), payload_ty.into()],
+                                Ty::Enum { ref variants, .. } => {
+                                    variants.iter().map(|v| (*v).into()).collect_vec()
+                                }
+                                _ => unreachable!(),
+                            };
 
                             let mut first_arm_ty = None;
 
                             for arm in arms {
-                                let Some(variant_name) = arm.variant_name else {
+                                let Some(variant) = arm.variant else {
+                                    // skip the errors
                                     continue;
                                 };
 
-                                let Some(variant) = variants.get_mut(&variant_name.name) else {
-                                    // todo: use NonExistantVariant for more things
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::NonExistentVariant {
-                                            variant_name: variant_name.name.0,
-                                            enum_ty: scrutinee_ty,
-                                        },
-                                        file: self.file,
-                                        expr: Some(arm.body),
-                                        range: self.bodies.range_for_expr(arm.body),
-                                        help: None,
-                                    });
-                                    continue;
+                                let Some(arm_variant) = variants
+                                    .iter_mut()
+                                    .find(|v| v.matches_arm(&self.tys[self.file], variant))
+                                else {
+                                    unreachable!()
                                 };
 
-                                if variant.included_in_switch {
+                                if arm_variant.included_in_switch {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::SwitchAlreadyCoversVariant {
-                                            ty: variant.variant_ty,
+                                            ty: arm_variant.variant_ty,
                                         },
                                         file: self.file,
                                         expr: Some(expr),
-                                        range: variant_name.range,
+                                        range: arm.variant_range,
                                         help: None, // todo: show the previous arm
                                     });
                                 } else {
-                                    // later, if any variants haven't been covered an error will be
-                                    // reported.
-                                    variant.included_in_switch = true;
+                                    // if any variants haven't been covered an error will be reported
+                                    arm_variant.included_in_switch = true;
                                 }
 
                                 let found_arm_ty = self.tys[self.file][arm.body];
@@ -1652,7 +1990,7 @@ impl GlobalInferenceCtx<'_> {
                                         } else {
                                             self.diagnostics.push(TyDiagnostic {
                                                 kind: TyDiagnosticKind::SwitchMismatch {
-                                                    second: found_arm_ty,
+                                                    other: found_arm_ty,
                                                     first: first_ty,
                                                 },
                                                 file: self.file,
@@ -1683,7 +2021,7 @@ impl GlobalInferenceCtx<'_> {
                                         } else {
                                             self.diagnostics.push(TyDiagnostic {
                                                 kind: TyDiagnosticKind::SwitchMismatch {
-                                                    second: default_ty,
+                                                    other: default_ty,
                                                     first: first_ty,
                                                 },
                                                 file: self.file,
@@ -1700,15 +2038,15 @@ impl GlobalInferenceCtx<'_> {
                                 for VariantToCheck {
                                     variant_ty,
                                     included_in_switch,
-                                } in variants.values()
+                                } in variants
                                 {
-                                    if *included_in_switch {
+                                    if included_in_switch {
                                         continue;
                                     }
 
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::SwitchDoesNotCoverVariant {
-                                            ty: *variant_ty,
+                                            ty: variant_ty,
                                         },
                                         file: self.file,
                                         range: self.bodies.range_for_expr(expr),
@@ -1728,40 +2066,47 @@ impl GlobalInferenceCtx<'_> {
                             first_arm_ty.unwrap_or_else(|| Ty::Void.into())
                         }
                         Expr::Local(local) => self.tys[self.file].local_tys[*local],
-                        Expr::SwitchLocal(switch_local) => 'switch_local: {
+                        Expr::SwitchArgument(switch_local) => 'switch_arg: {
                             if let Some(ty) =
                                 self.tys[self.file].switch_local_tys.get(*switch_local)
                             {
-                                break 'switch_local *ty;
+                                break 'switch_arg *ty;
                             }
 
                             let switch_local_body = &self.bodies[*switch_local];
-                            let Some(this_variant_name) = switch_local_body.variant_name else {
-                                break 'switch_local Ty::Unknown.into();
-                            };
-
                             let scrutinee_ty = self.tys[self.file][switch_local_body.scrutinee];
-
-                            if switch_local_body.default {
+                            if switch_local_body.is_default {
                                 // default branches just receive the scrutinee as-is
-                                break 'switch_local scrutinee_ty;
+                                break 'switch_arg scrutinee_ty;
                             }
 
-                            let Ty::Enum { variants, .. } = scrutinee_ty.as_ref() else {
-                                break 'switch_local Ty::Unknown.into();
+                            let Some(this_variant) = switch_local_body.variant else {
+                                break 'switch_arg Ty::Unknown.into();
                             };
 
-                            let variant_ty = variants
-                                .iter()
-                                .find(|v| {
-                                    let Ty::Variant { variant_name, .. } = v.as_ref() else {
-                                        unreachable!("all variants should be `Ty::Variant`")
+                            let variant_ty = match this_variant {
+                                ArmVariant::Shorthand(name) => {
+                                    let Ty::Enum { variants, .. } = scrutinee_ty.as_ref() else {
+                                        // an error will be reported so we don't have to do
+                                        // anything here
+                                        break 'switch_arg Ty::Unknown.into();
                                     };
 
-                                    *variant_name == this_variant_name.name
-                                })
-                                .copied()
-                                .unwrap_or_else(|| Ty::Unknown.into());
+                                    variants
+                                        .iter()
+                                        .find(|v| {
+                                            let Ty::EnumVariant { variant_name, .. } = v.as_ref()
+                                            else {
+                                                unreachable!("all variants should be `Ty::Variant`")
+                                            };
+
+                                            *variant_name == name.name
+                                        })
+                                        .copied()
+                                        .unwrap_or_else(|| Ty::Unknown.into())
+                                }
+                                ArmVariant::FullyQualified(ty) => self.const_ty(ty)?,
+                            };
 
                             self.tys[self.file]
                                 .switch_local_tys
@@ -1800,8 +2145,9 @@ impl GlobalInferenceCtx<'_> {
                             previous,
                             name: field,
                         } => {
-                            let previous_ty = self.tys[self.file][*previous];
-                            match previous_ty.as_ref() {
+                            // make sure this matches up with the one in reinfer_expr
+                            let super_ty = self.tys[self.file][*previous];
+                            match super_ty.as_ref() {
                                 Ty::File(file) => {
                                     let fqn = hir::Fqn {
                                         file: *file,
@@ -1848,12 +2194,18 @@ impl GlobalInferenceCtx<'_> {
                                 }
                                 Ty::Type => {
                                     // this is included for resolving enum variants
-                                    self.const_ty(expr)?;
-                                    Ty::Type.into()
+                                    let ty = self.const_ty(expr)?;
+
+                                    // zero-sized types can be used as their own singletons
+                                    if ty.is_zero_sized() {
+                                        ty
+                                    } else {
+                                        Ty::Type.into()
+                                    }
                                 }
                                 _ => {
                                     // because it's annoying to do `foo^.bar`, this code lets you do `foo.bar`
-                                    let mut deref_ty = previous_ty;
+                                    let mut deref_ty = super_ty;
                                     while let Some((_, sub_ty)) = deref_ty.as_pointer() {
                                         deref_ty = sub_ty;
                                     }
@@ -1862,18 +2214,22 @@ impl GlobalInferenceCtx<'_> {
                                     let field_name = self.interner.lookup(field.name.0);
 
                                     match (deref_ty.as_ref(), field_name) {
-                                        (Ty::Struct { members, .. }, _) => {
+                                        (
+                                            Ty::AnonStruct { members }
+                                            | Ty::ConcreteStruct { members, .. },
+                                            _,
+                                        ) => {
                                             if let Some(matching_member) = members
                                                 .iter()
                                                 .find(|member_ty| member_ty.name == field.name)
                                             {
                                                 matching_member.ty
                                             } else {
-                                                if !previous_ty.is_unknown() {
+                                                if !super_ty.is_unknown() {
                                                     self.diagnostics.push(TyDiagnostic {
                                                         kind: TyDiagnosticKind::NonExistentMember {
                                                             member: field.name.0,
-                                                            found_ty: previous_ty,
+                                                            found_ty: super_ty,
                                                         },
                                                         file: self.file,
                                                         expr: Some(expr),
@@ -1897,13 +2253,16 @@ impl GlobalInferenceCtx<'_> {
                                         }
                                         (Ty::Any, "ty") => Ty::Type.into(),
                                         (Ty::Any, "ptr") => Ty::RawPtr { mutable: false }.into(),
-                                        (Ty::Array { .. }, "len") => Ty::UInt(u8::MAX).into(),
+                                        (
+                                            Ty::AnonArray { .. } | Ty::ConcreteArray { .. },
+                                            "len",
+                                        ) => Ty::UInt(u8::MAX).into(),
                                         _ => {
-                                            if !previous_ty.is_unknown() {
+                                            if !super_ty.is_unknown() {
                                                 self.diagnostics.push(TyDiagnostic {
                                                     kind: TyDiagnosticKind::NonExistentMember {
                                                         member: field.name.0,
-                                                        found_ty: previous_ty,
+                                                        found_ty: super_ty,
                                                     },
                                                     file: self.file,
                                                     expr: Some(expr),
@@ -2010,9 +2369,11 @@ impl GlobalInferenceCtx<'_> {
                                             current_arg = args_iter.next();
                                         }
                                     } else {
-                                        self.expect_match(arg_ty, param.ty, *arg);
-
-                                        self.replace_weak_tys(*arg, param.ty);
+                                        self.expect_match(
+                                            arg_ty,
+                                            ExpectedTy::Concrete(param.ty),
+                                            *arg,
+                                        );
 
                                         current_param = params_iter.next();
                                         current_arg = args_iter.next();
@@ -2041,13 +2402,10 @@ impl GlobalInferenceCtx<'_> {
                                 params,
                                 return_ty,
                                 body,
-                                is_extern,
                                 ..
                             } = &self.bodies[*lambda];
 
-                            let is_type = !is_extern
-                                && return_ty.is_some()
-                                && self.bodies[*body] == hir::Expr::Missing;
+                            let is_type = *body == hir::LambdaBody::Empty && return_ty.is_some();
 
                             let return_ty = if let Some(return_ty) = return_ty {
                                 self.const_ty(*return_ty)?
@@ -2070,7 +2428,7 @@ impl GlobalInferenceCtx<'_> {
                                     // we already called `const_ty` on the last param
                                     let last_ty = self.tys[self.file].meta_tys[last_param.ty];
 
-                                    if !ty.can_differentiate(&last_ty) {
+                                    if !ty.can_differentiate_from(&last_ty) {
                                         impossible_to_differentiate = true;
                                         self.diagnostics.push(TyDiagnostic {
                                             kind:
@@ -2088,6 +2446,16 @@ impl GlobalInferenceCtx<'_> {
 
                                 if param.varargs {
                                     ty = Ty::Slice { sub_ty: ty }.into();
+
+                                    if *body == hir::LambdaBody::Extern {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::ExternVarargs,
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: param.range,
+                                            help: None,
+                                        });
+                                    }
                                 }
 
                                 param_tys.push(ParamTy {
@@ -2179,16 +2547,11 @@ impl GlobalInferenceCtx<'_> {
                                 if let Some(expected_member_ty) =
                                     expected_tys.get(found_member_name)
                                 {
-                                    if self.expect_match(
+                                    self.expect_match(
                                         *found_member_ty,
-                                        *expected_member_ty,
+                                        ExpectedTy::Concrete(*expected_member_ty),
                                         *found_member_expr,
-                                    ) {
-                                        self.replace_weak_tys(
-                                            *found_member_expr,
-                                            *expected_member_ty,
-                                        );
-                                    }
+                                    );
                                 } else {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::NonExistentMember {
@@ -2227,10 +2590,7 @@ impl GlobalInferenceCtx<'_> {
                         Expr::StructLiteral {
                             ty: None,
                             members: member_values,
-                        } => Ty::Struct {
-                            anonymous: true,
-                            fqn: None,
-                            uid: 0,
+                        } => Ty::AnonStruct {
                             members: member_values
                                 .iter()
                                 .copied()
@@ -2256,146 +2616,307 @@ impl GlobalInferenceCtx<'_> {
                             self.const_ty(expr)?;
                             Ty::Type.into()
                         }
-                        Expr::Directive { name, args } => match self.interner.lookup(name.name.0) {
-                            "unwrap" => 'blk: {
-                                let mut args = args.iter();
+                        Expr::Nil => Ty::Nil.into(),
+                        Expr::OptionalDecl { .. } => {
+                            self.const_ty(expr)?;
+                            Ty::Type.into()
+                        }
+                        Expr::ErrorUnionDecl { .. } => {
+                            self.const_ty(expr)?;
+                            Ty::Type.into()
+                        }
+                        Expr::Propagate { label: None, .. } => {
+                            // we don't have to do anything because an error should've already been
+                            // reported by `hir`
+                            Ty::Unknown.into()
+                        }
+                        Expr::Propagate {
+                            expr: inner,
+                            label: Some(label),
+                            try_range,
+                        } => {
+                            let inner_ty = self.tys[self.file][*inner];
 
-                                let call_range = self.bodies.range_for_expr(expr);
-                                let call_end = call_range
-                                    .end()
-                                    .checked_sub(TextSize::new(1))
-                                    .unwrap_or(call_range.end());
-                                let call_end = TextRange::new(call_end, call_end);
+                            if let Ty::Optional { sub_ty } = inner_ty.as_ref() {
+                                self.break_with(
+                                    *label,
+                                    Some(expr),
+                                    *try_range,
+                                    Ty::Nil.into(),
+                                    false,
+                                );
 
-                                // first arg = enum to unwrap
+                                *sub_ty
+                            } else if let Ty::ErrorUnion {
+                                error_ty,
+                                payload_ty,
+                            } = inner_ty.as_ref()
+                            {
+                                self.break_with(*label, Some(expr), *try_range, *error_ty, false);
 
-                                let Some(enum_val) = args.next() else {
-                                    let missing =
-                                        [ExpectedTy::Enum, ExpectedTy::Concrete(Ty::Type.into())];
-                                    for expected in missing {
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind: TyDiagnosticKind::MissingArg { expected },
-                                            file: self.file,
-                                            expr: Some(expr),
-                                            range: call_end,
-                                            help: None,
-                                        });
-                                    }
-                                    break 'blk Ty::Unknown.into();
-                                };
-                                let enum_ty = self.tys[self.file][*enum_val];
-                                let Ty::Enum { uid, .. } = enum_ty.absolute_ty() else {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::Mismatch {
-                                            expected: ExpectedTy::Enum,
-                                            found: enum_ty,
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(*enum_val),
-                                        help: None,
-                                    });
-                                    break 'blk Ty::Unknown.into();
-                                };
-
-                                // second arg = variant type
-
-                                let Some(variant_ty_val) = args.next() else {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::MissingArg {
-                                            expected: ExpectedTy::Concrete(Ty::Type.into()),
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: call_end,
-                                        help: None,
-                                    });
-                                    break 'blk Ty::Unknown.into();
-                                };
-                                let variant_ty = self.tys[self.file][*variant_ty_val];
-                                if !matches!(variant_ty.absolute_ty(), Ty::Type) {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::Mismatch {
-                                            expected: ExpectedTy::Concrete(Ty::Type.into()),
-                                            found: variant_ty,
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(*variant_ty_val),
-                                        help: None,
-                                    });
-                                    break 'blk Ty::Unknown.into();
-                                };
-                                let variant_ty = self.const_ty(*variant_ty_val)?;
-
-                                let Ty::Variant { enum_uid, .. } =
-                                    variant_ty.absolute_ty_keep_variants()
-                                else {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::Mismatch {
-                                            expected: ExpectedTy::Variant,
-                                            found: variant_ty,
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(*variant_ty_val),
-                                        help: None,
-                                    });
-                                    break 'blk Ty::Unknown.into();
-                                };
-
-                                if enum_uid != uid {
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::UnwrapVariantMismatchEnum {
-                                            variant_ty,
-                                            enum_ty,
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(*variant_ty_val),
-                                        help: None,
-                                    });
-                                    break 'blk Ty::Unknown.into();
-                                }
-
-                                let mut extra_args = false;
-                                for arg in args {
-                                    extra_args = true;
-                                    self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::ExtraArg {
-                                            found: self.tys[self.file][*arg],
-                                        },
-                                        file: self.file,
-                                        expr: Some(expr),
-                                        range: self.bodies.range_for_expr(*variant_ty_val),
-                                        help: None,
-                                    });
-                                }
-
-                                if extra_args {
-                                    break 'blk Ty::Unknown.into();
-                                }
-
-                                variant_ty
-                            }
-                            _ => {
+                                *payload_ty
+                            } else {
                                 self.diagnostics.push(TyDiagnostic {
-                                    kind: TyDiagnosticKind::UnknownDirective { name: name.name.0 },
+                                    kind: TyDiagnosticKind::PropagateNonPropagatable {
+                                        found: inner_ty,
+                                    },
                                     file: self.file,
                                     expr: Some(expr),
-                                    range: name.range,
+                                    range: self.bodies.range_for_expr(expr),
                                     help: None,
                                 });
 
                                 Ty::Unknown.into()
                             }
-                        },
+                        }
+                        Expr::Directive { name, args } => {
+                            let mut args = args.iter();
+
+                            let call_range = self.bodies.range_for_expr(expr);
+                            let call_end = call_range
+                                .end()
+                                .checked_sub(TextSize::new(1))
+                                .unwrap_or(call_range.end());
+                            let call_end = TextRange::new(call_end, call_end);
+
+                            match self.interner.lookup(name.name.0) {
+                                "unwrap" => 'blk: {
+                                    // first arg = enum to unwrap
+                                    let Some(vary_val) = args.next() else {
+                                        // we could also report that a second argument of type `type`
+                                        // is needed, but since that argument isn't required for
+                                        // optionals I'm deciding not to
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg {
+                                                expected: ExpectedTy::SumType,
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+                                    let sum_ty = self.tys[self.file][*vary_val];
+                                    if !self.expect_match(sum_ty, ExpectedTy::SumType, *vary_val) {
+                                        break 'blk Ty::Unknown.into();
+                                    }
+
+                                    // second arg = variant type
+                                    if let Some(variant_ty_val) = args.next() {
+                                        let variant_ty = self.tys[self.file][*variant_ty_val];
+                                        if !self.expect_match(
+                                            variant_ty,
+                                            ExpectedTy::Concrete(Ty::Type.into()),
+                                            *variant_ty_val,
+                                        ) {
+                                            break 'blk Ty::Unknown.into();
+                                        }
+                                        let variant_ty = self.const_ty(*variant_ty_val)?;
+
+                                        if !sum_ty.has_sum_variant(&variant_ty) {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::NotAVariantOfSumType {
+                                                    ty: variant_ty,
+                                                    sum_ty,
+                                                },
+                                                file: self.file,
+                                                expr: Some(expr),
+                                                range: self.bodies.range_for_expr(*variant_ty_val),
+                                                help: None,
+                                            });
+                                            break 'blk Ty::Unknown.into();
+                                        }
+
+                                        let mut extra_args = false;
+                                        for arg in args {
+                                            self.diagnostics.push(TyDiagnostic {
+                                                kind: TyDiagnosticKind::ExtraArg {
+                                                    found: self.tys[self.file][*arg],
+                                                },
+                                                file: self.file,
+                                                expr: Some(*arg),
+                                                range: self.bodies.range_for_expr(*arg),
+                                                help: None,
+                                            });
+                                            extra_args = true;
+                                        }
+                                        if extra_args {
+                                            break 'blk Ty::Unknown.into();
+                                        }
+
+                                        variant_ty
+                                    } else if let Ty::Optional { sub_ty } = sum_ty.absolute_ty() {
+                                        *sub_ty
+                                    } else {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg {
+                                                expected: ExpectedTy::Concrete(Ty::Type.into()),
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                        Ty::Unknown.into()
+                                    }
+                                }
+                                "is_variant" => 'blk: {
+                                    // first arg = enum to unwrap
+                                    let Some(vary_val) = args.next() else {
+                                        // we could also report that a second argument of type `type`
+                                        // is needed, but since that argument isn't required for
+                                        // optionals I'm deciding not to
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg {
+                                                expected: ExpectedTy::SumType,
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+                                    let sum_ty = self.tys[self.file][*vary_val];
+                                    if !self.expect_match(sum_ty, ExpectedTy::SumType, *vary_val) {
+                                        break 'blk Ty::Unknown.into();
+                                    }
+
+                                    // second arg = variant type
+                                    let Some(variant_ty_val) = args.next() else {
+                                        // unlike #unwrap which will work for optionals without a
+                                        // second argument, #is_variant always requires a second
+                                        // argument
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg {
+                                                expected: ExpectedTy::Concrete(Ty::Type.into()),
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+
+                                    let variant_ty = self.tys[self.file][*variant_ty_val];
+                                    if !self.expect_match(
+                                        variant_ty,
+                                        ExpectedTy::Concrete(Ty::Type.into()),
+                                        *variant_ty_val,
+                                    ) {
+                                        break 'blk Ty::Unknown.into();
+                                    }
+                                    let variant_ty = self.const_ty(*variant_ty_val)?;
+
+                                    if !sum_ty.has_sum_variant(&variant_ty) {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::NotAVariantOfSumType {
+                                                ty: variant_ty,
+                                                sum_ty,
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: self.bodies.range_for_expr(*variant_ty_val),
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    }
+
+                                    let mut extra_args = false;
+                                    for arg in args {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::ExtraArg {
+                                                found: self.tys[self.file][*arg],
+                                            },
+                                            file: self.file,
+                                            expr: Some(*arg),
+                                            range: self.bodies.range_for_expr(*arg),
+                                            help: None,
+                                        });
+                                        extra_args = true;
+                                    }
+                                    if extra_args {
+                                        break 'blk Ty::Unknown.into();
+                                    }
+
+                                    Ty::Bool.into()
+                                }
+                                "builtin" => 'blk: {
+                                    // first arg = builtin name
+                                    let Some(name_val) = args.next() else {
+                                        // we could also report that a second argument of type `type`
+                                        // is needed, but since that argument isn't required for
+                                        // optionals I'm deciding not to
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::MissingArg {
+                                                expected: ExpectedTy::Concrete(Ty::String.into()),
+                                            },
+                                            file: self.file,
+                                            expr: Some(expr),
+                                            range: call_end,
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+                                    let name_ty = self.tys[self.file][*name_val];
+                                    if !self.expect_match(
+                                        name_ty,
+                                        ExpectedTy::Concrete(Ty::String.into()),
+                                        *name_val,
+                                    ) {
+                                        break 'blk Ty::Unknown.into();
+                                    }
+                                    // todo: allow this to be any const expr
+                                    let hir::Expr::StringLiteral(name) = &self.bodies[*name_val]
+                                    else {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::NotStringLit,
+                                            file: self.file,
+                                            expr: Some(*name_val),
+                                            range: self.bodies.range_for_expr(*name_val),
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+
+                                    let Ok(builtin) =
+                                        BuiltinKind::from_str(self.interner.lookup(*name))
+                                    else {
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::NotABuiltin { name: *name },
+                                            file: self.file,
+                                            expr: Some(*name_val),
+                                            range: self.bodies.range_for_expr(*name_val),
+                                            help: None,
+                                        });
+                                        break 'blk Ty::Unknown.into();
+                                    };
+
+                                    builtin.to_expected()
+                                }
+                                _ => {
+                                    self.diagnostics.push(TyDiagnostic {
+                                        kind: TyDiagnosticKind::UnknownDirective {
+                                            name: name.name.0,
+                                        },
+                                        file: self.file,
+                                        expr: Some(expr),
+                                        range: name.range,
+                                        help: None,
+                                    });
+
+                                    Ty::Unknown.into()
+                                }
+                            }
+                        }
                         Expr::Import(file_name) => Ty::File(*file_name).into(),
                     };
 
                     self.tys[self.file].expr_tys.insert(expr, ty);
                 }
-                Descendant::Stmt(stmt) => {
+                Descendant::PreStmt(stmt) => {
                     if self.inferred_stmts.contains(&(self.file, stmt)) {
                         continue;
                     }
@@ -2412,12 +2933,16 @@ impl GlobalInferenceCtx<'_> {
 
                                 // the definition has an annotation, so the value should match
                                 if let Some(value) = def_body.value {
+                                    // note: type annotations get inserted into `expected_tys`
+                                    // in a different loop at the beginning of the `infer_expr`
+                                    // function
+
                                     let value_ty = self.tys[self.file][value];
-                                    if self.expect_match(value_ty, ty_annotation, value)
-                                        && self.replace_weak_tys(value, ty_annotation)
-                                    {
-                                        self.tys[self.file].expr_tys.insert(value, ty_annotation);
-                                    }
+                                    self.expect_match(
+                                        value_ty,
+                                        ExpectedTy::Concrete(ty_annotation),
+                                        value,
+                                    );
                                 } else if !ty_annotation.has_default_value() {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::DeclTypeHasNoDefault {
@@ -2466,22 +2991,22 @@ impl GlobalInferenceCtx<'_> {
                                 continue;
                             }
 
-                            let source_ty = self.tys[self.file][assign_body.dest];
+                            let dest_ty = self.tys[self.file][assign_body.dest];
                             let value_ty = self.tys[self.file][assign_body.value];
 
                             match assign_body
                                 .quick_assign_op
-                                .map(|op| (op, op.get_possible_output_ty(&source_ty, &value_ty)))
+                                .map(|op| (op, op.get_possible_output_ty(&dest_ty, &value_ty)))
                             {
                                 Some((op, Some(output_ty))) => {
-                                    if *source_ty != Ty::Unknown
+                                    if *dest_ty != Ty::Unknown
                                         && *value_ty != Ty::Unknown
                                         && !op.can_perform(&output_ty.max_ty)
                                     {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::BinaryOpMismatch {
                                                 op,
-                                                first: source_ty,
+                                                first: dest_ty,
                                                 second: value_ty,
                                             },
                                             file: self.file,
@@ -2501,7 +3026,7 @@ impl GlobalInferenceCtx<'_> {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::BinaryOpMismatch {
                                             op,
-                                            first: source_ty,
+                                            first: dest_ty,
                                             second: value_ty,
                                         },
                                         file: self.file,
@@ -2512,14 +3037,14 @@ impl GlobalInferenceCtx<'_> {
                                     });
                                 }
                                 None => {
-                                    if source_ty.is_weak_replaceable_by(&value_ty) {
+                                    if dest_ty.is_weak_replaceable_by(&value_ty) {
                                         self.replace_weak_tys(assign_body.dest, value_ty);
-                                    } else if self.expect_match(
-                                        value_ty,
-                                        source_ty,
-                                        assign_body.value,
-                                    ) {
-                                        self.replace_weak_tys(assign_body.value, value_ty);
+                                    } else {
+                                        self.expect_match(
+                                            value_ty,
+                                            ExpectedTy::Concrete(dest_ty),
+                                            assign_body.value,
+                                        );
                                     }
                                 }
                             }
@@ -2530,55 +3055,18 @@ impl GlobalInferenceCtx<'_> {
                         Stmt::Break {
                             label: Some(label),
                             value,
+                            range,
                             ..
                         } => {
-                            let referenced_expr = self.bodies[label];
-
                             let value_ty = value.map_or_else(
                                 || Ty::Void.into(),
                                 |value| self.tys[self.file][value],
                             );
 
-                            let must_be_void = matches!(
-                                self.bodies[referenced_expr],
-                                Expr::While {
-                                    condition: Some(_),
-                                    ..
-                                }
-                            );
+                            let range =
+                                value.map_or(range, |value| self.bodies.range_for_expr(value));
 
-                            match self.tys[self.file].expr_tys.get(referenced_expr) {
-                                Some(expected_ty) => {
-                                    self.expect_block_match(
-                                        value,
-                                        value_ty,
-                                        referenced_expr,
-                                        *expected_ty,
-                                    );
-                                }
-                                None => {
-                                    if must_be_void && !value_ty.is_void() {
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind: TyDiagnosticKind::Mismatch {
-                                                expected: ExpectedTy::Concrete(Ty::Void.into()),
-                                                found: value_ty,
-                                            },
-                                            file: self.file,
-                                            expr: value,
-                                            range: self.bodies.range_for_expr(value.unwrap()),
-                                            help: None,
-                                        });
-
-                                        self.tys[self.file]
-                                            .expr_tys
-                                            .insert(referenced_expr, Ty::Unknown.into());
-                                    } else {
-                                        self.tys[self.file]
-                                            .expr_tys
-                                            .insert(referenced_expr, value_ty);
-                                    }
-                                }
-                            }
+                            self.break_with(label, value, range, value_ty, true);
                         }
                         Stmt::Continue { .. } => {}
                         Stmt::Defer { expr, .. } => {
@@ -2588,21 +3076,128 @@ impl GlobalInferenceCtx<'_> {
 
                     self.inferred_stmts.insert((self.file, stmt));
                 }
+                // Although the type is called *PostStmt*, since we reversed the list these
+                // actually come *before* all their inner subexpressions.
+                //
+                // This is useful because inserting a value into `expected_tys` will change
+                // how types get resolved and how errors get reported
+                Descendant::PostStmt(stmt) => {
+                    if self.inferred_stmts.contains(&(self.file, stmt)) {
+                        continue;
+                    }
+
+                    match self.bodies[stmt] {
+                        Stmt::Expr(expr) => {
+                            self.find_usages(&[expr], stmt);
+                        }
+                        Stmt::LocalDef(local_def) => {
+                            let def_body = &self.bodies[local_def];
+
+                            if let Some(ty_annotation_expr) = def_body.ty
+                                && let Some(value) = def_body.value
+                            {
+                                let ty_annotation = self.const_ty(ty_annotation_expr)?;
+
+                                self.expected_tys.insert(
+                                    value,
+                                    ExprExpected {
+                                        expected_ty: ty_annotation,
+                                        annotation_range: self
+                                            .bodies
+                                            .range_for_expr(ty_annotation_expr),
+                                        is_return_ty: false,
+                                        is_default: false,
+                                    },
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             };
         }
 
         Ok(self.tys[self.file][expr])
     }
 
+    fn break_with(
+        &mut self,
+        label: ScopeId,
+        value: Option<Idx<Expr>>,
+        range: TextRange,
+        ty: Intern<Ty>,
+        replace_found_with_new_max: bool,
+    ) {
+        let referenced_expr = self.bodies[label];
+
+        let must_be_void = matches!(
+            self.bodies[referenced_expr],
+            Expr::While {
+                condition: Some(_),
+                ..
+            }
+        );
+
+        match self.try_get_previous_ty(referenced_expr) {
+            Some(expected_ty) => {
+                self.expect_block_match(
+                    value,
+                    ty,
+                    range,
+                    referenced_expr,
+                    expected_ty,
+                    replace_found_with_new_max,
+                );
+            }
+            None => {
+                if must_be_void && !ty.is_void() {
+                    // we just checked that the type wasn't void
+                    assert!(!ty.can_be_created_from_nothing());
+
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::Mismatch {
+                            expected: ExpectedTy::Concrete(Ty::Void.into()),
+                            found: ty,
+                        },
+                        file: self.file,
+                        expr: value,
+                        range: self.bodies.range_for_expr(value.unwrap()),
+                        help: None,
+                    });
+
+                    self.tys[self.file]
+                        .expr_tys
+                        .insert(referenced_expr, Ty::Unknown.into());
+                } else {
+                    // the type just hasn't been set yet
+                    self.tys[self.file].expr_tys.insert(referenced_expr, ty);
+                }
+            }
+        }
+    }
+
+    fn try_get_previous_ty(&self, expr: Idx<Expr>) -> Option<Intern<Ty>> {
+        self.tys[self.file]
+            .expr_tys
+            .get(expr)
+            .copied()
+            .or_else(|| self.expected_tys.get(expr).copied().map(|e| e.expected_ty))
+    }
+
     /// Only call for blocks which had their type previously set by a `break`
     ///
     /// returns the max of the found expression and the current type of the block
+    ///
+    /// todo: what if the expected type is nil but then the block type becomes ?u64 or something
+    /// like that?
     fn expect_block_match(
         &mut self,
         found_expr: Option<Idx<hir::Expr>>,
         found_ty: Intern<Ty>,
+        found_range: TextRange,
         block_expr: Idx<hir::Expr>,
         block_ty: Intern<Ty>,
+        replace_found_with_new_max: bool,
     ) -> Option<Intern<Ty>> {
         if found_ty.is_unknown() || block_ty.is_unknown() {
             return None;
@@ -2610,16 +3205,89 @@ impl GlobalInferenceCtx<'_> {
 
         if let Some(max) = block_ty.max(&found_ty) {
             let max = max.into();
-            self.tys[self.file].expr_tys[block_expr] = max;
-            if let Some(found_expr) = found_expr {
+            self.tys[self.file].expr_tys.insert(block_expr, max);
+            if replace_found_with_new_max && let Some(found_expr) = found_expr {
                 self.replace_weak_tys(found_expr, max);
             }
 
             Some(max)
+        } else if found_ty.can_fit_into(&block_ty) {
+            if replace_found_with_new_max && let Some(found_expr) = found_expr {
+                self.replace_weak_tys(found_expr, block_ty);
+            }
+
+            Some(block_ty)
         } else {
-            // there must be a usage since the block has a type
-            let id = self.bodies.block_to_scope_id(block_expr).unwrap();
-            let first_usage = self.bodies.scope_id_usages(id).iter().next().unwrap();
+            let help = if let Some(expected) = self.expected_tys.get(block_expr) {
+                if expected.is_return_ty {
+                    TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::ReturnTyHere {
+                            ty: expected.expected_ty,
+                            is_default: expected.is_default,
+                        },
+                        range: expected.annotation_range,
+                    }
+                } else {
+                    TyDiagnosticHelp {
+                        kind: TyDiagnosticHelpKind::AnnotationHere {
+                            ty: expected.expected_ty,
+                        },
+                        range: expected.annotation_range,
+                    }
+                }
+            } else {
+                let id = self.bodies.block_to_scope_id(block_expr).unwrap();
+
+                let mut usages = self.bodies.scope_id_usages(id).iter();
+                loop {
+                    // todo: maybe use better ranges for these errors
+                    match usages.next() {
+                        Some(ScopeUsage::Expr(expr)) => {
+                            assert!(matches!(self.bodies[*expr], hir::Expr::Propagate { .. }));
+
+                            break TyDiagnosticHelp {
+                                kind: TyDiagnosticHelpKind::PropagateHere { ty: block_ty },
+                                range: self.bodies.range_for_expr(*expr),
+                            };
+                        }
+                        Some(ScopeUsage::Stmt(stmt)) => match self.bodies[*stmt] {
+                            hir::Stmt::Break {
+                                is_return: false,
+                                value,
+                                ..
+                            } => {
+                                break TyDiagnosticHelp {
+                                    kind: TyDiagnosticHelpKind::BreakHere {
+                                        ty: block_ty,
+                                        is_default: value.is_none(),
+                                    },
+                                    range: self.bodies.range_for_stmt(*stmt),
+                                };
+                            }
+                            hir::Stmt::Break {
+                                is_return: true,
+                                value,
+                                ..
+                            } => {
+                                break TyDiagnosticHelp {
+                                    kind: TyDiagnosticHelpKind::ReturnHere {
+                                        ty: block_ty,
+                                        is_default: value.is_none(),
+                                    },
+                                    range: self.bodies.range_for_stmt(*stmt),
+                                };
+                            }
+                            hir::Stmt::Continue { .. } => {
+                                // continues can't change the type of a block, so we skip them
+                            }
+                            _ => {}
+                        },
+                        None => unreachable!(
+                            "we already checked for expected_ty, so something must have previously set the block type"
+                        ),
+                    }
+                }
+            };
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch {
@@ -2628,14 +3296,14 @@ impl GlobalInferenceCtx<'_> {
                 },
                 file: self.file,
                 expr: Some(found_expr.unwrap_or(block_expr)),
-                range: self.bodies.range_for_expr(found_expr.unwrap_or(block_expr)),
-                help: Some(TyDiagnosticHelp {
-                    kind: TyDiagnosticHelpKind::BreakHere { break_ty: block_ty },
-                    range: self.bodies.range_for_stmt(*first_usage),
-                }),
+                range: found_range,
+                help: Some(help),
             });
 
-            self.tys[self.file].expr_tys[block_expr] = Ty::Unknown.into();
+            // make the block type unknown so errors don't get reported twice in a row
+            self.tys[self.file]
+                .expr_tys
+                .insert(block_expr, Ty::Unknown.into());
 
             None
         }
@@ -2666,21 +3334,23 @@ impl GlobalInferenceCtx<'_> {
     }
 
     /// If found does not match expected, an error is thrown at the expression
+    ///
+    /// This function will also do weak type replacing
     pub(crate) fn expect_match(
         &mut self,
         found: Intern<Ty>,
-        expected: Intern<Ty>,
+        expected: ExpectedTy,
         expr: Idx<hir::Expr>,
     ) -> bool {
         // if the expression we're checking against is an
         // int literal (which can be inferred into any int type),
         // then we can just quickly set it's type here
-        if let (hir::Expr::IntLiteral(num), Ty::IInt(bit_width) | Ty::UInt(bit_width)) =
-            (&self.bodies[expr], expected.as_ref())
+        if let (hir::Expr::IntLiteral(num), Some(Ty::IInt(_)) | Some(Ty::UInt(_))) =
+            (&self.bodies[expr], expected.get_concrete().as_deref())
         {
-            if *bit_width != u8::MAX {
-                self.tys[self.file].expr_tys[expr] = expected;
-            }
+            let expected = expected.get_concrete().expect("already checked for Some");
+
+            self.tys[self.file].expr_tys[expr] = expected;
 
             if let Some(max_size) = expected.get_max_int_size() {
                 if *num > max_size {
@@ -2701,12 +3371,37 @@ impl GlobalInferenceCtx<'_> {
             return true;
         }
 
-        if found.is_unknown() || expected.is_unknown() {
+        // todo: make sure this works for blocks
+        if expected.get_concrete().is_some_and(|ty| *ty == Ty::Type) && found.is_zero_sized() {
+            return true;
+        }
+
+        if found.is_unknown()
+            || expected
+                .get_concrete()
+                .as_deref()
+                .is_some_and(Ty::is_unknown)
+        {
             // return false without throwing an error
             return false;
         }
 
-        if !found.can_fit_into(&expected) {
+        if expected.can_take(&found) {
+            if let ExpectedTy::Concrete(expected_ty) = expected {
+                self.replace_weak_tys(expr, expected_ty);
+            }
+
+            true
+        } else {
+            if let ExpectedTy::Concrete(expected_ty) = expected {
+                assert!(
+                    !found.is_weak_replaceable_by(&expected_ty),
+                    "`is_weak_replaceable_by` is not a subset of `can_fit_into` for `{}` -> `{}`\n(`is_weak_replaceable_by` returned true but `can_fit_into` returned false)",
+                    found.simple_display(self.interner, true),
+                    expected_ty.simple_display(self.interner, true),
+                );
+            }
+
             let help = match self.bodies[expr] {
                 hir::Expr::Block {
                     tail_expr: Some(tail_expr),
@@ -2719,10 +3414,7 @@ impl GlobalInferenceCtx<'_> {
             };
 
             self.diagnostics.push(TyDiagnostic {
-                kind: TyDiagnosticKind::Mismatch {
-                    expected: ExpectedTy::Concrete(expected),
-                    found,
-                },
+                kind: TyDiagnosticKind::Mismatch { expected, found },
                 file: self.file,
                 expr: Some(expr),
                 range: self.bodies.range_for_expr(expr),
@@ -2730,8 +3422,6 @@ impl GlobalInferenceCtx<'_> {
             });
 
             false
-        } else {
-            true
         }
     }
 
@@ -2807,74 +3497,11 @@ impl GlobalInferenceCtx<'_> {
                 let actual_ty = self.const_ty(global_body)?;
                 self.file = old_file;
 
-                // it'd be better to mutate the fqn, but that would invalidate the hash
-                // within the internment crate
-                Ok(match actual_ty.as_ref() {
-                    Ty::Distinct {
-                        fqn: None,
-                        sub_ty: ty,
-                        uid,
-                    } => Ty::Distinct {
-                        fqn: Some(fqn),
-                        uid: *uid,
-                        sub_ty: *ty,
-                    }
-                    .into(),
-                    Ty::Struct {
-                        anonymous,
-                        fqn: None,
-                        members,
-                        uid,
-                    } => Ty::Struct {
-                        anonymous: *anonymous,
-                        fqn: Some(fqn),
-                        members: members.clone(),
-                        uid: *uid,
-                    }
-                    .into(),
-                    Ty::Enum {
-                        fqn: None,
-                        uid,
-                        variants,
-                    } => {
-                        let new_ty = Ty::Enum {
-                            fqn: Some(fqn),
-                            uid: *uid,
-                            variants: variants
-                                .iter()
-                                .map(|v| {
-                                    let Ty::Variant {
-                                        enum_fqn: None,
-                                        enum_uid,
-                                        variant_name,
-                                        uid,
-                                        sub_ty,
-                                        discriminant,
-                                    } = v.as_ref()
-                                    else {
-                                        unreachable!("all variants should be `Ty::Variant`")
-                                    };
+                if actual_ty.can_have_a_name() {
+                    set_type_name(actual_ty, TyName::Global(fqn));
+                }
 
-                                    Ty::Variant {
-                                        enum_fqn: Some(fqn),
-                                        enum_uid: *enum_uid,
-                                        variant_name: *variant_name,
-                                        uid: *uid,
-                                        sub_ty: *sub_ty,
-                                        discriminant: *discriminant,
-                                    }
-                                    .into()
-                                })
-                                .collect(),
-                        }
-                        .into();
-
-                        ty::set_enum_uid(*uid, new_ty);
-
-                        new_ty
-                    }
-                    _ => actual_ty,
-                })
+                Ok(actual_ty)
             }
             hir::DefinitionStatus::UnknownFile => {
                 self.diagnostics.push(TyDiagnostic {
@@ -2998,18 +3625,7 @@ impl GlobalInferenceCtx<'_> {
                             Ty::Unknown.into()
                         }
                         Expr::Member { previous, name } => {
-                            // todo: eventually comment this out and remove recursion
-                            // if !self.tys[self.file].expr_tys.contains_idx(*previous) {
-                            //     println!(
-                            //         "get {} #{} {:?}\n#{} {:?}",
-                            //         self.file.debug(self.interner),
-                            //         previous.into_raw(),
-                            //         &self.bodies[*previous],
-                            //         expr.into_raw(),
-                            //         &self.bodies[expr],
-                            //     );
-                            // }
-                            // let previous_ty = self.tys[self.file][*previous];
+                            // todo: remove recursion
 
                             // this has to be done because `infer_fqn` will call
                             // `const_ty` on the type annotation of the fqn, even
@@ -3036,7 +3652,7 @@ impl GlobalInferenceCtx<'_> {
                                         Ty::Enum { variants, .. } => variants
                                             .iter()
                                             .find(|variant| {
-                                                let Ty::Variant { variant_name, .. } =
+                                                let Ty::EnumVariant { variant_name, .. } =
                                                     variant.as_ref()
                                                 else {
                                                     unreachable!(
@@ -3049,9 +3665,9 @@ impl GlobalInferenceCtx<'_> {
                                             .copied()
                                             .unwrap_or_else(|| {
                                                 self.diagnostics.push(TyDiagnostic {
-                                                    kind: TyDiagnosticKind::NonExistentVariant {
-                                                        variant_name: name.name.0,
-                                                        enum_ty: const_ty,
+                                                    kind: TyDiagnosticKind::NotAShorthandVariantOfSumType {
+                                                        ty: name.name.0,
+                                                        sum_ty: const_ty,
                                                     },
                                                     file: self.file,
                                                     expr: Some(expr),
@@ -3092,7 +3708,11 @@ impl GlobalInferenceCtx<'_> {
                                 // we must infer it manually because it might not
                                 // have been inferred.
                                 let usize_ty = Ty::UInt(u8::MAX).into();
-                                if !self.expect_match(self.tys[self.file][*size], usize_ty, *size) {
+                                if !self.expect_match(
+                                    self.tys[self.file][*size],
+                                    ExpectedTy::Concrete(usize_ty),
+                                    *size,
+                                ) {
                                     break 'branch Ty::Unknown.into();
                                 }
 
@@ -3114,12 +3734,9 @@ impl GlobalInferenceCtx<'_> {
                                 }
 
                                 match self.const_data(self.file, *size)? {
-                                    Some(ComptimeResult::Integer { num, .. }) => Ty::Array {
-                                        anonymous: false,
-                                        size: num,
-                                        sub_ty,
+                                    Some(ComptimeResult::Integer { num, .. }) => {
+                                        Ty::ConcreteArray { size: num, sub_ty }.into()
                                     }
-                                    .into(),
                                     _ => {
                                         // todo: we check that the array size is a `usize` above,
                                         // soo... is this even reachable?
@@ -3139,14 +3756,11 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Distinct { uid, ty } => Ty::Distinct {
-                            fqn: None,
                             uid: *uid,
                             sub_ty: self.tys[self.file].meta_tys[*ty],
                         }
                         .into(),
-                        Expr::StructDecl { uid, members } => Ty::Struct {
-                            anonymous: false,
-                            fqn: None,
+                        Expr::StructDecl { uid, members } => Ty::ConcreteStruct {
                             uid: *uid,
                             members: members
                                 .iter()
@@ -3182,17 +3796,19 @@ impl GlobalInferenceCtx<'_> {
 
                                 if let Some(discrim_expr) = variant.discriminant {
                                     'discrim_calc: {
+                                        let ty_u8 = Ty::UInt(8).into();
+
                                         // we must infer it manually because it might not
                                         // have been inferred.
                                         if !self.expect_match(
                                             self.tys[self.file][discrim_expr],
-                                            *ty::U8,
+                                            ExpectedTy::Concrete(ty_u8),
                                             discrim_expr,
                                         ) {
                                             break 'discrim_calc;
                                         }
 
-                                        self.replace_weak_tys(discrim_expr, *ty::U8);
+                                        self.replace_weak_tys(discrim_expr, ty_u8);
 
                                         let expr_const = self.get_const(discrim_expr);
                                         if !expr_const.is_const() {
@@ -3272,8 +3888,7 @@ impl GlobalInferenceCtx<'_> {
                                 }
 
                                 variant_tys.push(
-                                    Ty::Variant {
-                                        enum_fqn: None,
+                                    Ty::EnumVariant {
                                         enum_uid: *enum_uid,
                                         variant_name: name.name,
                                         uid: variant.uid,
@@ -3285,7 +3900,6 @@ impl GlobalInferenceCtx<'_> {
                             }
 
                             let enum_ty = Ty::Enum {
-                                fqn: None,
                                 uid: *enum_uid,
                                 variants: variant_tys,
                             }
@@ -3295,12 +3909,43 @@ impl GlobalInferenceCtx<'_> {
 
                             enum_ty
                         }
+                        Expr::OptionalDecl { ty } => Ty::Optional {
+                            sub_ty: self.tys[self.file].meta_tys[*ty],
+                        }
+                        .into(),
+                        Expr::ErrorUnionDecl {
+                            error_ty,
+                            payload_ty,
+                        } => {
+                            let error_ty = self.tys[self.file].meta_tys[*error_ty];
+                            let payload_ty = self.tys[self.file].meta_tys[*payload_ty];
+
+                            if !error_ty.can_differentiate_from(&payload_ty) {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::ImpossibleToDifferentiateErrorUnion {
+                                        error_ty,
+                                        payload_ty,
+                                    },
+                                    file: self.file,
+                                    expr: Some(expr),
+                                    range: self.bodies.range_for_expr(expr),
+                                    help: None,
+                                });
+
+                                Ty::Unknown.into()
+                            } else {
+                                Ty::ErrorUnion {
+                                    error_ty,
+                                    payload_ty,
+                                }
+                                .into()
+                            }
+                        }
                         Expr::Lambda(lambda) => {
                             let hir::Lambda {
                                 params,
                                 return_ty,
                                 body,
-                                is_extern,
                                 ..
                             } = &self.bodies[*lambda];
 
@@ -3323,7 +3968,7 @@ impl GlobalInferenceCtx<'_> {
                                 {
                                     let last_ty = self.tys[self.file].meta_tys[last_param.ty];
 
-                                    if !ty.can_differentiate(&last_ty) {
+                                    if !ty.can_differentiate_from(&last_ty) {
                                         impossible_to_differentiate = true;
                                         self.diagnostics.push(TyDiagnostic {
                                             kind:
@@ -3356,8 +4001,8 @@ impl GlobalInferenceCtx<'_> {
                             }
                             .into();
 
-                            // if the function has a body (or is extern), then it isn't a type
-                            if *is_extern || self.bodies[*body] != hir::Expr::Missing {
+                            // if the function has a body then it isn't a type
+                            if *body != hir::LambdaBody::Empty {
                                 self.report_non_type(expr, ty);
 
                                 Ty::Unknown.into()
@@ -3396,22 +4041,30 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Paren(Some(paren_expr)) => {
                             self.tys[self.file].get_meta_ty(*paren_expr).unwrap()
                         }
-                        // todo: should we remove the void type?
-                        Expr::Paren(None) => Ty::Void.into(),
-                        Expr::Block { .. } => todo!("blocks as types"),
                         _ => {
                             // TODO: remove recursion
                             let expr_ty = self.infer_expr(expr)?;
 
-                            self.report_non_type(expr, expr_ty);
+                            if expr_ty.is_zero_sized() {
+                                println!(
+                                    "converting #{} ({:?}) into a const `{}` type",
+                                    expr.into_raw(),
+                                    self.bodies[expr],
+                                    expr_ty.simple_display(self.interner, true),
+                                );
+                                expr_ty
+                            } else {
+                                self.report_non_type(expr, expr_ty);
 
-                            Ty::Unknown.into()
+                                Ty::Unknown.into()
+                            }
                         }
                     };
 
                     self.tys[self.file].meta_tys.insert(expr, ty);
                 }
-                Descendant::Stmt(_) => unreachable!(),
+                Descendant::PreStmt(_) => unreachable!(),
+                Descendant::PostStmt(_) => unreachable!(),
             }
         }
 
@@ -3508,6 +4161,7 @@ impl GlobalInferenceCtx<'_> {
                     expr,
                     hir::DescentOpts::All {
                         include_lambdas: false,
+                        include_post_stmts: false,
                     },
                 )
                 .collect_vec(),
@@ -3631,7 +4285,7 @@ impl GlobalInferenceCtx<'_> {
                         Expr::While { .. } => {}
                         Expr::Switch { .. } => {}
                         Expr::Local(_) => {}
-                        Expr::SwitchLocal(_) => {}
+                        Expr::SwitchArgument(_) => {}
                         Expr::LocalGlobal(name) => {
                             let fqn = hir::Fqn {
                                 file,
@@ -3663,6 +4317,7 @@ impl GlobalInferenceCtx<'_> {
                                         body,
                                         hir::DescentOpts::All {
                                             include_lambdas: false,
+                                            include_post_stmts: false,
                                         },
                                     )
                                     .collect(),
@@ -3729,6 +4384,7 @@ impl GlobalInferenceCtx<'_> {
                                                     body,
                                                     hir::DescentOpts::All {
                                                         include_lambdas: false,
+                                                        include_post_stmts: false,
                                                     },
                                                 )
                                                 .collect(),
@@ -3768,9 +4424,11 @@ impl GlobalInferenceCtx<'_> {
                                 return Err(vec![lambda]);
                             }
 
-                            let is_type = !lambda_body.is_extern
-                                && lambda_body.return_ty.is_some()
-                                && self.world_bodies[file][lambda_body.body] == Expr::Missing;
+                            if lambda_body.body == hir::LambdaBody::Empty
+                                && lambda_body.return_ty.is_none()
+                            {
+                                return Ok(false);
+                            }
 
                             // println!(
                             //     "lambda #{} : {} {}",
@@ -3779,15 +4437,15 @@ impl GlobalInferenceCtx<'_> {
                             //     is_type
                             // );
 
-                            // check if the lambda is extern, or it is being used as a type
-                            if !lambda_body.is_extern && !is_type {
+                            if let hir::LambdaBody::Block(block) = lambda_body.body {
                                 checking_stack.push((
                                     lambda,
                                     self.world_bodies[file]
                                         .descendants(
-                                            lambda_body.body,
+                                            block,
                                             hir::DescentOpts::All {
                                                 include_lambdas: false,
+                                                include_post_stmts: false,
                                             },
                                         )
                                         .collect(),
@@ -3798,13 +4456,17 @@ impl GlobalInferenceCtx<'_> {
                         Expr::PrimitiveTy(_) => {}
                         Expr::Distinct { .. } => {}
                         Expr::StructDecl { .. } => {}
-                        Expr::EnumDecl { .. } => {}
                         Expr::StructLiteral { .. } => {}
+                        Expr::EnumDecl { .. } => {}
+                        Expr::Nil => {}
+                        Expr::OptionalDecl { .. } => {}
+                        Expr::ErrorUnionDecl { .. } => {}
+                        Expr::Propagate { .. } => {}
                         Expr::Import(_) => {}
                         Expr::Directive { .. } => {}
                     }
                 }
-                Descendant::Stmt(stmt) => match &self.world_bodies[file][stmt] {
+                Descendant::PreStmt(stmt) => match &self.world_bodies[file][stmt] {
                     Stmt::Expr(_) => {}
                     Stmt::LocalDef(_) => {}
                     Stmt::Assign(_) => {}
@@ -3824,6 +4486,7 @@ impl GlobalInferenceCtx<'_> {
                     }
                     Stmt::Defer { .. } => {}
                 },
+                Descendant::PostStmt(_) => unreachable!(),
             }
         }
 

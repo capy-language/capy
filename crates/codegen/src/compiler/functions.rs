@@ -1,16 +1,16 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, str::FromStr};
 
 use cranelift::{
-    codegen::ir::{Endianness, FuncRef},
+    codegen::ir::{BlockArg, Endianness, FuncRef},
     frontend::Switch,
     prelude::{
-        types, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
-        StackSlotKind, TrapCode, Value, Variable,
+        types, AbiParam, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
+        StackSlotData, StackSlotKind, TrapCode, Value, Variable,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use hir::{FQComptime, LocalDef, ScopeId, SwitchLocal};
-use hir_ty::{ComptimeResult, InternTyExt, ParamTy, Ty};
+use hir::{FQComptime, LocalDef, ScopeId, SwitchArg};
+use hir_ty::{ComptimeResult, InternTyDisplay, InternTyExt, ParamTy, Ty};
 use interner::Interner;
 use internment::Intern;
 use la_arena::Idx;
@@ -18,10 +18,12 @@ use rustc_hash::FxHashMap;
 use uid_gen::UIDGenerator;
 
 use crate::{
-    builtin::{self, BuiltinFunction},
+    builtin::{self, BuiltinFunction, BuiltinGlobal},
     convert::{GetFinalTy, ToTyId},
+    debug::{write_nice_function, NiceFuncWriter},
     layout::{self, GetLayoutInfo},
     mangle::{self, Mangle},
+    FinalSignature,
 };
 
 use super::{
@@ -69,6 +71,8 @@ pub(crate) struct FunctionCompiler<'a> {
 
     // globals
     pub(crate) functions: &'a mut FxHashMap<hir::Fqn, FuncId>,
+    pub(crate) user_extern_functions: &'a mut FxHashMap<hir::Name, FuncId>,
+    pub(crate) internal_extern_functions: &'a mut FxHashMap<&'static str, FuncId>,
     pub(crate) compiler_defined_functions: &'a mut FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) globals: &'a mut FxHashMap<hir::Fqn, DataId>,
     pub(crate) str_id_gen: &'a mut UIDGenerator,
@@ -77,15 +81,17 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) comptime_data: &'a mut FxHashMap<FQComptime, ComptimeData>,
 
     // variables
-    pub(crate) var_id_gen: UIDGenerator,
     pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
-    pub(crate) switch_locals: FxHashMap<Idx<SwitchLocal>, Value>,
+    pub(crate) switch_locals: FxHashMap<Idx<SwitchArg>, Value>,
     pub(crate) params: FxHashMap<u64, Variable>,
 
     // for control flow (breaks and continues)
     pub(crate) exits: FxHashMap<ScopeId, Block>,
     pub(crate) continues: FxHashMap<ScopeId, Block>,
     pub(crate) defer_stack: Vec<DeferFrame>,
+
+    // for prettier debugging
+    pub(crate) func_writer: NiceFuncWriter,
 }
 
 impl FunctionCompiler<'_> {
@@ -95,11 +101,20 @@ impl FunctionCompiler<'_> {
         (args, return_ty): (&Vec<ParamTy>, Intern<Ty>),
         function_body: Idx<hir::Expr>,
         debug_print: bool,
+        mangled_name: &str,
     ) {
         fn_abi.build_fn(&mut self, return_ty, args, function_body);
 
         if debug_print {
-            print!("{}", self.builder.func);
+            let mut buffer = String::new();
+            write_nice_function(
+                &mut self.func_writer,
+                &mut buffer,
+                self.builder.func,
+                mangled_name,
+            )
+            .expect("there was an error printing the function");
+            print!("{buffer}");
         }
 
         self.builder.finalize();
@@ -111,7 +126,9 @@ impl FunctionCompiler<'_> {
         file_name: hir::FileName,
         expr: Idx<hir::Expr>,
     ) -> Result<Box<[u8]>, UnfinishedComptimeErr> {
-        if let Some(meta_ty) = self.tys[file_name].get_meta_ty(expr) {
+        if let Some(meta_ty) = self.tys[file_name].get_meta_ty(expr)
+            && *self.tys[file_name][expr] == Ty::Type
+        {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return Ok(match self.module.isa().endianness() {
@@ -163,9 +180,12 @@ impl FunctionCompiler<'_> {
                 _ => unreachable!(),
             },
             hir::Expr::BoolLiteral(b) => Box::new([b as u8]),
-            hir::Expr::StringLiteral(mut text) => {
-                text.push('\0');
-                text.into_bytes().into()
+            hir::Expr::StringLiteral(text) => {
+                let text = self.interner.lookup(text);
+                let mut s = String::with_capacity(text.len() + 1);
+                s.push_str(text);
+                s.push('\0');
+                s.into_bytes().into()
             }
             hir::Expr::ArrayLiteral { items, .. } => {
                 assert_ne!(items.len(), 0);
@@ -221,7 +241,10 @@ impl FunctionCompiler<'_> {
             hir::Expr::Local(local) => {
                 let local_def = &self.world_bodies[file_name][local];
 
-                assert!(local_def.value.is_some(), "if the value doesn't exist, `get_const` should've returned non-const, and there should be an error before codegen");
+                assert!(
+                    local_def.value.is_some(),
+                    "if the value doesn't exist, `get_const` should've returned non-const, and there should be an error before codegen"
+                );
 
                 return self.expr_to_const_data(file_name, local_def.value.unwrap());
             }
@@ -269,105 +292,6 @@ impl FunctionCompiler<'_> {
         }
 
         if self.world_bodies.is_extern(fqn) {
-            if let Some(builtin) =
-                builtin::as_compiler_defined_global(fqn, self.mod_dir, self.interner)
-            {
-                return Ok(match builtin {
-                    builtin::BuiltinGlobal::ArrayLayouts => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .array_layout_slice
-                    }
-                    builtin::BuiltinGlobal::DistinctLayouts => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .distinct_layout_slice
-                    }
-                    builtin::BuiltinGlobal::StructLayouts => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .struct_layout_slice
-                    }
-                    builtin::BuiltinGlobal::EnumLayouts => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .enum_layout_slice
-                    }
-                    builtin::BuiltinGlobal::VariantLayouts => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .variant_layout_slice
-                    }
-                    builtin::BuiltinGlobal::PointerLayout => {
-                        self.meta_tys
-                            .layout_arrays
-                            .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
-                            .pointer_layout
-                    }
-                    builtin::BuiltinGlobal::ArrayInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .array_info_slice
-                    }
-                    builtin::BuiltinGlobal::SliceInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .slice_info_slice
-                    }
-                    builtin::BuiltinGlobal::PointerInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .pointer_info_slice
-                    }
-                    builtin::BuiltinGlobal::DistinctInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .distinct_info_slice
-                    }
-                    builtin::BuiltinGlobal::StructInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .struct_info_slice
-                    }
-                    builtin::BuiltinGlobal::EnumInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .enum_info_slice
-                    }
-                    builtin::BuiltinGlobal::VariantInfo => {
-                        self.meta_tys
-                            .info_arrays
-                            .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
-                            .variant_info_slice
-                    }
-                    builtin::BuiltinGlobal::CommandlineArgs => {
-                        *self.cmd_args_slice.get_or_insert_with(|| {
-                            self.module
-                                .declare_data(
-                                    &mangle::mangle_internal("commandline_args"),
-                                    Linkage::Export,
-                                    // it must be writable since that's what happens in the c main
-                                    // function
-                                    true,
-                                    false,
-                                )
-                                .expect("error declaring data")
-                        })
-                    }
-                });
-            }
-
             let global = self
                 .module
                 .declare_data(
@@ -384,6 +308,23 @@ impl FunctionCompiler<'_> {
         }
 
         let value = self.world_bodies.body(fqn);
+
+        if let hir::Expr::Directive { name, args } = &self.world_bodies[fqn.file][value]
+            && self.interner.lookup(name.name.0) == "builtin"
+        {
+            let builtin_name = args[0];
+            let hir::Expr::StringLiteral(builtin_name) = &self.world_bodies[fqn.file][builtin_name]
+            else {
+                // todo: report an error
+                unreachable!("an error should have been reported")
+            };
+
+            let builtin_kind =
+                hir_ty::BuiltinKind::from_str(self.interner.lookup(*builtin_name)).unwrap();
+            let builtin_global: BuiltinGlobal = builtin_kind.into();
+
+            return Ok(self.compile_builtin_global(builtin_global));
+        }
 
         let bytes = self.expr_to_const_data(fqn.file, value)?;
 
@@ -469,6 +410,8 @@ impl FunctionCompiler<'_> {
             self.ptr_ty,
             self.mod_dir,
             self.functions,
+            self.user_extern_functions,
+            self.internal_extern_functions,
             self.compiler_defined_functions,
             self.functions_to_compile,
             self.tys,
@@ -476,6 +419,38 @@ impl FunctionCompiler<'_> {
             self.interner,
             fqn,
         )
+    }
+
+    fn get_or_create_extern_func_id(
+        &mut self,
+        name: &'static str,
+        params: Vec<AbiParam>,
+        returns: Vec<AbiParam>,
+    ) -> FuncId {
+        if let Some(func_id) = self.internal_extern_functions.get(name).or_else(|| {
+            self.interner
+                .get_interned(name)
+                .and_then(|key| self.user_extern_functions.get(&hir::Name(key)))
+        }) {
+            return *func_id;
+        }
+
+        let func_id = self
+            .module
+            .declare_function(
+                name,
+                Linkage::Import,
+                &FinalSignature {
+                    params,
+                    returns,
+                    call_conv: self.module.target_config().default_call_conv,
+                },
+            )
+            .expect("There are multiple extern functions with the same name");
+
+        self.internal_extern_functions.insert(name, func_id);
+
+        func_id
     }
 
     fn get_local_func(&mut self, fqn: hir::Fqn) -> FuncRef {
@@ -584,7 +559,7 @@ impl FunctionCompiler<'_> {
 
                     assert!(!dest_ty.is_aggregate());
 
-                    dest.write(res, *dest_ty, self.module, &mut self.builder);
+                    dest.write_all(res, *dest_ty, self.module, &mut self.builder);
                 } else {
                     self.compile_and_cast_into_memory(assign_body.value, *dest_ty, dest);
                 }
@@ -594,8 +569,6 @@ impl FunctionCompiler<'_> {
                 value,
                 ..
             } => {
-                let exit_block = self.exits[&label];
-
                 let value = value.and_then(|value| {
                     let referenced_block_ty =
                         self.tys[self.file_name][self.world_bodies[self.file_name][label]];
@@ -603,36 +576,7 @@ impl FunctionCompiler<'_> {
                     self.compile_and_cast(value, referenced_block_ty)
                 });
 
-                // run all the defers from here, backwards to the one we are breaking out of
-
-                let mut used_frames = Vec::new();
-
-                while let Some(frame) = self.defer_stack.last().cloned() {
-                    // the exit block of every Expr::Block contains the instructions for running
-                    // the defers. This break instruction jumps to that exit block.
-                    // therefore, we only need to insert extra defer handling for everything OTHER
-                    // than the block we are breaking to.
-                    if let Some(id) = frame.id {
-                        if id == label {
-                            break;
-                        }
-                    }
-
-                    // do this in reverse for the reasons explained in the Expr::Block code
-                    for defer in frame.defers.iter().rev() {
-                        self.compile_expr(*defer);
-                    }
-
-                    used_frames.push(self.defer_stack.pop().unwrap());
-                }
-
-                self.defer_stack.extend(used_frames.into_iter().rev());
-
-                if let Some(value) = value {
-                    self.builder.ins().jump(exit_block, &[value]);
-                } else {
-                    self.builder.ins().jump(exit_block, &[]);
-                };
+                self.break_to_label(value, label);
             }
             hir::Stmt::Break { label: None, .. } => unreachable!(),
             hir::Stmt::Continue {
@@ -655,6 +599,47 @@ impl FunctionCompiler<'_> {
                     .push(expr);
             }
         }
+    }
+
+    /// This pushes a final jump instruction to the block, meaning additional operations
+    /// won't be allowed in the current block
+    fn break_to_label(&mut self, value: Option<Value>, label: hir::ScopeId) {
+        let exit_block = self.exits[&label];
+
+        // run all the defers from here, backwards to the one we are breaking out of
+
+        let mut used_frames = Vec::new();
+
+        // todo: don't do popping
+        while let Some(frame) = self.defer_stack.last().cloned() {
+            // the exit block of every Expr::Block contains the instructions for running
+            // the defers. This break instruction jumps to that exit block.
+            // therefore, we only need to insert extra defer handling for everything OTHER
+            // than the block we are breaking to.
+            if let Some(id) = frame.id {
+                if id == label {
+                    break;
+                }
+            }
+
+            // do it in reverse to make sure later defers can still rely on the allocations of
+            // previous defers
+            for defer in frame.defers.iter().rev() {
+                self.compile_expr(*defer);
+            }
+
+            used_frames.push(self.defer_stack.pop().unwrap());
+        }
+
+        self.defer_stack.extend(used_frames.into_iter().rev());
+
+        if let Some(value) = value {
+            self.builder
+                .ins()
+                .jump(exit_block, &[BlockArg::Value(value)]);
+        } else {
+            self.builder.ins().jump(exit_block, &[]);
+        };
     }
 
     fn store_default_in_memory(&mut self, expected_ty: Intern<Ty>, memory: MemoryLoc) {
@@ -685,7 +670,7 @@ impl FunctionCompiler<'_> {
             Ty::Bool => self.builder.ins().iconst(types::I8, 0),
             Ty::String => unreachable!("str does not have a default value"),
             Ty::Char => self.builder.ins().iconst(types::I8, 0),
-            Ty::Array { size, sub_ty, .. } => {
+            Ty::AnonArray { size, sub_ty } | Ty::ConcreteArray { size, sub_ty, .. } => {
                 let inner_stride = sub_ty.stride();
 
                 for idx in 0..*size {
@@ -706,7 +691,7 @@ impl FunctionCompiler<'_> {
             Ty::RawSlice => unreachable!("rawslice does not have a default value"),
             Ty::File(_) => unreachable!("files do not have default values"),
             Ty::Function { .. } => unreachable!("functions do not have default values"),
-            Ty::Struct { members, .. } => {
+            Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let struct_mem = expected_ty.struct_layout().unwrap();
 
                 for (idx, hir_ty::MemberTy { ty, .. }) in members.iter().enumerate() {
@@ -718,16 +703,23 @@ impl FunctionCompiler<'_> {
                 return;
             }
             Ty::Enum { .. } => unreachable!("enums do not have default values"),
-            Ty::Variant { sub_ty, .. } => {
+            Ty::EnumVariant { sub_ty, .. } => {
                 self.store_default_in_memory(*sub_ty, memory);
                 return;
             }
+            Ty::Optional { .. } => {
+                memory.memset(self.module, &mut self.builder, 0, expected_ty);
+                return;
+            }
+            Ty::ErrorUnion { .. } => unreachable!("error unions do not have default values"),
             // void is just a no-op
             Ty::Void => return,
-            Ty::NoEval => return,
+            // nil is just a no-op
+            Ty::Nil => return,
+            Ty::AlwaysJumps => return,
         };
 
-        memory.store(&mut self.builder, value, 0);
+        memory.write_val(&mut self.builder, value, 0);
     }
 
     fn store_expr_in_memory(
@@ -761,7 +753,7 @@ impl FunctionCompiler<'_> {
             _ => {
                 let val = self.compile_expr(expr);
 
-                memory.write(val, expected_ty, self.module, &mut self.builder);
+                memory.write_all(val, expected_ty, self.module, &mut self.builder);
             }
         }
     }
@@ -814,7 +806,9 @@ impl FunctionCompiler<'_> {
     /// `no_load` will cause the first encountered deref to not deref at all.
     /// this is used for assignment
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
-        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr) {
+        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr)
+            && *self.tys[self.file_name][expr] == Ty::Type
+        {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return Some(self.builder.ins().iconst(types::I32, id as i64));
@@ -867,7 +861,10 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::BoolLiteral(b) => Some(self.builder.ins().iconst(types::I8, b as i64)),
             hir::Expr::StringLiteral(text) => {
-                let data = self.create_global_str(text);
+                let text = self.interner.lookup(text);
+                let mut s = String::with_capacity(text.len() + 1);
+                s.push_str(text);
+                let data = self.create_global_str(s);
 
                 let local_id = self.module.declare_data_in_func(data, self.builder.func);
 
@@ -878,11 +875,17 @@ impl FunctionCompiler<'_> {
             hir::Expr::ArrayLiteral { items, .. } => {
                 let ty = self.tys[self.file_name][expr];
 
+                let (_, sub_ty) = ty.as_array().unwrap_or_else(|| {
+                    panic!(
+                        "{} #{} : array literal has type {ty:?} instead of an array type",
+                        self.file_name.debug(self.interner),
+                        expr.into_raw()
+                    )
+                });
+
                 if ty.is_zero_sized() {
                     return None;
                 }
-
-                let (_, sub_ty) = ty.as_array().expect("array literals must have array types");
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -943,25 +946,20 @@ impl FunctionCompiler<'_> {
                     (len, source)
                 };
 
-                let good_index_block = self.builder.create_block();
-                let bad_index_block = self.builder.create_block();
-
                 let is_good_index =
                     self.builder
                         .ins()
                         .icmp(IntCC::UnsignedLessThan, naive_index, len);
-                self.builder
-                    .ins()
-                    .brif(is_good_index, good_index_block, &[], bad_index_block, &[]);
 
-                self.builder.switch_to_block(bad_index_block);
-                self.builder.set_cold_block(bad_index_block);
-                self.builder.seal_block(bad_index_block);
-
-                self.builder.ins().trap(TRAP_UNREACHABLE);
-
-                self.builder.switch_to_block(good_index_block);
-                self.builder.seal_block(good_index_block);
+                self.compile_unreachablez(
+                    is_good_index,
+                    Some(if source_ty.is_array() {
+                        "array index out of bounds"
+                    } else {
+                        assert!(source_ty.is_slice());
+                        "slice index out of bounds"
+                    }),
+                );
 
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
@@ -1035,9 +1033,9 @@ impl FunctionCompiler<'_> {
                         align_shift: inner_ty.align_shift(),
                     });
 
-                    let expr = self.compile_expr(expr).unwrap();
-
-                    self.builder.ins().stack_store(expr, stack_slot, 0);
+                    if let Some(expr) = self.compile_expr(expr) {
+                        self.builder.ins().stack_store(expr, stack_slot, 0);
+                    }
 
                     Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
                 }
@@ -1074,13 +1072,13 @@ impl FunctionCompiler<'_> {
                 rhs: rhs_expr,
                 op,
             } => self.compile_binary(lhs_expr, rhs_expr, op),
-            hir::Expr::Unary { expr, op } => {
-                let expr_ty = self.tys[self.file_name][expr]
+            hir::Expr::Unary { expr: inner, op } => {
+                let expr_ty = self.tys[self.file_name][inner]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap();
 
-                let expr = self.compile_expr(expr).unwrap();
+                let expr = self.compile_expr(inner).unwrap();
 
                 if expr_ty.float {
                     match op {
@@ -1354,14 +1352,16 @@ impl FunctionCompiler<'_> {
                     fn_abi.handle_ret(call, self, ret_mem)
                 }
             }
-            hir::Expr::Paren(Some(expr)) => self.compile_expr_with_args(expr, no_load),
+            hir::Expr::Paren(Some(inner)) => self.compile_expr_with_args(inner, no_load),
             hir::Expr::Paren(None) => None,
             hir::Expr::Block { stmts, tail_expr } => {
                 let expr_ty = self.tys[self.file_name][expr];
                 let final_ty = expr_ty.get_final_ty();
 
                 let body_block = self.builder.create_block();
+                self.func_writer[body_block] = "block_body".into();
                 let exit_block = self.builder.create_block();
+                self.func_writer[exit_block] = "block_exit".into();
                 if let Some(ty) = final_ty.into_real_type() {
                     self.builder.append_block_param(exit_block, ty);
                 }
@@ -1391,7 +1391,7 @@ impl FunctionCompiler<'_> {
                         // then the sub expression must be breaking to a higher block
                         hir::Stmt::Expr(expr)
                             if scope_id.is_none()
-                                && *self.tys[self.file_name][expr] == Ty::NoEval =>
+                                && *self.tys[self.file_name][expr] == Ty::AlwaysJumps =>
                         {
                             no_eval = true;
                             break;
@@ -1407,10 +1407,12 @@ impl FunctionCompiler<'_> {
                 let value = (!no_eval)
                     .then(|| {
                         tail_expr.and_then(|tail_expr| {
-                            let value = self.compile_expr_with_args(tail_expr, no_load);
-                            if scope_id.is_none()
-                                && *self.tys[self.file_name][tail_expr] == Ty::NoEval
-                            {
+                            let value =
+                                self.compile_and_cast_with_args(tail_expr, no_load, expr_ty);
+                            // unlike before, where we had to make sure the scope id is `None`,
+                            // here, if the tail doesn't reach its own end (and it doesn't evaluate
+                            // to anything) then *we* aren't going to evaluate to anything.
+                            if *self.tys[self.file_name][tail_expr] == Ty::AlwaysJumps {
                                 no_eval = true;
                             }
                             value
@@ -1420,33 +1422,68 @@ impl FunctionCompiler<'_> {
 
                 if !no_eval {
                     if let Some(value) = value {
-                        self.builder.ins().jump(exit_block, &[value]);
-                    } else if !expr_ty.is_void() && scope_id.is_some() {
-                        // we know this block reaches it's end (it's !noeval)
+                        self.builder
+                            .ins()
+                            .jump(exit_block, &[BlockArg::Value(value)]);
+                    } else if tail_expr.is_none() && !expr_ty.can_be_created_from_nothing() {
+                        // we know this block somehow reaches it's end (because we already checked it's !no_eval)
                         //
-                        // we also know it doesn't have a tail expression (because `value` was None)
+                        // we also know it doesn't have a tail expression
                         //
-                        // we also know it has a non-void type (no implicit tail expression)
+                        // we also know it has a type which can't be created from nothing (no implicit tail expression)
                         //
-                        // since it doesn't have a tail expression, the type checker has already
-                        // confirmed that it *must* always reach a break to it's own end.
+                        // due to that fact, the type checker must have already confirmed that
+                        // it *always* reaches a break. we can actually assert that.
                         //
-                        // this break has to be somewhere deep in an grandchild block. we know it
-                        // exists, and we know that this exact point is unreachable because of that
-                        // break, and because of the absence of a tail expression.
+                        // that's the only way a block like this can exist. If there was no break
+                        // then there would've been an error and we wouldn't be doing codegen rn.
                         //
-                        // therefore it's safe to trap *here*, at the end of the `body_block`
-                        //
-                        // but we can't trap in the `exit_block`, since the `exit_block` *is*
-                        // reachable.
+                        // the reason we check `tail_expr` and not `value` is because `value` might
+                        // be something like `None` from a value of `nil` (a zero-sized type)
                         //
                         // the reason we need to trap is because cranelift forces us to end all blocks with
                         // a "final" instruction (a jump or trap). we can't exactly jump to the exit
-                        // because we don't have a value with which to jump (and remember the exit
-                        // is expecting something non-void). so since it's safe to trap, we just trap.
-                        self.builder.ins().trap(TRAP_UNREACHABLE);
+                        // because we don't have a value with which to jump (and recall that the exit
+                        // is expecting something which can't be created from nothing).
+                        //
+                        // So, since it's safe to trap, we just trap.
+                        assert!(scope_id.is_some());
+                        self.compile_unreachable(Some("end of noreturn block reached"));
                     } else {
-                        self.builder.ins().jump(exit_block, &[]);
+                        // note that we still might get zero-sized types here in this branch that *can't* be
+                        // created from nothing because they made the value `None`
+
+                        if expr_ty.is_zero_sized() {
+                            self.builder.ins().jump(exit_block, &[]);
+                        } else {
+                            assert!(
+                                expr_ty.can_be_created_from_nothing(),
+                                "{expr_ty:?} can't be created from nothing"
+                            );
+
+                            // This might be because of something like this:
+                            //
+                            // ```
+                            // my_block : ?void = {
+                            //      core.println("hello");
+                            // };
+                            // ```
+                            //
+                            // `?void` can be created from nothing (it can be created from a void)
+                            // but it itself actually does have a size.
+                            //
+                            // So here we create a value from nothing.
+                            //
+                            // TODO: what if this `.into()` screws things up in a program where
+                            // `Ty::Void` has never been created?
+                            let something = self
+                                .cast(None, Ty::Void.into(), expr_ty)
+                                .expect("we already checked for zero-sized types");
+
+                            self.builder
+                                .ins()
+                                .jump(exit_block, &[BlockArg::Value(something)]);
+                        }
                     }
                 }
 
@@ -1481,8 +1518,11 @@ impl FunctionCompiler<'_> {
                 let condition = self.compile_expr(condition).unwrap();
 
                 let then_block = self.builder.create_block();
+                self.func_writer[then_block] = "if_then".into();
                 let else_block = self.builder.create_block();
+                self.func_writer[else_block] = "if_else".into();
                 let merge_block = self.builder.create_block();
+                self.func_writer[merge_block] = "if_exit".into();
 
                 let return_ty = self.tys[self.file_name][expr];
                 let return_ty_real = return_ty.get_final_ty().into_real_type();
@@ -1502,12 +1542,14 @@ impl FunctionCompiler<'_> {
 
                 let body_value = self.compile_and_cast_with_args(body, no_load, return_ty);
 
-                if *self.tys[self.file_name][body] == Ty::NoEval {
-                    self.builder.ins().trap(TRAP_UNREACHABLE);
+                if *self.tys[self.file_name][body] == Ty::AlwaysJumps {
+                    self.compile_unreachable(Some("end of noreturn then block reached"));
                 } else {
                     match body_value {
                         Some(then_value) => {
-                            self.builder.ins().jump(merge_block, &[then_value]);
+                            self.builder
+                                .ins()
+                                .jump(merge_block, &[BlockArg::Value(then_value)]);
                         }
                         None => {
                             self.builder.ins().jump(merge_block, &[]);
@@ -1524,12 +1566,14 @@ impl FunctionCompiler<'_> {
                     let else_value =
                         self.compile_and_cast_with_args(else_branch, no_load, return_ty);
 
-                    if *self.tys[self.file_name][else_branch] == Ty::NoEval {
-                        self.builder.ins().trap(TRAP_UNREACHABLE);
+                    if *self.tys[self.file_name][else_branch] == Ty::AlwaysJumps {
+                        self.compile_unreachable(Some("end of noreturn else block reached"));
                     } else {
                         match else_value {
                             Some(then_value) => {
-                                self.builder.ins().jump(merge_block, &[then_value]);
+                                self.builder
+                                    .ins()
+                                    .jump(merge_block, &[BlockArg::Value(then_value)]);
                             }
                             None => {
                                 self.builder.ins().jump(merge_block, &[]);
@@ -1555,8 +1599,11 @@ impl FunctionCompiler<'_> {
             }
             hir::Expr::While { condition, body } => {
                 let header_block = self.builder.create_block();
+                self.func_writer[header_block] = "while_header".into();
                 let body_block = self.builder.create_block();
+                self.func_writer[body_block] = "while_body".into();
                 let exit_block = self.builder.create_block();
+                self.func_writer[exit_block] = "while_exit".into();
 
                 let ty = self.tys[self.file_name][expr].get_final_ty();
 
@@ -1608,30 +1655,41 @@ impl FunctionCompiler<'_> {
                 default,
                 ..
             } => {
-                let body_block = self.builder.create_block();
-                let fallback_block = self.builder.create_block();
-                let arm_blocks: FxHashMap<_, _> = arms
+                let sum_ty = self.tys[self.file_name][scrutinee];
+
+                let arm_blocks: Vec<_> = arms
                     .iter()
                     .map(|arm| {
-                        (
-                            arm.variant_name
-                                .expect("if codegen is running, no names should be `None`")
-                                .name,
-                            (self.builder.create_block(), *arm),
-                        )
+                        let arm_ty = match arm.variant.expect("should be Some") {
+                            hir::ArmVariant::FullyQualified(ty) => {
+                                self.tys[self.file_name].get_meta_ty(ty).unwrap()
+                            }
+                            hir::ArmVariant::Shorthand(name) => {
+                                let Ty::Enum { ref variants, .. } = *sum_ty else {
+                                    unreachable!()
+                                };
+
+                                variants
+                                    .iter()
+                                    .find(|v| {
+                                        let Ty::EnumVariant { variant_name, .. } = ***v else {
+                                            unreachable!()
+                                        };
+
+                                        variant_name == name.name
+                                    })
+                                    .copied()
+                                    .unwrap()
+                            }
+                        };
+
+                        // the name of the block is set later
+                        (arm_ty, self.builder.create_block(), *arm)
                     })
                     .collect();
-                let exit_block = self.builder.create_block();
 
-                let enum_ty = self.tys[self.file_name][scrutinee];
-                let Ty::Enum {
-                    variants: variant_tys,
-                    ..
-                } = enum_ty.as_ref()
-                else {
-                    unreachable!("the scrutinee should be an enum")
-                };
-                let enum_layout = enum_ty.enum_layout().unwrap();
+                let exit_block = self.builder.create_block();
+                self.func_writer[exit_block] = "switch_exit".into();
 
                 let return_ty = self.tys[self.file_name][expr];
                 let return_ty_real = return_ty.get_final_ty().into_real_type();
@@ -1640,48 +1698,41 @@ impl FunctionCompiler<'_> {
                     self.builder.append_block_param(exit_block, ty);
                 }
 
-                self.builder.ins().jump(body_block, &[]);
-                self.builder.seal_block(body_block);
-                self.builder.switch_to_block(body_block);
-
                 let scrutinee_val = self
                     .compile_expr(scrutinee)
                     .expect("enums are never zero sized");
-                let discrim_val = self.builder.ins().load(
-                    types::I8,
-                    MemFlags::trusted(),
-                    scrutinee_val,
-                    enum_layout.discriminant_offset() as i32,
-                );
 
-                let mut switch = Switch::new();
-                for variant_ty in variant_tys {
-                    let Ty::Variant {
-                        variant_name,
-                        discriminant,
-                        ..
-                    } = variant_ty.as_ref()
-                    else {
-                        unreachable!("all variants should be `Ty::Variant`")
-                    };
+                if let Some(enum_layout) = sum_ty.enum_layout() {
+                    assert!(sum_ty.is_tagged_union());
 
-                    let Some(arm) = arm_blocks.get(variant_name) else {
-                        continue;
-                    };
+                    let default_block = self.builder.create_block();
+                    self.func_writer[default_block] = "switch_default".into();
 
-                    // todo: maybe discriminant should also be u128
-                    switch.set_entry(*discriminant as u128, arm.0);
-                }
+                    let discrim_val = self.builder.ins().load(
+                        types::I8,
+                        MemFlags::trusted(),
+                        scrutinee_val,
+                        enum_layout.discriminant_offset() as i32,
+                    );
 
-                switch.emit(&mut self.builder, discrim_val, fallback_block);
+                    let mut switch = Switch::new();
+                    for (variant_ty, arm_block, _) in &arm_blocks {
+                        let discrim = sum_ty.get_tagged_union_discrim(variant_ty).unwrap();
 
-                {
-                    self.builder.switch_to_block(fallback_block);
-                    self.builder.seal_block(fallback_block);
+                        // todo: maybe discriminant should also be u128
+                        switch.set_entry(discrim as u128, *arm_block);
+                        self.func_writer[*arm_block] =
+                            format!("switch_arm_discrim{discrim}").into();
+                    }
+
+                    switch.emit(&mut self.builder, discrim_val, default_block);
+
+                    self.builder.switch_to_block(default_block);
+                    self.builder.seal_block(default_block);
 
                     if let Some(default) = default {
-                        if let Some(switch_local) = default.switch_local {
-                            self.switch_locals.insert(switch_local, scrutinee_val);
+                        if let Some(switch_arg) = default.switch_arg {
+                            self.switch_locals.insert(switch_arg, scrutinee_val);
                         }
 
                         // todo: should no_load be used here?
@@ -1689,27 +1740,69 @@ impl FunctionCompiler<'_> {
                             self.compile_and_cast_with_args(default.body, no_load, return_ty);
 
                         if let Some(default_val) = default_val {
-                            self.builder.ins().jump(exit_block, &[default_val]);
+                            self.builder
+                                .ins()
+                                .jump(exit_block, &[BlockArg::Value(default_val)]);
                         } else {
                             self.builder.ins().jump(exit_block, &[]);
                         }
                     } else {
-                        self.builder.ins().trap(TRAP_UNREACHABLE);
+                        self.compile_unreachable(Some("every branch of `switch` was missed"));
                     }
+                } else {
+                    // todo: include more tests for this
+                    assert!(sum_ty.is_optional() && !sum_ty.is_tagged_union());
+                    // the scrutinee should be a pointer
+                    assert_eq!(self.builder.func.dfg.value_type(scrutinee_val), self.ptr_ty);
+                    // todo: add support for default blocks here
+                    assert!(default.is_none());
+
+                    let is_some = self
+                        .builder
+                        .ins()
+                        .icmp_imm(IntCC::NotEqual, scrutinee_val, 0);
+
+                    assert_eq!(arm_blocks.len(), 2);
+                    let (nil_idx, nil_block) = arm_blocks
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (ty, _, _))| **ty == Ty::Nil)
+                        .expect("this is an optional");
+                    assert!(nil_idx == 0 || nil_idx == 1);
+                    let some_idx = (nil_idx == 0) as usize;
+                    assert!(some_idx == 0 || some_idx == 1);
+                    assert_ne!(some_idx, nil_idx);
+                    let some_block = arm_blocks[some_idx];
+
+                    self.func_writer[some_block.1] = "switch_arm_discrim1".into();
+                    self.func_writer[nil_block.1] = "switch_arm_discrim0".into();
+
+                    self.builder
+                        .ins()
+                        .brif(is_some, some_block.1, &[], nil_block.1, &[]);
                 }
 
-                for (arm_block, arm) in arm_blocks.values() {
-                    self.builder.switch_to_block(*arm_block);
-                    self.builder.seal_block(*arm_block);
+                for (variant_ty, arm_block, arm) in arm_blocks {
+                    self.builder.switch_to_block(arm_block);
+                    self.builder.seal_block(arm_block);
 
-                    if let Some(switch_local) = arm.switch_local {
-                        self.switch_locals.insert(switch_local, scrutinee_val);
+                    if let Some(switch_local) = arm.switch_arg
+                        && let Some(inner_val) = super::unwrap_sum_ty(
+                            &mut self.builder,
+                            scrutinee_val,
+                            sum_ty,
+                            variant_ty,
+                        )
+                    {
+                        self.switch_locals.insert(switch_local, inner_val);
                     }
 
                     let body_val = self.compile_and_cast_with_args(arm.body, no_load, return_ty);
 
                     if let Some(body_val) = body_val {
-                        self.builder.ins().jump(exit_block, &[body_val]);
+                        self.builder
+                            .ins()
+                            .jump(exit_block, &[BlockArg::Value(body_val)]);
                     } else {
                         self.builder.ins().jump(exit_block, &[]);
                     }
@@ -1739,20 +1832,8 @@ impl FunctionCompiler<'_> {
                         .map(|ty| self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
                 }
             }
-            hir::Expr::SwitchLocal(switch_local) => {
-                let ptr = *self.switch_locals.get(&switch_local)?;
-
-                let ty = &self.tys[self.file_name][switch_local];
-
-                if no_load || ty.is_aggregate() {
-                    Some(ptr)
-                } else {
-                    let ty = ty.get_final_ty();
-
-                    // if it isn't a real type, this will just return None
-                    ty.into_real_type()
-                        .map(|ty| self.builder.ins().load(ty, MemFlags::trusted(), ptr, 0))
-                }
+            hir::Expr::SwitchArgument(switch_local) => {
+                self.switch_locals.get(&switch_local).copied()
             }
             hir::Expr::Param { idx, .. } => self
                 .params
@@ -1819,7 +1900,7 @@ impl FunctionCompiler<'_> {
                                     ));
                                 }
                             }
-                            Ty::Array { size, .. } => {
+                            Ty::AnonArray { size, .. } | Ty::ConcreteArray { size, .. } => {
                                 // the len isn't actually located anywhere in memory. In memory the
                                 // array is just the raw data only. However, when you usually get the
                                 // address of a field it returns the actual address of that field in
@@ -1938,37 +2019,212 @@ impl FunctionCompiler<'_> {
             hir::Expr::Distinct { .. } => None,
             hir::Expr::StructDecl { .. } => None,
             hir::Expr::EnumDecl { .. } => None,
+            // hir::Expr::Nil => {
+            //     let opt_ty = self.tys[self.file_name][expr];
+            //
+            //     // if `sub_ty` is `None`, its a zero sized type and we can just return
+            //
+            //     self.create_nil_value(opt_ty)
+            // }
+            hir::Expr::Nil => None,
+            hir::Expr::OptionalDecl { .. } => None,
+            hir::Expr::ErrorUnionDecl { .. } => None,
+            hir::Expr::Propagate { label: None, .. } => {
+                unreachable!("`hir_ty` should've reported this")
+            }
+            hir::Expr::Propagate {
+                label: Some(label),
+                expr: inner,
+                ..
+            } => {
+                let union = self.compile_expr(inner)?;
+                let union_ty = self.tys[self.file_name][inner];
+                assert!(matches!(
+                    *union_ty,
+                    Ty::Optional { .. } | Ty::ErrorUnion { .. }
+                ));
+
+                let payload_ty = self.tys[self.file_name][expr];
+
+                let is_ok = if union_ty.is_error_union() {
+                    super::tagged_union_has_discriminant(&mut self.builder, union_ty, union, 1)
+                } else {
+                    assert!(union_ty.is_optional());
+                    super::optional_is_some(&mut self.builder, union_ty, union)
+                };
+
+                let err_block = self.builder.create_block();
+                self.func_writer[err_block] = "propagate_error".into();
+                let ok_block = self.builder.create_block();
+                self.func_writer[ok_block] = "propagate_okay".into();
+
+                self.builder
+                    .ins()
+                    .brif(is_ok, ok_block, &[], err_block, &[]);
+                self.builder.seal_block(ok_block);
+                self.builder.seal_block(err_block);
+
+                self.builder.switch_to_block(err_block);
+
+                let referenced_block_ty =
+                    self.tys[self.file_name][self.world_bodies[self.file_name][label]];
+
+                // if this try is propagating to a block who only ever resolves to `nil`, `void`, etc.
+                // then we don't actually have to construct anything.
+                if referenced_block_ty.is_zero_sized() {
+                    if union_ty.is_optional() {
+                        assert_eq!(
+                            union_ty.propagated_ty().map(|ty| ty.as_ref()),
+                            Some(&Ty::Nil)
+                        );
+                    }
+
+                    self.break_to_label(None, label);
+                } else if union_ty.is_optional() {
+                    assert!(referenced_block_ty.is_optional());
+                    let nil_value = super::create_nil_value(
+                        &mut self.builder,
+                        self.ptr_ty,
+                        referenced_block_ty,
+                        None,
+                    );
+                    self.break_to_label(Some(nil_value), label);
+                } else if let Ty::ErrorUnion { error_ty, .. } = union_ty.absolute_ty() {
+                    assert!(
+                        referenced_block_ty
+                            .propagated_ty()
+                            .is_some_and(|ty| error_ty.can_cast_to(&ty))
+                            || (!referenced_block_ty.is_error_union()
+                                && error_ty.can_fit_into(&referenced_block_ty))
+                    );
+
+                    let error = super::unwrap_sum_ty(&mut self.builder, union, union_ty, *error_ty);
+
+                    // this will construct a new error union with the error inside it
+                    let casted = self.cast(error, *error_ty, referenced_block_ty);
+                    self.break_to_label(casted, label);
+                }
+
+                self.builder.switch_to_block(ok_block);
+
+                super::unwrap_sum_ty(&mut self.builder, union, union_ty, payload_ty)
+            }
             hir::Expr::Import(_) => None,
             hir::Expr::Directive { name, args } => match self.interner.lookup(name.name.0) {
                 "unwrap" => {
-                    let enum_val = self.compile_expr(args[0])?;
-                    let enum_ty = self.tys[self.file_name][args[0]];
-                    let enum_layout = enum_ty.enum_layout().unwrap();
+                    let sum_val = self
+                        .compile_expr(args[0])
+                        .expect("sum types are never zero-sized");
+                    let sum_ty = self.tys[self.file_name][args[0]];
+                    assert!(sum_ty.is_sum_ty(), "{sum_ty:?} is not a sum type");
 
-                    let variant_ty = self.tys[self.file_name].get_meta_ty(args[1]).unwrap();
-                    let variant_ty = variant_ty.absolute_ty_keep_variants();
-
-                    let Ty::Variant { discriminant, .. } = variant_ty else {
-                        unreachable!("the second arg of `#unwrap` should be a variant")
-                    };
-
-                    let discrim = self.builder.ins().load(
-                        types::I8,
-                        MemFlags::trusted(),
-                        enum_val,
-                        enum_layout.discriminant_offset() as i32,
+                    let variant_ty = self.tys[self.file_name][expr];
+                    assert!(
+                        sum_ty.has_sum_variant(&variant_ty),
+                        "{variant_ty:?} is not a variant of {sum_ty:?}"
                     );
 
-                    let is_correct_discrim =
-                        self.builder
-                            .ins()
-                            .icmp_imm(IntCC::Equal, discrim, *discriminant as i64);
+                    if let Some(desired_discrim) = sum_ty.get_tagged_union_discrim(&variant_ty) {
+                        let enum_layout = sum_ty.enum_layout().unwrap_or_else(|| {
+                            panic!("{} #{} : the tagged union discriminant of {:?} is {} but there is no enum layout", self.file_name.debug(self.interner), args[0].into_raw(), sum_ty, desired_discrim)
+                        });
 
-                    self.builder
-                        .ins()
-                        .trapz(is_correct_discrim, TRAP_UNREACHABLE);
+                        let discrim = self.builder.ins().load(
+                            types::I8,
+                            MemFlags::trusted(),
+                            sum_val,
+                            enum_layout.discriminant_offset() as i32,
+                        );
 
-                    Some(enum_val)
+                        let is_correct_discrim = self.builder.ins().icmp_imm(
+                            IntCC::Equal,
+                            discrim,
+                            desired_discrim as i64,
+                        );
+
+                        self.compile_unreachablez(
+                            is_correct_discrim,
+                            Some(&format!(
+                                "called #unwrap({}, {}) but the variant was different",
+                                sum_ty.named_display(self.mod_dir, self.interner, false),
+                                variant_ty.named_display(self.mod_dir, self.interner, false)
+                            )),
+                        );
+
+                        super::unwrap_sum_ty(&mut self.builder, sum_val, sum_ty, variant_ty)
+                    } else {
+                        assert!(sum_ty.is_optional());
+                        assert!(!sum_ty.is_tagged_union());
+                        // if aggregate non-zero types are added, we have to do a memcmp
+                        assert!(!sum_ty.is_aggregate());
+
+                        let is_correct_discrim = if *variant_ty == Ty::Nil {
+                            self.builder.ins().icmp_imm(IntCC::Equal, sum_val, 0)
+                        } else {
+                            self.builder.ins().icmp_imm(IntCC::NotEqual, sum_val, 0)
+                        };
+
+                        self.compile_unreachablez(
+                            is_correct_discrim,
+                            Some(&format!(
+                                "called #unwrap({}, {}) but the variant was different",
+                                sum_ty.named_display(self.mod_dir, self.interner, false),
+                                variant_ty.named_display(self.mod_dir, self.interner, false)
+                            )),
+                        );
+
+                        super::unwrap_sum_ty(&mut self.builder, sum_val, sum_ty, variant_ty)
+                    }
+                }
+                "is_variant" => {
+                    let sum_val = self
+                        .compile_expr(args[0])
+                        .expect("sum types are never zero-sized");
+                    let sum_ty = self.tys[self.file_name][args[0]];
+                    assert!(sum_ty.is_sum_ty(), "{sum_ty:?} is not a sum type");
+
+                    let variant_ty = self.tys[self.file_name].get_meta_ty(args[1]).unwrap();
+                    assert!(
+                        sum_ty.has_sum_variant(&variant_ty),
+                        "{variant_ty:?} is not a variant of {sum_ty:?}"
+                    );
+
+                    if let Some(desired_discrim) = sum_ty.get_tagged_union_discrim(&variant_ty) {
+                        let enum_layout = sum_ty.enum_layout().unwrap();
+
+                        let discrim = self.builder.ins().load(
+                            types::I8,
+                            MemFlags::trusted(),
+                            sum_val,
+                            enum_layout.discriminant_offset() as i32,
+                        );
+
+                        let is_correct_discrim = self.builder.ins().icmp_imm(
+                            IntCC::Equal,
+                            discrim,
+                            desired_discrim as i64,
+                        );
+
+                        Some(is_correct_discrim)
+                    } else {
+                        assert!(sum_ty.is_optional());
+                        assert!(!sum_ty.is_tagged_union());
+                        // if aggregate non-zero types are added, we have to do a memcmp
+                        assert!(!sum_ty.is_aggregate());
+
+                        if *variant_ty == Ty::Nil {
+                            let is_none = self.builder.ins().icmp_imm(IntCC::Equal, sum_val, 0);
+
+                            Some(is_none)
+                        } else {
+                            assert!(variant_ty.is_non_zero());
+                            assert!(variant_ty.is_pointer());
+
+                            let is_some = self.builder.ins().icmp_imm(IntCC::NotEqual, sum_val, 0);
+
+                            Some(is_some)
+                        }
+                    }
                 }
                 _ => unreachable!(),
             },
@@ -2066,8 +2322,11 @@ impl FunctionCompiler<'_> {
                             .load(types::I8, MemFlags::trusted(), init_flag_ptr, 0);
 
                     let previous_block = self.builder.create_block();
+                    self.func_writer[previous_block] = "comptime_get_previous".into();
                     let compute_block = self.builder.create_block();
+                    self.func_writer[compute_block] = "comptime_compute".into();
                     let exit_block = self.builder.create_block();
+                    self.func_writer[exit_block] = "comptime_exit".into();
 
                     self.builder
                         .ins()
@@ -2085,7 +2344,9 @@ impl FunctionCompiler<'_> {
                                 .load(real_ty, MemFlags::trusted(), value_ptr, 0)
                         };
 
-                        self.builder.ins().jump(exit_block, &[value]);
+                        self.builder
+                            .ins()
+                            .jump(exit_block, &[BlockArg::Value(value)]);
                     } else {
                         self.builder.ins().jump(exit_block, &[]);
                     }
@@ -2114,7 +2375,9 @@ impl FunctionCompiler<'_> {
                                 .load(real_ty, MemFlags::trusted(), value_ptr, 0)
                         };
 
-                        self.builder.ins().jump(exit_block, &[value]);
+                        self.builder
+                            .ins()
+                            .jump(exit_block, &[BlockArg::Value(value)]);
                     } else {
                         self.builder.ins().jump(exit_block, &[]);
                     }
@@ -2139,83 +2402,616 @@ impl FunctionCompiler<'_> {
         rhs_expr: Idx<hir::Expr>,
         op: hir::BinaryOp,
     ) -> Option<Value> {
+        let lhs = |comp: &mut Self| comp.compile_expr(lhs_expr).unwrap();
+        let rhs = |comp: &mut Self| comp.compile_expr(rhs_expr).unwrap();
+
         match op {
-            hir::BinaryOp::LAnd => {
-                let rhs_block = self.builder.create_block();
-                let exit_block = self.builder.create_block();
-
-                // if lhs is true, test the rhs
-                // if lhs is false, exit early
-                let lhs = self.compile_expr(lhs_expr).unwrap();
-                self.builder
-                    .ins()
-                    .brif(lhs, rhs_block, &[], exit_block, &[lhs]);
-
-                self.builder.switch_to_block(rhs_block);
-                self.builder.seal_block(rhs_block);
-
-                let rhs = self.compile_expr(rhs_expr).unwrap();
-                self.builder.ins().jump(exit_block, &[rhs]);
-
-                self.builder.switch_to_block(exit_block);
-                self.builder.seal_block(exit_block);
-                let result = self.builder.append_block_param(exit_block, types::I8);
-
-                return Some(result);
-            }
-            hir::BinaryOp::LOr => {
-                let rhs_block = self.builder.create_block();
-                let exit_block = self.builder.create_block();
-
-                // if the lhs is true, exit early
-                // if the lhs is false, test the rhs
-                let lhs = self.compile_expr(lhs_expr).unwrap();
-                self.builder
-                    .ins()
-                    .brif(lhs, exit_block, &[lhs], rhs_block, &[]);
-
-                self.builder.switch_to_block(rhs_block);
-                self.builder.seal_block(rhs_block);
-
-                let rhs = self.compile_expr(rhs_expr).unwrap();
-                self.builder.ins().jump(exit_block, &[rhs]);
-
-                self.builder.switch_to_block(exit_block);
-                self.builder.seal_block(exit_block);
-                let result = self.builder.append_block_param(exit_block, types::I8);
-
-                return Some(result);
-            }
+            hir::BinaryOp::LAnd => return Some(self.logical_and(lhs, rhs)),
+            hir::BinaryOp::LOr => return Some(self.logical_or(lhs, rhs)),
             _ => {}
         }
 
-        let lhs = self.compile_expr(lhs_expr).unwrap();
-        let rhs = self.compile_expr(rhs_expr).unwrap_or_else(|| {
-            println!("{:#?}", self.world_bodies[self.file_name][rhs_expr].clone());
+        let lhs_ty = self.tys[self.file_name][lhs_expr];
+        let rhs_ty = self.tys[self.file_name][rhs_expr];
+        let max_ty: Intern<Ty> = lhs_ty
+            .max(&rhs_ty)
+            .expect("hir_ty would've caught this")
+            .into();
+
+        // zero-sized types are always equal
+        if max_ty.is_zero_sized() {
+            // We call compile_expr just so side-effects will occur.
+            // The data gets thrown out anyway.
+            assert_eq!(self.compile_expr(lhs_expr), None);
+            assert_eq!(self.compile_expr(rhs_expr), None);
+
+            match op {
+                hir::BinaryOp::Eq => return Some(self.builder.ins().iconst(types::I8, 1)),
+                hir::BinaryOp::Ne => return Some(self.builder.ins().iconst(types::I8, 0)),
+                _ => unreachable!(),
+            }
+        }
+
+        // Note that if an optional on the lhs is compared to a nil on the rhs, the rhs will be
+        // zero-sized despite the fact that they will both get casted to a common maximum.
+
+        let lhs = self.compile_and_cast(lhs_expr, max_ty).unwrap_or_else(|| {
             panic!(
-                "{}#{} is None",
-                self.interner.lookup(self.file_name.0),
+                "{} #{} : LHS IS NONE ({lhs_ty:?}) {op:?} #{} ({rhs_ty:?})",
+                self.file_name.debug(self.interner),
+                lhs_expr.into_raw(),
+                rhs_expr.into_raw()
+            );
+        });
+        let rhs = self.compile_and_cast(rhs_expr, max_ty).unwrap_or_else(|| {
+            panic!(
+                "{} #{} : RHS IS NONE ({lhs_ty:?}) {op:?} #{} ({rhs_ty:?})",
+                self.file_name.debug(self.interner),
+                lhs_expr.into_raw(),
                 rhs_expr.into_raw()
             );
         });
 
-        let lhs_ty = self.tys[self.file_name][lhs_expr]
-            .get_final_ty()
-            .into_number_type()
-            .unwrap();
-        let rhs_ty = self.tys[self.file_name][rhs_expr]
-            .get_final_ty()
-            .into_number_type()
-            .unwrap();
+        Some(self.compile_complex_compare(lhs, rhs, max_ty, op))
+    }
 
-        let max_ty = lhs_ty.max(rhs_ty);
+    fn compile_complex_compare(
+        &mut self,
+        lhs: Value,
+        rhs: Value,
+        ty: Intern<Ty>,
+        hir_op: hir::BinaryOp,
+    ) -> Value {
+        assert!(!ty.is_zero_sized());
 
-        // we need to make sure that both types are the same before we can do any operations on them
-        let lhs = super::cast_num(&mut self.builder, lhs, lhs_ty, max_ty);
-        let rhs = super::cast_num(&mut self.builder, rhs, rhs_ty, max_ty);
+        if ty.get_final_ty().is_number_type() {
+            return self.compile_num_binary(lhs, rhs, ty, hir_op);
+        }
 
-        if max_ty.float {
-            Some(match op {
+        let op = match hir_op {
+            hir::BinaryOp::Eq => IntCC::Equal,
+            hir::BinaryOp::Ne => IntCC::NotEqual,
+            _ => unreachable!(),
+        };
+
+        match ty.absolute_ty() {
+            Ty::NotYetResolved => unreachable!(),
+            Ty::Unknown => unreachable!(),
+            Ty::IInt(_) => unreachable!("already covered by `compile_num_binary`"),
+            Ty::UInt(_) => unreachable!("already covered by `compile_num_binary`"),
+            Ty::Float(_) => unreachable!("already covered by `compile_num_binary`"),
+            Ty::Bool => unreachable!("already covered by `compile_num_binary`"),
+            Ty::String => {
+                // todo: when there are separate cstring and string types, keep this code for
+                // cstring
+                // todo: it's kind of hard for me to visualize this but I think there should be a
+                // branchless way to do the inner logic
+
+                let stage1 = self.builder.create_block();
+                let stage1_lhs_addr = self.builder.append_block_param(stage1, self.ptr_ty);
+                let stage1_rhs_addr = self.builder.append_block_param(stage1, self.ptr_ty);
+                self.func_writer[stage1] = "string_cmp_stage1".into();
+                let stage2 = self.builder.create_block();
+                let stage2_lhs_addr = self.builder.append_block_param(stage2, self.ptr_ty);
+                let stage2_rhs_addr = self.builder.append_block_param(stage2, self.ptr_ty);
+                self.func_writer[stage2] = "string_cmp_stage2".into();
+                let exit = self.builder.create_block();
+                let exit_res = self.builder.append_block_param(exit, types::I8);
+                self.func_writer[exit] = "string_cmp_exit".into();
+
+                self.builder
+                    .ins()
+                    .jump(stage1, &[BlockArg::Value(lhs), BlockArg::Value(rhs)]);
+
+                self.builder.switch_to_block(stage1);
+
+                let lhs_byte =
+                    self.builder
+                        .ins()
+                        .load(types::I8, MemFlags::trusted(), stage1_lhs_addr, 0);
+                let rhs_byte =
+                    self.builder
+                        .ins()
+                        .load(types::I8, MemFlags::trusted(), stage1_rhs_addr, 0);
+
+                let same_bytes = self.builder.ins().icmp(op, lhs_byte, rhs_byte);
+
+                match hir_op {
+                    hir::BinaryOp::Eq => {
+                        let r#false = self.builder.ins().iconst(types::I8, 0);
+                        self.builder.ins().brif(
+                            same_bytes,
+                            stage2,
+                            &[
+                                BlockArg::Value(stage1_lhs_addr),
+                                BlockArg::Value(stage1_rhs_addr),
+                            ],
+                            exit,
+                            &[BlockArg::Value(r#false)],
+                        );
+                    }
+                    hir::BinaryOp::Ne => {
+                        let r#true = self.builder.ins().iconst(types::I8, 1);
+                        self.builder.ins().brif(
+                            same_bytes,
+                            exit,
+                            &[BlockArg::Value(r#true)],
+                            stage2,
+                            &[
+                                BlockArg::Value(stage1_lhs_addr),
+                                BlockArg::Value(stage1_rhs_addr),
+                            ],
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+
+                self.builder.switch_to_block(stage2);
+                self.builder.seal_block(stage2);
+
+                let null_term = self.builder.ins().icmp_imm(IntCC::Equal, lhs_byte, 0);
+
+                let next_lhs = self.builder.ins().iadd_imm(stage2_lhs_addr, 1);
+                let next_rhs = self.builder.ins().iadd_imm(stage2_rhs_addr, 1);
+
+                let true_val = self.builder.ins().iconst(types::I8, 1);
+                let false_val = self.builder.ins().iconst(types::I8, 0);
+                self.builder.ins().brif(
+                    null_term,
+                    exit,
+                    &[match hir_op {
+                        hir::BinaryOp::Eq => BlockArg::Value(true_val),
+                        hir::BinaryOp::Ne => BlockArg::Value(false_val),
+                        _ => unreachable!(),
+                    }],
+                    stage1,
+                    &[BlockArg::Value(next_lhs), BlockArg::Value(next_rhs)],
+                );
+
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(exit);
+                self.builder.seal_block(stage1);
+
+                exit_res
+            }
+            Ty::Char => unreachable!("already covered by `compile_num_binary`"),
+            Ty::AnonArray { size, sub_ty } | Ty::ConcreteArray { size, sub_ty, .. } => {
+                let size = self.builder.ins().iconst(self.ptr_ty, *size as i64);
+                self.compile_array_compare(lhs, rhs, *sub_ty, size, hir_op)
+            }
+            Ty::Slice { sub_ty } => {
+                // the len field is at offset 0
+                let lhs_len = self
+                    .builder
+                    .ins()
+                    .load(self.ptr_ty, MemFlags::trusted(), lhs, 0);
+                let rhs_len = self
+                    .builder
+                    .ins()
+                    .load(self.ptr_ty, MemFlags::trusted(), rhs, 0);
+
+                // the array field is at offset size_of(usize)
+                let lhs_data = self.builder.ins().load(
+                    self.ptr_ty,
+                    MemFlags::trusted(),
+                    lhs,
+                    self.ptr_ty.bytes() as i32,
+                );
+                let rhs_data = self.builder.ins().load(
+                    self.ptr_ty,
+                    MemFlags::trusted(),
+                    rhs,
+                    self.ptr_ty.bytes() as i32,
+                );
+
+                match hir_op {
+                    hir::BinaryOp::Eq => self.logical_and(
+                        |comp| comp.builder.ins().icmp(op, lhs_len, rhs_len),
+                        |comp| {
+                            comp.compile_array_compare(lhs_data, rhs_data, *sub_ty, lhs_len, hir_op)
+                        },
+                    ),
+                    hir::BinaryOp::Ne => self.logical_or(
+                        |comp| comp.builder.ins().icmp(op, lhs_len, rhs_len),
+                        |comp| {
+                            comp.compile_array_compare(lhs_data, rhs_data, *sub_ty, lhs_len, hir_op)
+                        },
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+            Ty::Pointer { sub_ty, .. } => {
+                let r#false = self.builder.ins().iconst(types::I8, 0);
+                let r#true = self.builder.ins().iconst(types::I8, 1);
+
+                // zero-sized types are always equal
+                let Some(final_ty) = sub_ty.get_final_ty().into_real_type() else {
+                    match hir_op {
+                        hir::BinaryOp::Eq => return r#true,
+                        hir::BinaryOp::Ne => return r#false,
+                        _ => unreachable!(),
+                    }
+                };
+
+                let lhs = self
+                    .builder
+                    .ins()
+                    .load(final_ty, MemFlags::trusted(), lhs, 0);
+                let rhs = self
+                    .builder
+                    .ins()
+                    .load(final_ty, MemFlags::trusted(), rhs, 0);
+
+                self.compile_complex_compare(lhs, rhs, *sub_ty, hir_op)
+            }
+            Ty::Distinct { .. } => unreachable!("called `absolute_ty`"),
+            Ty::Type => unreachable!("already covered by `compile_num_binary`"),
+            Ty::Any => unreachable!("any cannot be compared"),
+            Ty::RawPtr { .. } => unreachable!("rawptr cannot be compared"),
+            Ty::RawSlice => unreachable!("rawslice cannot be compared"),
+            Ty::File(_) => unreachable!("files don't have a common max"),
+            Ty::Function { .. } => unreachable!("functions don't have a common max"),
+            Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
+                let exit = self.builder.create_block();
+                let exit_res = self.builder.append_block_param(exit, types::I8);
+                self.func_writer[exit] = "array_cmp_exit".into();
+
+                let struct_layout = ty.struct_layout().unwrap();
+
+                let test_block = self.builder.create_block();
+                self.func_writer[test_block] = "array_cmp_idx0".into();
+                self.builder.ins().jump(test_block, &[]);
+                self.builder.switch_to_block(test_block);
+                self.builder.seal_block(test_block);
+
+                for (idx, member) in members.iter().enumerate() {
+                    let offset = struct_layout.offsets()[idx];
+
+                    let lhs_addr = self.builder.ins().iadd_imm(lhs, offset as i64);
+                    let rhs_addr = self.builder.ins().iadd_imm(rhs, offset as i64);
+                    let res = if member.ty.is_aggregate() {
+                        self.compile_complex_compare(lhs_addr, rhs_addr, member.ty, hir_op)
+                    } else if let Some(real_ty) = member.ty.get_final_ty().into_real_type() {
+                        let lhs_item =
+                            self.builder
+                                .ins()
+                                .load(real_ty, MemFlags::trusted(), lhs_addr, 0);
+                        let rhs_item =
+                            self.builder
+                                .ins()
+                                .load(real_ty, MemFlags::trusted(), rhs_addr, 0);
+
+                        self.compile_complex_compare(lhs_item, rhs_item, member.ty, hir_op)
+                    } else {
+                        assert!(member.ty.is_zero_sized());
+                        unreachable!("shouldn't have gotten this far");
+                    };
+
+                    if idx < members.len() - 1 {
+                        let next_test_block = self.builder.create_block();
+                        self.func_writer[next_test_block] =
+                            format!("array_cmp_next_idx{}", idx + 1).into();
+
+                        match hir_op {
+                            hir::BinaryOp::Eq => {
+                                let false_val = self.builder.ins().iconst(types::I8, 0);
+                                self.builder.ins().brif(
+                                    res,
+                                    next_test_block,
+                                    &[],
+                                    exit,
+                                    &[BlockArg::Value(false_val)],
+                                );
+                            }
+                            hir::BinaryOp::Ne => {
+                                let true_val = self.builder.ins().iconst(types::I8, 1);
+                                self.builder.ins().brif(
+                                    res,
+                                    exit,
+                                    &[BlockArg::Value(true_val)],
+                                    next_test_block,
+                                    &[],
+                                );
+                            }
+                            _ => unreachable!(),
+                        };
+
+                        self.builder.switch_to_block(next_test_block);
+                        self.builder.seal_block(next_test_block);
+                    } else {
+                        self.builder.ins().jump(exit, &[BlockArg::Value(res)]);
+                    }
+                }
+
+                self.builder.switch_to_block(exit);
+                self.builder.seal_block(exit);
+
+                exit_res
+            }
+            Ty::Enum { variants, .. } => self.compile_enum_compare(
+                lhs,
+                rhs,
+                ty,
+                variants.iter().map(|ty| {
+                    let Ty::EnumVariant { discriminant, .. } = &**ty else {
+                        unreachable!("only variants within enums");
+                    };
+
+                    (*discriminant as u128, Some(*ty))
+                }),
+                hir_op,
+            ),
+            Ty::EnumVariant { .. } => unreachable!("called `absolute_ty`"),
+            Ty::Nil => unreachable!("tested for zero-sized types"),
+            Ty::Optional { sub_ty } => {
+                if sub_ty.is_non_zero() {
+                    assert!(!ty.is_aggregate());
+
+                    self.builder.ins().icmp(op, lhs, rhs)
+                } else {
+                    self.compile_enum_compare(
+                        lhs,
+                        rhs,
+                        ty,
+                        vec![(0, None), (1, Some(*sub_ty))].into_iter(),
+                        hir_op,
+                    )
+                }
+            }
+            Ty::ErrorUnion {
+                error_ty,
+                payload_ty,
+            } => self.compile_enum_compare(
+                lhs,
+                rhs,
+                ty,
+                vec![(0, Some(*error_ty)), (1, Some(*payload_ty))].into_iter(),
+                hir_op,
+            ),
+            Ty::Void => unreachable!("tested for zero-sized types"),
+            Ty::AlwaysJumps => unreachable!("tested for zero-sized types"),
+        }
+    }
+
+    fn compile_enum_compare(
+        &mut self,
+        lhs: Value,
+        rhs: Value,
+        ty: Intern<Ty>,
+        variants: impl Iterator<Item = (u128, Option<Intern<Ty>>)>,
+        hir_op: hir::BinaryOp,
+    ) -> Value {
+        assert!(ty.is_tagged_union(), "{ty:?} is not a tagged union");
+
+        let op = match hir_op {
+            hir::BinaryOp::Eq => IntCC::Equal,
+            hir::BinaryOp::Ne => IntCC::NotEqual,
+            _ => unreachable!(),
+        };
+
+        let enum_layout = ty.enum_layout().unwrap();
+        let lhs_discrim = self.builder.ins().load(
+            types::I8,
+            MemFlags::trusted(),
+            lhs,
+            enum_layout.discriminant_offset() as i32,
+        );
+        let rhs_discrim = self.builder.ins().load(
+            types::I8,
+            MemFlags::trusted(),
+            rhs,
+            enum_layout.discriminant_offset() as i32,
+        );
+
+        let arm_blocks: Vec<_> = variants
+            .map(|(discrim, ty)| {
+                let block = self.builder.create_block();
+                self.func_writer[block] = format!("enum_cmp_arm_discrim{discrim}").into();
+                (discrim, ty, block)
+            })
+            .collect();
+
+        self.logical(
+            hir_op,
+            |comp| comp.builder.ins().icmp(op, lhs_discrim, rhs_discrim),
+            |comp| {
+                let exit = comp.builder.create_block();
+                let exit_res = comp.builder.append_block_param(exit, types::I8);
+                comp.func_writer[exit] = "enum_cmp_exit".into();
+
+                let mut switch = Switch::new();
+                for (discriminant, _, arm) in &arm_blocks {
+                    switch.set_entry(*discriminant, *arm);
+                }
+
+                let default = comp.builder.create_block();
+                comp.func_writer[default] = "enum_cmp_default".into();
+
+                switch.emit(&mut comp.builder, lhs_discrim, default);
+
+                comp.builder.switch_to_block(default);
+                let true_val = comp.builder.ins().iconst(types::I8, 1);
+                let false_val = comp.builder.ins().iconst(types::I8, 0);
+                comp.builder.ins().jump(
+                    exit,
+                    &[match hir_op {
+                        hir::BinaryOp::Eq => BlockArg::Value(true_val),
+                        hir::BinaryOp::Ne => BlockArg::Value(false_val),
+                        _ => unreachable!(),
+                    }],
+                );
+
+                for (_, variant_ty, arm_block) in &arm_blocks {
+                    comp.builder.switch_to_block(*arm_block);
+                    comp.builder.seal_block(*arm_block);
+
+                    if let Some(variant_ty) = *variant_ty {
+                        // the payload begins at offset 0, so we can just use the lhs and rhs
+                        // directly.
+                        let res = if variant_ty.is_aggregate() {
+                            comp.compile_complex_compare(lhs, rhs, variant_ty, hir_op)
+                        } else if let Some(real_ty) = variant_ty.get_final_ty().into_real_type() {
+                            let lhs_item =
+                                comp.builder
+                                    .ins()
+                                    .load(real_ty, MemFlags::trusted(), lhs, 0);
+                            let rhs_item =
+                                comp.builder
+                                    .ins()
+                                    .load(real_ty, MemFlags::trusted(), rhs, 0);
+
+                            comp.compile_complex_compare(lhs_item, rhs_item, variant_ty, hir_op)
+                        } else {
+                            assert!(variant_ty.is_zero_sized());
+
+                            // zero-sized types are always equal
+                            match hir_op {
+                                hir::BinaryOp::Eq => comp.builder.ins().iconst(types::I8, 1),
+                                hir::BinaryOp::Ne => comp.builder.ins().iconst(types::I8, 0),
+                                _ => unreachable!(),
+                            }
+                        };
+
+                        comp.builder.ins().jump(exit, &[BlockArg::Value(res)]);
+                    } else {
+                        comp.builder.ins().jump(default, &[]);
+                    }
+                }
+
+                comp.builder.switch_to_block(exit);
+                comp.builder.seal_block(exit);
+                comp.builder.seal_block(default);
+
+                exit_res
+            },
+        )
+    }
+
+    // todo: make sure this works for not equal
+    fn compile_array_compare(
+        &mut self,
+        lhs: Value,
+        rhs: Value,
+        sub_ty: Intern<Ty>,
+        size: Value,
+        hir_op: hir::BinaryOp,
+    ) -> Value {
+        let false_val = self.builder.ins().iconst(types::I8, 0);
+        let true_val = self.builder.ins().iconst(types::I8, 1);
+
+        // zero-sized types are always equal
+        if sub_ty.is_zero_sized() {
+            match hir_op {
+                hir::BinaryOp::Eq => return true_val,
+                hir::BinaryOp::Ne => return false_val,
+                _ => unimplemented!(),
+            }
+        }
+
+        let idx = self.builder.declare_var(self.ptr_ty);
+        let zero = self.builder.ins().iconst(self.ptr_ty, 0);
+        self.builder.def_var(idx, zero);
+
+        let header = self.builder.create_block();
+        let header_idx = self.builder.append_block_param(header, self.ptr_ty);
+        self.func_writer[header] = "array_cmp_header".into();
+        let body = self.builder.create_block();
+        let body_idx = self.builder.append_block_param(body, self.ptr_ty);
+        self.func_writer[body] = "array_cmp_body".into();
+        let exit = self.builder.create_block();
+        let exit_bool = self.builder.append_block_param(exit, types::I8);
+        self.func_writer[exit] = "array_cmp_exit".into();
+
+        self.builder.ins().jump(header, &[BlockArg::Value(zero)]);
+
+        self.builder.switch_to_block(header);
+        let cond = self
+            .builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, header_idx, size);
+        self.builder.ins().brif(
+            cond,
+            body,
+            &[BlockArg::Value(header_idx)],
+            exit,
+            &[match hir_op {
+                hir::BinaryOp::Eq => BlockArg::Value(true_val),
+                hir::BinaryOp::Ne => BlockArg::Value(false_val),
+                _ => unimplemented!(),
+            }],
+        );
+
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        let offset = self
+            .builder
+            .ins()
+            .imul_imm(body_idx, sub_ty.stride() as i64);
+        let lhs_addr = self.builder.ins().iadd(lhs, offset);
+        let rhs_addr = self.builder.ins().iadd(rhs, offset);
+        let res = if sub_ty.is_aggregate() {
+            self.compile_complex_compare(lhs_addr, rhs_addr, sub_ty, hir_op)
+        } else if let Some(real_ty) = sub_ty.get_final_ty().into_real_type() {
+            let lhs_item = self
+                .builder
+                .ins()
+                .load(real_ty, MemFlags::trusted(), lhs_addr, 0);
+            let rhs_item = self
+                .builder
+                .ins()
+                .load(real_ty, MemFlags::trusted(), rhs_addr, 0);
+
+            self.compile_complex_compare(lhs_item, rhs_item, sub_ty, hir_op)
+        } else {
+            assert!(sub_ty.is_zero_sized());
+            unreachable!("shouldn't have gotten this far");
+        };
+
+        let idx_plus_one = self.builder.ins().iadd_imm(body_idx, 1);
+
+        // if the check was successful, check the next item of the array, otherwise exit
+        // with false
+
+        match hir_op {
+            hir::BinaryOp::Eq => {
+                self.builder.ins().brif(
+                    res,
+                    header,
+                    &[BlockArg::Value(idx_plus_one)],
+                    exit,
+                    &[BlockArg::Value(false_val)],
+                );
+            }
+            hir::BinaryOp::Ne => {
+                self.builder.ins().brif(
+                    res,
+                    exit,
+                    &[BlockArg::Value(true_val)],
+                    header,
+                    &[BlockArg::Value(idx_plus_one)],
+                );
+            }
+            _ => unimplemented!(),
+        }
+
+        self.builder.switch_to_block(exit);
+        self.builder.seal_block(header);
+        self.builder.seal_block(exit);
+
+        exit_bool
+    }
+
+    fn compile_num_binary(
+        &mut self,
+        lhs: Value,
+        rhs: Value,
+        ty: Intern<Ty>,
+        op: hir::BinaryOp,
+    ) -> Value {
+        let ty = ty.get_final_ty().into_number_type().unwrap();
+
+        if ty.float {
+            match op {
                 hir::BinaryOp::Add => self.builder.ins().fadd(lhs, rhs),
                 hir::BinaryOp::Sub => self.builder.ins().fsub(lhs, rhs),
                 hir::BinaryOp::Mul => self.builder.ins().fmul(lhs, rhs),
@@ -2235,35 +3031,35 @@ impl FunctionCompiler<'_> {
                 hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
                 hir::BinaryOp::LShift | hir::BinaryOp::RShift => unreachable!(),
                 hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
-            })
+            }
         } else {
-            Some(match op {
+            match op {
                 hir::BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
                 hir::BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
                 hir::BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
                 hir::BinaryOp::Div => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder.ins().sdiv(lhs, rhs)
                     } else {
                         self.builder.ins().udiv(lhs, rhs)
                     }
                 }
                 hir::BinaryOp::Mod => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder.ins().srem(lhs, rhs)
                     } else {
                         self.builder.ins().urem(lhs, rhs)
                     }
                 }
                 hir::BinaryOp::Lt => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
                     } else {
                         self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs)
                     }
                 }
                 hir::BinaryOp::Gt => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
                     } else {
                         self.builder
@@ -2272,7 +3068,7 @@ impl FunctionCompiler<'_> {
                     }
                 }
                 hir::BinaryOp::Le => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder
                             .ins()
                             .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
@@ -2283,7 +3079,7 @@ impl FunctionCompiler<'_> {
                     }
                 }
                 hir::BinaryOp::Ge => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder
                             .ins()
                             .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
@@ -2300,14 +3096,207 @@ impl FunctionCompiler<'_> {
                 hir::BinaryOp::Xor => self.builder.ins().bxor(lhs, rhs),
                 hir::BinaryOp::LShift => self.builder.ins().ishl(lhs, rhs),
                 hir::BinaryOp::RShift => {
-                    if max_ty.signed {
+                    if ty.signed {
                         self.builder.ins().sshr(lhs, rhs)
                     } else {
                         self.builder.ins().ushr(lhs, rhs)
                     }
                 }
                 hir::BinaryOp::LAnd | hir::BinaryOp::LOr => unreachable!(),
-            })
+            }
+        }
+    }
+
+    // uses `logical_and` for Eq and `logical_or` for Ne
+    fn logical(
+        &mut self,
+        op: hir::BinaryOp,
+        lhs: impl Fn(&mut Self) -> Value,
+        rhs: impl Fn(&mut Self) -> Value,
+    ) -> Value {
+        match op {
+            hir::BinaryOp::Eq => self.logical_and(lhs, rhs),
+            hir::BinaryOp::Ne => self.logical_or(lhs, rhs),
+            _ => unreachable!(),
+        }
+    }
+
+    fn logical_and(
+        &mut self,
+        lhs: impl FnOnce(&mut Self) -> Value,
+        rhs: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        let rhs_block = self.builder.create_block();
+        self.func_writer[rhs_block] = "logical_and_compute_rhs".into();
+        let exit_block = self.builder.create_block();
+        self.func_writer[exit_block] = "logical_and_exit".into();
+
+        // if lhs is true, test the rhs
+        // if lhs is false, exit early
+        let lhs = lhs(self);
+        self.builder
+            .ins()
+            .brif(lhs, rhs_block, &[], exit_block, &[BlockArg::Value(lhs)]);
+
+        self.builder.switch_to_block(rhs_block);
+        self.builder.seal_block(rhs_block);
+
+        let rhs = rhs(self);
+        self.builder.ins().jump(exit_block, &[BlockArg::Value(rhs)]);
+
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+
+        self.builder.append_block_param(exit_block, types::I8)
+    }
+
+    fn logical_or(
+        &mut self,
+        lhs: impl FnOnce(&mut Self) -> Value,
+        rhs: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        let rhs_block = self.builder.create_block();
+        self.func_writer[rhs_block] = "logical_or_compute_rhs".into();
+        let exit_block = self.builder.create_block();
+        self.func_writer[exit_block] = "logical_or_exit".into();
+
+        // if the lhs is true, exit early
+        // if the lhs is false, test the rhs
+        let lhs = lhs(self);
+        self.builder
+            .ins()
+            .brif(lhs, exit_block, &[BlockArg::Value(lhs)], rhs_block, &[]);
+
+        self.builder.switch_to_block(rhs_block);
+        self.builder.seal_block(rhs_block);
+
+        let rhs = rhs(self);
+        self.builder.ins().jump(exit_block, &[BlockArg::Value(rhs)]);
+
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+
+        self.builder.append_block_param(exit_block, types::I8)
+    }
+
+    fn compile_builtin_global(&mut self, builtin: BuiltinGlobal) -> DataId {
+        match builtin {
+            builtin::BuiltinGlobal::ArrayLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .array_layout_slice
+            }
+            builtin::BuiltinGlobal::DistinctLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .distinct_layout_slice
+            }
+            builtin::BuiltinGlobal::StructLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .struct_layout_slice
+            }
+            builtin::BuiltinGlobal::EnumLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .enum_layout_slice
+            }
+            builtin::BuiltinGlobal::VariantLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .variant_layout_slice
+            }
+            builtin::BuiltinGlobal::OptionalLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .optional_layout_slice
+            }
+            builtin::BuiltinGlobal::ErrorUnionLayouts => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .error_union_layout_slice
+            }
+            builtin::BuiltinGlobal::PointerLayout => {
+                self.meta_tys
+                    .layout_arrays
+                    .get_or_insert_with(|| MetaTyLayoutArrays::new(self.module))
+                    .pointer_layout
+            }
+            builtin::BuiltinGlobal::ArrayInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .array_info_slice
+            }
+            builtin::BuiltinGlobal::SliceInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .slice_info_slice
+            }
+            builtin::BuiltinGlobal::PointerInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .pointer_info_slice
+            }
+            builtin::BuiltinGlobal::DistinctInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .distinct_info_slice
+            }
+            builtin::BuiltinGlobal::StructInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .struct_info_slice
+            }
+            builtin::BuiltinGlobal::EnumInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .enum_info_slice
+            }
+            builtin::BuiltinGlobal::VariantInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .variant_info_slice
+            }
+            builtin::BuiltinGlobal::OptionalInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .optional_info_slice
+            }
+            builtin::BuiltinGlobal::ErrorUnionInfos => {
+                self.meta_tys
+                    .info_arrays
+                    .get_or_insert_with(|| MetaTyInfoArrays::new(self.module))
+                    .error_union_info_slice
+            }
+            builtin::BuiltinGlobal::CommandlineArgs => {
+                *self.cmd_args_slice.get_or_insert_with(|| {
+                    self.module
+                        .declare_data(
+                            &mangle::mangle_internal("commandline_args"),
+                            Linkage::Export,
+                            // it must be writable since that's what happens in the c main
+                            // function
+                            true,
+                            false,
+                        )
+                        .expect("error declaring data")
+                })
+            }
         }
     }
 
@@ -2346,6 +3335,63 @@ impl FunctionCompiler<'_> {
         local_func
     }
 
+    pub fn compile_unreachablez(&mut self, condition: Value, message: Option<&str>) {
+        let pass = self.builder.create_block();
+        self.func_writer[pass] = "unreachable_check_okay".into();
+        let fail = self.builder.create_block();
+        self.func_writer[fail] = "unreachable_check_failure".into();
+        self.builder.set_cold_block(fail);
+
+        self.builder.ins().brif(condition, pass, &[], fail, &[]);
+
+        self.builder.switch_to_block(fail);
+        self.builder.seal_block(fail);
+
+        self.compile_unreachable(message);
+
+        self.builder.switch_to_block(pass);
+        self.builder.seal_block(pass);
+    }
+
+    /// The default message is "Entered unreachable code"
+    pub fn compile_unreachable(&mut self, message: Option<&str>) {
+        // print message
+        let puts = self.get_or_create_extern_func_id(
+            "puts",
+            vec![AbiParam::new(self.ptr_ty)],
+            vec![AbiParam::new(types::I32)],
+        );
+        let puts = self.module.declare_func_in_func(puts, self.builder.func);
+
+        let mut msg = format!(
+            "\n\nin {} : entered unreachable code",
+            self.file_name.to_string(self.mod_dir, self.interner),
+        );
+        if let Some(message) = message {
+            msg.push_str(": ");
+            msg.push_str(message);
+        }
+
+        let data = self.create_global_str(msg);
+        let local_id = self.module.declare_data_in_func(data, self.builder.func);
+        let string = self.builder.ins().symbol_value(self.ptr_ty, local_id);
+
+        self.builder.ins().call(puts, &[string]);
+
+        // exit program
+
+        let exit =
+            self.get_or_create_extern_func_id("exit", vec![AbiParam::new(types::I32)], vec![]);
+        let exit = self.module.declare_func_in_func(exit, self.builder.func);
+
+        let exit_code = self.builder.ins().iconst(types::I32, 1);
+        self.builder.ins().call(exit, &[exit_code]);
+
+        // trap for good measure
+
+        self.builder.ins().trap(TRAP_UNREACHABLE);
+    }
+
     pub fn compile_and_cast(&mut self, expr: Idx<hir::Expr>, cast_to: Intern<Ty>) -> Option<Value> {
         let value = self.compile_expr(expr);
 
@@ -2379,6 +3425,16 @@ impl FunctionCompiler<'_> {
         // the way. this would remove an unnecessary memcpy
         let value = self.compile_expr(expr);
 
+        // println!(
+        //     "compile_and_cast_into_memory {} #{} : {:?} ({:?}) -> {:?} ({:?})",
+        //     self.file_name.debug(self.interner),
+        //     expr.into_raw(),
+        //     value,
+        //     self.tys[self.file_name][expr],
+        //     memory,
+        //     cast_to
+        // );
+
         self.cast_into_memory(value, self.tys[self.file_name][expr], cast_to, memory)
     }
 
@@ -2393,6 +3449,7 @@ impl FunctionCompiler<'_> {
             self.meta_tys,
             self.module,
             &mut self.builder,
+            &mut self.func_writer,
             self.ptr_ty,
             val,
             cast_from,
@@ -2413,6 +3470,7 @@ impl FunctionCompiler<'_> {
             self.meta_tys,
             self.module,
             &mut self.builder,
+            &mut self.func_writer,
             self.ptr_ty,
             val,
             cast_from,

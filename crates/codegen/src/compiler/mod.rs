@@ -3,10 +3,10 @@ pub mod functions;
 pub mod program;
 mod ty_info;
 
-use cranelift::codegen::ir::StackSlot;
+use cranelift::codegen::ir::{BlockArg, StackSlot};
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
-    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, StackSlotData,
+    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, StackSlotData,
     StackSlotKind, Value,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
@@ -14,12 +14,15 @@ use hir::FQComptime;
 use hir_ty::{ComptimeResult, InternTyExt, ParamTy, Ty};
 use interner::Interner;
 use internment::Intern;
+use itertools::Itertools;
 use la_arena::Idx;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
+use std::str::FromStr;
 use uid_gen::UIDGenerator;
 
-use crate::builtin::{as_compiler_defined_func, BuiltinFunction};
+use crate::builtin::BuiltinFunction;
+use crate::debug::NiceFuncWriter;
 use crate::layout::{self, GetLayoutInfo};
 use crate::mangle::{self, Mangle};
 use crate::{
@@ -45,11 +48,13 @@ pub(crate) struct MetaTyData {
     pub(crate) array_uid_gen: UIDGenerator,
     pub(crate) slice_uid_gen: UIDGenerator,
     pub(crate) pointer_uid_gen: UIDGenerator,
-    pub(crate) distinct_uid_gen: UIDGenerator,
     pub(crate) variant_uid_gen: UIDGenerator,
     pub(crate) function_uid_gen: UIDGenerator,
     pub(crate) struct_uid_gen: UIDGenerator,
     pub(crate) enum_uid_gen: UIDGenerator,
+    pub(crate) distinct_uid_gen: UIDGenerator,
+    pub(crate) optional_uid_gen: UIDGenerator,
+    pub(crate) error_union_uid_gen: UIDGenerator,
 
     pub(crate) layout_arrays: Option<MetaTyLayoutArrays>,
     pub(crate) info_arrays: Option<MetaTyInfoArrays>,
@@ -61,12 +66,16 @@ pub(crate) struct MetaTyLayoutArrays {
     pub(crate) struct_layout_array: DataId,
     pub(crate) enum_layout_array: DataId,
     pub(crate) variant_layout_array: DataId,
+    pub(crate) optional_layout_array: DataId,
+    pub(crate) error_union_layout_array: DataId,
 
     pub(crate) array_layout_slice: DataId,
     pub(crate) distinct_layout_slice: DataId,
     pub(crate) struct_layout_slice: DataId,
     pub(crate) enum_layout_slice: DataId,
     pub(crate) variant_layout_slice: DataId,
+    pub(crate) optional_layout_slice: DataId,
+    pub(crate) error_union_layout_slice: DataId,
 
     pub(crate) pointer_layout: DataId,
 }
@@ -95,6 +104,10 @@ impl MetaTyLayoutArrays {
             enum_layout_slice: declare("enum_layout_slice"),
             variant_layout_array: declare("variant_layout_array"),
             variant_layout_slice: declare("variant_layout_slice"),
+            optional_layout_array: declare("optional_layout_array"),
+            optional_layout_slice: declare("optional_layout_slice"),
+            error_union_layout_array: declare("error_union_layout_array"),
+            error_union_layout_slice: declare("error_union_layout_slice"),
             pointer_layout: declare("pointer_layout"),
         }
     }
@@ -109,6 +122,8 @@ pub(crate) struct MetaTyInfoArrays {
     pub(crate) struct_info_array: DataId,
     pub(crate) enum_info_array: DataId,
     pub(crate) variant_info_array: DataId,
+    pub(crate) optional_info_array: DataId,
+    pub(crate) error_union_info_array: DataId,
 
     // the global slices available in "meta.capy"
     pub(crate) array_info_slice: DataId,
@@ -118,6 +133,8 @@ pub(crate) struct MetaTyInfoArrays {
     pub(crate) struct_info_slice: DataId,
     pub(crate) enum_info_slice: DataId,
     pub(crate) variant_info_slice: DataId,
+    pub(crate) optional_info_slice: DataId,
+    pub(crate) error_union_info_slice: DataId,
 }
 
 impl MetaTyInfoArrays {
@@ -148,6 +165,10 @@ impl MetaTyInfoArrays {
             enum_info_slice: declare("enum_info_slice"),
             variant_info_array: declare("variant_info_array"),
             variant_info_slice: declare("variant_info_slice"),
+            optional_info_array: declare("optional_info_array"),
+            optional_info_slice: declare("optional_info_slice"),
+            error_union_info_array: declare("error_union_info_array"),
+            error_union_info_slice: declare("error_union_info_slice"),
         }
     }
 }
@@ -211,6 +232,8 @@ pub(crate) struct Compiler<'a> {
 
     // globals
     pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
+    pub(crate) user_extern_functions: FxHashMap<hir::Name, FuncId>,
+    pub(crate) internal_extern_functions: FxHashMap<&'static str, FuncId>,
     pub(crate) compiler_defined_functions: FxHashMap<BuiltinFunction, FuncId>,
     pub(crate) data: FxHashMap<hir::Fqn, DataId>,
     pub(crate) meta_tys: MetaTyData,
@@ -275,6 +298,8 @@ impl Compiler<'_> {
             self.ptr_ty,
             self.mod_dir,
             &mut self.functions,
+            &mut self.user_extern_functions,
+            &mut self.internal_extern_functions,
             &mut self.compiler_defined_functions,
             &mut self.functions_to_compile,
             self.tys,
@@ -285,21 +310,20 @@ impl Compiler<'_> {
     }
 
     fn compile_ftc(&mut self, ftc: FunctionToCompile) {
-        let hir::Lambda {
-            body, is_extern, ..
-        } = &self.world_bodies[ftc.file_name][ftc.lambda];
+        let hir::Lambda { body, .. } = &self.world_bodies[ftc.file_name][ftc.lambda];
 
-        if let Some(compiler_defined) =
-            as_compiler_defined_func(*is_extern, &ftc, self.mod_dir, self.interner)
-        {
-            let (mangled, sig, func_id) = compiler_defined.to_sig_and_func_id(
+        if let hir::LambdaBody::Builtin { name, .. } = body {
+            let builtin_kind = hir_ty::BuiltinKind::from_str(self.interner.lookup(*name)).unwrap();
+            let builtin_func: BuiltinFunction = builtin_kind.into();
+
+            let (mangled, sig, func_id) = builtin_func.to_sig_and_func_id(
                 self.module,
                 self.ptr_ty,
                 self.mod_dir,
                 self.interner,
             );
 
-            match compiler_defined {
+            match builtin_func {
                 BuiltinFunction::PtrBitcast => {
                     self.compile_bitcast_fn("ptr_bitcast", &mangled, sig, func_id, self.ptr_ty)
                 }
@@ -310,9 +334,13 @@ impl Compiler<'_> {
             return;
         }
 
-        if *is_extern {
+        if *body == hir::LambdaBody::Extern {
             unreachable!("regular extern functions should not be pushed to `functions_to_compile`");
         }
+
+        let hir::LambdaBody::Block(body) = body else {
+            unreachable!("hir::LambdaBody::Empty would've reported an error");
+        };
 
         let unmangled_name = if let Some(name) = ftc.function_name {
             let fqn = hir::Fqn {
@@ -411,7 +439,6 @@ impl Compiler<'_> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn compile_real_function_with_abi(
         &mut self,
         unmangled_name: &str,
@@ -451,32 +478,36 @@ impl Compiler<'_> {
             local_functions: FxHashMap::default(),
             local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,
+            user_extern_functions: &mut self.user_extern_functions,
+            internal_extern_functions: &mut self.internal_extern_functions,
             compiler_defined_functions: &mut self.compiler_defined_functions,
             globals: &mut self.data,
             str_id_gen: &mut self.str_id_gen,
             i128_id_gen: &mut self.i128_id_gen,
             comptime_results: self.comptime_results,
             comptime_data: &mut self.comptime_data,
-            var_id_gen: UIDGenerator::default(),
             locals: FxHashMap::default(),
             switch_locals: FxHashMap::default(),
             params: FxHashMap::default(),
             exits: FxHashMap::default(),
             continues: FxHashMap::default(),
             defer_stack: Vec::new(),
+            func_writer: Default::default(),
         };
 
         let is_mod = module_name.is_mod(self.mod_dir, self.interner);
 
         if self.verbosity.should_show(is_mod) {
-            println!("{} \x1B[90m{}\x1B[0m:", unmangled_name, mangled_name);
+            println!("({})", unmangled_name);
         }
 
+        // `finish` will print the cranelift ir itself
         function_compiler.finish(
             fn_abi,
             (&param_tys, return_ty),
             body,
             self.verbosity.should_show(is_mod),
+            mangled_name,
         );
 
         if self.verbosity.include_disasm(is_mod) {
@@ -519,12 +550,13 @@ impl Compiler<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn get_func_id(
     module: &mut dyn Module,
     pointer_ty: types::Type,
     mod_dir: &std::path::Path,
     functions: &mut FxHashMap<hir::Fqn, FuncId>,
+    user_extern_functions: &mut FxHashMap<hir::Name, FuncId>,
+    internal_extern_functions: &mut FxHashMap<&'static str, FuncId>,
     compiler_defined_functions: &mut FxHashMap<BuiltinFunction, FuncId>,
     functions_to_compile: &mut VecDeque<FunctionToCompile>,
     tys: &hir_ty::ProjectInference,
@@ -542,6 +574,14 @@ fn get_func_id(
         .expect("tried to compile non-function as function");
 
     if world_bodies.is_extern(fqn) {
+        if let Some(func_id) = user_extern_functions.get(&fqn.name) {
+            return *func_id;
+        }
+        if let Some(func_id) = internal_extern_functions.get(interner.lookup(fqn.name.0)) {
+            user_extern_functions.insert(fqn.name, *func_id);
+            return *func_id;
+        }
+
         let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
             .to_cl(pointer_ty, module.target_config().default_call_conv);
@@ -550,7 +590,7 @@ fn get_func_id(
             .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
             .expect("There are multiple extern functions with the same name");
 
-        functions.insert(fqn, func_id);
+        user_extern_functions.insert(fqn.name, func_id);
 
         return func_id;
     }
@@ -571,6 +611,8 @@ fn get_func_id(
                 pointer_ty,
                 mod_dir,
                 functions,
+                user_extern_functions,
+                internal_extern_functions,
                 compiler_defined_functions,
                 functions_to_compile,
                 tys,
@@ -595,6 +637,8 @@ fn get_func_id(
                     pointer_ty,
                     mod_dir,
                     functions,
+                    user_extern_functions,
+                    internal_extern_functions,
                     compiler_defined_functions,
                     functions_to_compile,
                     tys,
@@ -609,8 +653,6 @@ fn get_func_id(
         _ => todo!("global with function type does not have a lambda as it's body"),
     };
 
-    let is_extern = world_bodies[fqn.file][lambda].is_extern;
-
     let ftc = FunctionToCompile {
         file_name: fqn.file,
         function_name: Some(fqn.name),
@@ -619,25 +661,30 @@ fn get_func_id(
         return_ty,
     };
 
-    if let Some(compiler_defined) = as_compiler_defined_func(is_extern, &ftc, mod_dir, interner) {
-        if let Some(func_id) = compiler_defined_functions.get(&compiler_defined) {
+    let lambda_body = &world_bodies[fqn.file][lambda];
+
+    if let hir::LambdaBody::Builtin { name, .. } = lambda_body.body {
+        let builtin_kind = hir_ty::BuiltinKind::from_str(interner.lookup(name)).unwrap();
+        let builtin_func: BuiltinFunction = builtin_kind.into();
+
+        if let Some(func_id) = compiler_defined_functions.get(&builtin_func) {
             functions.insert(fqn, *func_id);
 
             return *func_id;
         }
 
         let (_, _, func_id) =
-            compiler_defined.to_sig_and_func_id(module, pointer_ty, mod_dir, interner);
+            builtin_func.to_sig_and_func_id(module, pointer_ty, mod_dir, interner);
 
         functions_to_compile.push_back(ftc);
 
-        compiler_defined_functions.insert(compiler_defined, func_id);
+        compiler_defined_functions.insert(builtin_func, func_id);
         functions.insert(fqn, func_id);
 
         return func_id;
     }
 
-    if is_extern {
+    if lambda_body.body == hir::LambdaBody::Extern {
         let comp_sig = Into::<Abi>::into(module.target_config())
             .fn_to_target((&param_tys, return_ty))
             .to_cl(pointer_ty, module.target_config().default_call_conv);
@@ -718,7 +765,8 @@ impl MemoryLoc {
         }
     }
 
-    fn store(&self, builder: &mut FunctionBuilder, x: Value, offset: i32) {
+    /// As opposed to `write_all`, this writes a single `Value` to an `offset`
+    fn write_val(&self, builder: &mut FunctionBuilder, x: Value, offset: i32) {
         match self.addr {
             Location::Stack(slot) => {
                 builder
@@ -733,14 +781,15 @@ impl MemoryLoc {
         };
     }
 
-    /// Does a simple store of a memmove if necessary
+    /// Does a simple write or a memmove if necessary
+    /// Unlike `write_val`, this writes an *entire* object into the memory
     ///
     /// By using this function, you promise that the bytes of val can fit inside
     /// the given MemoryLoc.
     ///
     /// You also promise that the alignment of val matches the alignment of the
     /// the given MemoryLoc.
-    fn write(
+    fn write_all(
         self,
         val: Option<Value>,
         ty: Intern<Ty>,
@@ -807,6 +856,54 @@ impl MemoryLoc {
             };
         }
     }
+
+    /// writes the byte `val` into every byte of `ty`
+    fn memset(
+        self,
+        module: &mut dyn Module,
+        builder: &mut FunctionBuilder,
+        val: u8,
+        ty: Intern<Ty>,
+    ) {
+        match self.addr {
+            Location::Addr(mut addr) => {
+                if self.offset != 0 {
+                    addr = builder.ins().iadd_imm(addr, self.offset as i64);
+                }
+                builder.emit_small_memset(
+                    module.target_config(),
+                    addr,
+                    val,
+                    ty.size() as u64,
+                    ty.align() as u8,
+                    MemFlags::trusted(),
+                );
+            }
+            Location::Stack(slot) => {
+                // be very explicit to cranelift what we are doing here
+                // since there is no `emit_stack_memcpy`, do it ourselves
+                let mut off = 0;
+                macro_rules! mem_cpy_loop {
+                    ($width:expr) => {
+                        while (off + $width) <= (ty.stride() as i32 / $width) * $width {
+                            let val = builder.ins().iconst(
+                                cranelift::codegen::ir::Type::int_with_byte_size(8).unwrap(),
+                                val as i64,
+                            );
+                            builder
+                                .ins()
+                                .stack_store(val, slot, off + self.offset as i32);
+                            off += $width;
+                        }
+                    };
+                }
+                mem_cpy_loop!(8);
+                mem_cpy_loop!(4);
+                mem_cpy_loop!(2);
+                mem_cpy_loop!(1);
+            }
+        }
+    }
 }
 
 trait UnwrapOrAlloca {
@@ -830,11 +927,11 @@ impl UnwrapOrAlloca for Option<MemoryLoc> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cast_into_memory(
     meta_tys: &mut MetaTyData,
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
     ptr_ty: types::Type,
     val: Option<Value>,
     cast_from: Intern<Ty>,
@@ -846,7 +943,7 @@ fn cast_into_memory(
             Some(memory) => {
                 assert_eq!(cast_from.align(), cast_to.align());
 
-                memory.write(val, cast_to, module, builder);
+                memory.write_all(val, cast_to, module, builder);
 
                 return Some(memory.into_value(builder, ptr_ty));
             }
@@ -859,9 +956,15 @@ fn cast_into_memory(
     let mut cast_from = cast_from.absolute_intern_ty(false);
     let cast_to = cast_to.absolute_intern_ty(true);
 
+    if *cast_from == Ty::AlwaysJumps {
+        assert_eq!(val, None);
+        return val;
+    }
+
     // first we check for variant -> enum
+    // we do this before cast_from gets absoluted
     if let (
-        Ty::Variant {
+        Ty::EnumVariant {
             enum_uid: from_enum_uid,
             uid,
             sub_ty,
@@ -882,7 +985,7 @@ fn cast_into_memory(
         let found_sub_ty = variants
             .iter()
             .find_map(|v| {
-                let Ty::Variant {
+                let Ty::EnumVariant {
                     uid: variant_uid,
                     sub_ty,
                     ..
@@ -901,10 +1004,10 @@ fn cast_into_memory(
 
         let memory = memory.unwrap_or_alloca(builder, cast_to);
 
-        memory.write(val, *sub_ty, module, builder);
+        memory.write_all(val, *sub_ty, module, builder);
 
         let discrim = builder.ins().iconst(ptr_ty, *discriminant as i64);
-        memory.store(builder, discrim, enum_layout.discriminant_offset() as i32);
+        memory.write_val(builder, discrim, enum_layout.discriminant_offset() as i32);
 
         return Some(memory.into_value(builder, ptr_ty));
     }
@@ -913,16 +1016,51 @@ fn cast_into_memory(
     cast_from = cast_from.absolute_intern_ty(true);
 
     match (cast_from.as_ref(), cast_to.as_ref()) {
-        (Ty::Array { size, .. }, Ty::Slice { .. }) => {
+        (
+            Ty::AnonStruct { .. } | Ty::ConcreteStruct { .. },
+            Ty::AnonStruct { .. } | Ty::ConcreteStruct { .. },
+        ) => {
+            return cast_struct_to_struct(
+                meta_tys,
+                module,
+                builder,
+                func_writer,
+                ptr_ty,
+                val,
+                cast_from,
+                cast_to,
+                memory,
+            );
+        }
+        (
+            Ty::AnonArray { .. } | Ty::ConcreteArray { .. },
+            Ty::AnonArray { .. } | Ty::ConcreteArray { .. },
+        ) => {
+            return cast_array_to_array(
+                meta_tys,
+                module,
+                builder,
+                func_writer,
+                ptr_ty,
+                val,
+                cast_from,
+                cast_to,
+                memory,
+            );
+        }
+        (Ty::AnonArray { size, .. } | Ty::ConcreteArray { size, .. }, Ty::Slice { .. }) => {
             let memory = memory.unwrap_or_alloca(builder, cast_to);
 
             let len = builder.ins().iconst(ptr_ty, *size as i64);
-            memory.store(builder, len, 0_i32);
-            memory.store(builder, val?, ptr_ty.bytes() as i32);
+            memory.write_val(builder, len, 0_i32);
+            // todo: will this cause errors? what happens if you do slice[5] or ^slice[5]?
+            if let Some(val) = val {
+                memory.write_val(builder, val, ptr_ty.bytes() as i32);
+            }
 
             return Some(memory.into_value(builder, ptr_ty));
         }
-        (Ty::Slice { .. }, Ty::Array { .. }) => {
+        (Ty::Slice { .. }, Ty::AnonArray { .. } | Ty::ConcreteArray { .. }) => {
             // todo: do a runtime check that the lengths match
 
             return Some(builder.ins().load(
@@ -932,6 +1070,197 @@ fn cast_into_memory(
                 // the second field (after usize len) is the addr of the array
                 ptr_ty.bytes() as i32,
             ));
+        }
+        (Ty::Nil, Ty::Optional { .. }) => {
+            return Some(create_nil_value(builder, ptr_ty, cast_to, memory));
+        }
+        (Ty::Optional { sub_ty: from_sub }, Ty::Optional { sub_ty: to_sub }) => {
+            assert!(
+                from_sub.can_cast_to(to_sub),
+                "{from_sub:?} can not cast to {to_sub:?}"
+            );
+
+            let opt = val.expect("the found type is an option so val should be Some");
+
+            return optional_map(
+                builder,
+                func_writer,
+                cast_from,
+                opt,
+                true,
+                |builder, func_writer, payload| {
+                    // this will reuse the (_, Ty::Optional) cast defined below because I don't want
+                    // to implement it again
+                    let new_opt = cast_into_memory(
+                        meta_tys,
+                        module,
+                        builder,
+                        func_writer,
+                        ptr_ty,
+                        payload,
+                        *from_sub,
+                        cast_to,
+                        memory,
+                    )
+                    .expect("since we're casting to an optional, we should get a value");
+
+                    Some(new_opt)
+                },
+                |builder, _func_writer| Some(create_nil_value(builder, ptr_ty, cast_to, memory)),
+                cast_to.get_final_ty().into_real_type(),
+            );
+        }
+        (_, Ty::Optional { sub_ty }) => {
+            assert!(
+                cast_from.can_cast_to(sub_ty),
+                "{cast_from:?} can not cast to {sub_ty:?}"
+            );
+
+            if cast_to.is_tagged_union() {
+                assert!(cast_to.is_aggregate());
+
+                return Some(cast_payload_into_tagged_union(
+                    meta_tys,
+                    module,
+                    builder,
+                    func_writer,
+                    ptr_ty,
+                    val,
+                    cast_from,
+                    *sub_ty,
+                    cast_to,
+                    1,
+                    memory,
+                ));
+            } else {
+                assert!(!cast_to.is_aggregate());
+                assert!(sub_ty.is_non_zero());
+
+                return cast_into_memory(
+                    meta_tys,
+                    module,
+                    builder,
+                    func_writer,
+                    ptr_ty,
+                    val,
+                    cast_from,
+                    *sub_ty,
+                    memory,
+                );
+            }
+        }
+        (
+            Ty::ErrorUnion {
+                error_ty: from_error_ty,
+                payload_ty: from_payload_ty,
+            },
+            Ty::ErrorUnion {
+                error_ty: to_error_ty,
+                payload_ty: to_payload_ty,
+            },
+        ) => {
+            // Because I'm not sure how safe it is to cast undefined nil memory, we only do actual
+            // casting if the first optional isn't nil
+
+            assert!(
+                from_error_ty.can_cast_to(to_error_ty)
+                    && from_payload_ty.can_cast_to(to_payload_ty),
+                "{from_error_ty:?} and {from_payload_ty:?} can not cast to {to_error_ty:?} and {to_payload_ty:?}"
+            );
+
+            let val = val.expect("the found type is an option so val should be Some");
+
+            assert!(cast_to.is_error_union());
+            return error_union_map(
+                meta_tys,
+                module,
+                builder,
+                func_writer,
+                cast_from,
+                val,
+                true,
+                |meta_tys, module, builder, func_writer, payload| {
+                    Some(cast_payload_into_tagged_union(
+                        meta_tys,
+                        module,
+                        builder,
+                        func_writer,
+                        ptr_ty,
+                        payload,
+                        *from_payload_ty,
+                        *to_payload_ty,
+                        cast_to,
+                        1,
+                        memory,
+                    ))
+                },
+                |meta_tys, module, builder, func_writer, error| {
+                    Some(cast_payload_into_tagged_union(
+                        meta_tys,
+                        module,
+                        builder,
+                        func_writer,
+                        ptr_ty,
+                        error,
+                        *from_error_ty,
+                        *to_error_ty,
+                        cast_to,
+                        0,
+                        memory,
+                    ))
+                },
+                cast_to.get_final_ty().into_real_type(),
+            );
+        }
+        // ok to error union
+        (_, Ty::ErrorUnion { payload_ty, .. }) if cast_from.can_fit_into(payload_ty) => {
+            return Some(cast_payload_into_tagged_union(
+                meta_tys,
+                module,
+                builder,
+                func_writer,
+                ptr_ty,
+                val,
+                cast_from,
+                *payload_ty,
+                cast_to,
+                1,
+                memory,
+            ));
+        }
+        // error to error union
+        (_, Ty::ErrorUnion { error_ty, .. }) if cast_from.can_fit_into(error_ty) => {
+            return Some(cast_payload_into_tagged_union(
+                meta_tys,
+                module,
+                builder,
+                func_writer,
+                ptr_ty,
+                val,
+                cast_from,
+                *error_ty,
+                cast_to,
+                0,
+                memory,
+            ));
+        }
+        (_, Ty::ErrorUnion { .. }) => unreachable!(
+            "the previous two arms should've caught this: {cast_from:?} -> {cast_to:?}"
+        ),
+        // todo: try to pass a singleton into a function that takes types
+        (_, Ty::Type) => {
+            assert!(cast_from.is_zero_sized());
+
+            let id = cast_from_original.to_type_id(meta_tys, ptr_ty);
+            let id = builder.ins().iconst(types::I32, id as i64);
+
+            if let Some(memory) = memory {
+                assert_eq!(cast_from.align(), cast_to.align());
+
+                memory.write_val(builder, id, 0);
+            }
+
+            return Some(id);
         }
         (_, Ty::Any) => {
             let any_mem = memory.unwrap_or_alloca(builder, cast_to);
@@ -945,7 +1274,7 @@ fn cast_into_memory(
 
             let typeid = cast_from_original.to_type_id(meta_tys, ptr_ty) as i64;
             let typeid = builder.ins().iconst(types::I32, typeid);
-            any_mem.store(builder, typeid, typeid_offset);
+            any_mem.write_val(builder, typeid, typeid_offset);
 
             if let Some(val) = val {
                 let ptr = if cast_from.is_aggregate() {
@@ -962,45 +1291,59 @@ fn cast_into_memory(
                     builder.ins().stack_addr(ptr_ty, tmp_stack_slot, 0)
                 };
 
-                any_mem.store(builder, ptr, rawptr_offset as i32);
+                any_mem.write_val(builder, ptr, rawptr_offset as i32);
             }
 
             return Some(any_mem.into_value(builder, ptr_ty));
         }
-        (Ty::Struct { .. }, Ty::Struct { .. }) => {
-            return cast_struct_to_struct(
-                meta_tys, module, builder, ptr_ty, val, cast_from, cast_to, memory,
-            );
-        }
-        (Ty::Array { .. }, Ty::Array { .. }) => {
-            return cast_array_to_array(
-                meta_tys, module, builder, ptr_ty, val, cast_from, cast_to, memory,
-            );
+        // todo: do these string casts also need to be caught the other way?
+        (Ty::Pointer { .. } | Ty::RawPtr { .. }, Ty::Pointer { .. } | Ty::RawPtr { .. })
+        | (Ty::Slice { .. } | Ty::RawSlice, Ty::Slice { .. } | Ty::RawSlice)
+        | (
+            Ty::String,
+            Ty::AnonArray { .. }
+            | Ty::ConcreteArray { .. }
+            | Ty::Pointer { .. }
+            | Ty::RawPtr { .. },
+        ) => {
+            if let Some(memory) = memory
+                && let Some(val) = val
+            {
+                // memory.write_all(val, cast_to, module, builder);
+                memory.write_val(builder, val, 0);
+            }
+
+            return val;
         }
         _ => {}
     }
 
     // it's a simple cast
 
+    assert!(
+        !cast_from.is_aggregate() && !cast_to.is_aggregate(),
+        "{cast_from:?} -> {cast_to:?} is an aggregate cast but it hasn't been handled yet"
+    );
+
     let val = match (cast_from.get_final_ty(), cast_to.get_final_ty()) {
         (FinalTy::Number(cast_from), FinalTy::Number(cast_to)) => {
             Some(cast_num(builder, val?, cast_from, cast_to))
         }
-        _ => val,
+        _ => panic!("unhandled cast {cast_from:?} -> {cast_to:?}"),
     };
 
     if let Some(memory) = memory {
-        memory.write(val, cast_to, module, builder);
+        memory.write_all(val, cast_to, module, builder);
     }
 
     val
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cast_struct_to_struct(
     meta_tys: &mut MetaTyData,
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
     ptr_ty: types::Type,
     val: Option<Value>,
     cast_from: Intern<Ty>,
@@ -1017,7 +1360,7 @@ fn cast_struct_to_struct(
 
     if from_members
         .iter()
-        .zip(to_members.iter())
+        .zip_eq(to_members.iter())
         .all(|(from, to)| {
             from.name == to.name && from.ty.is_functionally_equivalent_to(&to.ty, true)
         })
@@ -1068,6 +1411,7 @@ fn cast_struct_to_struct(
                 meta_tys,
                 module,
                 builder,
+                func_writer,
                 ptr_ty,
                 src,
                 *from_ty,
@@ -1080,11 +1424,11 @@ fn cast_struct_to_struct(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cast_array_to_array(
     meta_tys: &mut MetaTyData,
     module: &mut dyn Module,
     builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
     ptr_ty: types::Type,
     val: Option<Value>,
     cast_from: Intern<Ty>,
@@ -1135,6 +1479,7 @@ fn cast_array_to_array(
                 meta_tys,
                 module,
                 builder,
+                func_writer,
                 ptr_ty,
                 src,
                 from_sub_ty,
@@ -1180,7 +1525,7 @@ fn cast_num(
         return val;
     }
 
-    let res = match (cast_from.float, cast_to.float) {
+    match (cast_from.float, cast_to.float) {
         (true, true) => {
             // float to float
             match cast_from.bit_width().cmp(&cast_to.bit_width()) {
@@ -1253,7 +1598,347 @@ fn cast_num(
                 std::cmp::Ordering::Greater => builder.ins().ireduce(cast_to.ty, val),
             }
         }
+    }
+}
+
+fn cast_payload_into_tagged_union(
+    meta_tys: &mut MetaTyData,
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
+    ptr_ty: types::Type,
+    val: Option<Value>,
+    from_payload_ty: Intern<Ty>,
+    to_payload_ty: Intern<Ty>,
+    union_ty: Intern<Ty>,
+    discrim: i64,
+    memory: Option<MemoryLoc>,
+) -> Value {
+    // todo: should absolute_ty be called?
+    assert!(union_ty.is_tagged_union());
+    assert!(union_ty.is_aggregate());
+    assert!(
+        from_payload_ty.can_cast_to(&to_payload_ty),
+        "{from_payload_ty:?} can not cast to {to_payload_ty:?}"
+    );
+
+    let memory = memory.unwrap_or_alloca(builder, union_ty);
+
+    cast_into_memory(
+        meta_tys,
+        module,
+        builder,
+        func_writer,
+        ptr_ty,
+        val,
+        from_payload_ty,
+        to_payload_ty,
+        Some(memory),
+    );
+
+    let enum_layout = union_ty
+        .enum_layout()
+        .expect("we already checked that the type was a tagged union");
+    let one = builder.ins().iconst(types::I8, discrim);
+    memory.write_val(builder, one, enum_layout.discriminant_offset() as i32);
+
+    memory.into_value(builder, ptr_ty)
+}
+
+// This works for tagged unions and nullable pointers.
+//
+// Note: this doesn't check the tag of the tagged union
+fn unwrap_sum_ty(
+    builder: &mut FunctionBuilder,
+    union_ptr: Value,
+    union_ty: Intern<Ty>,
+    payload_ty: Intern<Ty>,
+) -> Option<Value> {
+    assert!(union_ty.is_sum_ty(), "{union_ty:?} is not a sum type");
+    assert!(
+        union_ty.has_sum_variant(&payload_ty),
+        "{payload_ty:?} is not a variant of {union_ty:?}"
+    );
+
+    if !union_ty.is_tagged_union() {
+        assert!(union_ty.is_optional());
+
+        if *payload_ty == Ty::Nil {
+            return None;
+        } else {
+            assert!(payload_ty.is_non_zero(), "{payload_ty:?} can be zero");
+            return Some(union_ptr);
+        }
+    }
+
+    if !payload_ty.is_aggregate()
+        && let Some(final_ty) = payload_ty.get_final_ty().into_real_type()
+    {
+        assert!(!payload_ty.is_non_zero());
+
+        Some(
+            builder
+                .ins()
+                .load(final_ty, MemFlags::trusted(), union_ptr, 0),
+        )
+    } else if payload_ty.is_zero_sized() {
+        None
+    } else {
+        assert!(payload_ty.is_aggregate());
+        Some(union_ptr)
+    }
+}
+
+fn create_nil_value(
+    builder: &mut FunctionBuilder,
+    ptr_ty: types::Type,
+    option_ty: Intern<Ty>,
+    memory: Option<MemoryLoc>,
+) -> Value {
+    let Ty::Optional { sub_ty } = option_ty.absolute_ty() else {
+        unreachable!("the type of nil should be an optional");
     };
 
-    res
+    if sub_ty.is_non_zero() {
+        assert!(!sub_ty.is_aggregate());
+
+        let real_ty = sub_ty
+            .get_final_ty()
+            .into_real_type()
+            .expect("non_zero is never void");
+
+        let nil = builder.ins().iconst(real_ty, 0);
+
+        if let Some(memory) = memory {
+            memory.write_val(builder, nil, 0);
+        }
+
+        nil
+    } else {
+        assert!(option_ty.is_aggregate());
+
+        let opt_layout = option_ty
+            .enum_layout()
+            .expect("all non-pointer options should have an enum layout");
+
+        let memory = memory.unwrap_or_alloca(builder, option_ty);
+
+        let zero = builder.ins().iconst(types::I8, 0);
+        memory.write_val(builder, zero, opt_layout.discriminant_offset() as i32);
+
+        memory.into_value(builder, ptr_ty)
+    }
+}
+
+fn optional_map(
+    builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
+    option_ty: Intern<Ty>,
+    val: Value,
+    unwrap_option: bool,
+    map_payload: impl FnOnce(&mut FunctionBuilder, &mut NiceFuncWriter, Option<Value>) -> Option<Value>,
+    map_nil: impl FnOnce(&mut FunctionBuilder, &mut NiceFuncWriter) -> Option<Value>,
+    finally_ret: Option<types::Type>,
+) -> Option<Value> {
+    let Ty::Optional { sub_ty: payload_ty } = option_ty.absolute_ty() else {
+        panic!("{option_ty:?} is not an optional");
+    };
+
+    let err_block = builder.create_block();
+    func_writer[err_block] = "optional_map_error".into();
+    let some_block = builder.create_block();
+    func_writer[some_block] = "optional_map_okay".into();
+    let finally_block = builder.create_block();
+    func_writer[finally_block] = "optional_map_exit".into();
+
+    if let Some(finally_ret) = finally_ret {
+        builder.append_block_param(finally_block, finally_ret);
+    }
+
+    let is_some = optional_is_some(builder, option_ty, val);
+
+    builder.ins().brif(is_some, some_block, &[], err_block, &[]);
+    builder.seal_block(some_block);
+    builder.seal_block(err_block);
+
+    builder.switch_to_block(some_block);
+
+    let some_val = if unwrap_option {
+        // todo: I think this needs to take the payload type and not the optional type
+        unwrap_sum_ty(builder, val, option_ty, *payload_ty)
+    } else {
+        None
+    };
+
+    match map_payload(builder, func_writer, some_val) {
+        Some(val) => {
+            builder.ins().jump(finally_block, &[BlockArg::Value(val)]);
+        }
+        None => {
+            builder.ins().jump(finally_block, &[]);
+        }
+    }
+
+    builder.switch_to_block(err_block);
+
+    match map_nil(builder, func_writer) {
+        Some(val) => {
+            builder.ins().jump(finally_block, &[BlockArg::Value(val)]);
+        }
+        None => {
+            builder.ins().jump(finally_block, &[]);
+        }
+    }
+
+    builder.switch_to_block(finally_block);
+    builder.seal_block(finally_block);
+
+    if finally_ret.is_some() {
+        Some(builder.block_params(finally_block)[0])
+    } else {
+        None
+    }
+}
+
+fn optional_is_some(builder: &mut FunctionBuilder, option_ty: Intern<Ty>, val: Value) -> Value {
+    let Ty::Optional { sub_ty } = *option_ty else {
+        unreachable!(
+            "the function is literally named `optional_is_some`. what the hell are you doing trying to pass something a non-optional to it????"
+        )
+    };
+
+    if sub_ty.is_non_zero() {
+        // if aggregate non-zero types are added, we have to do a memcmp
+        assert!(!option_ty.is_aggregate());
+        assert!(sub_ty.is_pointer());
+
+        builder.ins().icmp_imm(IntCC::NotEqual, val, 0)
+    } else {
+        tagged_union_has_discriminant(builder, option_ty, val, 1)
+    }
+}
+
+fn error_union_map(
+    meta_tys: &mut MetaTyData,
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder,
+    func_writer: &mut NiceFuncWriter,
+    error_union_ty: Intern<Ty>,
+    val: Value,
+    unwrap_union: bool,
+    map_payload: impl FnOnce(
+        &mut MetaTyData,
+        &mut dyn Module,
+        &mut FunctionBuilder,
+        &mut NiceFuncWriter,
+        Option<Value>,
+    ) -> Option<Value>,
+    map_error: impl FnOnce(
+        &mut MetaTyData,
+        &mut dyn Module,
+        &mut FunctionBuilder,
+        &mut NiceFuncWriter,
+        Option<Value>,
+    ) -> Option<Value>,
+    finally_ret: Option<types::Type>,
+) -> Option<Value> {
+    let Ty::ErrorUnion {
+        error_ty,
+        payload_ty,
+    } = *error_union_ty
+    else {
+        unreachable!(
+            "the function is literally named `error_union_is_payload`. what the hell are you doing trying to pass something a non-optional to it????"
+        )
+    };
+
+    let err_block = builder.create_block();
+    func_writer[err_block] = "error_union_map_error".into();
+    let ok_block = builder.create_block();
+    func_writer[ok_block] = "error_union_map_okay".into();
+    let finally_block = builder.create_block();
+    func_writer[finally_block] = "error_union_map_exit".into();
+
+    if let Some(finally_ret) = finally_ret {
+        builder.append_block_param(finally_block, finally_ret);
+    }
+
+    let is_ok = tagged_union_has_discriminant(builder, error_union_ty, val, 1);
+
+    builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+    builder.seal_block(ok_block);
+    builder.seal_block(err_block);
+
+    builder.switch_to_block(ok_block);
+
+    let ok_val = if unwrap_union {
+        unwrap_sum_ty(builder, val, error_union_ty, payload_ty)
+    } else {
+        None
+    };
+
+    match map_payload(meta_tys, module, builder, func_writer, ok_val) {
+        Some(val) => {
+            builder.ins().jump(finally_block, &[BlockArg::Value(val)]);
+        }
+        None => {
+            builder.ins().jump(finally_block, &[]);
+        }
+    }
+
+    builder.switch_to_block(err_block);
+
+    let err_val = if unwrap_union {
+        unwrap_sum_ty(builder, val, error_union_ty, error_ty)
+    } else {
+        None
+    };
+
+    match map_error(meta_tys, module, builder, func_writer, err_val) {
+        Some(val) => {
+            builder.ins().jump(finally_block, &[BlockArg::Value(val)]);
+        }
+        None => {
+            builder.ins().jump(finally_block, &[]);
+        }
+    }
+
+    builder.switch_to_block(finally_block);
+    builder.seal_block(finally_block);
+
+    if finally_ret.is_some() {
+        Some(builder.block_params(finally_block)[0])
+    } else {
+        None
+    }
+}
+
+fn tagged_union_has_discriminant(
+    builder: &mut FunctionBuilder,
+    tagged_union_ty: Intern<Ty>,
+    val: Value,
+    discrim: i64,
+) -> Value {
+    // todo: should absolute_ty be called?
+    assert!(
+        matches!(*tagged_union_ty, Ty::Enum { .. } | Ty::ErrorUnion { .. })
+            || matches!(*tagged_union_ty, Ty::Optional { sub_ty } if !sub_ty.is_non_zero() ),
+        "{tagged_union_ty:?} is not an enum/error union/aggregate optional"
+    );
+    assert!(tagged_union_ty.is_aggregate());
+
+    let enum_layout = tagged_union_ty
+        .enum_layout()
+        .expect("we already checked that the type is an enum");
+
+    let actual_discrim = builder.ins().load(
+        types::I8,
+        MemFlags::trusted(),
+        val,
+        enum_layout.discriminant_offset() as i32,
+    );
+
+    builder
+        .ins()
+        .icmp_imm(IntCC::Equal, actual_discrim, discrim)
 }

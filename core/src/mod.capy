@@ -12,12 +12,8 @@ ptr :: #import("ptr.capy");
 list :: #import("structs/list.capy");
 string_builder :: #import("structs/string_builder.capy");
 
-// a builtin slice that gets populated with `argc` and `argv`
-// just before `main` gets called
-args : [] str : extern;
-
-// builtin
-len :: (slice: [] any) -> usize extern;
+// this gets populated with `argc` and `argv` just before `main` gets called
+args : [] str : #builtin("commandline_args");
 
 // for testing.
 // exits the program if a check failed, and prints the specificed message
@@ -105,7 +101,7 @@ any_from_raw_parts :: (data: rawptr, ty: type) -> any {
     };
 
     // transmute Any to any using rawptr
-    (^any).(rawptr.(^raw))^
+    ^any.(rawptr.(^raw))^
 }
 
 // see `print`
@@ -122,7 +118,7 @@ println :: (values: ...any) {
 
 _print_str :: (text: str) {
     // cast str to ^char
-    text := (^char).(text);
+    text := ^char.(text);
 
     i := 0;
     loop {
@@ -137,9 +133,9 @@ _print_str :: (text: str) {
     }
 }
 
-// the print function uses the `Any` type to be able to print
-// all possible values. you don't need to implement `Display` or `Debug`,
-// struct printing just works due to the reflection system.
+// The print function uses the `any` type to print all possible values.
+// You don't need to implement `Display` or `Debug`.
+// Struct printing just works due to the reflection system.
 print :: (values: ...any) {
     val_idx := 0;
     while val_idx < values.len {
@@ -149,18 +145,18 @@ print :: (values: ...any) {
         data := val.ptr;
 
         switch info in meta.get_type_info(ty) {
-            Int => {
+            .Int => {
                 str := if info.signed {
                     num := if info.bit_width == 8 {
-                        i64.((^i8).(data)^)
+                        i64.(^i8.(data)^)
                     } else if info.bit_width == 16 {
-                        i64.((^i16).(data)^)
+                        i64.(^i16.(data)^)
                     } else if info.bit_width == 32 {
-                        i64.((^i32).(data)^)
+                        i64.(^i32.(data)^)
                     } else if info.bit_width == 64 {
-                        i64.((^i64).(data)^)
+                        i64.(^i64.(data)^)
                     } else if info.bit_width == 128 {
-                        i64.((^i128).(data)^)
+                        i64.(^i128.(data)^)
                     } else {
                         unreachable();
                         0
@@ -169,15 +165,15 @@ print :: (values: ...any) {
                     fmt.int_to_string(fmt.decimal(num))
                 } else {
                     num := if info.bit_width == 8 {
-                        u64.((^u8).(data)^)
+                        u64.(^u8.(data)^)
                     } else if info.bit_width == 16 {
-                        u64.((^u16).(data)^)
+                        u64.(^u16.(data)^)
                     } else if info.bit_width == 32 {
-                        u64.((^u32).(data)^)
+                        u64.(^u32.(data)^)
                     } else if info.bit_width == 64 {
-                        u64.((^u64).(data)^)
+                        u64.(^u64.(data)^)
                     } else if info.bit_width == 128 {
-                        u64.((^u128).(data)^)
+                        u64.(^u128.(data)^)
                     } else {
                         unreachable();
                         0
@@ -188,12 +184,12 @@ print :: (values: ...any) {
                 defer string_builder.free(^mut str);
 
                 string_builder.print(^str);
-            }
-            Float => {
+            },
+            .Float => {
                 num := if info.bit_width == 32 {
-                    f64.((^f32).(data)^)
+                    f64.(^f32.(data)^)
                 } else if info.bit_width == 64 {
-                    f64.((^f64).(data)^)
+                    f64.(^f64.(data)^)
                 } else {
                     unreachable();
                     0
@@ -203,17 +199,19 @@ print :: (values: ...any) {
                 defer string_builder.free(^mut str);
 
                 string_builder.print(^str);
-            }
-            Bool => {
-                if (^bool).(data)^ {
+            },
+            .Bool => {
+                if ^bool.(data)^ {
                     _print_str("true");
                 } else {
                     _print_str("false");
                 }
-            }
-            String => _print_str((^str).(data)^),
-            Char => libc.putchar((^char).(data)^),
-            Array => {
+            },
+            .String => _print_str(^str.(data)^),
+            .Char => {
+                libc.putchar(^char.(data)^);
+            },
+            .Array => {
                 elem_stride := meta.stride_of(info.sub_ty);
 
                 _print_str("[ ");
@@ -232,11 +230,11 @@ print :: (values: ...any) {
                 }
 
                 _print_str(" ]");
-            }
-            Slice => {
+            },
+            .Slice => {
                 elem_stride := meta.stride_of(info.sub_ty);
 
-                slice := (^[] any).(data);
+                slice := ^[] any.(data);
                 len := slice.len;
 
                 _print_str("[ ");
@@ -255,23 +253,22 @@ print :: (values: ...any) {
                 }
 
                 _print_str(" ]");
-            }
-            Pointer => {
+            },
+            .Pointer => {
                 _print_str("^");
-                // since data is a pointer, we can safely dereference it
-                print(any_from_raw_parts((^rawptr).(data)^, info.sub_ty));
-            }
-            Distinct => {
+                print(any_from_raw_parts(^rawptr.(data)^, info.sub_ty));
+            },
+            .Distinct => {
                 print(any_from_raw_parts(data, info.sub_ty));
-            }
-            Struct => {
+            },
+            .Struct => `struct_blk: {
                 if ty == fmt.Number_Formatting {
-                    str := fmt.int_to_string((^fmt.Number_Formatting).(data)^);
+                    str := fmt.int_to_string(^fmt.Number_Formatting.(data)^);
                     defer string_builder.free(^mut str);
 
                     string_builder.print(^str);
-                    
-                    return;
+                 
+                    break `struct_blk;
                 }
             
                 _print_str("{ ");
@@ -294,16 +291,16 @@ print :: (values: ...any) {
                 }
 
                 _print_str(" }");
-            }
-            Enum => {
-                discriminant := (^u8).(ptr.const_offset(data, info.discriminant_offset))^;
+            },
+            .Enum => {
+                discriminant := ^u8.(ptr.const_offset(data, info.discriminant_offset))^;
 
                 idx := 0;
                 while idx < info.variants.len {
                     variant := info.variants[idx];
 
                     variant_info := switch v in meta.get_type_info(variant) {
-                        Variant => v,
+                        .Variant => v,
                         _ => {
                             unreachable("all variants of the enum should be `Type_Info.Variant`");
                             meta.Type_Info.Variant.{sub_ty=void,discriminant=0}
@@ -317,28 +314,61 @@ print :: (values: ...any) {
 
                     idx += 1;
                 }
-            }
-            Variant => {
-                print(any_from_raw_parts(data, info.sub_ty));
-            }
-            Function => _print_str("{function}"),
-            File => _print_str("{import}"),
-            Meta_Type => {
-                print_type_info((^type).(data)^);
-            }
-            Any => {
-                print((^any).(data)^);
             },
-            Raw_Ptr => _print_str("{rawptr}"),
-            Raw_Slice => {
+            .Variant => {
+                print(any_from_raw_parts(data, info.sub_ty));
+            },
+            .Nil => _print_str("nil"),
+            .Optional => {
+                if info.is_non_zero {
+                    assert(#is_variant(meta.get_type_info(info.sub_ty), meta.Type_Info.Pointer), info.sub_ty, " should be a pointer");
+
+                    if ^usize.(data)^ == 0 {
+                        _print_str("nil");
+                    } else {
+                        print(any_from_raw_parts(data, info.sub_ty));
+                    }
+                } else {
+                    discriminant := ^u8.(ptr.const_offset(data, info.discriminant_offset))^;
+
+                    if discriminant == 0 {
+                        _print_str("nil");
+                    } else if discriminant == 1 {
+                        print(any_from_raw_parts(data, info.sub_ty));
+                    } else {
+                        panic("strange optional discriminant, ", discriminant);
+                    }
+                }
+            },
+            .Error_Union => {
+                discriminant := ^u8.(ptr.const_offset(data, info.discriminant_offset))^;
+
+                if discriminant == 0 {
+                    print(any_from_raw_parts(data, info.error_ty));
+                } else if discriminant == 1 {
+                    print(any_from_raw_parts(data, info.payload_ty));
+                } else {
+                    panic("strange error union discriminant, ", discriminant);
+                }
+            },
+            .Function => _print_str("{function}"),
+            .File => _print_str("{import}"),
+            .Meta_Type => {
+                print_type_info(^type.(data)^);
+            },
+            .Any => {
+                print(^any.(data)^);
+            },
+            .Raw_Ptr => _print_str("{rawptr}"),
+            .Raw_Slice => {
                 _print_str("[ {rawslice} ; ");
 
-                data := (^rawslice).(data)^;
+                data := ^rawslice.(data)^;
                 print(data.len);
 
                 _print_str(" ]");
             },
-            Void => _print_str("()"),
+            .Void => _print_str("()"),
         }
 
         val_idx += 1;
@@ -348,7 +378,7 @@ print :: (values: ...any) {
 // prints a type id as a human readable string
 print_type_info :: (ty: type) {
     switch info in meta.get_type_info(ty) {
-        Int => {
+        .Int => {
             if info.signed {
                 libc.putchar('i');
             } else {
@@ -359,19 +389,19 @@ print_type_info :: (ty: type) {
             defer string_builder.free(^mut str);
 
             string_builder.print(^str);
-        }
-        Float => {
+        },
+        .Float => {
             libc.putchar('f');
 
             str := fmt.int_to_string(fmt.decimal(info.bit_width));
             defer string_builder.free(^mut str);
 
             string_builder.print(^str);
-        }
-        Bool => _print_str("bool"),
-        String => _print_str("str"),
-        Char => _print_str("char"),
-        Array => {
+        },
+        .Bool => _print_str("bool"),
+        .String => _print_str("str"),
+        .Char => _print_str("char"),
+        .Array => {
             libc.putchar('[');
 
             str := fmt.int_to_string(fmt.decimal(i64.(info.len)));
@@ -382,20 +412,20 @@ print_type_info :: (ty: type) {
             libc.putchar(' ');
 
             print_type_info(info.sub_ty);
-        }
-        Slice => {
+        },
+        .Slice => {
             _print_str("[] ");
             print_type_info(info.sub_ty);
-        }
-        Pointer => {
+        },
+        .Pointer => {
             libc.putchar('^');
             print_type_info(info.sub_ty);
-        }
-        Distinct => {
+        },
+        .Distinct => {
             _print_str("distinct ");
             print_type_info(info.sub_ty);
-        }
-        Struct => {
+        },
+        .Struct => {
             _print_str("struct { ");
 
             idx := 0;
@@ -414,8 +444,8 @@ print_type_info :: (ty: type) {
             }
 
             _print_str(" }");
-        }
-        Enum => {
+        },
+        .Enum => {
             _print_str("enum { ");
 
             idx := 0;
@@ -432,8 +462,8 @@ print_type_info :: (ty: type) {
             }
 
             _print_str(" }");
-        }
-        Variant => {
+        },
+        .Variant => {
             _print_str("variant ");
             print_type_info(info.sub_ty);
 
@@ -441,18 +471,28 @@ print_type_info :: (ty: type) {
             str := fmt.int_to_string(fmt.decimal(i64.(info.discriminant)));
             defer string_builder.free(^mut str);
             string_builder.print(^str);
-        }
-        Function => _print_str("{function type}"),
-        File => _print_str("{import}"),
-        Meta_Type => _print_str("type"),
-        Any => _print_str("any"),
-        Raw_Ptr => if info.mutable {
+        },
+        .Nil => _print_str("nil"),
+        .Optional => {
+            _print_str("?");
+            print_type_info(info.sub_ty);
+        },
+        .Error_Union => {
+            print_type_info(info.error_ty);
+            _print_str("!");
+            print_type_info(info.payload_ty);
+        },
+        .Function => _print_str("{function type}"),
+        .File => _print_str("{import}"),
+        .Meta_Type => _print_str("type"),
+        .Any => _print_str("any"),
+        .Raw_Ptr => if info.mutable {
             _print_str("mut rawptr")
         } else {
             _print_str("rawptr")
         },
-        Raw_Slice => _print_str("rawslice"),
-        Void => _print_str("void"),
+        .Raw_Slice => _print_str("rawslice"),
+        .Void => _print_str("void"),
     }
 }
 
@@ -461,7 +501,7 @@ print_type_info :: (ty: type) {
 // and so are all null terminated like C.
 str_len :: (s: str) -> usize {
     // cast str to ^u8
-    s_ptr := (^u8).(s);
+    s_ptr := ^u8.(s);
 
     idx := 0;
     loop {
@@ -475,39 +515,15 @@ str_len :: (s: str) -> usize {
     idx
 }
 
-// checks to see if two strings are equal
-str_eq :: (first: str, second: str) -> bool {
-    first_ptr := (^u8).(first);
-    second_ptr := (^u8).(second);
-
-    idx := 0;
-    loop {
-        first_ch := ptr.read(first_ptr, idx);
-        second_ch := ptr.read(second_ptr, idx);
-        
-        if first_ch != second_ch {
-            return false;
-        }
-
-        if first_ch == 0 || second_ch == 0 { 
-	    return first_ch == second_ch;
-	}
-
-        idx += 1;
-    }
-
-    true
-}
-
 // casts an `any` into the specificied memory.
 // the buffer must have enough space for `expected`.
 //
 // this is more than just a memcpy, it casts `value`
 // as needed so that the resulting type is `expected`.
 //
-// Think of this as a runtime `as` operator.
+// Think of this as a runtime version of `type.(value)`.
 //
-// The returned `any` is made of the given `expected` and `into`
+// `into` must be large enough to hold `expected`
 //
 // todo: add more tests for this function, it is probably very incomplete
 cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
@@ -523,12 +539,12 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
     expected := expected;
     `l: loop {
         switch info in meta.get_type_info(expected) {
-            Distinct => {
+            .Distinct => {
                 expected = info.sub_ty;
-            }
-            Variant => {
+            },
+            .Variant => {
                 expected = info.sub_ty;
-            }
+            },
             _ => {
                 // todo break expressions
                 break `l;
@@ -538,246 +554,246 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
 
     // do actual casting
     switch from_info in meta.get_type_info(found_ty) {
-        Int => {
+        .Int => {
             num := if from_info.bit_width == 8 {
-                u64.((^u8).(found_data)^)
+                u64.(^u8.(found_data)^)
             } else if from_info.bit_width == 16 {
-                u64.((^u16).(found_data)^)
+                u64.(^u16.(found_data)^)
             } else if from_info.bit_width == 32 {
-                u64.((^u32).(found_data)^)
+                u64.(^u32.(found_data)^)
             } else if from_info.bit_width == 64 {
-                u64.((^u64).(found_data)^)
+                u64.(^u64.(found_data)^)
             } else if from_info.bit_width == 128 {
-                u64.((^u128).(found_data)^)
+                u64.(^u128.(found_data)^)
             } else {
                 unreachable();
                 0
             };
 
             switch into_info in meta.get_type_info(expected) {
-                Int => {
+                .Int => {
                     // int -> int
                     if into_info.bit_width == 8 {
-                        (^mut u8).(into) ^= u8.(num);
+                        ^mut u8.(into) ^= u8.(num);
                     } else if into_info.bit_width == 16 {
-                        (^mut u16).(into) ^= u16.(num);
+                        ^mut u16.(into) ^= u16.(num);
                     } else if into_info.bit_width == 32 {
-                        (^mut u32).(into) ^= u32.(num);
+                        ^mut u32.(into) ^= u32.(num);
                     } else if into_info.bit_width == 64 {
-                        (^mut u64).(into) ^= u64.(num);
+                        ^mut u64.(into) ^= u64.(num);
                     } else if into_info.bit_width == 128 {
-                        (^mut u128).(into) ^= u128.(num);
+                        ^mut u128.(into) ^= u128.(num);
                     } else {
                         unreachable();
                     }       
-                }
-                Float => {
+                },
+                .Float => {
                     // int -> float
                     if into_info.bit_width == 32 {
-                        (^mut f32).(into) ^= f32.(num);
+                        ^mut f32.(into) ^= f32.(num);
                     } else if into_info.bit_width == 64 {
-                        (^mut f64).(into) ^= f64.(num);
+                        ^mut f64.(into) ^= f64.(num);
                     } else {
                         unreachable();
                     }
-                }
-                Bool => {
-                    (^mut bool).(into) ^= bool.(num);
-                }
-                Char => {
-                    (^mut char).(into) ^= char.(num);
-                }
+                },
+                .Bool => {
+                    ^mut bool.(into) ^= bool.(num);
+                },
+                .Char => {
+                    ^mut char.(into) ^= char.(num);
+                },
                 _ => todo("only supports int -> int, int -> float, int -> bool, int -> char")
             }
-        }
-        Float => {
+        },
+        .Float => {
             num := if from_info.bit_width == 32 {
-                f64.((^f32).(found_data)^)
+                f64.(^f32.(found_data)^)
             } else if from_info.bit_width == 64 {
-                f64.((^f64).(found_data)^)
+                f64.(^f64.(found_data)^)
             } else {
                 unreachable();
                 0
             };
 
             switch into_info in meta.get_type_info(expected) {
-                Int => {
+                .Int => {
                     // float -> int
                     if into_info.bit_width == 8 {
-                        (^mut u8).(into) ^= u8.(num);
+                        ^mut u8.(into) ^= u8.(num);
                     } else if into_info.bit_width == 16 {
-                        (^mut u16).(into) ^= u16.(num);
+                        ^mut u16.(into) ^= u16.(num);
                     } else if into_info.bit_width == 32 {
-                        (^mut u32).(into) ^= u32.(num);
+                        ^mut u32.(into) ^= u32.(num);
                     } else if into_info.bit_width == 64 {
-                        (^mut u64).(into) ^= u64.(num);
+                        ^mut u64.(into) ^= u64.(num);
                     } else if into_info.bit_width == 128 {
-                        (^mut u128).(into) ^= u128.(num);
+                        ^mut u128.(into) ^= u128.(num);
                     } else {
                         unreachable();
                     }       
-                }
-                Float => {
+                },
+                .Float => {
                     // float -> float
                     if into_info.bit_width == 32 {
-                        (^mut f32).(into) ^= f32.(num);
+                        ^mut f32.(into) ^= f32.(num);
                     } else if into_info.bit_width == 64 {
-                        (^mut f64).(into) ^= f64.(num);
+                        ^mut f64.(into) ^= f64.(num);
                     } else {
                         unreachable();
                     }
-                }
-                Bool => {
-                    (^mut bool).(into) ^= bool.(num);
-                }
-                Char => {
-                    (^mut char).(into) ^= char.(num);
-                }
+                },
+                .Bool => {
+                    ^mut bool.(into) ^= bool.(num);
+                },
+                .Char => {
+                    ^mut char.(into) ^= char.(num);
+                },
                 _ => todo("only supports float -> int, float -> float, float -> bool, and float -> char")
             }
-        }
-        Bool => {
-            value := (^bool).(found_data)^;
+        },
+        .Bool => {
+            value := ^bool.(found_data)^;
 
             switch into_info in meta.get_type_info(expected) {
-                Int => {
+                .Int => {
                     // bool -> int
                     if into_info.bit_width == 8 {
-                        (^mut u8).(into) ^= u8.(value);
+                        ^mut u8.(into) ^= u8.(value);
                     } else if into_info.bit_width == 16 {
-                        (^mut u16).(into) ^= u16.(value);
+                        ^mut u16.(into) ^= u16.(value);
                     } else if into_info.bit_width == 32 {
-                        (^mut u32).(into) ^= u32.(value);
+                        ^mut u32.(into) ^= u32.(value);
                     } else if into_info.bit_width == 64 {
-                        (^mut u64).(into) ^= u64.(value);
+                        ^mut u64.(into) ^= u64.(value);
                     } else if into_info.bit_width == 128 {
-                        (^mut u128).(into) ^= u128.(value);
+                        ^mut u128.(into) ^= u128.(value);
                     } else {
                         unreachable();
                     }       
-                }
-                Float => {
+                },
+                .Float => {
                     // bool -> float
                     if into_info.bit_width == 32 {
-                        (^mut f32).(into) ^= f32.(value);
+                        ^mut f32.(into) ^= f32.(value);
                     } else if into_info.bit_width == 64 {
-                        (^mut f64).(into) ^= f64.(value);
+                        ^mut f64.(into) ^= f64.(value);
                     } else {
                         unreachable();
                     }
-                }
-                Bool => {
+                },
+                .Bool => {
                     // bool -> bool
-                    (^mut bool).(into) ^= bool.(value);
-                }
-                Char => {
+                    ^mut bool.(into) ^= bool.(value);
+                },
+                .Char => {
                     // bool -> char
-                    (^mut char).(into) ^= char.(value);
-                }
+                    ^mut char.(into) ^= char.(value);
+                },
                 _ => todo("only supports bool -> int, bool -> float, bool -> bool, and bool -> char")
             }
-        }
-        String => {
+        },
+        .String => {
             assert(
                 found_ty == expected,
                 "the string type can only be cast to itself",
             );
-            (^mut usize).(into) ^= (^usize).(found_data)^;
-        }
-        Char => {
-            value := (^bool).(found_data)^;
+            ^mut usize.(into) ^= (^usize).(found_data)^;
+        },
+        .Char => {
+            value := ^bool.(found_data)^;
 
             switch into_info in meta.get_type_info(expected) {
-                Int => {
+                .Int => {
                     // char -> int
                     if into_info.bit_width == 8 {
-                        (^mut u8).(into) ^= u8.(value);
+                        ^mut u8.(into) ^= u8.(value);
                     } else if into_info.bit_width == 16 {
-                        (^mut u16).(into) ^= u16.(value);
+                        ^mut u16.(into) ^= u16.(value);
                     } else if into_info.bit_width == 32 {
-                        (^mut u32).(into) ^= u32.(value);
+                        ^mut u32.(into) ^= u32.(value);
                     } else if into_info.bit_width == 64 {
-                        (^mut u64).(into) ^= u64.(value);
+                        ^mut u64.(into) ^= u64.(value);
                     } else if into_info.bit_width == 128 {
-                        (^mut u128).(into) ^= u128.(value);
+                        ^mut u128.(into) ^= u128.(value);
                     } else {
                         unreachable();
                     }       
-                }
-                Float => {
+                },
+                .Float => {
                     // char -> float
                     if into_info.bit_width == 32 {
-                        (^mut f32).(into) ^= f32.(value);
+                        ^mut f32.(into) ^= f32.(value);
                     } else if into_info.bit_width == 64 {
-                        (^mut f64).(into) ^= f64.(value);
+                        ^mut f64.(into) ^= f64.(value);
                     } else {
                         unreachable();
                     }
-                }
-                Bool => {
+                },
+                .Bool => {
                     // char -> bool
-                    (^mut bool).(into) ^= bool.(value);
-                }
-                Char => {
+                    ^mut bool.(into) ^= bool.(value);
+                },
+                .Char => {
                     // char -> char
-                    (^mut char).(into) ^= char.(value);
-                }
+                    ^mut char.(into) ^= char.(value);
+                },
                 _ => todo("only supports char -> int, char -> float, char -> bool, and char -> char"),
             }
-        }
-        Array => {
+        },
+        .Array => {
             switch into_info in meta.get_type_info(expected) {
-                Array => {
+                .Array => {
                     // array -> array
-                    // todo: we can do much better than this
+                    // todo: this can be much better
                     assert(from_info.sub_ty == into_info.sub_ty, "array -> array must have the same sub type");
                     libc.memcpy(into, found_data, meta.size_of(found_ty));
-                }
-                Slice => {
+                },
+                .Slice => {
                     // array -> slice
                     assert(from_info.sub_ty == into_info.sub_ty, "array -> slice must have the same sub type");
-                    (^mut rawslice).(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
-                }
+                    ^mut rawslice.(into) ^= ptr.slice_from_raw_parts(found_data, from_info.len);
+                },
                 _ => todo("only supports array -> array and array -> slice"),
             }
-        }
-        Slice => {
+        },
+        .Slice => {
             switch into_info in meta.get_type_info(expected) {
-                Array => {
+                .Array => {
                     // slice -> array
-                    // todo: we can do much better than this
+                    // todo: this can be much better
                     assert(from_info.sub_ty == into_info.sub_ty, "slice -> array must have the same sub type");
-                    libc.memcpy(into, found_data, meta.stride_of(into_info.sub_ty) * (^rawslice).(found_data).len);
-                }
-                Slice => {
+                    libc.memcpy(into, found_data, meta.stride_of(into_info.sub_ty) * ^rawslice.(found_data).len);
+                },
+                .Slice => {
                     // slice -> slice
                     assert(from_info.sub_ty == into_info.sub_ty, "slice -> slice must have the same sub type");
-                    (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
-                }
+                    ^mut rawslice.(into) ^= ^rawslice.(found_data)^;
+                },
                 _ => todo("only supports slice -> array and slice -> slice"),
             }
-        }
-        Raw_Slice => {
+        },
+        .Raw_Slice => {
             switch into_info in meta.get_type_info(expected) {
-                Array => {
+                .Array => {
                     // slice -> array
-                    // todo: we can do much better than this
-                    libc.memcpy(into, found_data, meta.size_of(into_info.sub_ty) * (^rawslice).(found_data).len);
-                }
-                Slice => {
+                    // todo: this can be much better
+                    libc.memcpy(into, found_data, meta.size_of(into_info.sub_ty) * ^rawslice.(found_data).len);
+                },
+                .Slice => {
                     // slice -> slice
-                    (^mut rawslice).(into) ^= (^rawslice).(found_data)^;
-                }
+                    ^mut rawslice.(into) ^= (^rawslice).(found_data)^;
+                },
                 _ => todo("only supports slice -> array and slice -> slice"),
             }
-        }
-        Pointer => {
-            (^mut usize).(into) ^= (^usize).(found_data)^;
-        }
-        Raw_Ptr => {
-            (^mut usize).(into) ^= (^usize).(found_data)^;
-        }
-        Distinct => {
+        },
+        .Pointer => {
+            ^mut usize.(into) ^= (^usize).(found_data)^;
+        },
+        .Raw_Ptr => {
+            ^mut usize.(into) ^= (^usize).(found_data)^;
+        },
+        .Distinct => {
             cast_into(
                 any_from_raw_parts(
                     found_data,
@@ -786,30 +802,30 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 expected,
                 into
             );    
-        }
-        Struct => {
+        },
+        .Struct => {
             assert(
                 found_ty == expected,
                 "struct types can only be casted to themselves",
             );
             libc.memcpy(into, found_data, meta.size_of(found_ty));
-        }
-        Enum => {
+        },
+        .Enum => {
             assert(
                 found_ty == expected,
                 "enum types can only be casted to themselves",
             );
             libc.memcpy(into, found_data, meta.size_of(found_ty));
-        }
-        Variant => {
+        },
+        .Variant => {
             switch into_info in meta.get_type_info(expected) {
-                Enum => {
+                .Enum => {
                     libc.memcpy(into, found_data, meta.size_of(found_ty));
 
-                    discrim := (^mut u8).(ptr.mut_offset(into, into_info.discriminant_offset));
+                    discrim := ^mut u8.(ptr.mut_offset(into, into_info.discriminant_offset));
 
                     discrim ^= u8.(from_info.discriminant);
-                }
+                },
                 _ => {
                     cast_into(
                         any_from_raw_parts(
@@ -821,45 +837,67 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                     );
                 }
             }
-        }
-        Function => {
+        },
+        .Nil => {
             assert(
                 found_ty == expected,
                 "function types can only be casted to themselves",
             );
-            (^mut usize).(into) ^= (^usize).(found_data)^;
-        }
-        File => {
+            assert(meta.size_of(found_ty) == 0);
+            // do nothing :)
+        },
+        .Optional => {
+            assert(
+                found_ty == expected,
+                "optional types can only be casted to themselves",
+            );
+            libc.memcpy(into, found_data, meta.size_of(found_ty));
+        },
+        .Error_Union => {
+            assert(
+                found_ty == expected,
+                "error union types can only be casted to themselves",
+            );
+            libc.memcpy(into, found_data, meta.size_of(found_ty));
+        },
+        .Function => {
+            assert(
+                found_ty == expected,
+                "function types can only be casted to themselves",
+            );
+            ^mut usize.(into) ^= (^usize).(found_data)^;
+        },
+        .File => {
             assert(
                 found_ty == expected,
                 "file types can only be casted to themselves",
             );
             assert(meta.size_of(found_ty) == 0);
             // do nothing :)
-        }
-        Meta_Type => {
+        },
+        .Meta_Type => {
             assert(
                 found_ty == expected,
                 "type ids can only be casted to themselves",
             );
-            (^mut type).(into) ^= (^type).(found_data)^;
-        }
-        Any => {
+            ^mut type.(into) ^= (^type).(found_data)^;
+        },
+        .Any => {
             assert(
                 found_ty == expected,
                 "the any type can only be cast to itself",
             );
             assert(meta.size_of(found_ty) == 0);
             // do nothing :)
-        }
-        Void => {
+        },
+        .Void => {
             assert(
                 found_ty == expected,
                 "the void type can only be cast to itself",
             );
             assert(meta.size_of(found_ty) == 0);
             // do nothing :)
-        }
+        },
     }
 
     any_from_raw_parts(into, expected)

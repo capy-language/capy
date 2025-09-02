@@ -14,7 +14,7 @@ Root@0..19
       Whitespace@17..18 " "
       LBrace@18..19 "{"
       SwitchArm@19..19
-error at 19: missing enum variant name
+error at 19: missing variant
 error at 19: missing FatArrow
 error at 19: missing switch arm
 error at 19: missing RBrace

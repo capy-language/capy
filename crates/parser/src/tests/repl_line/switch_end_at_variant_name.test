@@ -1,9 +1,9 @@
 switch foo in bar {
-    Cat
+    .Cat
 ===
-Root@0..27
-  ExprStmt@0..27
-    SwitchExpr@0..27
+Root@0..28
+  ExprStmt@0..28
+    SwitchExpr@0..28
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -15,8 +15,10 @@ Root@0..27
       Whitespace@17..18 " "
       LBrace@18..19 "{"
       Whitespace@19..24 "\n    "
-      SwitchArm@24..27
-        Ident@24..27 "Cat"
-error at 27: missing FatArrow
-error at 27: missing switch arm
-error at 27: missing RBrace
+      SwitchArm@24..28
+        VariantShorthand@24..28
+          Dot@24..25 "."
+          Ident@25..28 "Cat"
+error at 28: missing FatArrow
+error at 28: missing switch arm
+error at 28: missing RBrace

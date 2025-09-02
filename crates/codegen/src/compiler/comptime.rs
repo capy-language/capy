@@ -107,7 +107,6 @@ impl IntBytes for f64 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn eval_comptime_blocks<'a>(
     verbosity: Verbosity,
     mut to_eval: Vec<FQComptime>,
@@ -151,6 +150,8 @@ pub fn eval_comptime_blocks<'a>(
         meta_tys: MetaTyData::default(),
         cmd_args_slice: None,
         functions: FxHashMap::default(),
+        user_extern_functions: FxHashMap::default(),
+        internal_extern_functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),

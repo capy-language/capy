@@ -1,10 +1,9 @@
-use std::path::Path;
-
 use cranelift::prelude::{types, AbiParam};
 use cranelift_module::{FuncId, Linkage, Module};
+use hir_ty::BuiltinKind;
 use interner::Interner;
 
-use crate::{compiler::FunctionToCompile, mangle::Mangle, FinalSignature};
+use crate::{mangle::Mangle, FinalSignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BuiltinGlobal {
@@ -14,18 +13,22 @@ pub(crate) enum BuiltinGlobal {
     StructLayouts,
     EnumLayouts,
     VariantLayouts,
+    OptionalLayouts,
+    ErrorUnionLayouts,
 
     /// a single slice for the size/align of usize
     PointerLayout,
 
     /// type info arrays
-    ArrayInfo,
-    SliceInfo,
-    PointerInfo,
-    DistinctInfo,
-    StructInfo,
-    EnumInfo,
-    VariantInfo,
+    ArrayInfos,
+    SliceInfos,
+    PointerInfos,
+    DistinctInfos,
+    StructInfos,
+    EnumInfos,
+    VariantInfos,
+    OptionalInfos,
+    ErrorUnionInfos,
 
     /// misc.
     CommandlineArgs,
@@ -66,89 +69,81 @@ impl BuiltinFunction {
     }
 }
 
-pub(crate) fn as_compiler_defined_global(
-    fqn: hir::Fqn,
-    mod_dir: &Path,
-    interner: &Interner,
-) -> Option<BuiltinGlobal> {
-    let is_core = fqn
-        .file
-        .get_mod_name(mod_dir, interner)
-        .is_some_and(|n| n == "core");
+impl From<hir_ty::BuiltinKind> for BuiltinGlobal {
+    fn from(value: hir_ty::BuiltinKind) -> Self {
+        match value {
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Array,
+            } => BuiltinGlobal::ArrayLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Distinct,
+            } => BuiltinGlobal::DistinctLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Struct,
+            } => BuiltinGlobal::StructLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Enum,
+            } => BuiltinGlobal::EnumLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Variant,
+            } => BuiltinGlobal::VariantLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Optional,
+            } => BuiltinGlobal::OptionalLayouts,
+            hir_ty::BuiltinKind::LayoutSlice {
+                sub_kind: hir_ty::BuiltinSubKind::ErrorUnion,
+            } => BuiltinGlobal::ErrorUnionLayouts,
+            hir_ty::BuiltinKind::LayoutSlice { .. } => unimplemented!(),
 
-    if !is_core {
-        return None;
+            hir_ty::BuiltinKind::SingleLayout {
+                sub_kind: hir_ty::BuiltinSubKind::Pointer,
+            } => BuiltinGlobal::PointerLayout,
+            hir_ty::BuiltinKind::SingleLayout { .. } => unimplemented!(),
+
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Array,
+            } => BuiltinGlobal::ArrayInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Slice,
+            } => BuiltinGlobal::SliceInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Pointer,
+            } => BuiltinGlobal::PointerInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Distinct,
+            } => BuiltinGlobal::DistinctInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Struct,
+            } => BuiltinGlobal::StructInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Enum,
+            } => BuiltinGlobal::EnumInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Variant,
+            } => BuiltinGlobal::VariantInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::Optional,
+            } => BuiltinGlobal::OptionalInfos,
+            hir_ty::BuiltinKind::InfoSlice {
+                sub_kind: hir_ty::BuiltinSubKind::ErrorUnion,
+            } => BuiltinGlobal::ErrorUnionInfos,
+
+            hir_ty::BuiltinKind::CommandlineArgs => BuiltinGlobal::CommandlineArgs,
+
+            _ => unreachable!("none of the other builtin kinds are globals"),
+        }
     }
-
-    let file_name = Path::new(interner.lookup(fqn.file.0))
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-
-    let function_name = interner.lookup(fqn.name.0);
-
-    Some(match (file_name.as_ref(), function_name) {
-        ("meta.capy", "array_layouts") => BuiltinGlobal::ArrayLayouts,
-        ("meta.capy", "distinct_layouts") => BuiltinGlobal::DistinctLayouts,
-        ("meta.capy", "struct_layouts") => BuiltinGlobal::StructLayouts,
-        ("meta.capy", "enum_layouts") => BuiltinGlobal::EnumLayouts,
-        ("meta.capy", "variant_layouts") => BuiltinGlobal::VariantLayouts,
-
-        ("meta.capy", "pointer_layout") => BuiltinGlobal::PointerLayout,
-
-        ("meta.capy", "array_infos") => BuiltinGlobal::ArrayInfo,
-        ("meta.capy", "slice_infos") => BuiltinGlobal::SliceInfo,
-        ("meta.capy", "pointer_infos") => BuiltinGlobal::PointerInfo,
-        ("meta.capy", "distinct_infos") => BuiltinGlobal::DistinctInfo,
-        ("meta.capy", "struct_infos") => BuiltinGlobal::StructInfo,
-        ("meta.capy", "enum_infos") => BuiltinGlobal::EnumInfo,
-        ("meta.capy", "variant_infos") => BuiltinGlobal::VariantInfo,
-
-        ("mod.capy", "args") => BuiltinGlobal::CommandlineArgs,
-        _ => return None,
-    })
 }
 
-pub(crate) fn as_compiler_defined_func(
-    is_extern: bool,
-    ftc: &FunctionToCompile,
-    mod_dir: &Path,
-    interner: &Interner,
-) -> Option<BuiltinFunction> {
-    if !is_extern {
-        return None;
-    }
-
-    let fqn = if let Some(name) = ftc.function_name {
-        hir::Fqn {
-            file: ftc.file_name,
-            name,
+impl From<BuiltinKind> for BuiltinFunction {
+    fn from(value: BuiltinKind) -> Self {
+        match value {
+            // we can ignore the `opt` field because opt pointers are the same size are regular
+            // pointers
+            hir_ty::BuiltinKind::PtrToRaw { .. } => BuiltinFunction::PtrBitcast,
+            hir_ty::BuiltinKind::PtrFromRaw { .. } => BuiltinFunction::PtrBitcast,
+            hir_ty::BuiltinKind::MetaToRaw => BuiltinFunction::ConcreteBitcast(types::I32),
+            _ => unreachable!("none of the other builtins are functions"),
         }
-    } else {
-        return None;
-    };
-
-    let is_core = fqn
-        .file
-        .get_mod_name(mod_dir, interner)
-        .is_some_and(|n| n == "core");
-
-    if !is_core {
-        return None;
     }
-
-    let file_name = Path::new(interner.lookup(fqn.file.0))
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-
-    let function_name = interner.lookup(fqn.name.0);
-
-    Some(match (file_name.as_ref(), function_name) {
-        ("ptr.capy", "to_raw") => BuiltinFunction::PtrBitcast,
-        ("ptr.capy", "const_from_raw") => BuiltinFunction::PtrBitcast,
-        ("ptr.capy", "mut_from_raw") => BuiltinFunction::PtrBitcast,
-        ("meta.capy", "meta_to_raw") => BuiltinFunction::ConcreteBitcast(types::I32),
-        _ => return None,
-    })
 }

@@ -1,12 +1,12 @@
 switch foo in animal_enum {
-    Dog => {},
-    Cat => {},
-    Turtle => {},
+    .Dog => {},
+    .Cat => {},
+    .Turtle => {},
 }
 ===
-Root@0..77
-  ExprStmt@0..77
-    SwitchExpr@0..77
+Root@0..80
+  ExprStmt@0..80
+    SwitchExpr@0..80
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -18,34 +18,40 @@ Root@0..77
       Whitespace@25..26 " "
       LBrace@26..27 "{"
       Whitespace@27..32 "\n    "
-      SwitchArm@32..41
-        Ident@32..35 "Dog"
-        Whitespace@35..36 " "
-        FatArrow@36..38 "=>"
-        Whitespace@38..39 " "
-        Block@39..41
-          LBrace@39..40 "{"
-          RBrace@40..41 "}"
-      Comma@41..42 ","
-      Whitespace@42..47 "\n    "
-      SwitchArm@47..56
-        Ident@47..50 "Cat"
-        Whitespace@50..51 " "
-        FatArrow@51..53 "=>"
-        Whitespace@53..54 " "
-        Block@54..56
-          LBrace@54..55 "{"
-          RBrace@55..56 "}"
-      Comma@56..57 ","
-      Whitespace@57..62 "\n    "
-      SwitchArm@62..74
-        Ident@62..68 "Turtle"
-        Whitespace@68..69 " "
-        FatArrow@69..71 "=>"
+      SwitchArm@32..42
+        VariantShorthand@32..36
+          Dot@32..33 "."
+          Ident@33..36 "Dog"
+        Whitespace@36..37 " "
+        FatArrow@37..39 "=>"
+        Whitespace@39..40 " "
+        Block@40..42
+          LBrace@40..41 "{"
+          RBrace@41..42 "}"
+      Comma@42..43 ","
+      Whitespace@43..48 "\n    "
+      SwitchArm@48..58
+        VariantShorthand@48..52
+          Dot@48..49 "."
+          Ident@49..52 "Cat"
+        Whitespace@52..53 " "
+        FatArrow@53..55 "=>"
+        Whitespace@55..56 " "
+        Block@56..58
+          LBrace@56..57 "{"
+          RBrace@57..58 "}"
+      Comma@58..59 ","
+      Whitespace@59..64 "\n    "
+      SwitchArm@64..77
+        VariantShorthand@64..71
+          Dot@64..65 "."
+          Ident@65..71 "Turtle"
         Whitespace@71..72 " "
-        Block@72..74
-          LBrace@72..73 "{"
-          RBrace@73..74 "}"
-      Comma@74..75 ","
-      Whitespace@75..76 "\n"
-      RBrace@76..77 "}"
+        FatArrow@72..74 "=>"
+        Whitespace@74..75 " "
+        Block@75..77
+          LBrace@75..76 "{"
+          RBrace@76..77 "}"
+      Comma@77..78 ","
+      Whitespace@78..79 "\n"
+      RBrace@79..80 "}"

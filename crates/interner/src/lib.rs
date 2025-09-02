@@ -33,6 +33,7 @@ pub struct Interner(lasso::Rodeo);
 
 impl_interner! {
     void => "void",
+    nil => "nil",
     isize => "isize",
     i128 => "i128",
     i64 => "i64",
@@ -54,11 +55,31 @@ impl_interner! {
     any => "any",
     rawptr => "rawptr",
     rawslice => "rawslice",
+    // these are included for the types returned from `#builtin(..)`
+    name => "name",
+    len => "len",
+    size => "size",
+    align => "align",
+    mutable => "mutable",
+    ty => "ty",
+    sub_ty => "sub_ty",
+    error_ty => "error_ty",
+    payload_ty => "payload_ty",
+    is_non_zero => "is_non_zero",
+    discriminant => "discriminant",
+    discriminant_offset => "discriminant_offset",
+    offset => "offset",
+    variants => "variants",
+    members => "members",
 }
 
 impl Interner {
     pub fn intern(&mut self, s: &str) -> Key {
         Key(self.0.get_or_intern(s))
+    }
+
+    pub fn get_interned(&self, s: &str) -> Option<Key> {
+        self.0.get(s).map(Key)
     }
 
     pub fn lookup(&self, key: Key) -> &str {

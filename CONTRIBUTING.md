@@ -46,7 +46,7 @@ Once we've type-checked everything, we can finally begin transforming our HIR in
 
 The first thing this crate takes care of is evaluating all `comptime { .. }` blocks by JIT compiling them into functions and then calling those functions to get the value. The second thing this crate takes care of is generating the final executable. Under the hood, these two different tasks use the same code for converting HIR into machine instructions (see [`codegen/compiler/functions.rs`](./crates/codegen/src/compiler/functions.rs)).
 
-The central nervous system of the codebase is the `capy` crate, which is essentially a CLI crate. But this crate is kind of complex if you're just trying to learn the basics, so I'd recommend looking at the `tests::check_impl` function within [`codegen/lib.rs`](./crates/codegen/src/lib.rs). It contains the most basic code for compiling multiple .capy files into a binary. Or if you want something even more bare-bones, [`fuzz`](./fuzz/fuzz_targets/main.rs) contains the simplest possible code for transforming source code into typed HIR expressions.
+The central nervous system of the codebase is the `capy` crate, which is essentially a CLI crate. But this crate is kind of complex if you're just trying to learn the basics, so I'd recommend looking at the `check_impl` function within [`codegen/tests.rs`](./crates/codegen/src/lib.rs). It contains the most basic code for compiling multiple .capy files into a binary. Or if you want something even more bare-bones, [`fuzz`](./fuzz/fuzz_targets/main.rs) contains the simplest possible code for transforming source code into typed HIR expressions.
 
 There are a few more helper crates but these aren't too important.
 

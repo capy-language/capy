@@ -25,7 +25,7 @@ binary :: (n: i64) -> Number_Formatting {
 
 binary_unsigned :: (n: u64) -> Number_Formatting {
     Number_Formatting.{
-        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        number = ^i64.(rawptr.(^n))^, // transmute u64 -> i64
         base = 2,
         signed = false,
     }
@@ -41,7 +41,7 @@ hex :: (n: i64) -> Number_Formatting {
 
 hex_unsigned :: (n: u64) -> Number_Formatting {
     Number_Formatting.{
-        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        number = ^i64.(rawptr.(^n))^, // transmute u64 -> i64
         base = 16,
         signed = false,
     }
@@ -57,7 +57,7 @@ decimal :: (n: i64) -> Number_Formatting {
 
 decimal_unsigned :: (n: u64) -> Number_Formatting {
     Number_Formatting.{
-        number = (^i64).(rawptr.(^n))^, // transmute u64 -> i64
+        number = ^i64.(rawptr.(^n))^, // transmute u64 -> i64
         base = 10,
         signed = false,
     }
@@ -65,6 +65,10 @@ decimal_unsigned :: (n: u64) -> Number_Formatting {
 
 /// takes in a number with formatting and returns how big the resulting string would be
 int_string_len :: (n: Number_Formatting) -> usize {
+    if n.number == 0 {
+        return 1;
+    }
+
     negative := n.signed && n.number < 0;
 
     number := if negative {
@@ -83,9 +87,7 @@ int_string_len :: (n: Number_Formatting) -> usize {
     } else if base == 10 {
         core.math.log10_u64(number) + 1
     } else {
-        // no +1 here
-        // otherwise it doesn't work
-        core.math.log10_u64(number)/core.math.log10_u64(base)
+        u64.(core.math.ln(f64.(number)) / core.math.ln(f64.(base)) + 1)
     };
 
     if negative {
@@ -97,7 +99,9 @@ int_string_len :: (n: Number_Formatting) -> usize {
 
 
 int_to_string :: (n: Number_Formatting) -> StringBuilder {
-    // lena's version of this function was much better than mine so I'm just gonna get rid of mine and add a few extra things to hers
+    core.assert(n.base <= 62, "only bases up to 62 are supported");
+
+    // lena's version of this function was much better than mine so I'm just gonna get rid of mine and add a few extra things to her's
     negative := n.signed && n.number < 0;
 
     number := if negative {
@@ -106,46 +110,64 @@ int_to_string :: (n: Number_Formatting) -> StringBuilder {
         u64.(n.number)
     };
 
-    base     := n.base;
+    base     :: n.base;
 
     digits   := int_string_len(n);
+    core.assert(digits >= 1, "digits should be at least one");
 
     str := string_builder.make_with_capacity(digits);
     str.len = digits;
 
-    // don't try and do anything for index 0, if the number is negative
+    // don't try and do anything for index 0 if the number is negative
     while digits > u32.(negative) {
         remainder :: number % u64.(base);
         number    =  number / u64.(base);
         digits    =  digits - 1;
 
-        zero_to_nine := u8.('9')-u8.('0');
-        a_to_z := zero_to_nine + u8.('z')-u8.('a');
-        A_to_Z := a_to_z + u8.('Z')-u8.('A');
+        zero_to_nine :: u8.('9') - u8.('0');
+        a_to_z       :: zero_to_nine + u8.('z') - u8.('a');
+        A_to_Z       :: a_to_z + u8.('Z') - u8.('A');
 
         ch := if remainder <= zero_to_nine {
             u8.('0') + u8.(remainder)
-        } else if remainder <= a_to_z {
+        } else if remainder <= a_to_z + 1 {
             u8.('a') + u8.(remainder - zero_to_nine - 1)
-        } else if remainder <= A_to_Z {
-            u8.('A') + u8.(remainder - a_to_z - 1)
+        } else if remainder <= A_to_Z + 2 {
+            u8.('A') + u8.(remainder - a_to_z - 2)
         } else {
             core.todo("bases this high are not yet supported");
             0
         };
 
-        ptr.write(str.buf, ch, digits);
+        ptr.write(#unwrap(str.buf), ch, digits);
     }
 
     if negative {
         ptr.write(
-            str.buf,
+            #unwrap(str.buf),
             u8.('-'),
             0
         );
     }
 
     str
+}
+
+iprint :: (n: i64) {
+    n := n;
+    
+    if n < 0 {
+        n = -n;
+        core.libc.putchar('-');
+    }
+
+    if n > 9 {
+        a := n / 10;
+
+        n -= 10 * a;
+        iprint(a);
+    }
+    core.libc.putchar(char.(u8.('0') + n));
 }
 
 precision               : f64   : 0.00000000000001;
@@ -189,18 +211,15 @@ float_to_string :: (n: f64) -> StringBuilder {
 
     afterpoint : usize : 3;
 
-
-    digits := float_string_len(n);
-    res := string_builder.make_with_capacity(digits);
+    float_digits := float_string_len(n);
+    res := string_builder.make_with_capacity(float_digits);
 
     ipart := i64.(math.floor(n));
     front := int_to_string(decimal(ipart));
     string_builder.append_string_builder(^mut res, ^front);
     string_builder.free(^mut front);
 
-
     string_builder.append_char(^mut res, '.');
-
 
     fpart := n - f64.(ipart);
     fpart *= f64.(math.pow_i32(10, i32.(afterpoint)));
@@ -216,6 +235,9 @@ float_to_string :: (n: f64) -> StringBuilder {
     decimal := int_to_string(fpart);
     string_builder.append_string_builder(^mut res, ^decimal);
     string_builder.free(^mut decimal);
+
+    // this is to make sure `float_to_string` is accurate
+    core.assert(res.cap == float_digits, res.cap, " != ", float_digits);
 
     res
 }

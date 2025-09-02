@@ -1,5 +1,6 @@
 use std::fmt;
 
+use itertools::Itertools;
 use syntax::TokenKind;
 use text_size::{TextRange, TextSize};
 
@@ -33,8 +34,8 @@ impl Tokens {
         self.kinds
             .iter()
             .copied()
-            .zip(self.starts.iter().copied())
-            .zip(self.starts.iter().copied().skip(1))
+            .zip_eq(self.starts.iter().copied())
+            .zip_eq(self.starts.iter().copied().skip(1))
             .map(|((kind, start), end)| (kind, TextRange::new(start, end)))
     }
 

@@ -1,21 +1,24 @@
 
 core :: #mod("core");
+fmt :: core.fmt;
 
 // returns the underlying bit representation of the type id.
-meta_to_raw :: (ty: type) -> u32 extern; // builtin
+meta_to_raw :: (ty: type) -> u32 #builtin("meta_type_to_u32");
 
 Layout :: struct {
     size: usize,
     align: usize,
 };
 
-array_layouts : [] Layout : extern; // builtin
-distinct_layouts : [] Layout : extern; // builtin
-struct_layouts : [] Layout : extern; // builtin
-enum_layouts : [] Layout : extern; // builtin
-variant_layouts : [] Layout : extern; // builtin
+array_layouts : [] Layout : #builtin("array_layouts");
+distinct_layouts : [] Layout : #builtin("distinct_layouts");
+struct_layouts : [] Layout : #builtin("struct_layouts");
+enum_layouts : [] Layout : #builtin("enum_layouts");
+variant_layouts : [] Layout : #builtin("variant_layouts");
+optional_layouts : [] Layout : #builtin("optional_layouts");
+error_union_layouts : [] Layout : #builtin("error_union_layouts");
 
-pointer_layout : Layout : extern; // builtin
+pointer_layout : Layout : #builtin("pointer_layout");
 
 // The amount of space a type takes up in memory.
 //
@@ -72,10 +75,16 @@ size_of :: (ty: type) -> usize {
             array_layouts
         } else if discriminant == slice_discriminant {
             return pointer_layout.size * 2;
+        } else if discriminant == optional_discriminant {
+            optional_layouts
+        } else if discriminant == error_union_discriminant {
+            error_union_layouts
         } else {
             core.assert(
                 discriminant == pointer_discriminant ||
-                discriminant == function_discriminant
+                discriminant == function_discriminant,
+                "called size_of on an unknown type with a discriminant of ",
+                discriminant
             );
             // the size is the same for both of these types
             return pointer_layout.size;
@@ -199,11 +208,17 @@ align_of :: (ty: type) -> usize {
             variant_layouts
         } else if discriminant == array_discriminant {
             array_layouts
+        } else if discriminant == optional_discriminant {
+            optional_layouts
+        } else if discriminant == error_union_discriminant {
+            error_union_layouts
         } else {
             core.assert(
                 discriminant == slice_discriminant ||
                 discriminant == pointer_discriminant ||
-                discriminant == function_discriminant
+                discriminant == function_discriminant,
+                "called align_of on an unknown type with a discriminant of ",
+                discriminant
             );
             // the align is the same for both of these types
             return pointer_layout.align;
@@ -229,6 +244,7 @@ any_discriminant : u8 : 8;
 file_discriminant : u8 : 9;
 raw_ptr_discriminant : u8 : 10;
 raw_slice_discriminant : u8 : 11;
+nil_discriminant : u8 : 12;
 
 // complex type ids
 // (they contain an index into a global type info array)
@@ -240,6 +256,8 @@ pointer_discriminant : u8 : 20;
 function_discriminant : u8 : 21;
 enum_discriminant : u8 : 22;
 variant_discriminant : u8 : 23;
+optional_discriminant : u8 : 24;
+error_union_discriminant : u8 : 25;
 
 Type_Info :: enum {
     // `i8`, `i16`, `i32`, `i64`, `i128`, `isize`
@@ -281,8 +299,8 @@ Type_Info :: enum {
     // `^bool`
     // ...
     Pointer: struct {
-        // todo: add mutable info
         sub_ty: type,
+        mutable: bool,
     }           | pointer_discriminant,
     // `distinct i32`
     // `distinct bool`
@@ -318,6 +336,46 @@ Type_Info :: enum {
         sub_ty: type,
         discriminant: u32,
     }           | variant_discriminant,
+    // `nil`
+    //
+    // Like void, nil is its own type. This allows you to do `?void` which internally is a tagged union of `void` or `nil`
+    Nil         | nil_discriminant,
+    // `?u64`
+    // `?str`
+    // ...
+    //
+    // Represents the possibility of missing/empty/unfilled data.
+    //
+    // Options, along with error unions can be used with the `.try` and `catch {}` operators
+    //
+    // Technical Details:
+    // 0 is always the nil discriminant
+    // 1 is always the payload discriminant
+    //
+    // Optional pointers are the same size as regular pointers, and the `nil` state is internally a NULL pointer
+    Optional: struct {
+        sub_ty: type,
+        // indicates that the inner type is a non-zero type, and the `nil` state of this optional is represented by a value of 0
+        is_non_zero: bool,
+        discriminant_offset: usize,
+    }           | optional_discriminant,
+    // `str!u64`
+    // `My_Error_Enum!bool`
+    // ...
+    //
+    // A type used for returning and propagating errors in your program.
+    // The error type goes on the left and can be whatever you want, although an enum is recommended.
+    //
+    // Error unions, along with options can be used with the `.try` and `catch {}` operators
+    //
+    // Technical Details:
+    // 0 is always the error discriminant
+    // 1 is always the payload discriminant
+    Error_Union: struct {
+        error_ty: type,
+        payload_ty: type,
+        discriminant_offset: usize,
+    }           | error_union_discriminant,
     // `() -> void`
     // `(x: i32) -> bool`
     // ...
@@ -350,13 +408,15 @@ Type_Info :: enum {
     Void        | void_discriminant,
 };
 
-array_infos : []Type_Info.Array : extern; // builtin
-slice_infos : []Type_Info.Slice : extern; // builtin
-pointer_infos : []Type_Info.Pointer : extern; // builtin
-distinct_infos : []Type_Info.Distinct : extern; // builtin
-struct_infos : []Type_Info.Struct : extern; // builtin
-enum_infos : []Type_Info.Enum : extern; // builtin
-variant_infos : []Type_Info.Variant : extern; // builtin
+array_infos : []Type_Info.Array : #builtin("array_infos");
+slice_infos : []Type_Info.Slice : #builtin("slice_infos");
+pointer_infos : []Type_Info.Pointer : #builtin("pointer_infos");
+distinct_infos : []Type_Info.Distinct : #builtin("distinct_infos");
+struct_infos : []Type_Info.Struct : #builtin("struct_infos");
+enum_infos : []Type_Info.Enum : #builtin("enum_infos");
+variant_infos : []Type_Info.Variant : #builtin("variant_infos");
+optional_infos : []Type_Info.Optional : #builtin("optional_infos");
+error_union_infos : []Type_Info.Error_Union : #builtin("error_union_infos");
 
 get_type_info :: (ty: type) -> Type_Info {
     raw := meta_to_raw(ty);
@@ -376,11 +436,11 @@ get_type_info :: (ty: type) -> Type_Info {
             bit_width = u8.((raw & 0b11111) * 8),
         }
     } else if discrim == bool_discriminant {
-        Type_Info.Bool.()
+        Type_Info.Bool
     } else if discrim == string_discriminant {
-        Type_Info.String.()
+        Type_Info.String
     } else if discrim == char_discriminant {
-        Type_Info.Char.()
+        Type_Info.Char
     } else if discrim == array_discriminant {
         // removes the discriminant (6 bits)
         idx := raw &~ (0b111111 << 26);
@@ -417,31 +477,44 @@ get_type_info :: (ty: type) -> Type_Info {
 
         variant_infos[idx]
     } else if discrim == function_discriminant {
-        Type_Info.Function.()
+        Type_Info.Function
     } else if discrim == file_discriminant {
-        Type_Info.File.()
+        Type_Info.File
     } else if discrim == meta_type_discriminant {
-        Type_Info.Meta_Type.()
+        Type_Info.Meta_Type
     } else if discrim == any_discriminant {
-        Type_Info.Any.()
+        Type_Info.Any
     } else if discrim == raw_ptr_discriminant {
         Type_Info.Raw_Ptr.{
             // the ninth bit is the mutable flag
             mutable = bool.((raw >> 9) & 1),
         }
     } else if discrim == raw_slice_discriminant {
-        Type_Info.Raw_Slice.()
+        Type_Info.Raw_Slice
     } else if discrim == void_discriminant {
-        Type_Info.Void.()
-    } else {
-        core.println("unknown type id:");
-        core.println("raw = ", raw);
-        core.println("discrim = ", discrim);
-        core.println("idx = ", raw &~ (0b111111) << 26);
+        Type_Info.Void
+    } else if discrim == nil_discriminant {
+        Type_Info.Nil
+    } else if discrim == optional_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
 
-        core.unreachable();
-        // todo: add a `!` type so we don't have to return values like this
-        Type_Info.Void.()
+        optional_infos[idx]
+    } else if discrim == error_union_discriminant {
+        // removes the discriminant (6 bits)
+        idx := raw &~ (0b111111 << 26);
+
+        error_union_infos[idx]
+    } else {
+        core.unreachable(
+            "\nunknown type id when calling `get_type_of`:",
+            "\nraw = 0b", fmt.binary(raw),
+            "\ndiscrim = ", discrim,
+            "\nidx = ", raw &~ (0b111111) << 26
+        );
+
+        // todo: add a `noreturn` type so values don't have to be returned like this
+        Type_Info.Void
     }
 }
 

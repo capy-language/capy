@@ -1,9 +1,9 @@
 switch foo in bar.baz {
-    Cake =>
+    .Cake =>
 ===
-Root@0..35
-  ExprStmt@0..35
-    SwitchExpr@0..35
+Root@0..36
+  ExprStmt@0..36
+    SwitchExpr@0..36
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -18,9 +18,11 @@ Root@0..35
       Whitespace@21..22 " "
       LBrace@22..23 "{"
       Whitespace@23..28 "\n    "
-      SwitchArm@28..35
-        Ident@28..32 "Cake"
-        Whitespace@32..33 " "
-        FatArrow@33..35 "=>"
-error at 35: missing switch arm
-error at 35: missing RBrace
+      SwitchArm@28..36
+        VariantShorthand@28..33
+          Dot@28..29 "."
+          Ident@29..33 "Cake"
+        Whitespace@33..34 " "
+        FatArrow@34..36 "=>"
+error at 36: missing switch arm
+error at 36: missing RBrace

@@ -1,12 +1,12 @@
 switch foo in animal_enum {
-    Dog => foo,
-    Cat => "hello",
-    Turtle => 2 * 10,
+    .Dog => foo,
+    .Cat => "hello",
+    .Turtle => 2 * 10,
 }
 ===
-Root@0..87
-  ExprStmt@0..87
-    SwitchExpr@0..87
+Root@0..90
+  ExprStmt@0..90
+    SwitchExpr@0..90
       Switch@0..6 "switch"
       Whitespace@6..7 " "
       Ident@7..10 "foo"
@@ -18,39 +18,45 @@ Root@0..87
       Whitespace@25..26 " "
       LBrace@26..27 "{"
       Whitespace@27..32 "\n    "
-      SwitchArm@32..42
-        Ident@32..35 "Dog"
-        Whitespace@35..36 " "
-        FatArrow@36..38 "=>"
-        Whitespace@38..39 " "
-        VarRef@39..42
-          Ident@39..42 "foo"
-      Comma@42..43 ","
-      Whitespace@43..48 "\n    "
-      SwitchArm@48..62
-        Ident@48..51 "Cat"
-        Whitespace@51..52 " "
-        FatArrow@52..54 "=>"
-        Whitespace@54..55 " "
-        StringLiteral@55..62
-          DoubleQuote@55..56 "\""
-          StringContents@56..61 "hello"
-          DoubleQuote@61..62 "\""
-      Comma@62..63 ","
-      Whitespace@63..68 "\n    "
-      SwitchArm@68..84
-        Ident@68..74 "Turtle"
-        Whitespace@74..75 " "
-        FatArrow@75..77 "=>"
+      SwitchArm@32..43
+        VariantShorthand@32..36
+          Dot@32..33 "."
+          Ident@33..36 "Dog"
+        Whitespace@36..37 " "
+        FatArrow@37..39 "=>"
+        Whitespace@39..40 " "
+        VarRef@40..43
+          Ident@40..43 "foo"
+      Comma@43..44 ","
+      Whitespace@44..49 "\n    "
+      SwitchArm@49..64
+        VariantShorthand@49..53
+          Dot@49..50 "."
+          Ident@50..53 "Cat"
+        Whitespace@53..54 " "
+        FatArrow@54..56 "=>"
+        Whitespace@56..57 " "
+        StringLiteral@57..64
+          DoubleQuote@57..58 "\""
+          StringContents@58..63 "hello"
+          DoubleQuote@63..64 "\""
+      Comma@64..65 ","
+      Whitespace@65..70 "\n    "
+      SwitchArm@70..87
+        VariantShorthand@70..77
+          Dot@70..71 "."
+          Ident@71..77 "Turtle"
         Whitespace@77..78 " "
-        BinaryExpr@78..84
-          IntLiteral@78..79
-            Int@78..79 "2"
-          Whitespace@79..80 " "
-          Asterisk@80..81 "*"
-          Whitespace@81..82 " "
-          IntLiteral@82..84
-            Int@82..84 "10"
-      Comma@84..85 ","
-      Whitespace@85..86 "\n"
-      RBrace@86..87 "}"
+        FatArrow@78..80 "=>"
+        Whitespace@80..81 " "
+        BinaryExpr@81..87
+          IntLiteral@81..82
+            Int@81..82 "2"
+          Whitespace@82..83 " "
+          Asterisk@83..84 "*"
+          Whitespace@84..85 " "
+          IntLiteral@85..87
+            Int@85..87 "10"
+      Comma@87..88 ","
+      Whitespace@88..89 "\n"
+      RBrace@89..90 "}"

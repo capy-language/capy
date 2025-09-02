@@ -17,16 +17,16 @@ Animal :: enum {
 
 main :: () {
     do_animal_stuff(Animal.Dog.("George"));
-    do_animal_stuff(Animal.Cat.());
+    do_animal_stuff(Animal.Cat);
     do_animal_stuff(Animal.Fish.(1000));
-    do_animal_stuff(Animal.Cow.());
-    do_animal_stuff(Animal.Chicken.());
+    do_animal_stuff(Animal.Cow);
+    do_animal_stuff(Animal.Chicken);
     do_animal_stuff(Animal.Sheep.{
-        name = "hello",
+        name = "Prof. Bahh",
         wool_amount = 1.0,
         fullness = 0.5,
     });
-    do_animal_stuff(Animal.Pig.());
+    do_animal_stuff(Animal.Pig);
 }
 
 do_animal_stuff :: (animal: Animal) {
@@ -35,17 +35,17 @@ do_animal_stuff :: (animal: Animal) {
     core.print("[", num, "] ");
 
     switch a in animal {
-        Cat => core.print("cat!"),
-        Dog => {
+        .Cat => core.print("cat!"),
+        .Dog => {
             core.print("dog: ", a);
         },
-        Fish => {
+        .Fish => {
             core.print("it was a fish (age = ", a, ")");
         },
-        Cow => core.print("cow!!!"),
-        Chicken => core.print("chicken >>>"),
-        Pig => core.print("oink oink"),
-        Sheep => {
+        .Cow => core.print("cow!!!"),
+        .Chicken => core.print("chicken >>>"),
+        .Pig => core.print("oink oink"),
+        .Sheep => {
             core.print("sheep: ", a.name, ", wool: ", a.wool_amount, ", fullness: ", a.fullness);
         },
     }
@@ -55,13 +55,13 @@ do_animal_stuff :: (animal: Animal) {
 
 animal_to_num :: (animal: Animal) -> u16 {
     num := switch animal {
-        Cat => 100,
-        Dog => 200,
-        Fish => 300,
-        Cow => 400,
-        Chicken => 500,
-        Pig => 600,
-        Sheep => 700,
+        .Cat => 100,
+        .Dog => 200,
+        .Fish => 300,
+        .Cow => 400,
+        .Chicken => 500,
+        .Pig => 600,
+        .Sheep => 700,
     };
 
     num

@@ -44,7 +44,7 @@ capy run examples/hello_world.capy
 
 ### Basics
 
-Variables are declared like this,
+Variables are declared like this
 
 ```cpp
 wizard_name: str = "Gandalf";
@@ -54,32 +54,31 @@ wizard_name: str = "Gandalf";
 wizard_name := "Gandalf";
 ```
 
-Variables can also be made *immutable*. This prevents them from being updated by other code.
-Once immutable variables are created, they never change. They can be created by using `::` instead of `:=`
+Variables can also be made *immutable* by using `::` instead of `:=`. This prevents them from being updated by other code.
 
 ```cpp
-age: i32 : 42; // age will stay the same forever!
+age : i32 : 21; // age will stay the same forever!
 
 // like before, you can let the compiler figure out the type for you
 
-age :: 42;
+age :: 21;
 ```
 
 Certain other languages have `const` definitions AND immutable variables. Capy combines these two concepts together.
 They are both defined the same way, using `::`.
 
 Variables can also shadow each other.
-So later definitions will replace earlier definitions that have the same name,
+So later definitions will replace earlier definitions that have the same name
 
 ```cpp
 foo := true;
 core.println(foo);  // will print "true"
 
 foo :: 5;
-core.println(foo);  // now, this will print "5"
+core.println(foo);  // this will print "5"
 
 foo := "Hullo :3";
-core.println(foo);  // now, this will print "Hullo :3"
+core.println(foo);  // this will print "Hullo :3"
 ```
 
 The value of a variable can be omitted and a default/zero value will be supplied.
@@ -110,22 +109,21 @@ the_numbers: [6]i32 = i32.[4, 8, 15, 16, 23, 42];
 the_numbers[2] = 10;
 ```
 
-But what happens if we want to change the size of `the_numbers`?
-Unfortunately since `the_numbers` has a type of `[6]i32`, we can't :(
-
-But there is a way to do it. We can use slices!
+`[6]i32` is called a *static* array because its size can never be changed later in the code.
+However, if you need to store differently sized arrays in the same variable, you can use slices.
 
 Slices are a type of reference that can hold an array of any possible size.
 They look very similar but lack a length within the square brackets.
 
 ```cpp
-the_numbers: []i32 = i32.[1, 2, 3];
-the_numbers: []i32 = i32.[4, 5, 6, 7, 8];
+the_numbers: []i32 = i32.[4, 8, 15, 16, 23, 42];
 
 the_numbers[2] = 10;
+
+the_numbers = i32.[4, 5, 6, 7, 8];
 ```
 
-Arrays can automatically cast themselves to slices, which is what's happening above.
+Arrays can automatically cast into slices, which is what's happening above.
 If we want to convert a slice back into a fixed array we have to do the cast explicitly,
 
 ```cpp
@@ -151,13 +149,15 @@ core.println(foo);  // prints "10"
 ```
 
 Unlike Rust however, there are currently no borrow checking rules like "either one mutable reference or many const references".
+I say *currently* but to be honest I'm not sure if they even should be added down the road.
 
 Mutable pointers greatly improve the readability of code, and allow one to see at a glance the side-effects of a function.
 
 ### Types
 
 Types are first-class in Capy. They can be put inside variables, passed to functions, printed, etc.
-Structs are just values put within immutable variables:
+
+As an example, structs are usually defined by just assigning a `struct { .. }` value to an immutable variable:
 
 ```cpp
 Person :: struct {
@@ -171,21 +171,10 @@ gandalf := Person.{
 };
 
 // birthday!
-gandalf.age = gandalf.age + 1;
+gandalf.age += 1;
 ```
 
-Types can also be created with the `distinct` keyword, which creates a new type with the same underlying semantics of its sub type.
-
-```cpp
-Seconds :: distinct i32;
-
-foo : Seconds = 42;
-bar : i32 = 12;
-
-bar = foo; // ERROR! Seconds != i32
-```
-
-And since types are first-class, type aliases are easy:
+Creating a type alias is as simple as assigning one to an immutable variable
 
 ```cpp
 My_Int :: i32;
@@ -193,13 +182,14 @@ My_Int :: i32;
 foo : My_Int = 42;
 bar : i32 = 12;
 
-bar = foo; // yay! My_Int == i32 :)
+bar = foo;
 ```
 
 It is important to note that in order to actually use a variable as a type, it must be *const*, or, "known at compile-time."
 Otherwise, the compiler will throw an error as it's impossible to compile a variable whose type might change at runtime,
 
 ```cpp
+// notice how this variable is mutable `:=`
 My_Int := i32;
 
 if random_num() % 2 == 0 {
@@ -214,10 +204,27 @@ There are two requirements which determine if a variable is *const*.
 1. It must be immutable.
 2. It must either contain a literal value, a reference to another const variable, or a `comptime` block.
 
-Const variables can also be used for enum discriminants (explained later) and array sizes.
+Beyond just being used for types, Const variables can also be used for enum discriminants (explained later) and array sizes.
 
-Enums are an incredibly useful construct for dealing with varying state, and representing optional or error values.
-In Capy enums can be declared as follows,
+#### Distinct types
+
+New types can also be created with the `distinct` keyword, which creates a new type with the same underlying semantics of its sub type
+
+```cpp
+Seconds :: distinct i32;
+
+foo : Seconds = 42;
+bar : i32 = 12;
+
+bar = foo; // ERROR! Seconds != i32
+```
+
+This can be useful for making sure one doesn't mix up `Seconds` for `Minutes` for e.g.
+
+#### Enums
+
+Enums are an incredibly useful construct for dealing with varying state.
+In Capy enums look like this:
 
 ```cpp
 Dessert :: enum {
@@ -227,9 +234,11 @@ Dessert :: enum {
     Milkshake,
 };
 
-bobs_order  : Dessert = Dessert.Chocolate_Cake.();
-johns_order : Dessert = Dessert.Ice_Cream.();
-mikes_order : Dessert = Dessert.Milkshake.();
+order_list := Dessert.[
+    Dessert.Chocolate_Cake,
+    Dessert.Ice_Cream,
+    Dessert.Milkshake,
+];
 ```
 
 Enums can also have additional data associated with each variant, and this data can be extracted using `switch` statements
@@ -254,25 +263,24 @@ clicked : Web_Event = Web_Event.Click.{
 };
 
 switch e in clicked {
-    Page_Load => core.println("page loaded"),
-    Page_Unload => core.println("page unloaded"),
-    Key_Press => {
+    .Page_Load => core.println("page loaded"),
+    .Page_Unload => core.println("page unloaded"),
+    .Key_Press => {
         // type_of(e) == char
         core.println("pressed key: ", e);
     },
-    Paste => {
+    .Paste => {
         // type_of(e) == str
         core.println("pasted: ", e);
-    }
-    Click => {
+    },
+    .Click => {
         // type_of(e) == struct { x: i64, y: i64 }
         core.println("clicked at x=", e.x, ", y=", e.y);
     }
 }
 ```
 
-As you can see, switches accept a *parameter* (`e`, in this case), and the type of that parameter
-actually changes depending on the branch.
+As you can see, switches declare an *argument* (`e`, in this case), and the type of that argument changes depending on the branch.
 
 One of the unique things about Capy's enums is that each variant of the enum is actually its own unique type.
 When you define the variants `Web_Event.Click`, `Web_Event.Paste`, `Dessert.Chocolate_Cake`, etc. inside an `enum {}` block
@@ -286,16 +294,16 @@ special_click_related_code :: (click_event: Web_Event.Click) {
 
 It's very similar to creating distincts. The only real difference is that enums allow you to mix the different variants together.
 
-Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be a hassle.
+Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be verbose.
 
 <details> 
-<summary>Extra enum stuff</summary>
+<summary>Extra enum information</summary>
 
 If you're doing FFI and you need to specify the discriminant you can do that with `|`
 
 ```cpp
 Error :: enum {
-    IO: i32     | 10, // i32 is the file handle
+    IO: str     | 10,
     Caught_Fire | 20,
     Exploded    | 30,
     Buggy_Code  | 40,
@@ -308,6 +316,209 @@ Reflection can be used to see what the byte offset of the discriminant is. [`cor
 *[`examples/enums_and_switch_statements.capy`](./examples/enums_and_switch_statements.capy) contains more examples*
 
 </details>
+
+#### Optionals & Error handling
+
+Error handling can really make or break a language.
+
+A programming language's error handling system will be used constantly, whether it's exceptions, errors as values, aborting, or whatever else.
+Making sure it's expressive and easy to use is very important.
+
+In Capy's case, the error handling system is heavily inspired by Zig's, with a few key differences.
+
+An optional type can be declared by using `?`
+
+```cpp
+message : ?str = nil;
+
+message = "hello";
+```
+
+Optionals represent the presence or absence of a value.
+
+Capy does not have null pointers.
+They've been called a "billion dollar mistake" and from my own personal experience they're such a pain to deal with.
+All pointer types, `^i32`, `^bool`, etc. are forbidden from ever being null.
+
+Instead, nullable pointers must be *explicitly* declared by using optional types
+
+```cpp
+foo : i32 = 42;
+
+// This is a regular pointer.
+// You can use this freely in your program and dereference it at will
+regular_ptr : ^i32 = ^foo;
+
+// This is a nullable pointer.
+// You must explicitly check it before dereferencing it
+nullable_ptr : ?^i32 = ^foo;
+
+// this is what it looks like to make `nullable_ptr` null
+nullable_ptr = nil;
+```
+
+Of course, sometimes it's not enough to just know that a value isn't there.
+Sometimes you need to know *why* the value isn't there.
+
+Capy doesn't use exceptions. Errors are values just like any other value in your program.
+
+An *error union* type can be used to return either a successful value or an error.
+Error unions are created with `<error type>!<success type>`.
+
+For example:
+
+```cpp
+do_work :: (task_number: i32) -> str!f32 {
+    // ...
+}
+```
+
+This function `do_work` will try to return an `f32`, but if there was some kind of error it will return `str` instead.
+
+This is very similar to Zig's method of error handling although the problem with Zig's system is that they heavily restrict
+what kind of errors you can return. Imagine parsing a 12KB json file and just getting `InvalidCharacter`.
+
+In Capy the errors can be whatever you want.
+
+```cpp
+My_Custom_Error :: enum {
+    ID_Too_Big,
+    Bad_ID: struct {
+        why: str,
+    },
+    Caught_Fire,
+};
+
+try_to_double :: (id: u64) -> My_Custom_Error!u64 {
+    if id == 5 {
+        return My_Custom_Error.Bad_ID.{ why = "I don't like it" };
+    }
+
+    if id > 10 {
+        return My_Custom_Error.ID_Too_Big;
+    }
+
+    id * 2
+}
+```
+
+Enums, optionals, and error unions, are all called *sum types* because they're "true" type might vary between between one of several at runtime.
+
+Enums can be any one of their variants.
+Optionals can be either the success type, or the type `nil`.
+Error Unions can be either the success type, or the error type.
+
+Switches work for all sum types where each arm of the switch statement is a possible "true" type
+
+```cpp
+// switching on an optional
+
+message : ?str = "Hello, World!"
+
+switch inner in message {
+    str => {
+        // type_of(inner) == str
+        core.println("The message is: ", inner);
+    }
+    nil => {
+        // type_of(inner) == nil
+        // "nil" is its own type
+        core.println("There is no message :(");
+    }
+}
+
+// switching on an error union
+
+switch inner in try_to_double(5) {
+    u64 => {
+        // type_of(inner) == u64
+        core.println("successfully doubled!\nthe result is = ", inner);
+    }
+    My_Custom_Error => {
+        // type_of(inner) == My_Custom_Error
+        core.println("Uh oh, there was an error: ", inner);
+    }
+}
+```
+
+You can also use the compiler directives `#is_variant` and `#unwrap` to quickly assert that a sum type has a particular "true" type
+
+```cpp
+message : ?str = nil;
+
+if #is_variant(message, str) {
+    val := #unwrap(message, str);
+}
+
+
+result := try_to_double(11);
+
+if #is_variant(result, u64) {
+    doubled := #unwrap(result, u64);
+}
+
+// these also work for enums
+```
+
+Note: if the first argument is an optional, both `#unwrap(message, str)` and `#unwrap(message)` are equivalent
+
+The one place where optionals and error unions differ from enums is that optionals and error unions allow you to use the `.try` keyword.
+
+`.try` is an operator which will return an error/nil value if it finds one, and otherwise will continue execution like normal.
+For example:
+
+```cpp
+do_networking :: () -> My_Error_Type!u32 {
+    body := get_request("https://example.com").try;
+
+    version_number := parse_number(body).try;
+
+    save_number_to_disk(version_number).try;
+
+    200
+}
+
+get_request :: (url: str) -> My_Error_Type!str {}
+parse_number :: (text: str) -> My_Error_Type!u64 {}
+save_number_to_disk :: (number: u64) -> My_Error_Type!void {}
+```
+
+The above code is equivalent to this:
+
+```cpp
+do_networking :: () -> My_Error_Type!u32 {
+    body := switch inner in get_request("https://example.com") {
+        str => inner,
+        My_Error_Type => {
+            return inner;  
+        },
+    };
+
+    version_number := switch inner in parse_number(body) {
+        u64 => inner,
+        My_Error_Type => {
+            return inner;
+        },
+    };
+
+    switch inner in save_number_to_disk(version_number) {
+        void => {},
+        My_Error_Type => {
+            return inner;
+        }
+    }
+
+    200
+}
+
+get_request :: (url: str) -> My_Error_Type!str {}
+parse_number :: (text: str) -> My_Error_Type!u64 {}
+save_number_to_disk :: (number: u64) -> My_Error_Type!void {}
+```
+
+This is an example using error unions, but `.try` works for optionals as well. If the inner value is `nil`, it will return early.
+
+#### Summary
 
 With that, here are all the possible types data can have in Capy:
 
@@ -373,7 +584,7 @@ My_Type :: comptime {
 x : My_Type = 42;
 ```
 
-This obviously isn't the most useful example. Something more pragmatic but far too complex to fit in a readme might be an ORM that automatically downloads the latest schema and uses it to assemble its struct types.
+Something more pragmatic but far too complex to fit in a readme might be an ORM that automatically downloads the latest schema and uses it to assemble its struct types.
 
 As this feature continues to be fleshed out, this will become the basis of Capy's compile-time generic system.
 
@@ -387,7 +598,7 @@ All types in a Capy program become 32 bit IDs at runtime. The [`meta`](./core/sr
 array_type := [3]i32;
 
 switch info in meta.get_type_info(array_type) {
-    Array => {
+    .Array => {
         core.assert(info.len    == 3);
         core.assert(info.sub_ty == i32);
     }
@@ -401,7 +612,7 @@ The size of an integer type,
 int_type := i16;
 
 switch info in meta.get_type_info(int_type) {
-    Int => {
+    .Int => {
         core.assert(info.bit_width == 16);
         core.assert(info.signed    == true);
     }
@@ -417,11 +628,11 @@ struct_type := struct {
 };
 
 switch info in meta.get_type_info(struct_type) {
-    Struct => {
+    .Struct => {
         first := info.members[0];
-        core.assert(core.str_eq(first.name,    "foo"));
-        core.assert(first.ty                == str);
-        core.assert(first.offset            == 0);
+        core.assert(first.name   == "foo"));
+        core.assert(first.ty     == str);
+        core.assert(first.offset == 0);
     }
     _ => {}
 }
@@ -538,12 +749,12 @@ The modules directory can be changed via the `--mod-dir` flag, and if it lacks a
 `#unwrap` asserts that an enum is a certain variant, and panics otherwise.
 
 ```cpp
-clicked : Web_Event = Web_Event.Click.{
+some_event : Web_Event = Web_Event.Click.{
     x = 20,
     y = 80
 };
 
-unwrapped : Web_Event.Click = #unwrap(clicked, Web_Event.Click); 
+clicked : Web_Event.Click = #unwrap(some_event, Web_Event.Click); 
 ```
 
 The [`examples`](./examples/) folder contains a lot more, and it gives a much better idea of what the language looks like in practice.
@@ -554,7 +765,7 @@ Currently, either `zig` or `gcc` must be installed for the compiler to work.
 They are used for linking to libc and producing a proper executable.
 
 If you want to use libc functions, define them with `extern` (look in [`core/libc.capy`](./core/src/libc.capy) for examples).
-Variadic functions do not work. You *could* try explicitly defining a function like `printf` to take 3 arguments,
+Variadic extern functions do not work. You *could* try explicitly defining a function like `printf` to take 3 arguments,
 but this won't work for floats, which are passed into variadic functions differently depending on the calling convention.
 Cranelift is [currently working on adding variadic support](https://github.com/bytecodealliance/wasmtime/issues/1030), so that will be added in the future.
 
@@ -568,7 +779,7 @@ If you find any bugs in the compiler, please be sure to [make an issue](https://
 Big shout out to [Luna Razzaghipour](https://github.com/lunacookies), the structure of this entire codebase is largely based on [gingerbread](https://github.com/gingerbread-lang/gingerbread) and [eldiro](https://github.com/lunacookies/eldiro).
 Her help in teaching how programming languages really work is immeasurable and I'm very thankful.
 
-Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in testing the limits of the language and improving the compiler in so many ways. Due to her help the language has really expanded to new heights.
+Big shout out to [lenawanel](https://github.com/lenawanel), she's been an enormous help in testing the limits of the language and improving the compiler in so many ways. Due to her help the language has gotten much more complete than I would've been able to accomplish myself.
 
 Big shout out to [cranelift](https://cranelift.dev/). Trying to get LLVM on windows was just way too much effort for me and cranelift made all my dreams come true.
 
@@ -578,7 +789,9 @@ This project was made by [NotAFlyingGoose](https://github.com/NotAFlyingGoose) :
 
 ## Contributing
 
-Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how you can contribute. This file also explains how Capy's codebase internally works, so even if you don't plan on contributing it might be a good read.
+Capy is open to contributions! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) on how you can contribute.
+
+Even if you're not at all interested in contributing, this file explains how Capy's codebase works, which might be a good read if you're interested in compilers.
 
 ## License
 
@@ -587,7 +800,7 @@ See [LICENSE-APACHE](./LICENSE-APACHE) and [LICENSE-MIT](./LICENSE-MIT) for deta
 
 It is Copyright (c) The Capy Programming Language Contributors.
 
-The Runtime Library Exception makes it clear that end users of the Capy compiler don’t have to attribute their use of Capy in their finished binary application, game, or service. End-users of the Capy programming language should feel unrestricted to create great software. The full text of this exception follows:
+The Runtime Library Exception makes it clear that end users of the Capy compiler don’t have to attribute their use of Capy in their finished binary application, game, or service. End-users of the Capy Programming Language should feel unrestricted to create great software. The full text of this exception follows:
 
 ```
 As an exception, if you use this Software to compile your source code and
@@ -596,7 +809,9 @@ you may redistribute such product without providing attribution as would
 otherwise be required by Sections 4(a), 4(b) and 4(d) of the License.
 ```
 
-This exception can also be found at the bottom of the [LICENSE-APACHE](./LICENSE-APACHE) file.
+This exception can be found at the bottom of the [LICENSE-APACHE](./LICENSE-APACHE) file.
 This is the same exception used by the [Swift programming language](https://www.swift.org/legal/license.html).
 
 The capybara logo was AI generated by [imagine.art](https://www.imagine.art/), who own the rights to it. It can be used in this non-commercial setting with attribution to them.
+
+I would honestly rather pay an artist to make a proper logo, but I wouldn't know how to do that.

@@ -5,22 +5,56 @@ f32_to_bits :: (num: f32) -> u32 {
     // I don't think there's a way to do this with a cranelift intrinsic,
     // so pointer transmutation is the only option.
     num := num;
-    (^u32).(rawptr.(^num))^
+    ^u32.(rawptr.(^num))^
 }
 
 f32_from_bits :: (raw: u32) -> f32 {
     raw := raw;
-    (^f32).(rawptr.(^raw))^
+    ^f32.(rawptr.(^raw))^
 }
 
 // for doing bit-twiddelling with f64s
 
 f64_to_bits :: (num: f64) -> u64 {
     num := num;
-    (^u64).(rawptr.(^num))^
+    ^u64.(rawptr.(^num))^
 }
 
 f64_from_bits :: (raw: u64) -> f64 {
     raw := raw;
-    (^f64).(rawptr.(^raw))^
+    ^f64.(rawptr.(^raw))^
+}
+
+// useful for debugging.
+//
+// e.g.
+// ```
+// print_mem(^.[true, true, true, false, true], 5)
+// // 0xa0a0a0a0 : 1 1 1 0 1
+// ```
+print_mem :: (ptr: rawptr, size: usize) {
+    core :: #mod("core");
+
+    core.print("0x", core.fmt.hex(i64.(core.ptr.to_raw(ptr))), " : ");
+
+    if size == 0 {
+        core.println("(size = 0)");
+        return;
+    }
+
+    idx := 0;
+    while idx < size {
+        ptr := ^u8.(core.ptr.const_offset(ptr, idx));
+        byte := ptr^;
+
+        core.print(core.fmt.hex(byte));
+
+        if idx < size - 1 {
+            core.print(" ");
+        }
+
+        idx += 1;
+    }
+
+    core.println();
 }

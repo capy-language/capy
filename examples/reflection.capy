@@ -48,6 +48,104 @@ main :: () {
     check_any();
 }
 
+check_layouts :: () {
+    print_type_layout("i32               ", i32);
+    print_type_layout("i64               ", i64);
+    print_type_layout("u64               ", u64);
+    print_type_layout("i8                ", i8);
+    print_type_layout("u128              ", u128);
+    print_type_layout("usize             ", usize);
+    print_type_layout("f32               ", f32);
+    print_type_layout("void              ", void);
+    print_type_layout("any               ", any);
+    print_type_layout("rawptr            ", rawptr);
+    print_type_layout("rawslice          ", rawslice);
+    print_type_layout("str               ", str);
+    print_type_layout("bool              ", bool);
+    print_type_layout("char              ", char);
+    print_type_layout("type              ", type);
+    print_type_layout("Person            ", Person);
+    print_type_layout("Foo               ", Foo);
+    print_type_layout("[6] Person        ", [6] Person);
+    print_type_layout("[ ] Person        ", [] Person);
+    print_type_layout(" ^  Person        ", ^ Person);
+    print_type_layout("distinct Person   ", distinct Person);
+    print_type_layout("Dessert           ", Dessert);
+    print_type_layout("Dessert.Brownie   ", Dessert.Brownie);
+    print_type_layout("Dessert.Apple_Pie ", Dessert.Apple_Pie);
+    print_type_layout("Dessert.Milkshake ", Dessert.Milkshake);
+    print_type_layout("Farm_Animal       ", Farm_Animal);
+    print_type_layout("Farm_Animal.Sheep ", Farm_Animal.Sheep);
+    print_type_layout("()       -> void  ", () -> void);
+    print_type_layout("(x: i32) -> f32   ", (x: i32) -> f32);
+    print_type_layout("?i32              ", ?i32);
+    print_type_layout("?^i32             ", ?^i32);
+
+    // note that ?^i32 is internally represented by just a NULL pointer, meaning
+    core.assert(meta.size_of(?^i32) == meta.size_of(^i32));
+    // but this doesn't apply to other optional types
+    core.assert(meta.size_of(?i32)  != meta.size_of(i32));
+
+    core.println();
+}
+
+check_equality :: () {
+    // types can be checked against each other at runtime.
+    //
+    // included for compiler testing.
+
+    core.println("i32 == i16 : ", i32 == i16);
+    core.println("i32 == u32 : ", i32 == u32);
+    core.println("i32 == i32 : ", i32 == i32);
+    core.println("Foo == Person : ", Foo == Person);
+    core.println("Person == Person : ", Person == Person);
+    core.println("[5] Person == [6] Person : ", [5] Person == [6] Person);
+    core.println("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
+    core.println("[6] Person == [6] Person : ", [6] Person == [6] Person);
+    core.println("^Person == ^Foo : ", ^Person == ^Foo);
+    core.println("^Person == ^Person : ", ^Person == ^Person);
+
+    d1Person :: distinct Person;
+    d2Person :: distinct Person;
+
+    core.println("Person == distinct 'a Person : ", Person == d1Person);
+    core.println("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
+    core.println("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
+    
+    core.println("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
+    core.println("Dessert == Dessert : ", Dessert == Dessert);
+
+    // This compares the types of enum variants.
+    
+    // `Dessert.Apple_Pie` is a type, and this is comparing the type Apple_Pie to the type Cheesecake
+    core.println("type.(Dessert.Apple_Pie) == type.(Dessert.Cheesecake) : ", Dessert.Apple_Pie == Dessert.Cheesecake);
+    // `Dessert.Cheesecake` is a zero-sized type, and by default zero-sized types will refer to the singleton they represent.
+    // So here, we explicitly tell the compiler we're trying to compare types and not values.
+    core.println("type.(Dessert.Cheesecake) == type.(Dessert.Cheesecake) : ", type.(Dessert.Cheesecake) == type.(Dessert.Cheesecake));
+    core.println("type.(Dessert.Ice_Cream) == type.(Dessert.Cheesecake) : ", type.(Dessert.Ice_Cream) == type.(Dessert.Cheesecake));
+    // Since these are two variants of completely different enums, the compiler knows the only way this comparison will work
+    // is if it treats the two variants as types.
+    core.println("type.(Farm_Animal.Cow) == type.(Dessert.Ice_Cream) : ", Farm_Animal.Cow == Dessert.Ice_Cream);
+    core.println("type.(Farm_Animal.Cow) == type.(Farm_Animal.Cow) : ", type.(Farm_Animal.Cow) == type.(Farm_Animal.Cow));
+    core.println("type.(Farm_Animal.Cow) == type.(Farm_Animal.Sheep) : ", type.(Farm_Animal.Cow) == type.(Farm_Animal.Sheep));
+
+    // This compares the actual values of enum variants.
+    // I'm including this just to make sure that casting to a type doesn't affect enum comparison
+    core.println("Dessert.Apple_Pie == Dessert.Cheesecake : ", Dessert.Apple_Pie.{ warm=true, crumble=false, crust_thickness=2.0 } == Dessert.Cheesecake);
+    core.println("Dessert.Cheesecake == Dessert.Cheesecake : ", Dessert.Cheesecake == Dessert.Cheesecake);
+    core.println("Dessert.Ice_Cream == Dessert.Cheesecake : ", Dessert.Ice_Cream == Dessert.Cheesecake);
+    core.println("Farm_Animal.Cow == Farm_Animal.Cow : ", Farm_Animal.Cow == Farm_Animal.Cow);
+    core.println("Farm_Animal.Cow == Farm_Animal.Sheep : ", Farm_Animal.Cow == Farm_Animal.Sheep);
+
+    core.println("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
+    core.println("() -> void == () -> void : ", () -> void == () -> void);
+
+    core.println("?u64 == ?u64 : ", ?u64 == ?u64);
+    core.println("?u64 == ?bool : ", ?u64 == ?bool);
+
+    core.println();
+}
+
 check_type_info :: () {
     Bar :: struct {
         text: str,
@@ -79,6 +177,8 @@ check_type_info :: () {
     print_info(Dessert.Apple_Pie);
     print_info(Dessert.Cookie);
     print_info(Dessert.Milkshake);
+    print_info(?i16);
+    print_info(?^bool);
 }
 
 check_any :: () {
@@ -102,7 +202,7 @@ check_any :: () {
     one_two_three : any = u16.[1, 2, 3];
     core.println(one_two_three);
 
-    retirement_age_ptr : any = ^i128.(52);
+    retirement_age_ptr : any = ^(i128.(52));
     core.println(retirement_age_ptr);
 
     // `any` within `any` (for testing)
@@ -133,7 +233,7 @@ check_any :: () {
         flag = false,
         array = i16.[1, 2, 3],
     });
-    core.println(.{
+    core.println(.{ // anonymous structs!
         hello = "world",
         foo = .{
             bar = .{
@@ -151,8 +251,8 @@ check_any :: () {
         crust_thickness = 1.3,
     });
     core.println(Dessert.Cookie.(1089.5));
-    core.println(Dessert.Brownie.(())); // todo: change how void variants are instantiated
-    core.println(Dessert.Cheesecake.(()));
+    core.println(Dessert.Brownie); // todo: println should print `Brownie` instead of `()`
+    core.println(Dessert.Cheesecake);
     core.println(Dessert.Milkshake.{
         malt = true,
     });
@@ -170,77 +270,24 @@ check_any :: () {
         malt = false,
     }));
 
+    // printing optionals
+    core.println(nil);
+    core.println(?u64.(nil));
+    core.println(?u64.(42));
+    core.println(?^i32.(^21)); // nullable pointers
+    core.println(?^i32.(nil));
+
+    // printing error unions
+    core.println(str!u64.(0xFF));
+    core.println(str!u64.("this is an error!!"));
+
     // formatting
     core.println(fmt.decimal(0x1a2b3c));
     core.println("0x", fmt.hex(0x1a2b3c));
     core.println("0b", fmt.binary(0x1a2b3c));
 }
 
-check_equality :: () {
-    core.println("i32 == i16 : ", i32 == i16);
-    core.println("i32 == u32 : ", i32 == u32);
-    core.println("i32 == i32 : ", i32 == i32);
-    core.println("Foo == Person : ", Foo == Person);
-    core.println("Person == Person : ", Person == Person);
-    core.println("[5] Person == [6] Person : ", [5] Person == [6] Person);
-    core.println("[5] Foo == [5] Person : ", [5] Foo == [5] Person);
-    core.println("[6] Person == [6] Person : ", [6] Person == [6] Person);
-    core.println("^Person == ^Foo : ", ^Person == ^Foo);
-    core.println("^Person == ^Person : ", ^Person == ^Person);
-
-    d1Person :: distinct Person;
-    d2Person :: distinct Person;
-
-    core.println("Person == distinct 'a Person : ", Person == d1Person);
-    core.println("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
-    core.println("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
-    
-    core.println("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
-    core.println("Dessert == Dessert : ", Dessert == Dessert);
-    core.println("Dessert.Apple_Pie == Dessert.Cheesecake : ", Dessert.Apple_Pie == Dessert.Cheesecake);
-    core.println("Dessert.Cheesecake == Dessert.Cheesecake : ", Dessert.Cheesecake == Dessert.Cheesecake);
-    core.println("Farm_Animal.Cow == Dessert.Ice_Cream : ", Farm_Animal.Cow == Dessert.Ice_Cream);
-    core.println("Farm_Animal.Cow == Farm_Animal.Cow : ", Farm_Animal.Cow == Farm_Animal.Cow);
-
-    core.println("() -> void == (x : i32) -> f32 : ", () -> void == (x: i32) -> f32);
-    core.println("() -> void == () -> void : ", () -> void == () -> void);
-
-    core.println("");
-}
-
-check_layouts :: () {
-    print_type_layout("i32               ", i32);
-    print_type_layout("i64               ", i64);
-    print_type_layout("u64               ", u64);
-    print_type_layout("i8                ", i8);
-    print_type_layout("u128              ", u128);
-    print_type_layout("usize             ", usize);
-    print_type_layout("f32               ", f32);
-    print_type_layout("void              ", void);
-    print_type_layout("any               ", any);
-    print_type_layout("rawptr            ", rawptr);
-    print_type_layout("rawslice          ", rawslice);
-    print_type_layout("str               ", str);
-    print_type_layout("bool              ", bool);
-    print_type_layout("char              ", char);
-    print_type_layout("type              ", type);
-    print_type_layout("Person            ", Person);
-    print_type_layout("Foo               ", Foo);
-    print_type_layout("[6] Person        ", [6] Person);
-    print_type_layout("[ ] Person        ", [] Person);
-    print_type_layout(" ^  Person        ", ^ Person);
-    print_type_layout("distinct Person   ", distinct Person);
-    print_type_layout("Dessert           ", Dessert);
-    print_type_layout("Dessert.Brownie   ", Dessert.Brownie);
-    print_type_layout("Dessert.Apple_Pie ", Dessert.Apple_Pie);
-    print_type_layout("Dessert.Milkshake ", Dessert.Milkshake);
-    print_type_layout("Farm_Animal       ", Farm_Animal);
-    print_type_layout("Farm_Animal.Sheep ", Farm_Animal.Sheep);
-    print_type_layout("()       -> void  ", () -> void);
-    print_type_layout("(x: i32) -> f32   ", (x: i32) -> f32);
-
-    core.println("");
-}
+// == helper functions ==
 
 print_type_layout :: (name: str, ty: type) {
     core.println(
@@ -254,7 +301,7 @@ print_type_layout :: (name: str, ty: type) {
         ", stride = ",
         meta.stride_of(ty)
     );
-}
+};
 
 print_info :: (ty: type) {
     print_info_with_args(ty, 0);
@@ -282,7 +329,7 @@ print_info_with_args :: (ty: type, indent: i32) {
     };
 
     switch info in meta.get_type_info(ty) {
-        Int => {
+        .Int => {
             print_front(indent, "INT");
             print_front(indent, "bit_width = ", info.bit_width);
             print_front(indent, "signed    = ", if info.signed {
@@ -290,36 +337,36 @@ print_info_with_args :: (ty: type, indent: i32) {
             } else {
                 "false"
             });
-        }
-        Float => {
+        },
+        .Float => {
             print_front(indent, "FLOAT");
             print_front(indent, "bit_width = ", info.bit_width);
-        }
-        Bool => print_front(indent, "BOOL"),
-        String => print_front(indent, "STRING"),
-        Char => print_front(indent, "CHARACTER"),
-        Array => {
+        },
+        .Bool => print_front(indent, "BOOL"),
+        .String => print_front(indent, "STRING"),
+        .Char => print_front(indent, "CHARACTER"),
+        .Array => {
             print_front(indent, "ARRAY");
             print_front(indent, "len = ", info.len);
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
-        }
-        Slice => {
+        },
+        .Slice => {
             print_front(indent, "SLICE");
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
-        }
-        Pointer => {
+        },
+        .Pointer => {
             print_front(indent, "POINTER");
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
-        }
-        Distinct => {
+        },
+        .Distinct => {
             print_front(indent, "DISTINCT");
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
-        }
-        Struct => {
+        },
+        .Struct => {
             print_front(indent, "STRUCT");
             print_front(indent, "members =");
 
@@ -336,8 +383,8 @@ print_info_with_args :: (ty: type, indent: i32) {
 
                 idx += 1;
             }
-        }
-        Enum => {
+        },
+        .Enum => {
             print_front(indent, "ENUM");
             print_front(indent, "discriminant_offset = ", info.discriminant_offset);
             print_front(indent, "variants =");
@@ -349,22 +396,37 @@ print_info_with_args :: (ty: type, indent: i32) {
 
                 idx += 1;
             }
-        }
-        Variant => {
+        },
+        .Variant => {
             print_front(indent, "VARIANT");
             print_front(indent, "discriminant = ", info.discriminant);
             print_front(indent, "ty =");
             print_info_with_args(info.sub_ty, indent + 1);
-        }
-        Function => print_front(indent, "FUNCTION"),
-        File => print_front(indent, "FILE"),
-        Meta_Type => print_front(indent, "META TYPE"),
-        Any => print_front(indent, "ANY"),
-        Raw_Ptr => {
+        },
+        .Nil => print_front(indent, "NIL"),
+        .Optional => {
+            print_front(indent, "OPTIONAL");
+            print_front(indent, "discriminant_offset = ", info.discriminant_offset);
+            print_front(indent, "ty =");
+            print_info_with_args(info.sub_ty, indent + 1);
+        },
+        .Error_Union => {
+            print_front(indent, "ERROR_UNION");
+            print_front(indent, "discriminant_offset = ", info.discriminant_offset);
+            print_front(indent, "error_ty =");
+            print_info_with_args(info.error_ty, indent + 1);
+            print_front(indent, "payload_ty =");
+            print_info_with_args(info.payload_ty, indent + 1);
+        },
+        .Function => print_front(indent, "FUNCTION"),
+        .File => print_front(indent, "FILE"),
+        .Meta_Type => print_front(indent, "META TYPE"),
+        .Any => print_front(indent, "ANY"),
+        .Raw_Ptr => {
             print_front(indent, "RAW_POINTER");
             print_front(indent, "mutable = ", info.mutable);
-        }
-        Raw_Slice => print_front(indent, "RAW_SLICE"),
-        Void => print_front(indent, "VOID"),
+        },
+        .Raw_Slice => print_front(indent, "RAW_SLICE"),
+        .Void => print_front(indent, "VOID"),
     }
 }

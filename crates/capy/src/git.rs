@@ -84,7 +84,10 @@ pub(crate) fn download_github_dir(lib_dir: &Path, path: &str) {
 }
 
 fn download_file(url: &str, path: &Path) {
-    let file_name = url.split('/').last().expect("Invalid download file URL");
+    let file_name = url
+        .split('/')
+        .next_back()
+        .expect("Invalid download file URL");
     let client = Client::new();
     let response = client
         .get(url)

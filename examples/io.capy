@@ -4,7 +4,8 @@ core :: #mod("core");
 get_user_input :: () -> i32 {
     buffer := char.['\0', '\0', '\0', '\0', '\0'];
 
-    core.libc.read(core.libc.stdin, (^mut u8).((mut rawptr).(^mut buffer)), 2);
+    // cast ^mut [5]char -> mut rawptr -> ^mut u8
+    core.libc.read(core.libc.stdin, ^mut u8.(mut rawptr.(^mut buffer)), 2);
 
     len := isize.(core.str_len(str.(buffer)));
 

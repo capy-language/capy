@@ -14,9 +14,8 @@ use uid_gen::UIDGenerator;
 
 use crate::Verbosity;
 
-use super::{ cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
+use super::{cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_program<'a>(
     verbosity: Verbosity,
     entry_point: hir::Fqn,
@@ -67,6 +66,8 @@ pub(crate) fn compile_program<'a>(
         meta_tys: MetaTyData::default(),
         cmd_args_slice: None,
         functions: FxHashMap::default(),
+        user_extern_functions: FxHashMap::default(),
+        internal_extern_functions: FxHashMap::default(),
         compiler_defined_functions: FxHashMap::default(),
         data: FxHashMap::default(),
         str_id_gen: UIDGenerator::default(),

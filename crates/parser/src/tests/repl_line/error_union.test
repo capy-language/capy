@@ -1,0 +1,14 @@
+Error_Type!Payload_Type
+===
+Root@0..23
+  ExprStmt@0..23
+    ErrorUnionDecl@0..23
+      ErrorTy@0..10
+        Ty@0..10
+          VarRef@0..10
+            Ident@0..10 "Error_Type"
+      Bang@10..11 "!"
+      PayloadTy@11..23
+        Ty@11..23
+          VarRef@11..23
+            Ident@11..23 "Payload_Type"

@@ -127,7 +127,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Float(bit_width) => *bit_width as u32 / 8,
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String => pointer_bit_width / 8,
-        Ty::Array { size, sub_ty, .. } => {
+        Ty::AnonArray { size, sub_ty } | Ty::ConcreteArray { size, sub_ty, .. } => {
             calc_single(*sub_ty, pointer_bit_width);
             sub_ty.stride() * *size as u32
         }
@@ -141,7 +141,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
             sub_ty.size()
         }
         Ty::Function { .. } => pointer_bit_width / 8,
-        Ty::Struct { members, .. } => {
+        Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
             let members = members.iter().map(|member| member.ty).collect::<Vec<_>>();
             for member_ty in &members {
                 calc_single(*member_ty, pointer_bit_width);
@@ -195,9 +195,68 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
 
             size
         }
-        Ty::Variant { sub_ty, .. } => {
+        Ty::EnumVariant { sub_ty, .. } => {
             calc_single(*sub_ty, pointer_bit_width);
             sub_ty.size()
+        }
+        Ty::Nil => 0,
+        Ty::Optional { sub_ty } => {
+            calc_single(*sub_ty, pointer_bit_width);
+
+            if sub_ty.is_non_zero() {
+                sub_ty.size()
+            } else {
+                let payload_size = sub_ty.size();
+                let payload_align = sub_ty.align();
+
+                let enum_layout = EnumLayout {
+                    // +1 for the discriminant
+                    size: payload_size + 1,
+                    align: payload_align,
+                    discriminant_offset: payload_size,
+                };
+                let size = enum_layout.size;
+
+                {
+                    let mut layouts = LAYOUTS.lock().unwrap();
+                    layouts
+                        .get_mut()
+                        .unwrap()
+                        .enum_layouts
+                        .insert(ty, enum_layout);
+                }
+
+                size
+            }
+        }
+        Ty::ErrorUnion {
+            error_ty,
+            payload_ty,
+        } => {
+            calc_single(*error_ty, pointer_bit_width);
+            calc_single(*payload_ty, pointer_bit_width);
+
+            let inner_size = error_ty.size().max(payload_ty.size());
+            let inner_align = error_ty.align().max(payload_ty.align());
+
+            let enum_layout = EnumLayout {
+                // +1 for the discriminant
+                size: inner_size + 1,
+                align: inner_align,
+                discriminant_offset: inner_size,
+            };
+            let size = enum_layout.size;
+
+            {
+                let mut layouts = LAYOUTS.lock().unwrap();
+                layouts
+                    .get_mut()
+                    .unwrap()
+                    .enum_layouts
+                    .insert(ty, enum_layout);
+            }
+
+            size
         }
         Ty::Type => 32 / 8,
         Ty::Any => {
@@ -220,7 +279,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         // a slice is len (usize) + ptr (usize)
         Ty::RawSlice => pointer_bit_width / 8 * 2,
         Ty::Void => 0,
-        Ty::NoEval => 0,
+        Ty::AlwaysJumps => 0,
         Ty::File(_) => 0,
     };
 
@@ -230,12 +289,18 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
         Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size.min(8),
         // the sub_ty was already `calc()`ed just before
-        Ty::Array { sub_ty, .. } => sub_ty.align(),
+        Ty::AnonArray { sub_ty, .. } | Ty::ConcreteArray { sub_ty, .. } => sub_ty.align(),
         Ty::Slice { .. } => (size / 2).min(8),
         Ty::Distinct { sub_ty, .. } => sub_ty.align(),
-        Ty::Struct { .. } => ty.struct_layout().unwrap().align,
+        Ty::AnonStruct { .. } | Ty::ConcreteStruct { .. } => ty.struct_layout().unwrap().align,
         Ty::Enum { .. } => ty.enum_layout().unwrap().align,
-        Ty::Variant { sub_ty, .. } => sub_ty.align(),
+        Ty::EnumVariant { sub_ty, .. } => sub_ty.align(),
+        Ty::Nil => 1,
+        Ty::Optional { sub_ty } => sub_ty.align(),
+        Ty::ErrorUnion {
+            error_ty,
+            payload_ty,
+        } => error_ty.align().max(payload_ty.align()),
         Ty::Type => size,
         Ty::Any => {
             let typeid_size = 32 / 8;
@@ -249,9 +314,11 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::RawPtr { .. } => size.min(8),
         Ty::RawSlice => (size / 2).min(8),
         Ty::Void => 1,
-        Ty::NoEval => 1,
+        Ty::AlwaysJumps => 1,
         Ty::File(_) => 1,
     };
+
+    assert!(align <= 8, "align is {align} (> 8)");
 
     {
         let mut layouts = LAYOUTS.lock().unwrap();
@@ -261,6 +328,7 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
     }
 }
 
+/// Used for enums and optionals
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EnumLayout {
     size: u32,

@@ -1,0 +1,57 @@
+switch foo in animal_enum {
+    i64 => {},
+    bool => {},
+    nil => {},
+}
+===
+Root@0..75
+  ExprStmt@0..75
+    SwitchExpr@0..75
+      Switch@0..6 "switch"
+      Whitespace@6..7 " "
+      Ident@7..10 "foo"
+      Whitespace@10..11 " "
+      In@11..13 "in"
+      Whitespace@13..14 " "
+      VarRef@14..25
+        Ident@14..25 "animal_enum"
+      Whitespace@25..26 " "
+      LBrace@26..27 "{"
+      Whitespace@27..32 "\n    "
+      SwitchArm@32..41
+        Ty@32..35
+          VarRef@32..35
+            Ident@32..35 "i64"
+        Whitespace@35..36 " "
+        FatArrow@36..38 "=>"
+        Whitespace@38..39 " "
+        Block@39..41
+          LBrace@39..40 "{"
+          RBrace@40..41 "}"
+      Comma@41..42 ","
+      Whitespace@42..47 "\n    "
+      SwitchArm@47..57
+        Ty@47..51
+          VarRef@47..51
+            Ident@47..51 "bool"
+        Whitespace@51..52 " "
+        FatArrow@52..54 "=>"
+        Whitespace@54..55 " "
+        Block@55..57
+          LBrace@55..56 "{"
+          RBrace@56..57 "}"
+      Comma@57..58 ","
+      Whitespace@58..63 "\n    "
+      SwitchArm@63..72
+        Ty@63..66
+          VarRef@63..66
+            Ident@63..66 "nil"
+        Whitespace@66..67 " "
+        FatArrow@67..69 "=>"
+        Whitespace@69..70 " "
+        Block@70..72
+          LBrace@70..71 "{"
+          RBrace@71..72 "}"
+      Comma@72..73 ","
+      Whitespace@73..74 "\n"
+      RBrace@74..75 "}"

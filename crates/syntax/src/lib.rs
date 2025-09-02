@@ -24,11 +24,11 @@ unsafe impl eventree::TreeConfig for TreeConfig {
     }
 
     unsafe fn token_kind_from_raw(raw: u16) -> Self::TokenKind {
-        mem::transmute(raw as u8)
+        unsafe { mem::transmute(raw as u8) }
     }
 
     unsafe fn node_kind_from_raw(raw: u16) -> Self::NodeKind {
-        mem::transmute(raw as u8)
+        unsafe { mem::transmute(raw as u8) }
     }
 }
 
@@ -65,6 +65,9 @@ pub enum NodeKind {
     Condition,
     SwitchExpr,
     SwitchArm,
+    SwitchArmVariant,
+    VariantShorthand,
+    DefaultArm,
     LabelDecl,
     LabelRef,
     IntLiteral,
@@ -96,6 +99,11 @@ pub enum NodeKind {
     EnumDecl,
     VariantDecl,
     Discriminant,
+    OptionalDecl,
+    ErrorTy,
+    PayloadTy,
+    ErrorUnionDecl, // only for `Error_Type!Payload_Type`, the case without an error (`!Payload_Type`) is UnaryExpr
+    PropagateExpr,
     ImportExpr,
     Ty,
     Path,

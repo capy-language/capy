@@ -72,7 +72,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
             // __m64 are in class SSE."
             Ty::Float(_) => classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Sse),
 
-            Ty::Array { sub_ty, size, .. } => {
+            Ty::ConcreteArray { sub_ty, size, .. } => {
                 if size != 0 {
                     for idx in 0..size {
                         classify_eight_byte(
@@ -83,13 +83,13 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                     }
                 }
             }
-            Ty::Slice { .. } | Ty::RawSlice { .. } | Ty::Any => {
+            Ty::Slice { .. } | Ty::RawSlice | Ty::Any => {
                 classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Int);
                 classes[offset / 8 + 1] = classes[offset / 8 + 1].merge_eigthbyte(Int)
             }
             Ty::Distinct { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
-            Ty::Variant { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
-            Ty::Struct { members, .. } => {
+            Ty::EnumVariant { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
+            Ty::ConcreteStruct { members, .. } => {
                 for (field, &field_off) in ty.struct_layout().unwrap().offsets().iter().enumerate()
                 {
                     classify_eight_byte(members[field].ty, classes, offset + field_off as usize)
@@ -109,7 +109,8 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
         };
     }
 
-    let n = ((ty.size() + 7) / 8) as usize;
+    // let n = ((ty.size() + 7) / 8) as usize;
+    let n = ty.size().div_ceil(8) as usize;
     if n > 8 {
         return None;
     }

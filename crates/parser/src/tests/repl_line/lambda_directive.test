@@ -1,0 +1,27 @@
+(x: i32) #hello("world")
+===
+Root@0..24
+  ExprStmt@0..24
+    Lambda@0..24
+      ParamList@0..8
+        LParen@0..1 "("
+        Param@1..7
+          Ident@1..2 "x"
+          Colon@2..3 ":"
+          Whitespace@3..4 " "
+          Ty@4..7
+            VarRef@4..7
+              Ident@4..7 "i32"
+        RParen@7..8 ")"
+      Whitespace@8..9 " "
+      Directive@9..24
+        Hash@9..10 "#"
+        Ident@10..15 "hello"
+        ArgList@15..24
+          LParen@15..16 "("
+          Arg@16..23
+            StringLiteral@16..23
+              DoubleQuote@16..17 "\""
+              StringContents@17..22 "world"
+              DoubleQuote@22..23 "\""
+          RParen@23..24 ")"

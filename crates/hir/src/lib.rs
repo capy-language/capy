@@ -1,3 +1,6 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::too_many_arguments)]
+
 mod body;
 mod index;
 mod subdir;
@@ -310,9 +313,9 @@ impl PrimitiveTy {
             }
             Self::UInt { bit_width, .. } => {
                 if *bit_width != u8::MAX {
-                    format!("i{}", bit_width)
+                    format!("u{}", bit_width)
                 } else {
-                    "isize".to_string()
+                    "usize".to_string()
                 }
             }
             Self::Float { bit_width, .. } => format!("f{}", bit_width),

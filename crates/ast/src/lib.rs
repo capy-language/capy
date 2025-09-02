@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)]
+
 pub mod validation;
 
 use syntax::{NodeKind, SyntaxNode, SyntaxToken, SyntaxTree, TokenKind};
@@ -88,7 +90,7 @@ macro_rules! def_ast_token {
 macro_rules! def_multi_node {
     (
         $node_name:ident:
-        $($simple_child_name:ident -> $simple_child_node_kind:ident)*
+        $($node_child_name:ident -> $node_child_node_kind:ident)*
         ;
         $($multi_child_name:ident -> $multi_child_node_kind:ident)*
         ;
@@ -96,11 +98,11 @@ macro_rules! def_multi_node {
     ) => {
         #[derive(Clone, Copy, PartialEq, Eq)]
         pub enum $node_name {
-            $($simple_child_name($simple_child_node_kind),)*
+            $($node_child_name($node_child_node_kind),)*
             $($multi_child_name($multi_child_node_kind),)*
         }
 
-        def_multi_node!(@create_impl $node_name $($fn_name -> $fn_return_ty)* ; ($($simple_child_name -> $simple_child_node_kind),*) @ ($($multi_child_name -> $multi_child_node_kind),*));
+        def_multi_node!(@create_impl $node_name $($fn_name -> $fn_return_ty)* ; ($($node_child_name -> $node_child_node_kind),*) @ ($($multi_child_name -> $multi_child_node_kind),*));
 
         impl AstNode for $node_name {
             fn cast(node: SyntaxNode, tree: &SyntaxTree) -> Option<Self> {
@@ -111,15 +113,15 @@ macro_rules! def_multi_node {
                 )*
 
                 match node.kind(tree) {
-                    $(NodeKind::$simple_child_node_kind =>
-                        Some(Self::$simple_child_name($simple_child_node_kind(node))),)*
+                    $(NodeKind::$node_child_node_kind =>
+                        Some(Self::$node_child_name($node_child_node_kind(node))),)*
                     _ => None,
                 }
             }
 
             fn syntax(self) -> SyntaxNode {
                 match self {
-                    $(Self::$simple_child_name(node) => node.syntax(),)*
+                    $(Self::$node_child_name(node) => node.syntax(),)*
                     $(Self::$multi_child_name(node) => node.syntax(),)*
                 }
             }
@@ -128,7 +130,7 @@ macro_rules! def_multi_node {
         impl std::fmt::Debug for $node_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
-                    $(Self::$simple_child_name(node) => f.debug_tuple(stringify!($simple_child_name)).field(node).finish(),)*
+                    $(Self::$node_child_name(node) => f.debug_tuple(stringify!($node_child_name)).field(node).finish(),)*
                     $(Self::$multi_child_name(node) => f.debug_tuple(stringify!($multi_child_name)).field(node).finish(),)*
                 }
             }
@@ -145,14 +147,14 @@ macro_rules! def_multi_node {
         @create_fn
         $fn_name:ident -> $fn_return_ty:ty
         ;
-        ($($simple_child_name:ident -> $simple_child_node_kind:ident),*)
+        ($($node_child_name:ident -> $node_child_node_kind:ident),*)
         ;
         ($($multi_child_name:ident -> $multi_child_node_kind:ident),*)
     ) => {
         #[allow(dead_code)]
         pub fn $fn_name(self, tree: &SyntaxTree) -> $fn_return_ty {
             match self {
-                $(Self::$simple_child_name(inner) => inner.$fn_name(tree),)*
+                $(Self::$node_child_name(inner) => inner.$fn_name(tree),)*
                 $(Self::$multi_child_name(inner) => inner.$fn_name(tree),)*
             }
         }
@@ -407,6 +409,9 @@ def_multi_node! {
     ArrayDecl -> ArrayDecl
     ArrayLiteral -> ArrayLiteral
     IndexExpr -> IndexExpr
+    OptionalDecl -> OptionalDecl
+    ErrorUnionDecl -> ErrorUnionDecl
+    Propagate -> PropagateExpr // `foo.try` propagates nils/errors upward
     VarRef -> VarRef    // `foo` in `foo.bar`
     Path -> Path        // `foo.bar`
     Call -> Call
@@ -475,6 +480,58 @@ def_ast_node!(DerefExpr);
 
 impl DerefExpr {
     pub fn pointer(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(PropagateExpr);
+
+impl PropagateExpr {
+    pub fn expr(self, tree: &SyntaxTree) -> Option<Expr> {
+        node(self, tree)
+    }
+
+    pub fn dot(self, tree: &SyntaxTree) -> Option<Dot> {
+        token(self, tree)
+    }
+
+    pub fn r#try(self, tree: &SyntaxTree) -> Option<Try> {
+        token(self, tree)
+    }
+}
+
+def_ast_node!(OptionalDecl);
+
+impl OptionalDecl {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(ErrorTy);
+
+impl ErrorTy {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(PayloadTy);
+
+impl PayloadTy {
+    pub fn ty(self, tree: &SyntaxTree) -> Option<Ty> {
+        node(self, tree)
+    }
+}
+
+def_ast_node!(ErrorUnionDecl);
+
+impl ErrorUnionDecl {
+    pub fn error_ty(self, tree: &SyntaxTree) -> Option<ErrorTy> {
+        node(self, tree)
+    }
+
+    pub fn payload_ty(self, tree: &SyntaxTree) -> Option<PayloadTy> {
         node(self, tree)
     }
 }
@@ -554,7 +611,7 @@ impl WhileExpr {
 def_ast_node!(SwitchExpr);
 
 impl SwitchExpr {
-    pub fn variable_name(self, tree: &SyntaxTree) -> Option<Ident> {
+    pub fn argument(self, tree: &SyntaxTree) -> Option<Ident> {
         token(self, tree)
     }
 
@@ -570,12 +627,31 @@ impl SwitchExpr {
 def_ast_node!(SwitchArm);
 
 impl SwitchArm {
-    pub fn variant_name(self, tree: &SyntaxTree) -> Option<Ident> {
-        token(self, tree)
+    pub fn variant(self, tree: &SyntaxTree) -> Option<SwitchArmVariant> {
+        node(self, tree)
     }
 
     pub fn body(self, tree: &SyntaxTree) -> Option<Expr> {
         node(self, tree)
+    }
+}
+
+def_multi_node! {
+    SwitchArmVariant:
+    Default -> DefaultArm
+    Shorthand -> VariantShorthand
+    FullyQualified -> Ty
+    ;
+    ;
+}
+
+def_ast_node!(DefaultArm);
+
+def_ast_node!(VariantShorthand);
+
+impl VariantShorthand {
+    pub fn name(self, tree: &SyntaxTree) -> Option<Ident> {
+        token(self, tree)
     }
 }
 
@@ -946,6 +1022,8 @@ def_ast_token!(Bin);
 def_ast_token!(Float);
 def_ast_token!(Bool);
 def_ast_token!(Ellipsis);
+def_ast_token!(Dot);
+def_ast_token!(Try);
 
 def_multi_token! {
     StringComponent:
@@ -2296,6 +2374,32 @@ mod tests {
     }
 
     #[test]
+    fn get_lambda_builtin() {
+        let (tree, root) = parse("() #builtin(\"bar\");");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let lambda = match expr {
+            Some(Expr::Lambda(lambda)) => lambda,
+            _ => unreachable!(),
+        };
+
+        let directive = match lambda.body(&tree).unwrap() {
+            Expr::Directive(block) => block,
+            _ => unreachable!(),
+        };
+
+        assert_eq!(directive.name(&tree).unwrap().text(&tree), "builtin");
+
+        let mut arg_list = directive.arg_list(&tree).unwrap().args(&tree);
+        assert_eq!(arg_list.next().unwrap().text(&tree), "\"bar\"");
+        assert_eq!(arg_list.next(), None);
+    }
+
+    #[test]
     fn struct_decl_get_fields() {
         let (tree, root) = parse("struct { foo: i32, bar: string };");
         let statement = root.stmts(&tree).next().unwrap();
@@ -2519,8 +2623,9 @@ mod tests {
 
     #[test]
     fn switch() {
+        // todo: do better tests for the arm variants
         let (tree, root) =
-            parse("switch foo in bar { Cow => 5, Pig => \"hello\", Chicken => foo }");
+            parse("switch foo in bar { .Cow => 5, .Pig => \"hello\", .Chicken => foo }");
         let statement = root.stmts(&tree).next().unwrap();
         let expr = match statement {
             Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
@@ -2529,26 +2634,35 @@ mod tests {
 
         let switch_expr = match expr {
             Some(Expr::Switch(switch_expr)) => switch_expr,
-            _ => unreachable!(),
+            _ => panic!(),
         };
 
-        assert_eq!(switch_expr.variable_name(&tree).unwrap().text(&tree), "foo");
+        assert_eq!(switch_expr.argument(&tree).unwrap().text(&tree), "foo");
         assert_eq!(switch_expr.scrutinee(&tree).unwrap().text(&tree), "bar");
 
         let mut switch_arms = switch_expr.arms(&tree);
 
         let arm = switch_arms.next().unwrap();
-        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Cow");
+        let SwitchArmVariant::Shorthand(shorthand) = arm.variant(&tree).unwrap() else {
+            panic!();
+        };
+        assert_eq!(shorthand.name(&tree).unwrap().text(&tree), "Cow");
         assert_eq!(arm.body(&tree).unwrap().text(&tree), "5");
         assert!(matches!(arm.body(&tree).unwrap(), Expr::IntLiteral(_)));
 
         let arm = switch_arms.next().unwrap();
-        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Pig");
+        let SwitchArmVariant::Shorthand(shorthand) = arm.variant(&tree).unwrap() else {
+            panic!();
+        };
+        assert_eq!(shorthand.name(&tree).unwrap().text(&tree), "Pig");
         assert_eq!(arm.body(&tree).unwrap().text(&tree), "\"hello\"");
         assert!(matches!(arm.body(&tree).unwrap(), Expr::StringLiteral(_)));
 
         let arm = switch_arms.next().unwrap();
-        assert_eq!(arm.variant_name(&tree).unwrap().text(&tree), "Chicken");
+        let SwitchArmVariant::Shorthand(shorthand) = arm.variant(&tree).unwrap() else {
+            panic!();
+        };
+        assert_eq!(shorthand.name(&tree).unwrap().text(&tree), "Chicken");
         assert_eq!(arm.body(&tree).unwrap().text(&tree), "foo");
         assert!(matches!(arm.body(&tree).unwrap(), Expr::VarRef(_)));
 
@@ -2598,5 +2712,100 @@ mod tests {
         assert_eq!(args.next().unwrap().value(&tree).unwrap().text(&tree), "10");
         assert_eq!(args.next().unwrap().value(&tree).unwrap().text(&tree), "20");
         assert!(args.next().is_none());
+    }
+
+    #[test]
+    fn optional() {
+        let (tree, root) = parse("?u64");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let Some(Expr::OptionalDecl(decl)) = expr else {
+            unreachable!()
+        };
+
+        assert_eq!(decl.ty(&tree).unwrap().text(&tree), "u64");
+    }
+
+    #[test]
+    fn optional_no_type() {
+        let (tree, root) = parse("?");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let Some(Expr::OptionalDecl(decl)) = expr else {
+            unreachable!()
+        };
+
+        assert_eq!(decl.ty(&tree), None);
+    }
+
+    #[test]
+    fn error_union() {
+        let (tree, root) = parse("str!u64");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let Some(Expr::ErrorUnionDecl(decl)) = expr else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            decl.error_ty(&tree).unwrap().ty(&tree).unwrap().text(&tree),
+            "str"
+        );
+        assert_eq!(
+            decl.payload_ty(&tree)
+                .unwrap()
+                .ty(&tree)
+                .unwrap()
+                .text(&tree),
+            "u64"
+        );
+    }
+
+    #[test]
+    fn error_union_missing_payload() {
+        let (tree, root) = parse("str!");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let Some(Expr::ErrorUnionDecl(decl)) = expr else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            decl.error_ty(&tree).unwrap().ty(&tree).unwrap().text(&tree),
+            "str"
+        );
+        assert_eq!(decl.payload_ty(&tree), None);
+    }
+
+    #[test]
+    fn propagate() {
+        let (tree, root) = parse("foo.try");
+        let statement = root.stmts(&tree).next().unwrap();
+        let expr = match statement {
+            Stmt::Expr(expr_stmt) => expr_stmt.expr(&tree),
+            _ => unreachable!(),
+        };
+
+        let Some(Expr::Propagate(prop)) = expr else {
+            unreachable!()
+        };
+
+        assert_eq!(prop.expr(&tree).unwrap().text(&tree), "foo");
     }
 }

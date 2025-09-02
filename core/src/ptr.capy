@@ -1,10 +1,27 @@
 
-// compiler defined
-to_raw :: (ptr: rawptr) -> usize extern;
-// compiler defined
-const_from_raw :: (raw: usize) -> rawptr extern;
-// compiler defined
-mut_from_raw :: (raw: usize) -> mut rawptr extern;
+// Non-optional pointers
+
+to_raw :: (ptr: rawptr) -> usize #builtin("const_rawptr_to_usize");
+
+// WARNING: Calling `const_from_raw` with any value you haven't
+// gotten from `to_raw` is undefined behavior.
+// Calling `const_from_raw(0)` is especially illegal.
+const_from_raw :: (raw: usize) -> rawptr #builtin("usize_to_const_rawptr");
+// WARNING: Calling `mut_from_raw` with any value you haven't
+// gotten from `to_raw` is undefined behavior.
+// Calling `mut_from_raw(0)` is especially illegal.
+mut_from_raw :: (raw: usize) -> mut rawptr #builtin("usize_to_mut_rawptr");
+
+// Optional (nullable) pointers
+
+opt_to_raw :: (ptr: ?rawptr) -> usize #builtin("opt_const_rawptr_to_usize");
+
+// WARNING: Calling `const_opt_from_raw` with any value you haven't
+// gotten from either `to_raw` or `opt_to_raw` is undefined behavior
+const_opt_from_raw :: (raw: usize) -> ?rawptr #builtin("usize_to_opt_const_rawptr");
+// WARNING: Calling `mut_opt_from_raw` with any value you haven't
+// gotten from either `to_raw` or `opt_to_raw` is undefined behavior
+mut_opt_from_raw :: (raw: usize) -> ?rawptr #builtin("usize_to_opt_const_rawptr");
 
 const_offset :: (ptr: rawptr, offset: usize) -> rawptr {
     const_from_raw(to_raw(ptr) + offset)
@@ -15,25 +32,13 @@ mut_offset :: (ptr: mut rawptr, offset: usize) -> mut rawptr {
 }
 
 read :: (ptr: rawptr, offset: usize) -> u8 {
-    plus_offset := (^u8).(const_offset(ptr, offset));
+    plus_offset := ^u8.(const_offset(ptr, offset));
     plus_offset^
 }
 
 write :: (ptr: mut rawptr, byte: u8, offset: usize) {
-    plus_offset := (^mut u8).(mut_offset(ptr, offset));
+    plus_offset := ^mut u8.(mut_offset(ptr, offset));
     plus_offset^ = byte;
-}
-
-null :: () -> rawptr {
-    const_from_raw(0)
-}
-
-mut_null :: () -> mut rawptr {
-    mut_from_raw(0)
-}
-
-is_null :: (ptr: rawptr) -> bool {
-    to_raw(ptr) == 0
 }
 
 // constructs a slice from a pointer and a length
@@ -56,6 +61,22 @@ slice_from_raw_parts :: (data: rawptr, len: usize) -> rawslice {
         data = data,
     };
 
-    // transmute Any to any using rawptr
-    (^rawslice).((rawptr).(^raw))^
+    // transmute to rawslice using rawptr
+    ^rawslice.(rawptr.(^raw))^
+}
+
+// Note that while calling `const_from_raw(0)` is undefined behavior, this isn't
+empty_slice :: () -> rawslice {
+    Raw_Slice :: struct {
+        len: usize,
+        data: usize,
+    };
+
+    raw := Raw_Slice.{
+        len = 0,
+        data = 0,
+    };
+
+    // transmute to rawslice using rawptr
+    ^rawslice.(rawptr.(^raw))^
 }

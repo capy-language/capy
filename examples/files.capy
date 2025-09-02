@@ -12,7 +12,10 @@ write_to_file :: (filename: str) {
 read_from_file :: (filename: str) {
     my_file := libc.fopen("hello.txt", "r");
 
-    buf := (^mut char).(libc.malloc(20));
+    buf := #unwrap(libc.malloc(20));
+    // malloc returns a mut rawptr, so here we cast it to a ^mut char
+    // in the future this won't be necessary
+    buf := ^mut char.(buf);
     
     text := libc.fgets(buf, 20, my_file);
     libc.puts(text);

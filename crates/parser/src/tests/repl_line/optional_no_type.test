@@ -1,0 +1,7 @@
+?
+===
+Root@0..1
+  ExprStmt@0..1
+    OptionalDecl@0..1
+      Question@0..1 "?"
+error at 1: missing optional type

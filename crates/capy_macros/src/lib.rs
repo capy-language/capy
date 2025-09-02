@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)]
+
 extern crate proc_macro;
 use std::{fs, path::PathBuf, str::FromStr};
 
@@ -383,7 +385,11 @@ pub fn define_token_set(input: TokenStream) -> TokenStream {
     {
         Some(result) => result,
         None => {
-            let msg = format!("There are {} different tokens in {}, but rust's maximum int type is u128. Not all tokens can be covered in TokenSet", number_of_tokens, path.display());
+            let msg = format!(
+                "There are {} different tokens in {}, but rust's maximum int type is u128. Not all tokens can be covered in TokenSet",
+                number_of_tokens,
+                path.display()
+            );
             return quote_spanned! {
                 input[0].span().into() => compile_error!(#msg)
             }
