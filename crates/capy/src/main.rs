@@ -4,13 +4,14 @@
 mod git;
 mod source;
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::{
     cell::RefCell,
     env,
     ffi::CString,
     io::{self, Write},
     mem,
-    os::unix::process::ExitStatusExt,
     panic::AssertUnwindSafe,
     path::PathBuf,
     process::exit,
@@ -840,7 +841,10 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
                     }
                     _ => {}
                 }
-            } else if let Some(signal) = status.signal() {
+            }
+
+            #[cfg(unix)]
+            if let Some(signal) = status.signal() {
                 match (target.operating_system, signal) {
                     // https://developer.apple.com/documentation/xcode/understanding-the-exception-types-in-a-crash-report
                     (OperatingSystem::Darwin(_), libc::SIGSEGV) => {
