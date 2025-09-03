@@ -531,7 +531,7 @@ impl Compiler<'_> {
         if self.verbosity.include_disasm(is_mod) {
             print!("asm = \n{}", compiled.vcode.as_ref().unwrap());
             println!(
-                "({} instructions, {} bytes of machine code)",
+                "(~{} instructions, {} bytes of machine code)",
                 compiled
                     .vcode
                     .as_ref()

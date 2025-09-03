@@ -617,7 +617,7 @@ powers_of_two := comptime {
 ```
 
 One of the most sacred and holy promises Capy tries to keep is:
-*"any code that can run at runtime, shall also be runnable at compile-time"*.
+*"any code which can run at runtime, shall also be runnable at compile-time"*.
 
 There are no special `const` functions to be found here.
 
@@ -785,7 +785,8 @@ foo := `foo_calc: {
 };
 ```
 
-`return` works similarly to a `break`, except that instead of jumping to the last labeled scope, it jumps to the *very first scope* regardless of its a function or not.
+`return` works similarly to a `break`, except that instead of jumping to the last labeled scope,
+it jumps to the *very first scope* regardless of if its a function or not.
 
 
 ```cpp
@@ -793,7 +794,7 @@ global_variable_1 :: true;
 
 global_variable_2 :: comptime {
     if global_variable_2 {
-        return 42
+        return 42;
     }
 
     5
@@ -806,7 +807,11 @@ There's not much to say about `continue`. It works exactly like you'd expect it 
 
 Lambdas, or anonymous functions, are extremely useful in all the programming languages that have them.
 
-Capy has only one way of creating functions: `(param1: type1, param2: type2, ...) -> return_type { <code here> }`.
+Capy has only one way of creating functions:
+
+```
+(param1: type1, param2: type2, ...) -> return_type { <code here> }
+```
 
 These function values can be passed around and given to other functions, they can be assigned to variables, etc.
 

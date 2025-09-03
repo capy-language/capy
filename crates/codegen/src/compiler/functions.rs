@@ -330,7 +330,7 @@ impl FunctionCompiler<'_> {
 
         let global = self.create_global_data(
             &fqn.to_mangled_name(self.mod_dir, self.interner),
-            true,
+            false,
             bytes,
             self.tys[fqn].0.align() as u64,
         );
@@ -358,7 +358,7 @@ impl FunctionCompiler<'_> {
                 } else {
                     Linkage::Local
                 },
-                export,
+                false,
                 false,
             )
             .expect("error declaring data");
@@ -495,6 +495,8 @@ impl FunctionCompiler<'_> {
             .declare_data_in_func(global_data, self.builder.func);
 
         let global_ptr = self.builder.ins().symbol_value(self.ptr_ty, local_id);
+        // TODO: find out the difference between symbol_value and global_value.
+        // they both return pointers.
 
         let final_ty = ty.get_final_ty();
 

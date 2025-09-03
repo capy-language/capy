@@ -114,7 +114,7 @@ pub fn compile_obj(
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    flag_builder.set("is_pic", "false").unwrap();
+    flag_builder.set("is_pic", "true").unwrap();
 
     let isa_builder = isa::lookup(target).unwrap_or_else(|msg| {
         println!("invalid target: {}", msg);

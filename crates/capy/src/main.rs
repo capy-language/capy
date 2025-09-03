@@ -10,6 +10,7 @@ use std::{
     ffi::CString,
     io::{self, Write},
     mem,
+    os::unix::process::ExitStatusExt,
     panic::AssertUnwindSafe,
     path::PathBuf,
     process::exit,
@@ -823,8 +824,8 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
             if let Some(code) = status.code() {
                 let code = code as u32;
 
-                // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
                 match (target.operating_system, code) {
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
                     (OperatingSystem::Windows, 0xC00000FD) => {
                         print!(" STATUS_STACK_OVERFLOW")
                     }
@@ -836,6 +837,23 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
                     }
                     (OperatingSystem::Windows, _) if code & 0x80000000 != 0 => {
                         print!(" (unknown error code)");
+                    }
+                    _ => {}
+                }
+            } else if let Some(signal) = status.signal() {
+                match (target.operating_system, signal) {
+                    // https://developer.apple.com/documentation/xcode/understanding-the-exception-types-in-a-crash-report
+                    (OperatingSystem::Darwin(_), libc::SIGSEGV) => {
+                        print!(" EXC_BAD_ACCESS");
+                    }
+                    (OperatingSystem::Darwin(_), libc::SIGBUS) => {
+                        print!(" EXC_BAD_ACCESS");
+                    }
+                    (OperatingSystem::Darwin(_), libc::SIGTRAP) => {
+                        print!(" EXC_BREAKPOINT");
+                    }
+                    (OperatingSystem::Darwin(_), libc::SIGILL) => {
+                        print!(" EXC_BAD_INSTRUCTION");
                     }
                     _ => {}
                 }

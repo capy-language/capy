@@ -11,11 +11,11 @@ la-arena = "0.3"
 hir = { path = "../hir" }
 hir_ty = { path = "../hir_ty" }
 rustc-hash = "2.1"
-cranelift = "0.122"
-cranelift-module = "0.122"
-cranelift-jit = "0.122"
-cranelift-native = "0.122"
-cranelift-object = "0.122"
+cranelift = "0.123"
+cranelift-module = "0.123"
+cranelift-jit = "0.123"
+cranelift-native = "0.123"
+cranelift-object = "0.123"
 target-lexicon = "0.13"
 internment = "0.8.3"
 uid_gen = { path = "../uid_gen" }
