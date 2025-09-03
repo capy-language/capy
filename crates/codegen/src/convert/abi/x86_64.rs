@@ -72,7 +72,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
             // __m64 are in class SSE."
             Ty::Float(_) => classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Sse),
 
-            Ty::ConcreteArray { sub_ty, size, .. } => {
+            Ty::ConcreteArray { sub_ty, size, .. } | Ty::AnonArray { size, sub_ty } => {
                 if size != 0 {
                     for idx in 0..size {
                         classify_eight_byte(
@@ -89,7 +89,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
             }
             Ty::Distinct { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
             Ty::EnumVariant { sub_ty, .. } => classify_eight_byte(sub_ty, classes, offset),
-            Ty::ConcreteStruct { members, .. } => {
+            Ty::ConcreteStruct { members, .. } | Ty::AnonStruct { members } => {
                 for (field, &field_off) in ty.struct_layout().unwrap().offsets().iter().enumerate()
                 {
                     classify_eight_byte(members[field].ty, classes, offset + field_off as usize)
@@ -104,6 +104,28 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
                 }
                 let discrim_offset = offset + enum_layout.discriminant_offset() as usize;
                 classes[discrim_offset / 8] = classes[discrim_offset / 8].merge_eigthbyte(Int);
+            }
+            Ty::ErrorUnion {
+                error_ty,
+                payload_ty,
+            } => {
+                let enum_layout = ty.enum_layout().unwrap();
+                classify_eight_byte(payload_ty, classes, offset);
+                classify_eight_byte(error_ty, classes, offset);
+                let discrim_offset = offset + enum_layout.discriminant_offset() as usize;
+                classes[discrim_offset / 8] = classes[discrim_offset / 8].merge_eigthbyte(Int);
+            }
+            Ty::Optional { sub_ty } => {
+                if let Some(enum_layout) = ty.enum_layout() {
+                    classify_eight_byte(sub_ty, classes, offset);
+                    let discrim_offset = offset + enum_layout.discriminant_offset() as usize;
+                    classes[discrim_offset / 8] = classes[discrim_offset / 8].merge_eigthbyte(Int);
+                } else {
+                    classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Int);
+                    if ty.size() > 8 {
+                        classes[offset / 8 + 1] = classes[offset / 8 + 1].merge_eigthbyte(Int);
+                    }
+                }
             }
             _ => {}
         };
