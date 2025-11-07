@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use crate::{FileName, Fqn, Index, RangeInfo};
+use crate::{Index, RangeInfo, common::*};
 
 #[derive(Default, Debug)]
 pub struct WorldIndex(FxHashMap<FileName, Index>);

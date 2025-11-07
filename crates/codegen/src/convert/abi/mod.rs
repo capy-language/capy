@@ -8,13 +8,13 @@ use cranelift::{
     },
     frontend::FunctionBuilder,
 };
-use hir_ty::{ParamTy, Ty};
+use hir::common::{ParamTy, Ty};
 use internment::Intern;
 use la_arena::Idx;
 use tinyvec::ArrayVec;
 
 use crate::{
-    compiler::{functions::FunctionCompiler, MemoryLoc},
+    compiler::{MemoryLoc, functions::FunctionCompiler},
     layout::GetLayoutInfo,
 };
 

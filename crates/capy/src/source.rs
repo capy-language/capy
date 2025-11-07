@@ -2,7 +2,7 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use ast::{AstNode, Root};
 use diagnostics::{Diagnostic, Severity};
-use hir::{FileName, Name};
+use hir::common::{FileName, Name};
 use interner::Interner;
 use line_index::LineIndex;
 use parser::Parse;
@@ -45,7 +45,7 @@ impl SourceFile {
         verbose_types: VerboseScope,
         with_color: bool,
     ) -> SourceFile {
-        let module = hir::FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
+        let module = FileName(interner.borrow_mut().intern(&file_name.to_string_lossy()));
 
         let is_mod = module.is_mod(mod_dir, &interner.borrow());
 

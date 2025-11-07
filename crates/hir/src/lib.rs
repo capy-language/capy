@@ -2,137 +2,26 @@
 #![allow(clippy::too_many_arguments)]
 
 mod body;
+pub mod common;
 mod index;
-mod subdir;
 mod world_index;
 
 use std::{
+    borrow::Cow,
     env,
     path::{Component, Path},
 };
 
 use ast::AstToken;
 pub use body::*;
+use common::{NaiveGlobalLoc, SubDir};
 pub use index::*;
-use subdir::SubDir;
 use syntax::SyntaxTree;
 use text_size::TextRange;
 use uid_gen::UIDGenerator;
 pub use world_index::*;
 
 use interner::{Interner, Key};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FileName(pub Key);
-
-impl FileName {
-    pub fn to_string(&self, mod_dir: &Path, interner: &Interner) -> String {
-        let mut res = String::new();
-
-        let file_name = Path::new(interner.lookup(self.0));
-        let curr_dir = env::current_dir().unwrap();
-
-        let mut is_mod = file_name.is_sub_dir_of(mod_dir);
-        let relative_path = if is_mod {
-            pathdiff::diff_paths(file_name, mod_dir).unwrap()
-        } else if file_name.is_sub_dir_of(&curr_dir) {
-            pathdiff::diff_paths(file_name, curr_dir).unwrap()
-        } else {
-            unreachable!()
-        };
-
-        let components = relative_path
-            .components()
-            .filter(|c| !matches!(c, Component::Prefix(_) | Component::RootDir))
-            .collect::<Vec<_>>();
-        for (idx, component) in components.iter().enumerate() {
-            let component = component.as_os_str().to_string_lossy();
-
-            if idx < components.len() - 1 {
-                res.push_str(&component);
-
-                if is_mod {
-                    res.push_str("::");
-                    is_mod = false
-                } else {
-                    res.push('.');
-                }
-            } else {
-                res.push_str(
-                    &component
-                        .rsplit_once('.')
-                        .map(|(name, _)| name.replace('.', "-"))
-                        .unwrap_or(component.to_string()),
-                );
-            }
-        }
-
-        res
-    }
-
-    pub fn debug(&self, interner: &Interner) -> String {
-        interner.lookup(self.0).to_string()
-    }
-
-    pub fn is_mod(&self, mod_dir: &Path, interner: &Interner) -> bool {
-        let file_name = Path::new(interner.lookup(self.0));
-
-        file_name.is_sub_dir_of(mod_dir)
-    }
-
-    pub fn get_mod_name(&self, mod_dir: &Path, interner: &Interner) -> Option<String> {
-        let file_name = Path::new(interner.lookup(self.0));
-
-        file_name.get_sub_dir_divergence(mod_dir)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileNameWithRange {
-    pub file: FileName,
-    pub range: TextRange,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Name(pub Key);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NameWithRange {
-    pub name: Name,
-    pub range: TextRange,
-}
-
-// short for Fully Qualified Name
-// not only the name of whatever we're referring to, but also the file it's contained in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Fqn {
-    pub file: FileName,
-    pub name: Name,
-}
-
-impl Fqn {
-    pub fn to_string(&self, mod_dir: &std::path::Path, interner: &Interner) -> String {
-        format!(
-            r#"{}::{}"#,
-            self.file.to_string(mod_dir, interner),
-            interner.lookup(self.name.0),
-        )
-    }
-
-    pub fn debug(&self, interner: &Interner) -> String {
-        format!(
-            r#"{}::{}"#,
-            self.file.debug(interner),
-            interner.lookup(self.name.0),
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LocalFqn {
-    Full(Fqn),
-    Local(Name),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrimitiveTy {

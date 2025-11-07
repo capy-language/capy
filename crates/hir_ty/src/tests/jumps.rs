@@ -15,12 +15,14 @@ fn break_void_block_no_tail_match() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : void
-            1 : void
-            2 : void
-            3 : void
-            4 : () -> void
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : void
+              1 : void
+              2 : void
+              3 : void
+              4 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -39,13 +41,15 @@ fn break_i32_block_no_tail_mismatch() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : void
-            2 : bool
-            3 : <unknown>
-            4 : <unknown>
-            5 : () -> void
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : void
+              2 : bool
+              3 : <unknown>
+              4 : <unknown>
+              5 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -78,12 +82,14 @@ fn break_i32_block_tail_match() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : () -> i32
+            main::foo : main::foo() -> i32
+              5 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : i32
+              5 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -101,12 +107,14 @@ fn break_void_block_tail_mismatch() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : void
-            1 : {uint}
-            2 : <unknown>
-            3 : <unknown>
-            4 : () -> void
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : void
+              1 : {uint}
+              2 : <unknown>
+              3 : <unknown>
+              4 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -142,13 +150,15 @@ fn break_i32_block_from_inner() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : void
-            1 : noeval
-            2 : {uint}
-            3 : <unknown>
-            4 : <unknown>
-            5 : () -> void
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : void
+              1 : noeval
+              2 : {uint}
+              3 : <unknown>
+              4 : <unknown>
+              5 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -184,14 +194,16 @@ fn break_i32_block_from_inner_tail() {
         }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : bool
-            2 : {uint}
-            3 : {uint}
-            4 : {uint}
-            5 : <unknown>
-            6 : <unknown>
-            7 : () -> i32
+            main::foo : main::foo() -> i32
+              7 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : bool
+              2 : {uint}
+              3 : {uint}
+              4 : {uint}
+              5 : <unknown>
+              6 : <unknown>
+              7 : main::foo() -> i32
         "#]],
         |_| {
             [(
@@ -221,10 +233,12 @@ fn break_unknown_label() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : void
-            2 : () -> void
+            main::foo : main::foo() -> void
+              2 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : void
+              2 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -240,11 +254,13 @@ fn return_match() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : () -> i32
+            main::foo : main::foo() -> i32
+              4 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -260,11 +276,13 @@ fn return_mismatch() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : str
-            2 : {uint}
-            3 : <unknown>
-            4 : () -> i32
+            main::foo : main::foo() -> i32
+              4 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : str
+              2 : {uint}
+              3 : <unknown>
+              4 : main::foo() -> i32
         "#]],
         |_| {
             [(
@@ -294,10 +312,12 @@ fn return_only() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : i32
-            2 : i32
-            3 : () -> i32
+            main::foo : main::foo() -> i32
+              3 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : i32
+              2 : i32
+              3 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -320,22 +340,24 @@ fn return_with_globals() {
         "#,
         expect![[r#"
             main::a : i32
+              0 : i32
             main::b : i32
+              1 : i32
+              2 : i32
             main::c : i32
+              3 : i32
+              4 : i32
             main::d : i32
-            main::foo : () -> i32
-            0 : i32
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : i32
-            8 : i32
-            9 : i32
-            10 : i32
-            11 : i32
-            12 : () -> i32
+              5 : i32
+              6 : i32
+            main::foo : main::foo() -> i32
+              12 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              8 : i32
+              9 : i32
+              10 : i32
+              11 : i32
+              12 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -352,11 +374,13 @@ fn break_from_loop() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : noeval
-            1 : void
-            2 : void
-            3 : () -> void
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : noeval
+              1 : void
+              2 : void
+              3 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -373,12 +397,14 @@ fn break_from_loop_with_value() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : i32
-            2 : noeval
-            3 : i32
-            4 : i32
-            5 : () -> i32
+            main::foo : main::foo() -> i32
+              5 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : i32
+              2 : noeval
+              3 : i32
+              4 : i32
+              5 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -401,18 +427,20 @@ fn break_from_loop_with_multiple_values() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : i16
-            2 : i16
-            3 : i16
-            5 : i32
-            6 : i32
-            7 : noeval
-            8 : i32
-            9 : void
-            10 : () -> void
-            l0 : i16
-            l1 : i32
+            main::foo : main::foo() -> void
+              10 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : i16
+              2 : i16
+              3 : i16
+              5 : i32
+              6 : i32
+              7 : noeval
+              8 : i32
+              9 : void
+              10 : main::foo() -> void
+              l0 : i16
+              l1 : i32
         "#]],
         |_| [],
     )
@@ -429,16 +457,18 @@ fn break_from_while() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : {uint}
-            4 : bool
-            5 : noeval
-            6 : void
-            7 : void
-            8 : () -> void
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : {uint}
+              4 : bool
+              5 : noeval
+              6 : void
+              7 : void
+              8 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -455,17 +485,19 @@ fn break_from_while_with_void() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : {uint}
-            4 : bool
-            5 : void
-            6 : noeval
-            7 : void
-            8 : void
-            9 : () -> void
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : {uint}
+              4 : bool
+              5 : void
+              6 : noeval
+              7 : void
+              8 : void
+              9 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -483,17 +515,19 @@ fn break_from_while_with_value() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : {uint}
-            4 : bool
-            5 : {uint}
-            6 : noeval
-            7 : <unknown>
-            8 : <unknown>
-            9 : () -> void
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : {uint}
+              4 : bool
+              5 : {uint}
+              6 : noeval
+              7 : <unknown>
+              8 : <unknown>
+              9 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -520,12 +554,14 @@ fn continue_works() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : noeval
-            2 : void
-            3 : i32
-            4 : i32
-            5 : () -> i32
+            main::foo : main::foo() -> i32
+              5 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : noeval
+              2 : void
+              3 : i32
+              4 : i32
+              5 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -546,15 +582,17 @@ fn break_inner_if_no_else() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : bool
-            2 : i32
-            3 : noeval
-            4 : void
-            5 : void
-            6 : i32
-            7 : i32
-            8 : () -> i32
+            main::foo : main::foo() -> i32
+              8 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : bool
+              2 : i32
+              3 : noeval
+              4 : void
+              5 : void
+              6 : i32
+              7 : i32
+              8 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -577,16 +615,18 @@ fn break_inner_if_with_else_no_break() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : bool
-            2 : i32
-            3 : noeval
-            4 : void
-            5 : void
-            6 : void
-            7 : i32
-            8 : i32
-            9 : () -> i32
+            main::foo : main::foo() -> i32
+              9 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : bool
+              2 : i32
+              3 : noeval
+              4 : void
+              5 : void
+              6 : void
+              7 : i32
+              8 : i32
+              9 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -609,17 +649,19 @@ fn break_inner_if_with_else_break() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> i32
-            1 : bool
-            2 : i32
-            3 : noeval
-            4 : i32
-            5 : noeval
-            6 : noeval
-            7 : noeval
-            8 : i32
-            9 : i32
-            10 : () -> i32
+            main::foo : main::foo() -> i32
+              10 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              1 : bool
+              2 : i32
+              3 : noeval
+              4 : i32
+              5 : noeval
+              6 : noeval
+              7 : noeval
+              8 : i32
+              9 : i32
+              10 : main::foo() -> i32
         "#]],
         |_| [],
     )
@@ -638,15 +680,17 @@ fn reinfer_break_usages() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i8
-            1 : i8
-            3 : i8
-            4 : i8
-            5 : void
-            6 : () -> void
-            l0 : i8
-            l1 : i8
+            main::foo : main::foo() -> void
+              6 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i8
+              1 : i8
+              3 : i8
+              4 : i8
+              5 : void
+              6 : main::foo() -> void
+              l0 : i8
+              l1 : i8
         "#]],
         |_| [],
     )

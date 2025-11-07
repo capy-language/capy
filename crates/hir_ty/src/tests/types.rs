@@ -17,25 +17,27 @@ fn array_of_local_ty() {
             }
         "#,
         expect![[r#"
-            main::main : () -> i32
-            1 : type
-            3 : type
-            4 : usize
-            7 : type
-            10 : distinct'0 i32
-            11 : distinct'0 i32
-            12 : distinct'0 i32
-            13 : [3]distinct'0 i32
-            14 : distinct'1 [3]distinct'0 i32
-            15 : usize
-            16 : distinct'0 i32
-            18 : i32
-            19 : i32
-            20 : () -> i32
-            l0 : type
-            l1 : type
-            l2 : type
-            l3 : distinct'1 [3]distinct'0 i32
+            main::main : main::main() -> i32
+              20 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              1 : type
+              3 : type
+              4 : usize
+              7 : type
+              10 : distinct'0 i32
+              11 : distinct'0 i32
+              12 : distinct'0 i32
+              13 : [3]distinct'0 i32
+              14 : distinct'1 [3]distinct'0 i32
+              15 : usize
+              16 : distinct'0 i32
+              18 : i32
+              19 : i32
+              20 : main::main() -> i32
+              l0 : type
+              l1 : type
+              l2 : type
+              l3 : distinct'1 [3]distinct'0 i32
         "#]],
         |_| [],
     )
@@ -62,26 +64,28 @@ fn struct_of_local_tys() {
             }
         "#,
         expect![[r#"
-            main::main : () -> i32
-            1 : type
-            3 : type
-            6 : type
-            8 : i32
-            9 : distinct'0 i32
-            10 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
-            11 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
-            12 : i32
-            14 : i32
-            15 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
-            16 : distinct'0 i32
-            18 : i32
-            19 : i32
-            20 : i32
-            21 : () -> i32
-            l0 : type
-            l1 : type
-            l2 : type
-            l3 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
+            main::main : main::main() -> i32
+              21 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              1 : type
+              3 : type
+              6 : type
+              8 : i32
+              9 : distinct'0 i32
+              10 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
+              11 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
+              12 : i32
+              14 : i32
+              15 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
+              16 : distinct'0 i32
+              18 : i32
+              19 : i32
+              20 : i32
+              21 : main::main() -> i32
+              l0 : type
+              l1 : type
+              l2 : type
+              l3 : struct'1 {real_part: i32, imaginary_part: distinct'0 i32}
         "#]],
         |_| [],
     )
@@ -99,12 +103,12 @@ fn lambda_with_local_ty() {
                     real_part: int,
                     imaginary_part: imaginary,
                 };
-            
+
                 my_complex := complex.{
                     real_part = 5,
                     imaginary_part = 42,
                 };
-            
+
                 do_math :: (c: complex) -> imaginary_vec3 {
                     // this is kind of akward because while we can access locals
                     // in the parameters and return type, we can't access `imaginary`
@@ -112,45 +116,49 @@ fn lambda_with_local_ty() {
                     // this could be alleviated by adding a `type_of` builtin
                     i32.[1, c.real_part * i32.(c.imaginary_part), 3]
                 };
-            
+
                 i32.(do_math(my_complex)[1])
             }
         "#,
         expect![[r#"
-            main::main : () -> i32
-            1 : type
-            3 : type
-            4 : usize
-            7 : type
-            10 : type
-            12 : i32
-            13 : distinct'0 i32
-            14 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-            18 : i32
-            19 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-            20 : i32
-            21 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-            22 : distinct'0 i32
-            24 : i32
-            25 : i32
-            26 : i32
-            27 : [3]i32
-            28 : distinct'1 [3]distinct'0 i32
-            29 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-            30 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
-            31 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-            32 : distinct'1 [3]distinct'0 i32
-            33 : usize
-            34 : distinct'0 i32
-            36 : i32
-            37 : i32
-            38 : () -> i32
-            l0 : type
-            l1 : type
-            l2 : type
-            l3 : type
-            l4 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
-            l5 : (struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+            main::main : main::main() -> i32
+              38 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              1 : type
+              3 : type
+              4 : usize
+              7 : type
+              10 : type
+              12 : i32
+              13 : distinct'0 i32
+              14 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+              29 : main::lambda#29(struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+              30 : main::lambda#29(struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+              31 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+              32 : distinct'1 [3]distinct'0 i32
+              33 : usize
+              34 : distinct'0 i32
+              36 : i32
+              37 : i32
+              38 : main::main() -> i32
+              l0 : type
+              l1 : type
+              l2 : type
+              l3 : type
+              l4 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+              l5 : main::lambda#29(struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+            main::lambda#29 : main::lambda#29(struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
+              18 : i32
+              19 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+              20 : i32
+              21 : struct'2 {real_part: i32, imaginary_part: distinct'0 i32}
+              22 : distinct'0 i32
+              24 : i32
+              25 : i32
+              26 : i32
+              27 : [3]i32
+              28 : distinct'1 [3]distinct'0 i32
+              29 : main::lambda#29(struct'2 {real_part: i32, imaginary_part: distinct'0 i32}) -> distinct'1 [3]distinct'0 i32
         "#]],
         |_| [],
     )
@@ -165,12 +173,14 @@ fn ty_ptr_becomes_ty() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : type
-            2 : type
-            3 : void
-            4 : () -> void
-            l0 : type
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : type
+              2 : type
+              3 : void
+              4 : main::foo() -> void
+              l0 : type
         "#]],
         |_| [],
     )
@@ -199,11 +209,13 @@ fn array_literal_as_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : ~[0]void
-            2 : void
-            3 : () -> void
-            l0 : i32
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : ~[0]void
+              2 : void
+              3 : main::foo() -> void
+              l0 : i32
         "#]],
         |_| {
             [(
@@ -231,11 +243,13 @@ fn int_literal_as_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : void
-            2 : () -> void
-            l0 : <unknown>
+            main::foo : main::foo() -> void
+              2 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : void
+              2 : main::foo() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -261,10 +275,12 @@ fn unknown_as_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : void
-            2 : () -> void
-            l0 : <unknown>
+            main::foo : main::foo() -> void
+              2 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : void
+              2 : main::foo() -> void
+              l0 : <unknown>
         "#]],
         |_| [],
     )
@@ -282,18 +298,20 @@ fn type_names() {
             foo :: (a: My_Struct, b: My_Distinct, c: My_Enum, d: My_Int) {}
         "#,
         expect![[r#"
-            main::My_Distinct : type
-            main::My_Enum : type
-            main::My_Int : type
             main::My_Struct : type
-            main::foo : (main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
-            1 : type
-            2 : void
-            3 : type
-            4 : type
-            5 : type
-            10 : void
-            11 : (main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
+              1 : type
+            main::My_Distinct : type
+              2 : void
+              3 : type
+            main::My_Enum : type
+              4 : type
+            main::My_Int : type
+              5 : type
+            main::foo : main::foo(main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
+              11 : main::foo(main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
+            main::lambda#foo : main::foo(main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
+              10 : void
+              11 : main::foo(main::My_Struct, main::My_Distinct, main::My_Enum, i32) -> void
         "#]],
         |i| {
             println!("{:?}", get_all_named_types());
@@ -301,7 +319,7 @@ fn type_names() {
                 Ty::ConcreteStruct {
                     uid: 0,
                     members: vec![MemberTy {
-                        name: hir::Name(i.intern("a")),
+                        name: Name(i.intern("a")),
                         ty: Ty::IInt(32).into(),
                     }],
                 }
@@ -309,10 +327,13 @@ fn type_names() {
             );
             assert_eq!(
                 struct_name,
-                Some(TyName::Global(hir::Fqn {
-                    file: hir::FileName(i.intern("main.capy")),
-                    name: hir::Name(i.intern("My_Struct"))
-                }))
+                Some(TyName::Global(
+                    Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("My_Struct"))
+                    }
+                    .make_concrete(None)
+                ))
             );
 
             let distinct_name = get_type_name(
@@ -324,10 +345,13 @@ fn type_names() {
             );
             assert_eq!(
                 distinct_name,
-                Some(TyName::Global(hir::Fqn {
-                    file: hir::FileName(i.intern("main.capy")),
-                    name: hir::Name(i.intern("My_Distinct"))
-                }))
+                Some(TyName::Global(
+                    Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("My_Distinct"))
+                    }
+                    .make_concrete(None)
+                ))
             );
 
             let enum_name = get_type_name(
@@ -336,7 +360,7 @@ fn type_names() {
                     variants: vec![
                         Ty::EnumVariant {
                             enum_uid: 4,
-                            variant_name: hir::Name(i.intern("Foo")),
+                            variant_name: Name(i.intern("Foo")),
                             uid: 2,
                             sub_ty: Ty::Void.into(),
                             discriminant: 0,
@@ -344,7 +368,7 @@ fn type_names() {
                         .into(),
                         Ty::EnumVariant {
                             enum_uid: 4,
-                            variant_name: hir::Name(i.intern("Bar")),
+                            variant_name: Name(i.intern("Bar")),
                             uid: 3,
                             sub_ty: Ty::Void.into(),
                             discriminant: 1,
@@ -356,10 +380,13 @@ fn type_names() {
             );
             assert_eq!(
                 enum_name,
-                Some(TyName::Global(hir::Fqn {
-                    file: hir::FileName(i.intern("main.capy")),
-                    name: hir::Name(i.intern("My_Enum"))
-                }))
+                Some(TyName::Global(
+                    Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("My_Enum"))
+                    }
+                    .make_concrete(None)
+                ))
             );
 
             let int_name = get_type_name(Ty::IInt(32).into());
@@ -367,5 +394,67 @@ fn type_names() {
 
             []
         },
+    )
+}
+
+#[test]
+fn void_type_from_empty_body() {
+    check(
+        r#"
+            main :: () -> type {};
+        "#,
+        expect![[r#"
+            main::main : main::main() -> type
+              2 : main::main() -> type
+            main::lambda#main : main::main() -> type
+              1 : type
+              2 : main::main() -> type
+        "#]],
+        |_| [],
+    )
+}
+
+#[test]
+fn void_type_from_body_with_statements() {
+    // TODO: report error for this, but not for
+    // `void_type_from_empty_body` or `void_type_from_empty_block`
+    check(
+        r#"
+            main :: () -> type {
+                1 + 1;
+            };
+        "#,
+        expect![[r#"
+            main::main : main::main() -> type
+              5 : main::main() -> type
+            main::lambda#main : main::main() -> type
+              1 : {uint}
+              2 : {uint}
+              3 : {uint}
+              4 : type
+              5 : main::main() -> type
+        "#]],
+        |_| [],
+    )
+}
+
+#[test]
+fn void_type_from_empty_block() {
+    check(
+        r#"
+            main :: () {
+                foo : type : {};
+            };
+        "#,
+        expect![[r#"
+            main::main : main::main() -> void
+              3 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : type
+              2 : void
+              3 : main::main() -> void
+              l0 : type
+        "#]],
+        |_| [],
     )
 }

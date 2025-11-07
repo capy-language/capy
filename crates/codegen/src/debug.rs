@@ -1,3 +1,8 @@
+//! This is not for adding debug symbols.
+//! Debug symbols aren't really done yet.
+//! This is for displaying cranelift IR in an easier to
+//! read way.
+
 use std::{
     borrow::Cow,
     fmt::{self, Display, Write},

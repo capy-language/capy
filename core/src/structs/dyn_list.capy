@@ -1,0 +1,157 @@
+core :: #mod("core");
+ptr :: core.ptr;
+libc :: core.libc;
+math :: core.math;
+
+// A dynamically allocated DynList type that is generic at runtime.
+//
+// This, and Runtime Generics in general, has been largely inspired by the blog post
+// [A Simple Yet Useful Version of Generics by Luna Razzaghipour](https://blog.xoria.org/simple-generics/)
+DynList :: struct {
+    ty: type,
+    buf: ?mut rawptr,
+    cap: usize,
+    len: usize,
+};
+
+make :: (ty: type) -> DynList {
+    DynList.{
+        ty = ty,
+        buf = nil,
+        cap = 0,
+        len = 0,
+    }
+}
+
+make_with_capacity :: (ty: type, cap: usize) -> DynList {
+    if cap == 0 { return make(ty); }
+
+    raw_cap :: cap * core.meta.stride_of(ty);
+
+    if raw_cap < cap || raw_cap < core.meta.stride_of(ty) {
+        core.panic("overflow when trying to allocate the backing array of a list");
+    }
+
+    buf := ?^mut char.(libc.malloc(raw_cap));
+
+    if cap > 0 && buf == nil {
+        core.panic("Error allocating the DynList");
+    }
+
+    DynList.{
+        ty = ty,
+        buf = buf,
+        len = 0,
+        cap = cap,
+    }
+}
+
+free :: (self: ^mut DynList) {
+    libc.free(self.buf);
+    // to make sure the list isn't accidentally used after free
+    self.cap = 0;
+    self.len = 0;
+}
+
+push :: (self: ^mut DynList, value: any) {
+    _grow_by(self, 1);
+
+    // we just grew the list so this is safe
+    buf := #unwrap(self.buf);
+
+    offset := ptr.mut_offset(buf, self.len * core.meta.stride_of(self.ty));
+
+    core.cast_into(value, self.ty, offset);
+
+    self.len += 1;
+}
+
+get :: (comptime Item: type, self: ^DynList, index: usize) -> ^Item {
+    core.assert(Item == self.ty);
+
+    if index >= self.len {
+        core.panic("called `get` with an index outside the list");
+    }
+
+    ptr := ptr.const_offset(#unwrap(self.buf), index * core.meta.stride_of(self.ty));
+
+    ^Item.(ptr)
+}
+
+pop :: (comptime Item: type, self: ^mut DynList) -> Item {
+    if self.len == 0 {
+        core.panic("cannot pop from an empty list");
+    }
+
+    self.len = self.len - 1;
+
+    ptr := ptr.const_offset(#unwrap(self.buf), self.len * core.meta.stride_of(self.ty));
+    ptr := ^Item.(ptr);
+
+    ptr^
+}
+
+print :: (self: ^DynList) {
+    ty_stride := core.meta.stride_of(self.ty);
+
+    core.print("[ ");
+
+    idx := 0;
+    while idx < self.len {
+        // if we're in this loop, the buffer can't be nil
+        buf := #unwrap(self.buf);
+
+        core.print(core.any_from_raw_parts(
+            ptr.const_offset(buf, idx * ty_stride),
+            self.ty,
+        ));
+
+        idx += 1;
+
+        if idx < self.len {
+            core.print(", ");
+        }
+    }
+
+    core.print(" ]");
+}
+
+println :: (self: ^DynList) {
+    print(self);
+    core.print('\n');
+}
+
+to_slice :: (comptime Item: type, self: ^DynList) -> []Item {
+    core.assert(self.ty == Item);
+
+    switch buf in self.buf {
+        mut rawptr => []Item.(ptr.slice_from_raw_parts(buf, self.len)),
+        nil => []Item.(ptr.empty_slice()),
+    }
+}
+
+_grow_by :: (self: ^mut DynList, len: usize) {
+    if self.len + len > self.cap {
+        new_cap := math.max_usize(self.cap * 2, 1);
+        new_cap = math.max_usize(
+            math.next_pow_of_two(self.len + len),
+            new_cap
+        );
+
+        ty_stride := core.meta.stride_of(self.ty);
+
+	new_cap_raw :: new_cap * ty_stride;
+
+	if new_cap_raw < new_cap || new_cap_raw < ty_stride {
+	    core.panic("overflow when trying to grow list");
+	}
+
+        new_buf := ?^mut char.(libc.realloc(self.buf, new_cap_raw));
+        if new_buf == nil {
+            core.panic("Error reallocating the DynList");
+        }
+
+        self.buf = #unwrap(new_buf);
+        self.cap = new_cap;
+    }
+}

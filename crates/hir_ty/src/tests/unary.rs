@@ -9,11 +9,13 @@ fn pos_unary_expr() {
             redundant :: () -> u8 { +4 };
         "#,
         expect![[r#"
-            main::redundant : () -> u8
-            1 : u8
-            2 : u8
-            3 : u8
-            4 : () -> u8
+            main::redundant : main::redundant() -> u8
+              4 : main::redundant() -> u8
+            main::lambda#redundant : main::redundant() -> u8
+              1 : u8
+              2 : u8
+              3 : u8
+              4 : main::redundant() -> u8
         "#]],
         |_| [],
     );
@@ -26,11 +28,13 @@ fn neg_unary_expr() {
             neg :: () -> u8 { -4 };
         "#,
         expect![[r#"
-            main::neg : () -> u8
-            1 : {int}
-            2 : {int}
-            3 : <unknown>
-            4 : () -> u8
+            main::neg : main::neg() -> u8
+              4 : main::neg() -> u8
+            main::lambda#neg : main::neg() -> u8
+              1 : {int}
+              2 : {int}
+              3 : <unknown>
+              4 : main::neg() -> u8
         "#]],
         |_| {
             [(
@@ -58,14 +62,16 @@ fn multi_neg_unary_expr() {
             pos :: () -> i8 { ----4 };
         "#,
         expect![[r#"
-            main::pos : () -> i8
-            1 : i8
-            2 : i8
-            3 : i8
-            4 : i8
-            5 : i8
-            6 : i8
-            7 : () -> i8
+            main::pos : main::pos() -> i8
+              7 : main::pos() -> i8
+            main::lambda#pos : main::pos() -> i8
+              1 : i8
+              2 : i8
+              3 : i8
+              4 : i8
+              5 : i8
+              6 : i8
+              7 : main::pos() -> i8
         "#]],
         |_| [],
     );
@@ -78,11 +84,13 @@ fn bang_unary_expr() {
             not :: () -> bool { !true };
         "#,
         expect![[r#"
-            main::not : () -> bool
-            1 : bool
-            2 : bool
-            3 : bool
-            4 : () -> bool
+            main::not : main::not() -> bool
+              4 : main::not() -> bool
+            main::lambda#not : main::not() -> bool
+              1 : bool
+              2 : bool
+              3 : bool
+              4 : main::not() -> bool
         "#]],
         |_| [],
     );

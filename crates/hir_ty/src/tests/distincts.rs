@@ -16,13 +16,15 @@ fn distinct_int_mismatch() {
         "#,
         expect![[r#"
             main::imaginary : type
-            main::main : () -> i32
-            2 : type
-            5 : main::imaginary
-            6 : main::imaginary
-            7 : <unknown>
-            8 : () -> i32
-            l0 : main::imaginary
+              2 : type
+            main::main : main::main() -> i32
+              8 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              5 : main::imaginary
+              6 : main::imaginary
+              7 : <unknown>
+              8 : main::main() -> i32
+              l0 : main::imaginary
         "#]],
         |_| {
             [(
@@ -61,15 +63,17 @@ fn distinct_int_binary_weak_int() {
         "#,
         expect![[r#"
             main::imaginary : type
-            main::main : () -> main::imaginary
-            2 : type
-            5 : main::imaginary
-            6 : main::imaginary
-            7 : main::imaginary
-            8 : main::imaginary
-            9 : main::imaginary
-            10 : () -> main::imaginary
-            l0 : main::imaginary
+              2 : type
+            main::main : main::main() -> main::imaginary
+              10 : main::main() -> main::imaginary
+            main::lambda#main : main::main() -> main::imaginary
+              5 : main::imaginary
+              6 : main::imaginary
+              7 : main::imaginary
+              8 : main::imaginary
+              9 : main::imaginary
+              10 : main::main() -> main::imaginary
+              l0 : main::imaginary
         "#]],
         |_| [],
     );
@@ -89,15 +93,17 @@ fn distinct_int_binary_itself() {
         "#,
         expect![[r#"
             main::imaginary : type
-            main::main : () -> main::imaginary
-            2 : type
-            5 : main::imaginary
-            6 : main::imaginary
-            7 : main::imaginary
-            8 : main::imaginary
-            9 : main::imaginary
-            10 : () -> main::imaginary
-            l0 : main::imaginary
+              2 : type
+            main::main : main::main() -> main::imaginary
+              10 : main::main() -> main::imaginary
+            main::lambda#main : main::main() -> main::imaginary
+              5 : main::imaginary
+              6 : main::imaginary
+              7 : main::imaginary
+              8 : main::imaginary
+              9 : main::imaginary
+              10 : main::main() -> main::imaginary
+              l0 : main::imaginary
         "#]],
         |_| [],
     );
@@ -118,17 +124,19 @@ fn distinct_int_binary_strong_int() {
         "#,
         expect![[r#"
             main::imaginary : type
-            main::main : () -> main::imaginary
-            2 : type
-            5 : main::imaginary
-            7 : i32
-            8 : main::imaginary
-            9 : i32
-            10 : main::imaginary
-            11 : main::imaginary
-            12 : () -> main::imaginary
-            l0 : main::imaginary
-            l1 : i32
+              2 : type
+            main::main : main::main() -> main::imaginary
+              12 : main::main() -> main::imaginary
+            main::lambda#main : main::main() -> main::imaginary
+              5 : main::imaginary
+              7 : i32
+              8 : main::imaginary
+              9 : i32
+              10 : main::imaginary
+              11 : main::imaginary
+              12 : main::main() -> main::imaginary
+              l0 : main::imaginary
+              l1 : i32
         "#]],
         |_| {
             [(
@@ -163,20 +171,22 @@ fn distinct_int_binary_other_distinct() {
             };
         "#,
         expect![[r#"
-            main::extra_imaginary : type
             main::imaginary : type
-            main::main : () -> main::imaginary
-            2 : type
-            5 : type
-            8 : main::imaginary
-            10 : main::extra_imaginary
-            11 : main::imaginary
-            12 : main::extra_imaginary
-            13 : main::imaginary
-            14 : main::imaginary
-            15 : () -> main::imaginary
-            l0 : main::imaginary
-            l1 : main::extra_imaginary
+              2 : type
+            main::extra_imaginary : type
+              5 : type
+            main::main : main::main() -> main::imaginary
+              15 : main::main() -> main::imaginary
+            main::lambda#main : main::main() -> main::imaginary
+              8 : main::imaginary
+              10 : main::extra_imaginary
+              11 : main::imaginary
+              12 : main::extra_imaginary
+              13 : main::imaginary
+              14 : main::imaginary
+              15 : main::main() -> main::imaginary
+              l0 : main::imaginary
+              l1 : main::extra_imaginary
         "#]],
         |_| {
             [(
@@ -213,17 +223,19 @@ fn distinct_pointers() {
             };
         "#,
         expect![[r#"
-            main::main : () -> i32
             main::something_far_away : type
-            2 : type
-            5 : i32
-            6 : ^i32
-            7 : main::something_far_away
-            10 : ^i32
-            11 : i32
-            12 : i32
-            13 : () -> i32
-            l0 : main::something_far_away
+              2 : type
+            main::main : main::main() -> i32
+              13 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              5 : i32
+              6 : ^i32
+              7 : main::something_far_away
+              10 : ^i32
+              11 : i32
+              12 : i32
+              13 : main::main() -> i32
+              l0 : main::something_far_away
         "#]],
         |_| [],
     );
@@ -246,20 +258,22 @@ fn distinct_pointers_to_distinct_tys() {
         "#,
         expect![[r#"
             main::imaginary : type
+              1 : type
             main::imaginary_far_away : type
-            main::main : () -> main::imaginary
-            1 : type
-            4 : type
-            7 : main::imaginary
-            9 : main::imaginary
-            10 : ^main::imaginary
-            11 : main::imaginary_far_away
-            14 : ^main::imaginary
-            15 : main::imaginary
-            16 : main::imaginary
-            17 : () -> main::imaginary
-            l0 : main::imaginary
-            l1 : main::imaginary_far_away
+              4 : type
+            main::main : main::main() -> main::imaginary
+              17 : main::main() -> main::imaginary
+            main::lambda#main : main::main() -> main::imaginary
+              7 : main::imaginary
+              9 : main::imaginary
+              10 : ^main::imaginary
+              11 : main::imaginary_far_away
+              14 : ^main::imaginary
+              15 : main::imaginary
+              16 : main::imaginary
+              17 : main::main() -> main::imaginary
+              l0 : main::imaginary
+              l1 : main::imaginary_far_away
         "#]],
         |_| [],
     );
@@ -281,28 +295,30 @@ fn distinct_arrays() {
         "#,
         expect![[r#"
             main::Vector3 : type
-            main::main : () -> void
-            0 : usize
-            3 : type
-            6 : i32
-            7 : i32
-            8 : i32
-            9 : [3]i32
-            10 : main::Vector3
-            11 : usize
-            12 : i32
-            13 : main::Vector3
-            14 : usize
-            15 : i32
-            16 : main::Vector3
-            17 : usize
-            18 : i32
-            19 : void
-            20 : () -> void
-            l0 : main::Vector3
-            l1 : i32
-            l2 : i32
-            l3 : i32
+              0 : usize
+              3 : type
+            main::main : main::main() -> void
+              20 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              6 : i32
+              7 : i32
+              8 : i32
+              9 : [3]i32
+              10 : main::Vector3
+              11 : usize
+              12 : i32
+              13 : main::Vector3
+              14 : usize
+              15 : i32
+              16 : main::Vector3
+              17 : usize
+              18 : i32
+              19 : void
+              20 : main::main() -> void
+              l0 : main::Vector3
+              l1 : i32
+              l2 : i32
+              l3 : i32
         "#]],
         |_| [],
     );

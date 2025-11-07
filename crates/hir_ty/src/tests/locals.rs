@@ -12,12 +12,14 @@ fn local_definition_and_usage() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : void
-            3 : () -> void
-            l0 : {uint}
+            main::main : main::main() -> void
+              3 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : void
+              3 : main::main() -> void
+              l0 : {uint}
         "#]],
         |_| [],
     );
@@ -34,14 +36,16 @@ fn local_shadowing() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : str
-            2 : str
-            3 : void
-            4 : () -> void
-            l0 : {uint}
-            l1 : str
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : str
+              2 : str
+              3 : void
+              4 : main::foo() -> void
+              l0 : {uint}
+              l1 : str
         "#]],
         |_| [],
     );
@@ -58,14 +62,16 @@ fn assign() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            1 : str
-            2 : str
-            3 : str
-            4 : void
-            5 : () -> void
-            l0 : str
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              1 : str
+              2 : str
+              3 : str
+              4 : void
+              5 : main::foo() -> void
+              l0 : str
         "#]],
         |_| [],
     );
@@ -82,13 +88,15 @@ fn local_ty_def() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : type
-            3 : distinct'0 i32
-            4 : void
-            5 : () -> void
-            l0 : type
-            l1 : distinct'0 i32
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : type
+              3 : distinct'0 i32
+              4 : void
+              5 : main::foo() -> void
+              l0 : type
+              l1 : distinct'0 i32
         "#]],
         |_| [],
     );
@@ -105,13 +113,15 @@ fn local_ty_mut() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : type
-            3 : {uint}
-            4 : void
-            5 : () -> void
-            l0 : type
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : type
+              3 : {uint}
+              4 : void
+              5 : main::foo() -> void
+              l0 : type
+              l1 : <unknown>
         "#]],
         |_| {
             [(
@@ -136,15 +146,17 @@ fn local_ty_mut_through_binding() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : type
-            2 : type
-            4 : {uint}
-            5 : void
-            6 : () -> void
-            l0 : type
-            l1 : type
-            l2 : <unknown>
+            main::foo : main::foo() -> void
+              6 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : type
+              2 : type
+              4 : {uint}
+              5 : void
+              6 : main::foo() -> void
+              l0 : type
+              l1 : type
+              l2 : <unknown>
         "#]],
         |_| {
             [(
@@ -169,15 +181,17 @@ fn cast_as_local_ty() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : type
-            3 : i32
-            4 : i32
-            6 : distinct'0 i32
-            7 : void
-            8 : () -> void
-            l0 : type
-            l1 : i32
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : type
+              3 : i32
+              4 : i32
+              6 : distinct'0 i32
+              7 : void
+              8 : main::foo() -> void
+              l0 : type
+              l1 : i32
         "#]],
         |_| [],
     );

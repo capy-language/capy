@@ -1,5 +1,5 @@
 use cranelift::codegen::ir::Type;
-use hir_ty::{ParamTy, Ty};
+use hir::common::{ParamTy, Ty};
 use internment::Intern;
 use tinyvec::array_vec;
 

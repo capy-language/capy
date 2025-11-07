@@ -17,23 +17,25 @@ fn rawptr() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : i32
-            4 : i32
-            5 : ^i32
-            7 : ^i32
-            9 : rawptr
-            12 : rawptr
-            15 : ^f32
-            17 : ^f32
-            18 : f32
-            19 : void
-            20 : () -> void
-            l0 : i32
-            l1 : ^i32
-            l2 : rawptr
-            l3 : ^f32
-            l4 : f32
+            main::get_any : main::get_any() -> void
+              20 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : i32
+              4 : i32
+              5 : ^i32
+              7 : ^i32
+              9 : rawptr
+              12 : rawptr
+              15 : ^f32
+              17 : ^f32
+              18 : f32
+              19 : void
+              20 : main::get_any() -> void
+              l0 : i32
+              l1 : ^i32
+              l2 : rawptr
+              l3 : ^f32
+              l4 : f32
         "#]],
         |_| [],
     );
@@ -54,23 +56,25 @@ fn rawslice() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            3 : i32
-            4 : i32
-            5 : [2]i32
-            7 : []i32
-            9 : rawslice
-            12 : rawslice
-            15 : []f32
-            17 : []f32
-            18 : usize
-            19 : f32
-            20 : void
-            21 : () -> void
-            l0 : []i32
-            l1 : rawslice
-            l2 : []f32
-            l3 : f32
+            main::get_any : main::get_any() -> void
+              21 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              3 : i32
+              4 : i32
+              5 : [2]i32
+              7 : []i32
+              9 : rawslice
+              12 : rawslice
+              15 : []f32
+              17 : []f32
+              18 : usize
+              19 : f32
+              20 : void
+              21 : main::get_any() -> void
+              l0 : []i32
+              l1 : rawslice
+              l2 : []f32
+              l3 : f32
         "#]],
         |_| [],
     );
@@ -90,20 +94,22 @@ fn cast_ptr_without_raw() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : i32
-            4 : i32
-            5 : ^i32
-            8 : ^i32
-            11 : ^f32
-            13 : ^f32
-            14 : f32
-            15 : void
-            16 : () -> void
-            l0 : i32
-            l1 : ^i32
-            l2 : ^f32
-            l3 : f32
+            main::get_any : main::get_any() -> void
+              16 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : i32
+              4 : i32
+              5 : ^i32
+              8 : ^i32
+              11 : ^f32
+              13 : ^f32
+              14 : f32
+              15 : void
+              16 : main::get_any() -> void
+              l0 : i32
+              l1 : ^i32
+              l2 : ^f32
+              l3 : f32
         "#]],
         |_| {
             [(
@@ -137,16 +143,18 @@ fn cast_slice_without_raw() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            3 : i32
-            4 : i32
-            5 : [2]i32
-            8 : []i32
-            11 : []f32
-            12 : void
-            13 : () -> void
-            l0 : []i32
-            l1 : []f32
+            main::get_any : main::get_any() -> void
+              13 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              3 : i32
+              4 : i32
+              5 : [2]i32
+              8 : []i32
+              11 : []f32
+              12 : void
+              13 : main::get_any() -> void
+              l0 : []i32
+              l1 : []f32
         "#]],
         |_| {
             [(
@@ -181,20 +189,22 @@ fn deref_rawptr() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : i32
-            4 : i32
-            5 : ^i32
-            7 : ^i32
-            9 : rawptr
-            10 : rawptr
-            11 : <unknown>
-            12 : void
-            13 : () -> void
-            l0 : i32
-            l1 : ^i32
-            l2 : rawptr
-            l3 : <unknown>
+            main::get_any : main::get_any() -> void
+              13 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : i32
+              4 : i32
+              5 : ^i32
+              7 : ^i32
+              9 : rawptr
+              10 : rawptr
+              11 : <unknown>
+              12 : void
+              13 : main::get_any() -> void
+              l0 : i32
+              l1 : ^i32
+              l2 : rawptr
+              l3 : <unknown>
         "#]],
         |_| [(TyDiagnosticKind::DerefRaw, 165..169, None)],
     );
@@ -214,24 +224,26 @@ fn index_rawslice() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            0 : usize
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : [3]i32
-            10 : [3]i32
-            12 : []i32
-            14 : rawslice
-            15 : rawslice
-            16 : usize
-            17 : <unknown>
-            18 : void
-            19 : () -> void
-            l0 : [3]i32
-            l1 : []i32
-            l2 : rawslice
-            l3 : <unknown>
+            main::get_any : main::get_any() -> void
+              19 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              0 : usize
+              4 : i32
+              5 : i32
+              6 : i32
+              7 : [3]i32
+              10 : [3]i32
+              12 : []i32
+              14 : rawslice
+              15 : rawslice
+              16 : usize
+              17 : <unknown>
+              18 : void
+              19 : main::get_any() -> void
+              l0 : [3]i32
+              l1 : []i32
+              l2 : rawslice
+              l3 : <unknown>
         "#]],
         |_| [(TyDiagnosticKind::IndexRaw, 188..194, None)],
     );
@@ -272,16 +284,18 @@ fn auto_real_ptr_to_rawptr() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : i32
-            4 : i32
-            5 : ^i32
-            7 : ^i32
-            8 : void
-            9 : () -> void
-            l0 : i32
-            l1 : ^i32
-            l2 : rawptr
+            main::get_any : main::get_any() -> void
+              9 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : i32
+              4 : i32
+              5 : ^i32
+              7 : ^i32
+              8 : void
+              9 : main::get_any() -> void
+              l0 : i32
+              l1 : ^i32
+              l2 : rawptr
         "#]],
         |_| [],
     );
@@ -300,19 +314,21 @@ fn auto_rawptr_to_real_ptr() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : i32
-            4 : i32
-            5 : ^i32
-            7 : ^i32
-            9 : rawptr
-            12 : rawptr
-            13 : void
-            14 : () -> void
-            l0 : i32
-            l1 : ^i32
-            l2 : rawptr
-            l3 : ^i32
+            main::get_any : main::get_any() -> void
+              14 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : i32
+              4 : i32
+              5 : ^i32
+              7 : ^i32
+              9 : rawptr
+              12 : rawptr
+              13 : void
+              14 : main::get_any() -> void
+              l0 : i32
+              l1 : ^i32
+              l2 : rawptr
+              l3 : ^i32
         "#]],
         |_| {
             [(
@@ -344,16 +360,18 @@ fn auto_real_slice_to_rawslice() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : [3]i32
-            8 : []i32
-            9 : void
-            10 : () -> void
-            l0 : []i32
-            l1 : rawslice
+            main::get_any : main::get_any() -> void
+              10 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              3 : i32
+              4 : i32
+              5 : i32
+              6 : [3]i32
+              8 : []i32
+              9 : void
+              10 : main::get_any() -> void
+              l0 : []i32
+              l1 : rawslice
         "#]],
         |_| [],
     );
@@ -371,19 +389,21 @@ fn auto_rawslice_to_real_slice() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : [3]i32
-            8 : []i32
-            10 : rawslice
-            13 : rawslice
-            14 : void
-            15 : () -> void
-            l0 : []i32
-            l1 : rawslice
-            l2 : []i32
+            main::get_any : main::get_any() -> void
+              15 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              3 : i32
+              4 : i32
+              5 : i32
+              6 : [3]i32
+              8 : []i32
+              10 : rawslice
+              13 : rawslice
+              14 : void
+              15 : main::get_any() -> void
+              l0 : []i32
+              l1 : rawslice
+              l2 : []i32
         "#]],
         |_| {
             [(
@@ -414,21 +434,23 @@ fn rawptr_to_str() {
             }
         "#,
         expect![[r#"
-            main::get_any : () -> void
-            1 : char
-            2 : char
-            3 : char
-            4 : [3]char
-            5 : [3]char
-            6 : ^[3]char
-            8 : rawptr
-            9 : rawptr
-            11 : str
-            12 : void
-            13 : () -> void
-            l0 : [3]char
-            l1 : rawptr
-            l2 : str
+            main::get_any : main::get_any() -> void
+              13 : main::get_any() -> void
+            main::lambda#get_any : main::get_any() -> void
+              1 : char
+              2 : char
+              3 : char
+              4 : [3]char
+              5 : [3]char
+              6 : ^[3]char
+              8 : rawptr
+              9 : rawptr
+              11 : str
+              12 : void
+              13 : main::get_any() -> void
+              l0 : [3]char
+              l1 : rawptr
+              l2 : str
         "#]],
         |_| [],
     );
@@ -444,12 +466,14 @@ fn implicit_weak_ptr_to_rawptr() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : {uint}
-            2 : ^{uint}
-            3 : void
-            4 : () -> void
-            l0 : rawptr
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : {uint}
+              2 : ^{uint}
+              3 : void
+              4 : main::foo() -> void
+              l0 : rawptr
         "#]],
         |_| {
             [(
@@ -477,13 +501,15 @@ fn explicit_weak_ptr_to_i32_to_rawptr() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : i32
-            2 : ^i32
-            5 : ^i32
-            6 : void
-            7 : () -> void
-            l0 : rawptr
+            main::foo : main::foo() -> void
+              7 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : i32
+              2 : ^i32
+              5 : ^i32
+              6 : void
+              7 : main::foo() -> void
+              l0 : rawptr
         "#]],
         |_| [],
     )

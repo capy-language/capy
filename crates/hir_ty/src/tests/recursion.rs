@@ -11,19 +11,19 @@ fn recursive_definitions() {
             bar :: comptime foo;
         "#,
         expect![[r#"
-            main::bar : <unknown>
             main::foo : <unknown>
-            0 : <unknown>
-            1 : <unknown>
-            2 : <unknown>
-            3 : <unknown>
+              0 : <unknown>
+              1 : <unknown>
+            main::bar : <unknown>
+              2 : <unknown>
+              3 : <unknown>
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("bar")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("bar")),
                     },
                 },
                 29..32,
@@ -50,19 +50,19 @@ fn recursive_definitions_ty() {
             bar : i32 : comptime foo;
         "#,
         expect![[r#"
-            main::bar : i32
             main::foo : i32
-            1 : <unknown>
-            2 : <unknown>
-            4 : i32
-            5 : i32
+              1 : <unknown>
+              2 : <unknown>
+            main::bar : i32
+              4 : i32
+              5 : i32
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("bar")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("bar")),
                     },
                 },
                 34..37,
@@ -79,16 +79,18 @@ fn recursive_param_ty() {
             foo :: (bar: foo) {};
         "#,
         expect![[r#"
-            main::foo : (<unknown>) -> void
-            1 : void
-            2 : (<unknown>) -> void
+            main::foo : main::foo(<unknown>) -> void
+              2 : main::foo(<unknown>) -> void
+            main::lambda#foo : main::foo(<unknown>) -> void
+              1 : void
+              2 : main::foo(<unknown>) -> void
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("foo")),
                     },
                 },
                 26..29,
@@ -111,9 +113,9 @@ fn recursive_global_ty_annotation() {
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("foo")),
                     },
                 },
                 19..22,
@@ -133,11 +135,13 @@ fn recursive_local_ty_annotation() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : {uint}
-            2 : void
-            3 : () -> void
-            l0 : <unknown>
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : {uint}
+              2 : void
+              3 : main::foo() -> void
+              l0 : <unknown>
         "#]],
         |_| [],
     );
@@ -159,9 +163,9 @@ fn recursive_struct() {
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("Foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("Foo")),
                     },
                 },
                 50..53,
@@ -192,25 +196,27 @@ fn recursive_struct_and_multiple_literals() {
         "#,
         expect![[r#"
             main::Foo : type
+              1 : type
             main::global_foo : main::Foo
-            main::main : () -> void
-            1 : type
-            3 : {uint}
-            4 : main::Foo
-            5 : main::Foo
-            6 : main::Foo
-            8 : bool
-            9 : main::Foo
-            10 : void
-            11 : () -> void
-            l0 : main::Foo
+              3 : {uint}
+              4 : main::Foo
+              5 : main::Foo
+              6 : main::Foo
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : bool
+              9 : main::Foo
+              10 : void
+              11 : main::main() -> void
+              l0 : main::Foo
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("Foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("Foo")),
                     },
                 },
                 50..53,
@@ -234,9 +240,9 @@ fn recursive_distinct() {
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("Foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("Foo")),
                     },
                 },
                 29..32,
@@ -263,23 +269,25 @@ fn recursive_distinct_and_multiple_instances() {
         "#,
         expect![[r#"
             main::Foo : type
+              1 : type
             main::global_foo : main::Foo
-            main::main : () -> void
-            1 : type
-            3 : {uint}
-            4 : {uint}
-            5 : {uint}
-            7 : {uint}
-            8 : void
-            9 : () -> void
-            l0 : main::Foo
+              3 : {uint}
+              4 : {uint}
+              5 : {uint}
+            main::main : main::main() -> void
+              9 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              7 : {uint}
+              8 : void
+              9 : main::main() -> void
+              l0 : main::Foo
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("Foo")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("Foo")),
                     },
                 },
                 29..32,
@@ -298,17 +306,17 @@ fn recursive_array() {
         "#,
         expect![[r#"
             main::a : type
+              0 : usize
+              2 : type
             main::b : [0]<unknown>
-            0 : usize
-            2 : type
-            4 : {uint}
+              4 : {uint}
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("a")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("a")),
                     },
                 },
                 22..23,
@@ -342,29 +350,29 @@ fn get_const_on_cyclic_globals() {
             b.a = b.a + 1;
         "#,
         expect![[r#"
-            main::a : i32
-            main::b : <unknown>
             main::foo : i32
-            main::idx : i32
-            main::old_gandalf : type
+              0 : i32
             main::ptr : i32
-            0 : i32
-            1 : i32
-            2 : i32
-            3 : <unknown>
-            4 : type
-            5 : <unknown>
-            6 : <unknown>
-            7 : i32
-            8 : i32
+              1 : i32
+            main::idx : i32
+              2 : i32
+            main::b : <unknown>
+              3 : <unknown>
+            main::old_gandalf : type
+              4 : type
+            main::a : i32
+              5 : <unknown>
+              6 : <unknown>
+              7 : i32
+              8 : i32
         "#]],
         |i| {
             [
                 (
                     TyDiagnosticKind::NotYetResolved {
-                        fqn: hir::Fqn {
-                            file: hir::FileName(i.intern("main.capy")),
-                            name: hir::Name(i.intern("a")),
+                        fqn: Fqn {
+                            file: FileName(i.intern("main.capy")),
+                            name: Name(i.intern("a")),
                         },
                     },
                     86..87,
@@ -390,9 +398,9 @@ fn recursive_global() {
         |i| {
             [(
                 TyDiagnosticKind::NotYetResolved {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("main.capy")),
-                        name: hir::Name(i.intern("a")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("main.capy")),
+                        name: Name(i.intern("a")),
                     },
                 },
                 18..19,
@@ -400,4 +408,71 @@ fn recursive_global() {
             )]
         },
     )
+}
+
+#[test]
+fn recursive_function_defined_first() {
+    check(
+        r#"
+            foo :: () { foo() }
+
+            main :: () {
+                foo();
+            }
+        "#,
+        expect![[r#"
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : main::foo() -> void
+              1 : void
+              2 : void
+              3 : main::foo() -> void
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              4 : main::foo() -> void
+              5 : void
+              6 : void
+              7 : main::main() -> void
+        "#]],
+        |_| [],
+    );
+}
+
+#[test]
+fn recursive_function_defined_second() {
+    // when cyclic definitions are sorted, if they're sorted incorrectly,
+    // this input will produce incorrect cyclic errors
+
+    // NOTE: if the sorted was wrong `recursive_function_defined_first` would
+    // fail ONLY if you put the input in a file and ran the file.
+    // This is because "main" (the name of the entry point) will be interned early,
+    // causing "main" to be sorted first and "foo" to be sorted second.
+    check(
+        r#"
+            main :: () {
+                foo();
+            }
+
+            foo :: () { foo() }
+        "#,
+        expect![[r#"
+            main::main : main::main() -> void
+              3 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : main::foo() -> void
+              1 : void
+              2 : void
+              3 : main::main() -> void
+            main::foo : main::foo() -> void
+              7 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              4 : main::foo() -> void
+              5 : void
+              6 : void
+              7 : main::foo() -> void
+        "#]],
+        |_| [],
+    );
 }

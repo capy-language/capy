@@ -1,6 +1,6 @@
 use std::{cell::OnceCell, sync::Mutex};
 
-use hir_ty::{InternTyExt, Ty};
+use hir::common::{InternTyExt, Ty};
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
@@ -140,7 +140,9 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
             calc_single(*sub_ty, pointer_bit_width);
             sub_ty.size()
         }
-        Ty::Function { .. } => pointer_bit_width / 8,
+        Ty::NaivePolymorphicFunction { .. } => pointer_bit_width / 8,
+        Ty::ConcreteFunction { .. } => pointer_bit_width / 8,
+        Ty::FunctionPointer { .. } => pointer_bit_width / 8,
         Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
             let members = members.iter().map(|member| member.ty).collect::<Vec<_>>();
             for member_ty in &members {
@@ -287,7 +289,11 @@ fn calc_single(ty: Intern<Ty>, pointer_bit_width: u32) {
         Ty::NotYetResolved | Ty::Unknown => 1,
         Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) => size.min(8),
         Ty::Bool | Ty::Char => 1, // bools and chars are u8's
-        Ty::String | Ty::Pointer { .. } | Ty::Function { .. } => size.min(8),
+        Ty::String
+        | Ty::Pointer { .. }
+        | Ty::NaivePolymorphicFunction { .. }
+        | Ty::ConcreteFunction { .. }
+        | Ty::FunctionPointer { .. } => size.min(8),
         // the sub_ty was already `calc()`ed just before
         Ty::AnonArray { sub_ty, .. } | Ty::ConcreteArray { sub_ty, .. } => sub_ty.align(),
         Ty::Slice { .. } => (size / 2).min(8),

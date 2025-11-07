@@ -9,13 +9,14 @@ use std::{
 
 use ast::{AstNode, AstToken, SwitchArmVariant};
 use interner::{Interner, Key};
-use la_arena::{Arena, ArenaMap, Idx};
+use la_arena::{Arena, ArenaMap, Idx, RawIdx};
 use path_clean::PathClean;
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::TextRange;
+use tinyvec::{ArrayVec, array_vec};
 
-use crate::{subdir::SubDir, FileName, Fqn, Index, Name, NameWithRange, PrimitiveTy, UIDGenerator};
+use crate::{Index, PrimitiveTy, UIDGenerator, common::*};
 
 #[derive(Debug, Clone, Default)]
 pub struct WorldBodies {
@@ -31,7 +32,7 @@ impl std::ops::Index<FileName> for WorldBodies {
 }
 
 impl WorldBodies {
-    pub fn exists(&self, fqn: Fqn) -> bool {
+    pub fn global_exists(&self, fqn: Fqn) -> bool {
         if let Some(bodies) = self.bodies.get(&fqn.file) {
             bodies.global_exists(fqn.name)
         } else {
@@ -39,17 +40,45 @@ impl WorldBodies {
         }
     }
 
+    pub fn all_files(&self) -> impl Iterator<Item = (&FileName, &Bodies)> {
+        self.bodies.iter()
+    }
+
     #[track_caller]
-    pub fn body(&self, fqn: Fqn) -> Idx<Expr> {
+    pub fn global_body(&self, fqn: Fqn) -> Idx<Expr> {
         self[fqn.file].global_body(fqn.name)
     }
 
-    pub fn ty(&self, fqn: Fqn) -> Option<Idx<Expr>> {
+    pub fn global_ty(&self, fqn: Fqn) -> Option<Idx<Expr>> {
         self[fqn.file].global_ty(fqn.name)
     }
 
-    pub fn is_extern(&self, fqn: Fqn) -> bool {
+    pub fn global_is_extern(&self, fqn: Fqn) -> bool {
         self[fqn.file].global_is_extern(fqn.name)
+    }
+
+    #[track_caller]
+    pub fn has_polymorphic_body(&self, naive: NaiveLoc) -> bool {
+        let lambda = match naive {
+            NaiveLoc::Global(global) => {
+                assert!(self.global_exists(global), "{global:?} does not exist");
+
+                if self[global.file].global_bodies.get(&global.name).is_none() {
+                    return false;
+                }
+
+                self.global_body(global)
+            }
+            NaiveLoc::Lambda(lambda) => lambda.expr(),
+        };
+
+        let Expr::Lambda(lambda) = &self[naive.file()][lambda] else {
+            return false;
+        };
+
+        let Lambda { params, .. } = &self[naive.file()][*lambda];
+
+        params.iter().any(|p| p.comptime)
     }
 
     pub fn add_file(&mut self, file: FileName, bodies: Bodies) {
@@ -62,33 +91,67 @@ impl WorldBodies {
         }
     }
 
-    pub fn find_comptimes(&self) -> Vec<FQComptime> {
-        self.bodies
-            .iter()
-            .flat_map(|(file, bodies)| {
-                bodies.global_bodies.values().flat_map(|body| {
+    pub fn find_comptimes(&self) -> impl Iterator<Item = ComptimeLoc> {
+        self.all_files().flat_map(move |(file, bodies)| {
+            bodies
+                .all_global_bodies()
+                .flat_map(move |(global_name, body)| {
+                    let mut lambda_stack = Vec::new();
+
                     bodies
                         .descendants(
-                            *body,
+                            body,
                             DescentOpts::All {
                                 include_lambdas: true,
+                                include_post_exprs: true,
                                 include_post_stmts: false,
                             },
                         )
-                        .filter_map(|desc| match desc {
-                            Descendant::Expr(expr) => match &bodies[expr] {
-                                Expr::Comptime(comptime) => Some(FQComptime {
-                                    file: *file,
-                                    expr,
-                                    comptime: *comptime,
-                                }),
+                        .filter_map(move |desc| match desc {
+                            Descendant::PreExpr(expr) => match &bodies[expr] {
+                                Expr::Lambda(lambda) => {
+                                    lambda_stack.push((expr, *lambda));
+                                    None
+                                }
+                                Expr::Comptime(comptime) => {
+                                    let loc = match lambda_stack.last() {
+                                        Some((lambda_expr, lambda)) => NaiveLambdaLoc {
+                                            file: *file,
+                                            expr: *lambda_expr,
+                                            lambda: *lambda,
+                                        }
+                                        .wrap(),
+                                        None => NaiveGlobalLoc {
+                                            file: *file,
+                                            name: global_name,
+                                        }
+                                        .wrap(),
+                                    };
+
+                                    if !self.has_polymorphic_body(loc) {
+                                        Some(ComptimeLoc {
+                                            loc: loc.make_concrete(None),
+                                            expr,
+                                            comptime: *comptime,
+                                        })
+                                    } else {
+                                        todo!()
+                                    }
+                                }
+                                _ => None,
+                            },
+                            Descendant::PostExpr(expr) => match &bodies[expr] {
+                                Expr::Lambda(lambda) => {
+                                    assert_eq!(lambda_stack.pop(), Some((expr, *lambda)));
+
+                                    None
+                                }
                                 _ => None,
                             },
                             _ => None,
                         })
                 })
-            })
-            .collect()
+        })
     }
 }
 
@@ -122,10 +185,12 @@ pub enum Expr {
         ty: Idx<Expr>,
         expr: Option<Idx<Expr>>,
     },
+    /// Pointer reference
     Ref {
         mutable: bool,
         expr: Idx<Expr>,
     },
+    /// Pointer dereference
     Deref {
         pointer: Idx<Expr>,
     },
@@ -176,6 +241,38 @@ pub enum Expr {
     LocalGlobal(NameWithRange),
     Param {
         idx: u32,
+        range: TextRange,
+    },
+    ComptimeParam {
+        real_idx: u32,
+        comptime_idx: u32,
+        range: TextRange,
+    },
+    /// This is the same as ComptimeParam but specifically
+    /// for comptime param references within the header of a lambda itself.
+    /// e.g.
+    /// ```text
+    /// add :: (
+    ///     comptime T: type,
+    ///     left: T,            // inline param
+    ///     right: T,           // inline param
+    /// ) {
+    ///     left + right;       // regular params
+    /// }
+    /// ```
+    ///
+    /// Because parameter and return types are the only lowerable expressions
+    /// in the headers of a lambda, those are the only places where these will appear
+    ///
+    /// TODO: add non-comptime inline params. e.g
+    /// ```text
+    /// add :: (left: anytype, right: type_of(left)) -> type_of(left) {
+    ///     left + right
+    /// }
+    /// ```
+    InlineParam {
+        real_idx: u32,
+        comptime_idx: u32,
         range: TextRange,
     },
     Member {
@@ -349,6 +446,7 @@ pub struct Lambda {
 pub struct Param {
     pub name: Option<Name>,
     pub ty: Idx<Expr>,
+    pub comptime: bool,
     pub varargs: bool,
     pub range: TextRange,
 }
@@ -360,25 +458,9 @@ pub struct Param {
 //     pub associated_param: usize,
 // }
 
-/// Fully qualified lambda
-#[derive(Debug, Clone, Copy, Hash, PartialEq, PartialOrd, Ord, Eq)]
-pub struct FQLambda {
-    pub file: FileName,
-    pub expr: Idx<Expr>,
-    pub lambda: Idx<Lambda>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Comptime {
     pub body: Idx<Expr>,
-}
-
-/// Fully qualified comptime
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct FQComptime {
-    pub file: FileName,
-    pub expr: Idx<Expr>,
-    pub comptime: Idx<Comptime>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -567,6 +649,7 @@ pub enum LoweringDiagnosticKind {
     UsingBreakInsteadOfReturn,
     MultipleDefaultArms,
     RegularArmAfterDefault,
+    InlineParamNotComptime { name: Key },
 }
 
 pub fn lower(
@@ -619,6 +702,14 @@ impl Display for ScopeId {
     }
 }
 
+/// These are stored in a list and represent the current "live" parameters
+#[derive(Debug, Clone, Copy)]
+struct ParamInfo {
+    real_idx: u32,
+    comptime_idx: Option<u32>,
+    ast: ast::Param,
+}
+
 struct Ctx<'a> {
     bodies: Bodies,
     file_name: &'a Path,
@@ -630,7 +721,35 @@ struct Ctx<'a> {
     scopes: Vec<FxHashMap<Key, Local>>,
     label_kinds: Vec<ScopeKind>,
     label_gen: UIDGenerator,
-    params: FxHashMap<Key, (u32, ast::Param)>,
+    /// the usual place parameters are stored.
+    /// notably, these store the parameters of the "outer"
+    /// lambda while lowering lambda headers.
+    /// e.g.
+    /// ```text
+    /// foo :: (
+    ///     comptime T: type,
+    ///     a: i32,
+    ///     b: bool,
+    ///     // params = []
+    ///     // inline_header_params = [T, a, b]
+    /// ) {
+    ///     // params = [T, a, b]
+    ///     // inline_header_params = []
+    ///
+    ///     bar :: (
+    ///         comptime G: type,
+    ///         c: f32,
+    ///         d: char,
+    ///         // params = [T, a, b]
+    ///         // inline_header_params = [G, c, d]
+    ///     ) {
+    ///         // params = [G, c, d]
+    ///         // inline_header_params = []
+    ///     }
+    /// }
+    /// ```
+    params: FxHashMap<Key, ParamInfo>,
+    inline_header_params: FxHashMap<Key, ParamInfo>,
     mod_dir: &'a Path,
     fake_file_system: bool, // used for importing files in tests
 }
@@ -672,6 +791,7 @@ impl<'a> Ctx<'a> {
             label_kinds: Vec::new(),
             label_gen: UIDGenerator::default(),
             params: FxHashMap::default(),
+            inline_header_params: FxHashMap::default(),
             mod_dir,
             fake_file_system,
         }
@@ -730,9 +850,13 @@ impl<'a> Ctx<'a> {
     fn lower_lambda(&mut self, lambda: ast::Lambda, allow_extern: bool) -> Expr {
         let old_labels = mem::take(&mut self.label_kinds);
 
+        assert!(self.inline_header_params.is_empty());
+
         let mut params = Vec::new();
         let mut param_keys = FxHashMap::default();
         let mut param_type_ranges = Vec::new();
+
+        let mut comptime_idx = 0;
 
         if let Some(param_list) = lambda.param_list(self.tree) {
             for (idx, param) in param_list.params(self.tree).enumerate() {
@@ -748,12 +872,25 @@ impl<'a> Ctx<'a> {
                 params.push(Param {
                     name: key.map(Name),
                     ty,
+                    comptime: param.comptime(self.tree).is_some(),
                     varargs: param.ellipsis(self.tree).is_some(),
                     range: param.range(self.tree),
                 });
 
                 if let Some(key) = key {
-                    param_keys.insert(key, (idx as u32, param));
+                    let info = ParamInfo {
+                        real_idx: idx as u32,
+                        comptime_idx: param.comptime(self.tree).is_some().then_some(comptime_idx),
+                        ast: param,
+                    };
+
+                    self.inline_header_params.insert(key, info);
+
+                    param_keys.insert(key, info);
+                }
+
+                if param.comptime(self.tree).is_some() {
+                    comptime_idx += 1;
                 }
             }
         }
@@ -772,8 +909,9 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        // todo: when parameter types are added, self.params should be cloned, and then updated in
-        // place
+        // inline header params are only available for the headers of the lambda
+        self.inline_header_params.clear();
+
         let old_params = mem::replace(&mut self.params, param_keys);
         let old_scopes = mem::take(&mut self.scopes);
 
@@ -1788,17 +1926,43 @@ impl<'a> Ctx<'a> {
         };
         let ident_name = self.interner.intern(ident.text(self.tree));
 
+        if let Some(param) = self.look_up_inline_header_param(ident_name) {
+            if let Some(comptime_idx) = param.comptime_idx {
+                return Expr::InlineParam {
+                    real_idx: param.real_idx,
+                    comptime_idx,
+                    range: param.ast.range(self.tree),
+                };
+            } else {
+                // todo: add a help message to this
+                self.diagnostics.push(LoweringDiagnostic {
+                    kind: LoweringDiagnosticKind::InlineParamNotComptime { name: ident_name },
+                    range: var_ref.range(self.tree),
+                });
+
+                return Expr::Missing;
+            }
+        }
+
         match self.look_up_in_current_scope(ident_name) {
             Some(Local::Def(local_def)) => return Expr::Local(local_def),
             Some(Local::SwitchArm(local_arm_var)) => return Expr::SwitchArgument(local_arm_var),
             None => {}
         }
 
-        if let Some((idx, ast)) = self.look_up_param(ident_name) {
-            return Expr::Param {
-                idx,
-                range: ast.range(self.tree),
-            };
+        if let Some(param) = self.look_up_param(ident_name) {
+            if let Some(comptime_idx) = param.comptime_idx {
+                return Expr::ComptimeParam {
+                    real_idx: param.real_idx,
+                    comptime_idx,
+                    range: param.ast.range(self.tree),
+                };
+            } else {
+                return Expr::Param {
+                    idx: param.real_idx,
+                    range: param.ast.range(self.tree),
+                };
+            }
         }
 
         let name = Name(ident_name);
@@ -2213,8 +2377,12 @@ impl<'a> Ctx<'a> {
         None
     }
 
-    fn look_up_param(&mut self, name: Key) -> Option<(u32, ast::Param)> {
+    fn look_up_param(&mut self, name: Key) -> Option<ParamInfo> {
         self.params.get(&name).copied()
+    }
+
+    fn look_up_inline_header_param(&mut self, name: Key) -> Option<ParamInfo> {
+        self.inline_header_params.get(&name).copied()
     }
 
     fn create_new_child_scope(&mut self) {
@@ -2238,8 +2406,16 @@ enum PassedDeferErr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Descendant {
-    Expr(Idx<Expr>),
+    /// guarenteed to come BEFORE any sub statements or expressions
+    PreExpr(Idx<Expr>),
+    /// guarenteed to come AFTER any sub statements or expressions
+    PostExpr(Idx<Expr>),
+    /// guarenteed to come BEFORE any sub statements or expressions
     PreStmt(Idx<Stmt>),
+    /// guarenteed to come AFTER any sub statements or expressions.
+    ///
+    /// Note: PostStmt(LocalDef) will come after it's value,
+    /// but before its type annotation.
     PostStmt(Idx<Stmt>),
 }
 
@@ -2249,33 +2425,90 @@ pub struct PossibleDescendant {
     actually_return: bool,
 }
 
-impl PossibleDescendant {
-    fn expr(expr: Idx<Expr>, actually_return: bool) -> Self {
+// this is just so that PossibleDescendant can be used with tinyvec::ArrayVec
+impl Default for PossibleDescendant {
+    fn default() -> Self {
         Self {
-            descendant: Descendant::Expr(expr),
-            actually_return,
+            descendant: Descendant::PostExpr(Idx::from_raw(RawIdx::from_u32(0))),
+            actually_return: false,
         }
     }
+}
 
-    fn maybe_expr(expr: Option<Idx<Expr>>, actually_return: bool) -> Option<Self> {
-        expr.map(|expr| Self {
-            descendant: Descendant::Expr(expr),
+impl PossibleDescendant {
+    /// This actually will return the post expression *first*.
+    ///
+    /// The reason is because the `next` function below always returns the expression on
+    /// the top of the todo stack.
+    ///
+    /// 1. the pre expression will add all its children to the stack and then be returned
+    /// 2. all the children will be popped of the top of the stack and then returned
+    /// 3. the post expression will be popped of the top of the stack and then returned
+    fn expr(expr: Idx<Expr>, include_post: bool, actually_return: bool) -> ArrayVec<[Self; 2]> {
+        let mut res = array_vec!([Self; 2]);
+
+        if include_post {
+            res.push(Self {
+                descendant: Descendant::PostExpr(expr),
+                actually_return,
+            });
+        }
+
+        res.push(Self {
+            descendant: Descendant::PreExpr(expr),
             actually_return,
-        })
+        });
+
+        res
     }
 
-    fn pre_stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
-        Self {
+    fn maybe_expr(
+        expr: Option<Idx<Expr>>,
+        include_post: bool,
+        actually_return: bool,
+    ) -> ArrayVec<[Self; 2]> {
+        let mut res = array_vec!([Self; 2]);
+
+        if let Some(expr) = expr {
+            if include_post {
+                res.push(Self {
+                    descendant: Descendant::PostExpr(expr),
+                    actually_return,
+                });
+            }
+
+            res.push(Self {
+                descendant: Descendant::PreExpr(expr),
+                actually_return,
+            });
+        }
+
+        res
+    }
+
+    /// Unlike `PossibleDescendant::expr, this returns the post expression *second*.
+    ///
+    /// The reason is because when the contents of a block are constructed,
+    /// the entire list of statements is reversed before being added to the todo stack.
+    ///
+    /// This is so one can reverse the entire tree, and the statements will be
+    /// re-reversed into the correct order.
+    fn stmt(stmt: Idx<Stmt>, include_post: bool, actually_return: bool) -> ArrayVec<[Self; 2]> {
+        let mut res = array_vec!([Self; 2]);
+
+        if include_post {
+            res.push(Self {
+                descendant: Descendant::PostStmt(stmt),
+                actually_return,
+            });
+        }
+
+        res.push(Self {
             descendant: Descendant::PreStmt(stmt),
             actually_return,
-        }
-    }
+        });
 
-    fn post_stmt(stmt: Idx<Stmt>, actually_return: bool) -> Self {
-        Self {
-            descendant: Descendant::PostStmt(stmt),
-            actually_return,
-        }
+        res
     }
 }
 
@@ -2294,7 +2527,10 @@ pub enum DescentOpts<'a> {
     ///
     /// Note that if you reverse the descent tree, these "post" statements will actually come
     /// *before* the inner subexpressions.
-    Infer { include_post_stmts: bool },
+    Infer {
+        include_post_exprs: bool,
+        include_post_stmts: bool,
+    },
     /// Includes parameters and return type of lambdas.
     /// Will include the value of a referred local if a filter returns true.
     /// Doesn't include blocks.
@@ -2310,6 +2546,7 @@ pub enum DescentOpts<'a> {
     /// to true but you'd still need to manually include referenced global bodies
     All {
         include_lambdas: bool,
+        include_post_exprs: bool,
         include_post_stmts: bool,
     },
 }
@@ -2351,7 +2588,7 @@ impl Iterator for Descendants<'_> {
         loop {
             let PossibleDescendant {
                 descendant: next,
-                actually_return: actually_ret,
+                actually_return: mut actually_ret,
             } = self.todo.pop()?;
 
             // println!("  n={{{:?}, {actually_ret}}}", next);
@@ -2361,10 +2598,21 @@ impl Iterator for Descendants<'_> {
                 self.opts,
                 DescentOpts::Infer { .. } | DescentOpts::Reinfer | DescentOpts::All { .. }
             );
+            let include_post_exprs = matches!(
+                self.opts,
+                DescentOpts::Infer {
+                    include_post_exprs: true,
+                    ..
+                } | DescentOpts::All {
+                    include_post_exprs: true,
+                    ..
+                }
+            );
             let include_post_stmts = matches!(
                 self.opts,
                 DescentOpts::Infer {
-                    include_post_stmts: true
+                    include_post_stmts: true,
+                    ..
                 } | DescentOpts::All {
                     include_post_stmts: true,
                     ..
@@ -2375,9 +2623,12 @@ impl Iterator for Descendants<'_> {
                 DescentOpts::Types { .. } | DescentOpts::All { .. }
             );
             let is_all = matches!(self.opts, DescentOpts::All { .. });
+            let is_types = matches!(self.opts, DescentOpts::Types { .. });
 
             match next {
-                Descendant::Expr(expr) => match self.bodies[expr].clone() {
+                // if there's an index oob here, its because you used
+                // the wrong ConcreteLoc
+                Descendant::PreExpr(expr) => match self.bodies[expr].clone() {
                     Expr::Missing => {}
                     Expr::IntLiteral(_) => {}
                     Expr::FloatLiteral(_) => {}
@@ -2387,142 +2638,212 @@ impl Iterator for Descendants<'_> {
                     Expr::ArrayDecl { size, ty } => {
                         if include_eval {
                             if let Some(size) = size {
-                                self.todo.push(PossibleDescendant::expr(size, true));
+                                self.todo.extend(PossibleDescendant::expr(
+                                    size,
+                                    include_post_exprs,
+                                    true,
+                                ));
                             }
                         }
 
-                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        self.todo.extend(PossibleDescendant::expr(
+                            ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
                     }
                     Expr::ArrayLiteral { ty, items } => {
                         if let Some(ty) = ty {
-                            self.todo.push(PossibleDescendant::expr(ty, include_types));
+                            self.todo.extend(PossibleDescendant::expr(
+                                ty,
+                                include_post_exprs,
+                                include_types,
+                            ));
                         }
 
                         if include_eval {
-                            self.todo.extend(
-                                items
-                                    .into_iter()
-                                    .rev()
-                                    .map(|expr| PossibleDescendant::expr(expr, true)),
-                            );
+                            self.todo.extend(items.into_iter().rev().flat_map(|expr| {
+                                PossibleDescendant::expr(expr, include_post_exprs, true)
+                            }));
                         }
                     }
                     Expr::Index { source, index } => {
-                        self.todo
-                            .push(PossibleDescendant::expr(source, actually_ret));
-                        self.todo
-                            .push(PossibleDescendant::expr(index, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            source,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
+                        self.todo.extend(PossibleDescendant::expr(
+                            index,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                     }
                     Expr::Ref { expr, .. } => {
-                        self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            expr,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                     }
                     Expr::Cast { expr: None, .. } => {}
                     Expr::Cast {
                         expr: Some(expr),
                         ty,
                     } => {
-                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        self.todo.extend(PossibleDescendant::expr(
+                            ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
 
                         if include_eval {
-                            self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                expr,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
                         }
                     }
                     Expr::Deref { pointer: expr } | Expr::Unary { expr, .. } => {
                         if include_eval {
-                            self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                expr,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
                         }
                     }
                     Expr::Member { previous, .. } => {
                         if include_eval {
-                            self.todo.push(PossibleDescendant::expr(previous, true));
+                            self.todo.extend(PossibleDescendant::expr(
+                                previous,
+                                include_post_exprs,
+                                true,
+                            ));
                         }
                     }
                     Expr::Binary { lhs, rhs, .. } => {
-                        self.todo.push(PossibleDescendant::expr(lhs, actually_ret));
-                        self.todo.push(PossibleDescendant::expr(rhs, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            lhs,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
+                        self.todo.extend(PossibleDescendant::expr(
+                            rhs,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                     }
-                    Expr::Paren(Some(expr)) => {
-                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
-                    }
+                    Expr::Paren(Some(expr)) => self.todo.extend(PossibleDescendant::expr(
+                        expr,
+                        include_post_exprs,
+                        actually_ret,
+                    )),
                     Expr::Paren(None) => {}
-                    Expr::Block { stmts, tail_expr } => {
-                        match self.opts {
-                            DescentOpts::Infer { .. } | DescentOpts::All { .. } => {
-                                if include_post_stmts {
-                                    self.todo.extend(stmts.into_iter().flat_map(|stmt| {
-                                        [
-                                            PossibleDescendant::post_stmt(stmt, actually_ret),
-                                            PossibleDescendant::pre_stmt(stmt, actually_ret),
-                                        ]
-                                    }));
-                                } else {
-                                    self.todo.extend(stmts.into_iter().map(|stmt| {
-                                        PossibleDescendant::pre_stmt(stmt, actually_ret)
-                                    }));
-                                }
+                    Expr::Block { stmts, tail_expr } => match self.opts {
+                        DescentOpts::Infer { .. } | DescentOpts::All { .. } => {
+                            // Since the top of todo is always popped first,
+                            // this has the effect of reversing the statement list,
+                            // which is what we want--infer_expr will re-reverse the
+                            // statement list when it calls .rev() on the entire
+                            // descendants list
+                            self.todo.extend(stmts.into_iter().flat_map(|stmt| {
+                                PossibleDescendant::stmt(stmt, include_post_stmts, actually_ret)
+                            }));
 
-                                if let Some(tail_expr) = tail_expr {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(tail_expr, actually_ret));
-                                }
+                            if let Some(tail_expr) = tail_expr {
+                                self.todo.extend(PossibleDescendant::expr(
+                                    tail_expr,
+                                    include_post_exprs,
+                                    actually_ret,
+                                ));
                             }
-                            DescentOpts::Reinfer => {
-                                if let Some(id) = self.bodies.block_to_scope_id(expr) {
-                                    self.todo.extend(
-                                        self.bodies.scope_id_usages(id).iter().copied().map(
-                                            |usage| match usage {
-                                                ScopeUsage::Expr(expr) => {
-                                                    PossibleDescendant::expr(expr, actually_ret)
-                                                }
-                                                ScopeUsage::Stmt(stmt) => {
-                                                    PossibleDescendant::pre_stmt(stmt, actually_ret)
-                                                }
-                                            },
-                                        ),
-                                    )
-                                }
-
-                                if let Some(tail_expr) = tail_expr {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(tail_expr, actually_ret));
-                                }
-                            }
-                            DescentOpts::Types { .. } => {}
                         }
-                    }
+                        DescentOpts::Reinfer => {
+                            if let Some(id) = self.bodies.block_to_scope_id(expr) {
+                                self.todo.extend(
+                                    self.bodies.scope_id_usages(id).iter().copied().flat_map(
+                                        |usage| match usage {
+                                            ScopeUsage::Expr(expr) => PossibleDescendant::expr(
+                                                expr,
+                                                include_post_exprs,
+                                                actually_ret,
+                                            ),
+                                            ScopeUsage::Stmt(stmt) => PossibleDescendant::stmt(
+                                                stmt,
+                                                include_post_stmts,
+                                                actually_ret,
+                                            ),
+                                        },
+                                    ),
+                                )
+                            }
+
+                            if let Some(tail_expr) = tail_expr {
+                                self.todo.extend(PossibleDescendant::expr(
+                                    tail_expr,
+                                    include_post_exprs,
+                                    actually_ret,
+                                ));
+                            }
+                        }
+                        DescentOpts::Types { .. } => {}
+                    },
                     Expr::If {
                         condition,
                         body,
                         else_branch,
                     } => {
-                        self.todo
-                            .push(PossibleDescendant::expr(condition, actually_ret));
-                        self.todo.push(PossibleDescendant::expr(body, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            condition,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
+                        self.todo.extend(PossibleDescendant::expr(
+                            body,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                         if let Some(else_branch) = else_branch {
-                            self.todo
-                                .push(PossibleDescendant::expr(else_branch, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                else_branch,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
                         }
                     }
                     Expr::While { condition, body } => match self.opts {
                         DescentOpts::Infer { .. } | DescentOpts::All { .. } => {
                             if let Some(condition) = condition {
-                                self.todo
-                                    .push(PossibleDescendant::expr(condition, actually_ret));
+                                self.todo.extend(PossibleDescendant::expr(
+                                    condition,
+                                    include_post_exprs,
+                                    actually_ret,
+                                ));
                             }
-                            self.todo.push(PossibleDescendant::expr(body, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                body,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
                         }
                         DescentOpts::Reinfer => {
                             if condition.is_none() {
                                 if let Some(id) = self.bodies.block_to_scope_id(expr) {
                                     self.todo.extend(
-                                        self.bodies.scope_id_usages(id).iter().copied().map(
+                                        self.bodies.scope_id_usages(id).iter().copied().flat_map(
                                             |usage| match usage {
-                                                ScopeUsage::Expr(expr) => {
-                                                    PossibleDescendant::expr(expr, actually_ret)
-                                                }
-                                                ScopeUsage::Stmt(stmt) => {
-                                                    PossibleDescendant::pre_stmt(stmt, actually_ret)
-                                                }
+                                                ScopeUsage::Expr(expr) => PossibleDescendant::expr(
+                                                    expr,
+                                                    include_post_exprs,
+                                                    actually_ret,
+                                                ),
+                                                ScopeUsage::Stmt(stmt) => PossibleDescendant::stmt(
+                                                    stmt,
+                                                    include_post_stmts,
+                                                    actually_ret,
+                                                ),
                                             },
                                         ),
                                     );
@@ -2539,22 +2860,35 @@ impl Iterator for Descendants<'_> {
                     } => {
                         if !matches!(self.opts, DescentOpts::Types { .. }) {
                             // todo: maybe don't return the scrutinee on Reinfer
-                            self.todo
-                                .push(PossibleDescendant::expr(scrutinee, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                scrutinee,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
 
                             if let Some(default) = default
                                 && !matches!(self.opts, DescentOpts::Types { .. })
                             {
-                                self.todo
-                                    .push(PossibleDescendant::expr(default.body, actually_ret));
+                                self.todo.extend(PossibleDescendant::expr(
+                                    default.body,
+                                    include_post_exprs,
+                                    actually_ret,
+                                ));
                             }
 
                             for arm in arms {
-                                self.todo
-                                    .push(PossibleDescendant::expr(arm.body, actually_ret));
+                                self.todo.extend(PossibleDescendant::expr(
+                                    arm.body,
+                                    include_post_exprs,
+                                    actually_ret,
+                                ));
 
                                 if let Some(ArmVariant::FullyQualified(ty)) = arm.variant {
-                                    self.todo.push(PossibleDescendant::expr(ty, actually_ret));
+                                    self.todo.extend(PossibleDescendant::expr(
+                                        ty,
+                                        include_post_exprs,
+                                        actually_ret,
+                                    ));
                                 }
                             }
                         }
@@ -2568,38 +2902,51 @@ impl Iterator for Descendants<'_> {
                                 let local_def = &self.bodies[local_def];
 
                                 if let Some(value) = local_def.value {
-                                    self.todo
-                                        .push(PossibleDescendant::expr(value, actually_ret));
+                                    self.todo.extend(PossibleDescendant::expr(
+                                        value,
+                                        include_post_exprs,
+                                        actually_ret,
+                                    ));
                                 }
                             }
                         }
                     }
                     Expr::SwitchArgument(_) => {}
                     Expr::Param { .. } => {}
+                    Expr::ComptimeParam { .. } => {}
+                    Expr::InlineParam { .. } => {}
                     Expr::LocalGlobal(_) => {}
                     Expr::Call { callee, args } => {
-                        self.todo
-                            .push(PossibleDescendant::expr(callee, actually_ret));
-                        self.todo.extend(
-                            args.into_iter()
-                                .rev()
-                                .map(|expr| PossibleDescendant::expr(expr, actually_ret)),
-                        );
+                        // here we make sure !is_types so that the callee and arguments
+                        // aren't expected to be types in `const_ty`
+                        // todo: maybe do similar stuff for some other descended exprs
+                        self.todo.extend(PossibleDescendant::expr(
+                            callee,
+                            include_post_exprs,
+                            !is_types,
+                        ));
+                        self.todo.extend(args.into_iter().rev().flat_map(|expr| {
+                            PossibleDescendant::expr(expr, include_post_exprs, !is_types)
+                        }));
                     }
                     Expr::Lambda(lambda) => {
                         let lambda = &self.bodies[lambda];
 
-                        self.todo.extend(
-                            lambda
-                                .params
-                                .iter()
-                                .rev()
-                                .map(|param| PossibleDescendant::expr(param.ty, include_types)),
-                        );
+                        self.todo
+                            .extend(lambda.params.iter().rev().flat_map(|param| {
+                                PossibleDescendant::expr(
+                                    param.ty,
+                                    include_post_exprs,
+                                    include_types,
+                                )
+                            }));
 
                         if let Some(return_ty) = lambda.return_ty {
-                            self.todo
-                                .push(PossibleDescendant::expr(return_ty, include_types));
+                            self.todo.extend(PossibleDescendant::expr(
+                                return_ty,
+                                include_post_exprs,
+                                include_types,
+                            ));
                         }
 
                         let is_type =
@@ -2609,127 +2956,192 @@ impl Iterator for Descendants<'_> {
                             self.opts,
                             DescentOpts::All {
                                 include_lambdas: true,
-                                include_post_stmts: false,
+                                ..
                             }
                         ) && let LambdaBody::Block(block) = lambda.body
                         {
                             assert!(!is_type);
-                            self.todo
-                                .push(PossibleDescendant::expr(block, include_types));
+                            self.todo.extend(PossibleDescendant::expr(
+                                block,
+                                include_post_exprs,
+                                include_types,
+                            ));
                         }
                     }
                     Expr::Comptime(comptime) => {
-                        if include_eval {
-                            let comptime = self.bodies[comptime];
-
-                            self.todo
-                                .push(PossibleDescendant::expr(comptime.body, actually_ret));
+                        if actually_ret == false && include_types {
+                            actually_ret = true;
                         }
+
+                        let comptime = self.bodies[comptime];
+
+                        self.todo.extend(PossibleDescendant::expr(
+                            comptime.body,
+                            include_post_exprs,
+                            include_eval,
+                        ));
                     }
                     Expr::StructLiteral { ty, members, .. } => {
                         if let Some(ty) = ty {
-                            self.todo.push(PossibleDescendant::expr(ty, is_all));
+                            self.todo.extend(PossibleDescendant::expr(
+                                ty,
+                                include_post_exprs,
+                                is_all,
+                            ));
                         }
 
-                        self.todo.extend(members.into_iter().rev().map(
+                        self.todo.extend(members.into_iter().rev().flat_map(
                             |MemberLiteral { value, .. }| {
-                                PossibleDescendant::expr(value, actually_ret)
+                                PossibleDescendant::expr(value, include_post_exprs, actually_ret)
                             },
                         ));
                     }
                     Expr::Distinct { ty, .. } => {
-                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        self.todo.extend(PossibleDescendant::expr(
+                            ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
                     }
                     Expr::PrimitiveTy(_) => {}
                     Expr::StructDecl { members, .. } => {
-                        self.todo
-                            .extend(members.into_iter().map(|MemberDecl { ty, .. }| {
-                                PossibleDescendant::expr(ty, include_types)
-                            }));
+                        self.todo.extend(members.into_iter().flat_map(
+                            |MemberDecl { ty, .. }| {
+                                PossibleDescendant::expr(ty, include_post_exprs, include_types)
+                            },
+                        ));
                     }
                     Expr::EnumDecl { variants, .. } => {
                         self.todo.extend(
                             variants
                                 .into_iter()
-                                .flat_map(
+                                .map(
                                     |VariantDecl {
                                          ty, discriminant, ..
                                      }| {
                                         [
-                                            PossibleDescendant::maybe_expr(ty, include_types),
+                                            PossibleDescendant::maybe_expr(
+                                                ty,
+                                                include_post_exprs,
+                                                include_types,
+                                            ),
                                             PossibleDescendant::maybe_expr(
                                                 discriminant,
+                                                include_post_exprs,
                                                 include_eval,
                                             ),
                                         ]
                                     },
                                 )
+                                .flatten()
                                 .flatten(),
                         );
                     }
                     Expr::Nil => {}
                     Expr::OptionalDecl { ty } => {
-                        self.todo.push(PossibleDescendant::expr(ty, include_types));
+                        self.todo.extend(PossibleDescendant::expr(
+                            ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
                     }
                     Expr::ErrorUnionDecl {
                         error_ty,
                         payload_ty,
                     } => {
-                        self.todo
-                            .push(PossibleDescendant::expr(error_ty, include_types));
-                        self.todo
-                            .push(PossibleDescendant::expr(payload_ty, include_types));
+                        self.todo.extend(PossibleDescendant::expr(
+                            error_ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
+                        self.todo.extend(PossibleDescendant::expr(
+                            payload_ty,
+                            include_post_exprs,
+                            include_types,
+                        ));
                     }
                     Expr::Propagate { expr, .. } => {
-                        self.todo.push(PossibleDescendant::expr(expr, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            expr,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                     }
-                    Expr::Directive { args, .. } => self.todo.extend(
-                        args.into_iter()
-                            .rev()
-                            .map(|expr| PossibleDescendant::expr(expr, actually_ret)),
-                    ),
+                    Expr::Directive { args, .. } => {
+                        self.todo.extend(args.into_iter().rev().flat_map(|expr| {
+                            PossibleDescendant::expr(expr, include_post_exprs, actually_ret)
+                        }))
+                    }
                     Expr::Import(_) => {}
                 },
+                Descendant::PostExpr(_) => {
+                    // nothing to do here.
+                    // see `PossibleDescendant::expr`
+                }
+                // if there's an index oob here, its because you used
+                // the wrong ConcreteLoc
                 Descendant::PreStmt(stmt) => match self.bodies[stmt] {
                     Stmt::LocalDef(local_def) => {
                         let local_def = &self.bodies[local_def];
 
+                        // if post statements are included, then the post statement
+                        // code will handle adding the type annotation.
                         if !include_post_stmts && let Some(ty) = local_def.ty {
-                            self.todo.push(PossibleDescendant::expr(ty, is_all));
+                            self.todo.extend(PossibleDescendant::expr(
+                                ty,
+                                include_post_exprs,
+                                is_all,
+                            ));
                         }
 
                         if let Some(value) = local_def.value {
-                            self.todo
-                                .push(PossibleDescendant::expr(value, actually_ret));
+                            self.todo.extend(PossibleDescendant::expr(
+                                value,
+                                include_post_exprs,
+                                actually_ret,
+                            ));
                         }
                     }
                     Stmt::Assign(assign) => {
                         let assign = &self.bodies[assign];
-                        self.todo
-                            .push(PossibleDescendant::expr(assign.dest, actually_ret));
-                        self.todo
-                            .push(PossibleDescendant::expr(assign.value, actually_ret));
+                        self.todo.extend(PossibleDescendant::expr(
+                            assign.dest,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
+                        self.todo.extend(PossibleDescendant::expr(
+                            assign.value,
+                            include_post_exprs,
+                            actually_ret,
+                        ));
                     }
-                    Stmt::Expr(expr) => {
-                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
-                    }
+                    Stmt::Expr(expr) => self.todo.extend(PossibleDescendant::expr(
+                        expr,
+                        include_post_exprs,
+                        actually_ret,
+                    )),
                     Stmt::Break {
                         value: Some(value), ..
-                    } => self
-                        .todo
-                        .push(PossibleDescendant::expr(value, actually_ret)),
+                    } => self.todo.extend(PossibleDescendant::expr(
+                        value,
+                        include_post_exprs,
+                        actually_ret,
+                    )),
                     Stmt::Break { value: None, .. } => {}
                     Stmt::Continue { .. } => {}
-                    Stmt::Defer { expr, .. } => {
-                        self.todo.push(PossibleDescendant::expr(expr, actually_ret))
-                    }
+                    Stmt::Defer { expr, .. } => self.todo.extend(PossibleDescendant::expr(
+                        expr,
+                        include_post_exprs,
+                        actually_ret,
+                    )),
                 },
                 Descendant::PostStmt(stmt) => {
-                    // post expressions will still come before type annotations
+                    // post expressions will still come BEFORE inner type annotations
                     if let Stmt::LocalDef(local_def) = self.bodies[stmt]
                         && let Some(ty) = self.bodies[local_def].ty
                     {
-                        self.todo.push(PossibleDescendant::expr(ty, is_all));
+                        self.todo
+                            .extend(PossibleDescendant::expr(ty, include_post_exprs, is_all));
                     }
                 }
             }
@@ -2742,6 +3154,11 @@ impl Iterator for Descendants<'_> {
 }
 
 impl Bodies {
+    /// This returns every body of every defined global
+    pub fn all_global_bodies(&self) -> impl Iterator<Item = (Name, Idx<Expr>)> {
+        self.global_bodies.iter().map(|(name, body)| (*name, *body))
+    }
+
     /// builds a depth-first iterator of the given expression and all of it's children.
     ///
     /// sub expressions are guarenteed to come after their parents, and early statements are
@@ -2755,10 +3172,21 @@ impl Bodies {
     /// but we *should* include for example the size of arrays and the discriminants of enums,
     /// even when the full array type or enum type itself isn't included.
     pub fn descendants<'a>(&'a self, expr: Idx<Expr>, opts: DescentOpts<'a>) -> Descendants<'a> {
+        let include_post_exprs = matches!(
+            opts,
+            DescentOpts::All {
+                include_post_exprs: true,
+                ..
+            } | DescentOpts::Infer {
+                include_post_exprs: true,
+                ..
+            }
+        );
+
         Descendants {
             bodies: self,
             opts,
-            todo: vec![PossibleDescendant::expr(expr, true)],
+            todo: PossibleDescendant::expr(expr, include_post_exprs, true).to_vec(),
         }
     }
 
@@ -2771,6 +3199,10 @@ impl Bodies {
     #[track_caller]
     pub fn global_body(&self, name: Name) -> Idx<Expr> {
         self.global_bodies[&name]
+    }
+
+    pub fn try_global_body(&self, name: Name) -> Option<Idx<Expr>> {
+        self.global_bodies.get(&name).copied()
     }
 
     pub fn global_ty(&self, name: Name) -> Option<Idx<Expr>> {
@@ -2932,14 +3364,29 @@ impl Bodies {
         let mut globals: Vec<_> = self.global_bodies.iter().collect();
         globals.sort_unstable_by_key(|(name, _)| *name);
 
-        for (name, expr_id) in globals {
+        for (name, body) in globals {
             s.push_str(&format!(
-                "{} :: ",
+                "{} :",
                 Fqn { file, name: *name }.to_string(mod_dir, interner)
             ));
+            if let Some(ty) = self.global_tys.get(name) {
+                s.push(' ');
+                write_expr(
+                    &mut s,
+                    *ty,
+                    with_color,
+                    show_expr_idx,
+                    self,
+                    mod_dir,
+                    interner,
+                    0,
+                );
+                s.push(' ');
+            }
+            s.push_str(": ");
             write_expr(
                 &mut s,
-                *expr_id,
+                *body,
                 with_color,
                 show_expr_idx,
                 self,
@@ -2948,6 +3395,35 @@ impl Bodies {
                 0,
             );
             s.push_str(";\n");
+        }
+
+        let mut externs: Vec<_> = self.global_externs.iter().collect();
+        externs.sort_unstable_by_key(|name| *name);
+
+        for name in externs {
+            s.push_str(&format!(
+                "{} :",
+                Fqn { file, name: *name }.to_string(mod_dir, interner)
+            ));
+            if let Some(ty) = self.global_tys.get(name) {
+                s.push(' ');
+                write_expr(
+                    &mut s,
+                    *ty,
+                    with_color,
+                    show_expr_idx,
+                    self,
+                    mod_dir,
+                    interner,
+                    0,
+                );
+                s.push(' ');
+            }
+            s.push_str(": extern;\n");
+        }
+
+        for name in self.global_tys.keys() {
+            assert!(self.global_bodies.contains_key(name) || self.global_tys.contains_key(name));
         }
 
         return s;
@@ -3471,6 +3947,10 @@ impl Bodies {
 
                 Expr::Param { idx, .. } => s.push_str(&format!("p{}", idx)),
 
+                Expr::ComptimeParam { real_idx: idx, .. } => s.push_str(&format!("pc{}", idx)),
+
+                Expr::InlineParam { real_idx: idx, .. } => s.push_str(&format!("pi{}", idx)),
+
                 Expr::Call { callee, args } => {
                     write_expr(
                         s,
@@ -3559,6 +4039,10 @@ impl Bodies {
 
                     s.push('(');
                     for (idx, param) in params.iter().enumerate() {
+                        if param.varargs {
+                            s.push_str("comptime ");
+                        }
+
                         s.push('p');
                         s.push_str(idx.to_string().as_str());
                         s.push_str(": ");
@@ -3912,7 +4396,11 @@ impl Bodies {
                     }
 
                     if let Some(value) = local_def.value {
-                        s.push_str("= ");
+                        if local_def.mutable {
+                            s.push_str("= ");
+                        } else {
+                            s.push_str(": ");
+                        }
                         write_expr(
                             s,
                             value,
@@ -4004,16 +4492,143 @@ impl Bodies {
     }
 }
 
+pub fn debug_descendants(
+    res: &mut String,
+    bodies: &Bodies,
+    descendants: impl Iterator<Item = Descendant>,
+    indents: bool,
+    include_id: bool,
+) {
+    fn expr_variant_name(expr: &Expr) -> &'static str {
+        match expr {
+            Expr::Missing => "Missing",
+            Expr::IntLiteral(_) => "IntLiteral",
+            Expr::FloatLiteral(_) => "FloatLiteral",
+            Expr::BoolLiteral(_) => "BoolLiteral",
+            Expr::StringLiteral(_) => "StringLiteral",
+            Expr::CharLiteral(_) => "CharLiteral",
+            Expr::Cast { .. } => "Cast",
+            Expr::Ref { .. } => "Ref",
+            Expr::Deref { .. } => "Deref",
+            Expr::Binary { .. } => "Binary",
+            Expr::Unary { .. } => "Unary",
+            Expr::ArrayDecl { .. } => "ArrayDecl",
+            Expr::ArrayLiteral { .. } => "ArrayLiteral",
+            Expr::Index { .. } => "Index",
+            Expr::Paren(_) => "Paren",
+            Expr::Block { .. } => "Block",
+            Expr::If { .. } => "If",
+            Expr::While { .. } => "While",
+            Expr::Switch { .. } => "Switch",
+            Expr::Local(_) => "Local",
+            Expr::SwitchArgument(_) => "SwitchArgument",
+            Expr::LocalGlobal(_) => "LocalGlobal",
+            Expr::Param { .. } => "Param",
+            Expr::ComptimeParam { .. } => "ComptimeParam",
+            Expr::InlineParam { .. } => "InlineParam",
+            Expr::Member { .. } => "Member",
+            Expr::Call { .. } => "Call",
+            Expr::Lambda(_) => "Lambda",
+            Expr::Comptime(_) => "Comptime",
+            Expr::PrimitiveTy(_) => "PrimitiveTy",
+            Expr::Distinct { .. } => "Distinct",
+            Expr::StructDecl { .. } => "StructDecl",
+            Expr::StructLiteral { .. } => "StructLiteral",
+            Expr::EnumDecl { .. } => "EnumDecl",
+            Expr::Nil => "Nil",
+            Expr::OptionalDecl { .. } => "OptionalDecl",
+            Expr::ErrorUnionDecl { .. } => "ErrorUnionDecl",
+            Expr::Propagate { .. } => "Propagate",
+            Expr::Directive { .. } => "Directive",
+            Expr::Import(_) => "Import",
+        }
+    }
+
+    fn stmt_variant_name(stmt: &Stmt) -> &'static str {
+        match stmt {
+            Stmt::Expr(_) => "Expr",
+            Stmt::LocalDef(_) => "LocalDef",
+            Stmt::Assign(_) => "Assign",
+            Stmt::Break { .. } => "Break",
+            Stmt::Continue { .. } => "Continue",
+            Stmt::Defer { .. } => "Defer",
+        }
+    }
+
+    let mut indent = 1;
+
+    for des in descendants {
+        match des {
+            Descendant::PreExpr(expr) => {
+                if indents {
+                    for _ in 0..indent {
+                        res.push(' ');
+                    }
+                    indent += 1;
+                }
+                res.push_str("PreEXPR ");
+                res.push_str(expr_variant_name(&bodies[expr]));
+                if include_id {
+                    res.push_str(" #");
+                    res.push_str(&expr.into_raw().to_string());
+                }
+            }
+            Descendant::PostExpr(expr) => {
+                if indents {
+                    indent -= 1;
+                    for _ in 0..indent {
+                        res.push(' ');
+                    }
+                }
+                res.push_str("PostEXPR ");
+                res.push_str(expr_variant_name(&bodies[expr]));
+                if include_id {
+                    res.push_str(" #");
+                    res.push_str(&expr.into_raw().to_string());
+                }
+            }
+            Descendant::PreStmt(stmt) => {
+                if indents {
+                    for _ in 0..indent {
+                        res.push(' ');
+                    }
+                    indent += 1;
+                }
+                res.push_str("PreSTMT ");
+                res.push_str(stmt_variant_name(&bodies[stmt]));
+                if include_id {
+                    res.push_str(" #");
+                    res.push_str(&stmt.into_raw().to_string());
+                }
+            }
+            Descendant::PostStmt(stmt) => {
+                indent -= 1;
+                for _ in 0..indent {
+                    res.push(' ');
+                }
+                res.push_str("PostSTMT ");
+                res.push_str(stmt_variant_name(&bodies[stmt]));
+                if include_id {
+                    res.push_str(" #");
+                    res.push_str(&stmt.into_raw().to_string());
+                }
+            }
+        }
+        res.push_str("\n");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use expect_test::{expect, Expect};
+    use expect_test::{Expect, expect};
     use line_index::LineIndex;
 
     #[track_caller]
     fn check<const N: usize>(
         input: &str,
         expect: Expect,
+        expected_descent: Expect,
         expected_diagnostics: impl Fn(
             &mut Interner,
         ) -> [(LoweringDiagnosticKind, std::ops::Range<u32>); N],
@@ -4037,13 +4652,16 @@ mod tests {
             true,
         );
 
-        expect.assert_eq(&bodies.debug(
+        let debug = bodies.debug(
             FileName(interner.intern("main.capy")),
             std::path::Path::new(""),
             &interner,
             false,
             false,
-        ));
+        );
+
+        expect.assert_eq(&debug);
+        println!("{debug}");
 
         let expected_diagnostics: Vec<_> = expected_diagnostics(&mut interner)
             .into_iter()
@@ -4107,11 +4725,39 @@ mod tests {
         }
 
         pretty_assertions::assert_eq!(expected_diagnostics, actual_diagnostics);
+
+        expected_descent.assert_eq(&debug_all_descendants(&bodies, &interner));
+    }
+
+    fn debug_all_descendants(bodies: &Bodies, interner: &Interner) -> String {
+        let mut res = String::new();
+
+        for (name, global_body) in bodies.all_global_bodies() {
+            res.push_str(interner.lookup(name.0));
+            res.push_str(":\n");
+
+            debug_descendants(
+                &mut res,
+                bodies,
+                bodies.descendants(
+                    global_body,
+                    DescentOpts::All {
+                        include_lambdas: true,
+                        include_post_exprs: true,
+                        include_post_stmts: true,
+                    },
+                ),
+                true,
+                false,
+            );
+        }
+
+        res
     }
 
     #[test]
     fn empty() {
-        check("", expect![""], |_| [])
+        check("", expect![""], expect![""], |_| [])
     }
 
     #[test]
@@ -4119,11 +4765,18 @@ mod tests {
         check(
             r#"
                 foo :: () {
-                    
+
                 }
             "#,
             expect![[r#"
                 main::foo :: () {};
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4141,6 +4794,21 @@ mod tests {
                 main::foo :: () {
                     1 + 1;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4162,6 +4830,20 @@ mod tests {
                     foo;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR IntLiteral
+                 PostEXPR IntLiteral
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR LocalGlobal
+                    PostEXPR LocalGlobal
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4182,6 +4864,21 @@ mod tests {
                     l0;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Expr
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4198,6 +4895,19 @@ mod tests {
                 main::foo :: (p0: i32) {
                     p0;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostSTMT Expr
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4219,6 +4929,22 @@ mod tests {
                     other_file.global;
                 };
             "#]],
+            expect![[r#"
+                other_file:
+                 PreEXPR Import
+                 PostEXPR Import
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Member
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Member
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4239,6 +4965,22 @@ mod tests {
                     other_file.global;
                 };
             "#]],
+            expect![[r#"
+                other_file:
+                 PreEXPR Import
+                 PostEXPR Import
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Member
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Member
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4255,9 +4997,26 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () {
-                    l0 := <missing>;
+                    l0 :: <missing>;
                     l0.global;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                   PostSTMT Expr
+                   PreSTMT LocalDef
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [(LoweringDiagnosticKind::ImportMustEndInDotCapy, 70..86)],
         )
@@ -4275,6 +5034,17 @@ mod tests {
                 main::foo :: () {
                     l0 := 18446744073709551615;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4294,6 +5064,17 @@ mod tests {
                     l0 := 123000000000;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4312,6 +5093,17 @@ mod tests {
                     l0 := 4560000000000;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4328,6 +5120,17 @@ mod tests {
                 main::foo :: () {
                     l0 := <missing>;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..60)],
         )
@@ -4346,6 +5149,17 @@ mod tests {
                     l0 := <missing>;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..76)],
         )
     }
@@ -4362,6 +5176,17 @@ mod tests {
                 main::foo :: () {
                     l0 := 2224043;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4380,6 +5205,17 @@ mod tests {
                     l0 := <missing>;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..75)],
         )
     }
@@ -4396,6 +5232,17 @@ mod tests {
                 main::foo :: () {
                     l0 := 6485;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4414,6 +5261,17 @@ mod tests {
                     l0 := <missing>;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::OutOfRangeIntLiteral, 56..123)],
         )
     }
@@ -4430,6 +5288,17 @@ mod tests {
                 main::foo :: () {
                     l0 := 0.123;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR FloatLiteral
+                    PostEXPR FloatLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4448,6 +5317,17 @@ mod tests {
                     l0 := 1000;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR FloatLiteral
+                    PostEXPR FloatLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4464,6 +5344,17 @@ mod tests {
                 main::foo :: () {
                     l0 := "🦀";
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4482,6 +5373,17 @@ mod tests {
                     l0 := "\0\u{7}\u{8}\n\u{c}\r\t\u{b}\u{1b}'\"\\";
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4498,6 +5400,17 @@ mod tests {
                 main::foo :: () {
                     l0 := "abc";
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| {
                 [
@@ -4521,6 +5434,17 @@ mod tests {
                     l0 := 'a';
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4538,6 +5462,17 @@ mod tests {
                     l0 := '\0';
                 };
             "]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::EmptyCharLiteral, 55..57)],
         )
     }
@@ -4555,6 +5490,17 @@ mod tests {
                     l0 := '\0';
                 };
             "]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::TooManyCharsInCharLiteral, 55..70)],
         )
     }
@@ -4572,6 +5518,17 @@ mod tests {
                     l0 := '\0';
                 };
             "]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::NonU8CharLiteral, 57..63)],
         )
     }
@@ -4611,6 +5568,61 @@ mod tests {
                     l11 := '\\';
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4628,6 +5640,17 @@ mod tests {
                     l0 := '\0';
                 };
             "]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR CharLiteral
+                    PostEXPR CharLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::InvalidEscape, 58..63)],
         )
     }
@@ -4642,6 +5665,33 @@ mod tests {
             ",
             expect![[r#"
                 main::foo :: () -> i32 { 1 + 2 * 3 - 4 / 5 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Binary
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                    PreEXPR Binary
+                     PreEXPR Binary
+                      PreEXPR IntLiteral
+                      PostEXPR IntLiteral
+                      PreEXPR IntLiteral
+                      PostEXPR IntLiteral
+                     PostEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                   PostEXPR Binary
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4666,6 +5716,29 @@ mod tests {
                     l3 := 4;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4684,6 +5757,28 @@ mod tests {
                 main::bar :: () {};
                 main::baz :: () {};
                 main::qux :: () {};
+            "#]],
+            expect![[r#"
+                qux:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+                baz:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4705,6 +5800,26 @@ mod tests {
                 main::foo :: () { bar() };
                 main::bar :: () { foo() };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Call
+                    PreEXPR LocalGlobal
+                    PostEXPR LocalGlobal
+                   PostEXPR Call
+                  PostEXPR Block
+                 PostEXPR Lambda
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Call
+                    PreEXPR LocalGlobal
+                    PostEXPR LocalGlobal
+                   PostEXPR Call
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4719,6 +5834,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () { <missing>() };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Call
+                    PreEXPR Missing
+                    PostEXPR Missing
+                   PostEXPR Call
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [(
@@ -4744,6 +5870,19 @@ mod tests {
                     foo();
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Call
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Call
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4760,6 +5899,19 @@ mod tests {
                 main::foo :: () {
                     l0 := () {};
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Lambda
+                     PreEXPR Block
+                     PostEXPR Block
+                    PostEXPR Lambda
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4782,6 +5934,33 @@ mod tests {
                     l0 := 5;
                     l1 := () -> i32 { <missing> + <missing> };
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Lambda
+                     PreEXPR Block
+                      PreEXPR Binary
+                       PreEXPR Missing
+                       PostEXPR Missing
+                       PreEXPR Missing
+                       PostEXPR Missing
+                      PostEXPR Binary
+                     PostEXPR Block
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR Lambda
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [
@@ -4817,6 +5996,39 @@ mod tests {
             expect![[r#"
                 main::foo :: () -> i32 { { (p0: i32, p1: i32) -> i32 { p0 + p1 } }(1, 2) };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Call
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Block
+                     PreEXPR Lambda
+                      PreEXPR Block
+                       PreEXPR Binary
+                        PreEXPR Param
+                        PostEXPR Param
+                        PreEXPR Param
+                        PostEXPR Param
+                       PostEXPR Binary
+                      PostEXPR Block
+                      PreEXPR PrimitiveTy
+                      PostEXPR PrimitiveTy
+                      PreEXPR PrimitiveTy
+                      PostEXPR PrimitiveTy
+                      PreEXPR PrimitiveTy
+                      PostEXPR PrimitiveTy
+                     PostEXPR Lambda
+                    PostEXPR Block
+                   PostEXPR Call
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4834,6 +6046,21 @@ mod tests {
                     l0 := (p0: str) extern;
                 };
             "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Lambda
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR Lambda
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::NonGlobalExternFunc, 74..80)],
         )
     }
@@ -4846,6 +6073,15 @@ mod tests {
             "#,
             expect![[r#"
                 main::puts :: (p0: str) -> i32 extern;
+            "#]],
+            expect![[r#"
+                puts:
+                 PreEXPR Lambda
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4864,6 +6100,21 @@ mod tests {
                     l0 := (p0: str) #builtin("hello");
                 };
             "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Lambda
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR Lambda
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -4876,6 +6127,15 @@ mod tests {
             "#,
             expect![[r#"
                 main::puts :: (p0: str) -> i32 #builtin("hi");
+            "#]],
+            expect![[r#"
+                puts:
+                 PreEXPR Lambda
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4894,6 +6154,23 @@ mod tests {
                     l0 := (p0: str) <missing>;
                 };
             "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Lambda
+                     PreEXPR Missing
+                     PostEXPR Missing
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR Lambda
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::NonBuiltinLambdaBody, 78..85)],
         )
     }
@@ -4906,6 +6183,17 @@ mod tests {
             "#,
             expect![[r#"
                 main::puts :: (p0: str) -> i32 <missing>;
+            "#]],
+            expect![[r#"
+                puts:
+                 PreEXPR Lambda
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [(LoweringDiagnosticKind::NonBuiltinLambdaBody, 45..52)],
         )
@@ -4930,6 +6218,25 @@ mod tests {
                     };
                     <missing>
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Missing
+                   PostEXPR Missing
+                   PreSTMT Expr
+                    PreEXPR Block
+                     PreSTMT LocalDef
+                      PreEXPR IntLiteral
+                      PostEXPR IntLiteral
+                     PostSTMT LocalDef
+                    PostEXPR Block
+                   PostSTMT Expr
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [(
@@ -4960,6 +6267,30 @@ mod tests {
                     l0 := 25;
                     l0
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR IntLiteral
+                   PostEXPR IntLiteral
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Local
+                   PostEXPR Local
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -4992,6 +6323,45 @@ mod tests {
                     l2 + 3
                 };
             "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Binary
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Binary
+                   PreSTMT LocalDef
+                    PreEXPR Block
+                     PreEXPR Binary
+                      PreEXPR IntLiteral
+                      PostEXPR IntLiteral
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Binary
+                     PreSTMT LocalDef
+                      PreEXPR Block
+                       PreEXPR Binary
+                        PreEXPR IntLiteral
+                        PostEXPR IntLiteral
+                        PreEXPR Local
+                        PostEXPR Local
+                       PostEXPR Binary
+                       PreSTMT LocalDef
+                        PreEXPR IntLiteral
+                        PostEXPR IntLiteral
+                       PostSTMT LocalDef
+                      PostEXPR Block
+                     PostSTMT LocalDef
+                    PostEXPR Block
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5008,6 +6378,37 @@ mod tests {
                 main::main :: () -> i32 {
                     l0 : []i32 = i32.[4, 8, 15, 16, 23, 42];
                 };
+            "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR ArrayLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR ArrayLiteral
+                   PostSTMT LocalDef
+                   PreEXPR ArrayDecl
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostEXPR ArrayDecl
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5026,6 +6427,39 @@ mod tests {
                     l0 : [6]i32 = i32.[4, 8, 15, 16, 23, 42];
                 };
             "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR ArrayLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR ArrayLiteral
+                   PostSTMT LocalDef
+                   PreEXPR ArrayDecl
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostEXPR ArrayDecl
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5042,8 +6476,29 @@ mod tests {
             "#,
             expect![[r#"
                 main::main :: () -> i32 {
-                    l0 := comptime { 1 + 1 };
+                    l0 :: comptime { 1 + 1 };
                 };
+            "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Comptime
+                     PreEXPR Block
+                      PreEXPR Binary
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                      PostEXPR Binary
+                     PostEXPR Block
+                    PostEXPR Comptime
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5064,8 +6519,35 @@ mod tests {
             expect![[r#"
                 main::main :: (p0: i32) -> i32 {
                     l0 := 5;
-                    l1 := comptime { <missing> + <missing> };
+                    l1 :: comptime { <missing> + <missing> };
                 };
+            "#]],
+            expect![[r#"
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Comptime
+                     PreEXPR Block
+                      PreEXPR Binary
+                       PreEXPR Missing
+                       PostEXPR Missing
+                       PreEXPR Missing
+                       PostEXPR Missing
+                      PostEXPR Binary
+                     PostEXPR Block
+                    PostEXPR Comptime
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [
@@ -5101,8 +6583,32 @@ mod tests {
             expect![[r#"
                 main::foo :: 5;
                 main::main :: () -> i32 {
-                    l0 := comptime { foo * 2 };
+                    l0 :: comptime { foo * 2 };
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR IntLiteral
+                 PostEXPR IntLiteral
+                main:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Comptime
+                     PreEXPR Block
+                      PreEXPR Binary
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Binary
+                     PostEXPR Block
+                    PostEXPR Comptime
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5113,11 +6619,26 @@ mod tests {
         check(
             r#"
                 foo :: (x: bar, y: baz) -> qux.quux {
-    
+
                 }
             "#,
             expect![[r#"
                 main::foo :: (p0: <missing>, p1: <missing>) -> <missing>.quux {};
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR Member
+                   PreEXPR Missing
+                   PostEXPR Missing
+                  PostEXPR Member
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR Missing
+                  PostEXPR Missing
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [
@@ -5159,6 +6680,31 @@ mod tests {
             expect![[r#"
                 main::foo :: (p0: i32, p1: bool) -> i8 { if p1 { 0 } else { 1 } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR If
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostEXPR If
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5178,7 +6724,196 @@ mod tests {
             expect![[r#"
                 main::foo :: (p0: <missing>, p1: <missing>) -> i8 { if p1 { 0 } else { 1 } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR If
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostEXPR If
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR Missing
+                  PostEXPR Missing
+                 PostEXPR Lambda
+            "#]],
             |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_inline_param_references() {
+        check(
+            r#"
+                foo :: (comptime x: i32, y: x) -> x {
+                    if y {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: i32, p1: pi0) -> pi0 { if p1 { 0 } else { 1 } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR If
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostEXPR If
+                  PostEXPR Block
+                  PreEXPR InlineParam
+                  PostEXPR InlineParam
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR InlineParam
+                  PostEXPR InlineParam
+                 PostEXPR Lambda
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn function_with_future_inline_param_references() {
+        check(
+            r#"
+                foo :: (z: x, comptime x: i32, y: x) -> x {
+                    if y {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: <missing>, p1: i32, p2: pi1) -> pi1 { if p2 { 0 } else { 1 } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR If
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostEXPR If
+                  PostEXPR Block
+                  PreEXPR InlineParam
+                  PostEXPR InlineParam
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR InlineParam
+                  PostEXPR InlineParam
+                 PostEXPR Lambda
+            "#]],
+            |i| {
+                [(
+                    LoweringDiagnosticKind::UndefinedRef {
+                        name: i.intern("x"),
+                    },
+                    28..29,
+                )]
+            },
+        )
+    }
+
+    #[test]
+    fn function_with_future_non_comptime_inline_param_references() {
+        check(
+            r#"
+                foo :: (z: x, x: i32, y: x) -> x {
+                    if y {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            "#,
+            expect![[r#"
+                main::foo :: (p0: <missing>, p1: i32, p2: <missing>) -> <missing> { if p2 { 0 } else { 1 } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR If
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Block
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Block
+                    PreEXPR Param
+                    PostEXPR Param
+                   PostEXPR If
+                  PostEXPR Block
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR Missing
+                  PostEXPR Missing
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                  PreEXPR Missing
+                  PostEXPR Missing
+                 PostEXPR Lambda
+            "#]],
+            |i| {
+                [
+                    (
+                        LoweringDiagnosticKind::UndefinedRef {
+                            name: i.intern("x"),
+                        },
+                        28..29,
+                    ),
+                    (
+                        LoweringDiagnosticKind::InlineParamNotComptime {
+                            name: i.intern("x"),
+                        },
+                        42..43,
+                    ),
+                    (
+                        LoweringDiagnosticKind::InlineParamNotComptime {
+                            name: i.intern("x"),
+                        },
+                        48..49,
+                    ),
+                ]
+            },
         )
     }
 
@@ -5192,6 +6927,29 @@ mod tests {
             "#,
             expect![[r#"
                 main::foo :: () -> i32 { ((5 + 5) * 25) };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Paren
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR Paren
+                      PreEXPR Binary
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                      PostEXPR Binary
+                     PostEXPR Paren
+                    PostEXPR Binary
+                   PostEXPR Paren
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5213,6 +6971,19 @@ mod tests {
                 main::foo :: () `0: { { {
                             break `0;
                         } } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 105..111)],
         )
@@ -5242,6 +7013,23 @@ mod tests {
                                 } } }
                     }
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreEXPR Block
+                      PreEXPR Block
+                       PreSTMT Break
+                       PostSTMT Break
+                      PostEXPR Block
+                     PostEXPR Block
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5288,6 +7076,29 @@ mod tests {
                     }
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreEXPR Block
+                      PreEXPR Block
+                       PreEXPR Block
+                        PreEXPR Block
+                         PreEXPR Block
+                          PreSTMT Break
+                          PostSTMT Break
+                         PostEXPR Block
+                        PostEXPR Block
+                       PostEXPR Block
+                      PostEXPR Block
+                     PostEXPR Block
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5308,6 +7119,21 @@ mod tests {
                 main::foo :: () { { `2: loop {
                             break `2;
                         } } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR While
+                     PreEXPR Block
+                      PreSTMT Break
+                      PostSTMT Break
+                     PostEXPR Block
+                    PostEXPR While
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5330,6 +7156,19 @@ mod tests {
                             break `1;
                         } } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5350,6 +7189,19 @@ mod tests {
                 main::foo :: () { { {
                             break `<unknown>;
                         } } };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [(
@@ -5379,6 +7231,27 @@ mod tests {
                             break `1 1 + 1;
                         } } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreSTMT Break
+                      PreEXPR Binary
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                      PostEXPR Binary
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5406,6 +7279,35 @@ mod tests {
                         1 + 1
                     }
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                    PreSTMT Expr
+                     PreEXPR If
+                      PreEXPR Block
+                       PreSTMT Break
+                        PreEXPR BoolLiteral
+                        PostEXPR BoolLiteral
+                       PostSTMT Break
+                      PostEXPR Block
+                      PreEXPR BoolLiteral
+                      PostEXPR BoolLiteral
+                     PostEXPR If
+                    PostSTMT Expr
+                   PostEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 120..131)],
         )
@@ -5435,6 +7337,35 @@ mod tests {
                     }
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                    PreSTMT Expr
+                     PreEXPR If
+                      PreEXPR Block
+                       PreSTMT Break
+                        PreEXPR BoolLiteral
+                        PostEXPR BoolLiteral
+                       PostSTMT Break
+                      PostEXPR Block
+                      PreEXPR BoolLiteral
+                      PostEXPR BoolLiteral
+                     PostEXPR If
+                    PostSTMT Expr
+                   PostEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5462,6 +7393,27 @@ mod tests {
                     }
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR While
+                    PreEXPR Block
+                     PreEXPR While
+                      PreEXPR Block
+                       PreEXPR Block
+                        PreSTMT Continue
+                        PostSTMT Continue
+                       PostEXPR Block
+                      PostEXPR Block
+                      PreEXPR BoolLiteral
+                      PostEXPR BoolLiteral
+                     PostEXPR While
+                    PostEXPR Block
+                   PostEXPR While
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5487,6 +7439,27 @@ mod tests {
                             } } }
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR While
+                    PreEXPR Block
+                     PreEXPR While
+                      PreEXPR Block
+                       PreEXPR Block
+                        PreSTMT Continue
+                        PostSTMT Continue
+                       PostEXPR Block
+                      PostEXPR Block
+                      PreEXPR BoolLiteral
+                      PostEXPR BoolLiteral
+                     PostEXPR While
+                    PostEXPR Block
+                   PostEXPR While
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5511,6 +7484,25 @@ mod tests {
                                 continue `1;
                             } } }
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR While
+                     PreEXPR Block
+                      PreEXPR Block
+                       PreSTMT Continue
+                       PostSTMT Continue
+                      PostEXPR Block
+                     PostEXPR Block
+                     PreEXPR BoolLiteral
+                     PostEXPR BoolLiteral
+                    PostEXPR While
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |i| {
                 [(
@@ -5540,6 +7532,19 @@ mod tests {
                             continue `<unknown>;
                         } } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreEXPR Block
+                     PreSTMT Continue
+                     PostSTMT Continue
+                    PostEXPR Block
+                   PostEXPR Block
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| {
                 [(
                     LoweringDiagnosticKind::ContinueNonLoop { name: None },
@@ -5562,6 +7567,19 @@ mod tests {
                     break `0 5;
                 };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Break
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT Break
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::UsingBreakInsteadOfReturn, 56..64)],
         )
     }
@@ -5578,6 +7596,19 @@ mod tests {
                 main::foo :: () -> i32 `0: {
                     break `0 5;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Break
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT Break
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5598,6 +7629,21 @@ mod tests {
                         break `0 5;
                     } };
             "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreSTMT Break
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostSTMT Break
+                   PostEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5614,6 +7660,15 @@ mod tests {
                 main::foo :: `0: {
                     break `0 5;
                 };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Block
+                  PreSTMT Break
+                   PreEXPR IntLiteral
+                   PostEXPR IntLiteral
+                  PostSTMT Break
+                 PostEXPR Block
             "#]],
             |_| [],
         )
@@ -5633,6 +7688,18 @@ mod tests {
                 main::bar :: () {
                     foo;
                 };
+                main::foo :: extern;
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR LocalGlobal
+                    PostEXPR LocalGlobal
+                   PostSTMT Expr
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5662,6 +7729,45 @@ mod tests {
                         };
                     }
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Block
+                    PreSTMT Defer
+                     PreEXPR Block
+                      PreSTMT Defer
+                       PreEXPR Binary
+                        PreEXPR Unary
+                         PreEXPR Unary
+                          PreEXPR BoolLiteral
+                          PostEXPR BoolLiteral
+                         PostEXPR Unary
+                        PostEXPR Unary
+                        PreEXPR Unary
+                         PreEXPR BoolLiteral
+                         PostEXPR BoolLiteral
+                        PostEXPR Unary
+                       PostEXPR Binary
+                      PostSTMT Defer
+                     PostEXPR Block
+                    PostSTMT Defer
+                    PreSTMT Defer
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostSTMT Defer
+                   PostEXPR Block
+                   PreSTMT Defer
+                    PreEXPR Binary
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Binary
+                   PostSTMT Defer
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5699,6 +7805,39 @@ mod tests {
                         };
                     }
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR While
+                    PreEXPR Block
+                     PreSTMT Defer
+                      PreEXPR Block
+                       PreSTMT Continue
+                       PostSTMT Continue
+                      PostEXPR Block
+                     PostSTMT Defer
+                    PostEXPR Block
+                   PostEXPR While
+                   PreSTMT Expr
+                    PreEXPR Block
+                     PreSTMT Defer
+                      PreEXPR Block
+                       PreSTMT Break
+                       PostSTMT Break
+                      PostEXPR Block
+                     PostSTMT Defer
+                    PostEXPR Block
+                   PostSTMT Expr
+                   PreSTMT Defer
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostSTMT Defer
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| {
                 [
@@ -5743,6 +7882,39 @@ mod tests {
                         } };
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Defer
+                    PreEXPR Block
+                     PreEXPR While
+                      PreEXPR Block
+                       PreSTMT Continue
+                       PostSTMT Continue
+                      PostEXPR Block
+                     PostEXPR While
+                    PostEXPR Block
+                   PostSTMT Defer
+                   PreSTMT Defer
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Block
+                       PreSTMT Break
+                       PostSTMT Break
+                      PostEXPR Block
+                     PostSTMT Expr
+                    PostEXPR Block
+                   PostSTMT Defer
+                   PreSTMT Defer
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostSTMT Defer
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -5766,6 +7938,21 @@ mod tests {
                     break `0;
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Break
+                   PostSTMT Break
+                   PreSTMT Defer
+                    PreEXPR Block
+                     PreSTMT Break
+                     PostSTMT Break
+                    PostEXPR Block
+                   PostSTMT Defer
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [(LoweringDiagnosticKind::ReturnFromDefer, 81..88)],
         )
     }
@@ -5788,9 +7975,34 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := struct'0 {x: i32, y: str};
+                    l0 :: struct'0 {x: i32, y: str};
                     l1 := l0.{x = 42, y = 5};
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StructLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR StructLiteral
+                   PostSTMT LocalDef
+                   PreSTMT LocalDef
+                    PreEXPR StructDecl
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                    PostEXPR StructDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5814,10 +8026,43 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = 42;
                     l2 : l0 = l1;
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT LocalDef
+                   PreEXPR Local
+                   PostEXPR Local
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5851,7 +8096,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Qux.(42);
                     switch f in l1 {
                         .Bar (s0) => 10,
@@ -5863,6 +8108,70 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Switch
+                    PreEXPR Block
+                    PostEXPR Block
+                    PreEXPR Call
+                     PreEXPR SwitchArgument
+                     PostEXPR SwitchArgument
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Call
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Call
+                       PreEXPR SwitchArgument
+                       PostEXPR SwitchArgument
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Call
+                     PostSTMT Expr
+                    PostEXPR Block
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Switch
+                   PreSTMT LocalDef
+                    PreEXPR Cast
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR Member
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Member
+                    PostEXPR Cast
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+                take:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5895,7 +8204,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Quux.(true);
                     switch f in l1 {
                         .Bar (s0) => 10,
@@ -5906,6 +8215,68 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Switch
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Call
+                       PreEXPR SwitchArgument
+                       PostEXPR SwitchArgument
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Call
+                     PostSTMT Expr
+                    PostEXPR Block
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Call
+                     PreEXPR SwitchArgument
+                     PostEXPR SwitchArgument
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Call
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Switch
+                   PreSTMT LocalDef
+                    PreEXPR Cast
+                     PreEXPR BoolLiteral
+                     PostEXPR BoolLiteral
+                     PreEXPR Member
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Member
+                    PostEXPR Cast
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+                take:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5939,7 +8310,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Qux.(42);
                     switch f in l1 {
                         l0.Bar (s0) => 10,
@@ -5951,6 +8322,86 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Switch
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR Block
+                    PostEXPR Block
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR Call
+                     PreEXPR SwitchArgument
+                     PostEXPR SwitchArgument
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Call
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Call
+                       PreEXPR SwitchArgument
+                       PostEXPR SwitchArgument
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Call
+                     PostSTMT Expr
+                    PostEXPR Block
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Switch
+                   PreSTMT LocalDef
+                    PreEXPR Cast
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR Member
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Member
+                    PostEXPR Cast
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+                take:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -5983,7 +8434,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Quux.(true);
                     switch f in l1 {
                         l0.Bar (s0) => 10,
@@ -5994,6 +8445,76 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Switch
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Call
+                       PreEXPR SwitchArgument
+                       PostEXPR SwitchArgument
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Call
+                     PostSTMT Expr
+                    PostEXPR Block
+                    PreEXPR Member
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Member
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Call
+                     PreEXPR SwitchArgument
+                     PostEXPR SwitchArgument
+                     PreEXPR LocalGlobal
+                     PostEXPR LocalGlobal
+                    PostEXPR Call
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Switch
+                   PreSTMT LocalDef
+                    PreEXPR Cast
+                     PreEXPR BoolLiteral
+                     PostEXPR BoolLiteral
+                     PreEXPR Member
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Member
+                    PostEXPR Cast
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+                take:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -6033,7 +8554,7 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
+                    l0 :: enum'4 {Bar'0, Baz'1 | 5, Qux'2: i32, Quux'3: bool | 1000};
                     l1 : l0.Qux = l0.Quux.(true);
                     switch f in l1 {
                         .Bar (s0) => 10,
@@ -6047,6 +8568,70 @@ mod tests {
                     }
                 };
                 main::take :: (p0: void) {};
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreEXPR Switch
+                    PreEXPR Block
+                     PreSTMT Expr
+                      PreEXPR Call
+                       PreEXPR SwitchArgument
+                       PostEXPR SwitchArgument
+                       PreEXPR LocalGlobal
+                       PostEXPR LocalGlobal
+                      PostEXPR Call
+                     PostSTMT Expr
+                    PostEXPR Block
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Block
+                     PreEXPR Local
+                     PostEXPR Local
+                     PreSTMT LocalDef
+                      PreEXPR IntLiteral
+                      PostEXPR IntLiteral
+                     PostSTMT LocalDef
+                    PostEXPR Block
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Switch
+                   PreSTMT LocalDef
+                    PreEXPR Cast
+                     PreEXPR BoolLiteral
+                     PostEXPR BoolLiteral
+                     PreEXPR Member
+                      PreEXPR Local
+                      PostEXPR Local
+                     PostEXPR Member
+                    PostEXPR Cast
+                   PostSTMT LocalDef
+                   PreEXPR Member
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Member
+                   PreSTMT LocalDef
+                    PreEXPR EnumDecl
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR PrimitiveTy
+                     PostEXPR PrimitiveTy
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR EnumDecl
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+                take:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                  PostEXPR Block
+                  PreEXPR PrimitiveTy
+                  PostEXPR PrimitiveTy
+                 PostEXPR Lambda
             "#]],
             |_| {
                 [
@@ -6070,9 +8655,28 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := i32;
+                    l0 :: i32;
                     l1 : mut rawptr = ^mut 42;
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Ref
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Ref
+                   PostSTMT LocalDef
+                   PreEXPR PrimitiveTy
+                   PostEXPR PrimitiveTy
+                   PreSTMT LocalDef
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -6090,9 +8694,30 @@ mod tests {
             "#,
             expect![[r#"
                 main::bar :: () {
-                    l0 := i32;
+                    l0 :: i32;
                     l1 : ^mut l0 = ^mut 42;
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Ref
+                     PreEXPR IntLiteral
+                     PostEXPR IntLiteral
+                    PostEXPR Ref
+                   PostSTMT LocalDef
+                   PreEXPR Ref
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Ref
+                   PreSTMT LocalDef
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -6120,6 +8745,41 @@ mod tests {
                     l0 /= 5;
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Assign
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Assign
+                   PreSTMT Assign
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Assign
+                   PreSTMT Assign
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Assign
+                   PreSTMT Assign
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Assign
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -6140,6 +8800,27 @@ mod tests {
                     l0 = nil;
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Assign
+                    PreEXPR Nil
+                    PostEXPR Nil
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostSTMT Assign
+                   PreSTMT LocalDef
+                    PreEXPR IntLiteral
+                    PostEXPR IntLiteral
+                   PostSTMT LocalDef
+                   PreEXPR OptionalDecl
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostEXPR OptionalDecl
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -6157,6 +8838,23 @@ mod tests {
                     l0 : str!u64 = "there was an error!";
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                   PreEXPR ErrorUnionDecl
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostEXPR ErrorUnionDecl
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -6173,6 +8871,21 @@ mod tests {
                 main::bar :: () {
                     l0 : !u64 = "there was an error!";
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                   PreEXPR Unary
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostEXPR Unary
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )
@@ -6194,6 +8907,29 @@ mod tests {
                     l0.try (`0);
                 };
             "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT Expr
+                    PreEXPR Propagate
+                     PreEXPR Local
+                     PostEXPR Local
+                    PostEXPR Propagate
+                   PostSTMT Expr
+                   PreSTMT LocalDef
+                    PreEXPR StringLiteral
+                    PostEXPR StringLiteral
+                   PostSTMT LocalDef
+                   PreEXPR ErrorUnionDecl
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                    PreEXPR PrimitiveTy
+                    PostEXPR PrimitiveTy
+                   PostEXPR ErrorUnionDecl
+                  PostEXPR Block
+                 PostEXPR Lambda
+            "#]],
             |_| [],
         )
     }
@@ -6213,6 +8949,74 @@ mod tests {
                     l0 : str!u64 = "there was an error!";
                     l0.try (`0);
                 };
+            "#]],
+            expect![[r#"
+                bar:
+                 PreEXPR Block
+                  PreSTMT Expr
+                   PreEXPR Propagate
+                    PreEXPR Local
+                    PostEXPR Local
+                   PostEXPR Propagate
+                  PostSTMT Expr
+                  PreSTMT LocalDef
+                   PreEXPR StringLiteral
+                   PostEXPR StringLiteral
+                  PostSTMT LocalDef
+                  PreEXPR ErrorUnionDecl
+                   PreEXPR PrimitiveTy
+                   PostEXPR PrimitiveTy
+                   PreEXPR PrimitiveTy
+                   PostEXPR PrimitiveTy
+                  PostEXPR ErrorUnionDecl
+                 PostEXPR Block
+            "#]],
+            |_| [],
+        )
+    }
+
+    #[test]
+    fn comptime_with_type_decls_inside() {
+        check(
+            r#"
+                foo :: () {
+                    bar :: comptime {
+                        baz : [20] u64;
+
+                        baz
+                    };
+                }
+            "#,
+            expect![[r#"
+                main::foo :: () {
+                    l1 :: comptime {
+                        l0 : [20]u64;
+                        l0
+                    };
+                };
+            "#]],
+            expect![[r#"
+                foo:
+                 PreEXPR Lambda
+                  PreEXPR Block
+                   PreSTMT LocalDef
+                    PreEXPR Comptime
+                     PreEXPR Block
+                      PreEXPR Local
+                      PostEXPR Local
+                      PreSTMT LocalDef
+                      PostSTMT LocalDef
+                      PreEXPR ArrayDecl
+                       PreEXPR PrimitiveTy
+                       PostEXPR PrimitiveTy
+                       PreEXPR IntLiteral
+                       PostEXPR IntLiteral
+                      PostEXPR ArrayDecl
+                     PostEXPR Block
+                    PostEXPR Comptime
+                   PostSTMT LocalDef
+                  PostEXPR Block
+                 PostEXPR Lambda
             "#]],
             |_| [],
         )

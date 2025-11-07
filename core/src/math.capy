@@ -57,6 +57,7 @@ exp :: (x: f64) -> f64 {
     if x == 1 {
         euler_const
     } else if x < 0 {
+        // e^(-x) = 1/(e^x)
         1 / exp(-x)
     } else {
         n : i32 = 2;
@@ -147,7 +148,7 @@ min_usize :: (x: usize, y: usize) -> usize {
 }
 
 next_pow_of_two :: (x: usize) -> usize {
-    // see https://stackoverflow.com/questions/1322510/given-an-integer-how-do-i-find-the-next-largest-power-of-two-using-bit-twiddlin/1322548#1322548 
+    // see https://stackoverflow.com/questions/1322510/given-an-integer-how-do-i-find-the-next-largest-power-of-two-using-bit-twiddlin/1322548#1322548
     // for an explanation of how this works
     x := x - 1;
 
@@ -188,7 +189,7 @@ log10_u64 :: (n: u64) -> u64 {
         arr : [20] u64;
         i := 0;
         pow := 1;
-        
+
         while i <= 19 {
             arr[i] = pow;
             pow    = 10 * pow;

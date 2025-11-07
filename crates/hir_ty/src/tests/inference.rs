@@ -13,13 +13,15 @@ fn strong_int_to_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : u16
-            3 : u16
-            4 : void
-            5 : () -> void
-            l0 : u16
-            l1 : f32
+            main::main : main::main() -> void
+              5 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : u16
+              3 : u16
+              4 : void
+              5 : main::main() -> void
+              l0 : u16
+              l1 : f32
         "#]],
         |_| [],
     );
@@ -34,11 +36,13 @@ fn weak_int_to_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : f32
-            2 : void
-            3 : () -> void
-            l0 : f32
+            main::main : main::main() -> void
+              3 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : f32
+              2 : void
+              3 : main::main() -> void
+              l0 : f32
         "#]],
         |_| [],
     );
@@ -55,15 +59,17 @@ fn inference_simple_by_annotation() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : usize
-            1 : usize
-            3 : usize
-            4 : void
-            5 : () -> void
-            l0 : usize
-            l1 : usize
-            l2 : usize
+            main::main : main::main() -> void
+              5 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : usize
+              1 : usize
+              3 : usize
+              4 : void
+              5 : main::main() -> void
+              l0 : usize
+              l1 : usize
+              l2 : usize
         "#]],
         |_| [],
     );
@@ -85,20 +91,22 @@ fn inference_complex_by_annotation() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i16
-            2 : bool
-            3 : i16
-            4 : i16
-            5 : i16
-            6 : i16
-            7 : i16
-            8 : i16
-            9 : i16
-            10 : void
-            11 : () -> void
-            l0 : i16
-            l1 : i16
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i16
+              2 : bool
+              3 : i16
+              4 : i16
+              5 : i16
+              6 : i16
+              7 : i16
+              8 : i16
+              9 : i16
+              10 : void
+              11 : main::main() -> void
+              l0 : i16
+              l1 : i16
         "#]],
         |_| [],
     );
@@ -115,14 +123,16 @@ fn inference_simple_by_return() {
             };
         "#,
         expect![[r#"
-            main::main : () -> usize
-            1 : usize
-            2 : usize
-            3 : usize
-            4 : usize
-            5 : () -> usize
-            l0 : usize
-            l1 : usize
+            main::main : main::main() -> usize
+              5 : main::main() -> usize
+            main::lambda#main : main::main() -> usize
+              1 : usize
+              2 : usize
+              3 : usize
+              4 : usize
+              5 : main::main() -> usize
+              l0 : usize
+              l1 : usize
         "#]],
         |_| [],
     );
@@ -145,21 +155,23 @@ fn inference_complex_by_return_ok() {
             };
         "#,
         expect![[r#"
-            main::main : () -> i8
-            1 : i8
-            2 : bool
-            3 : i8
-            4 : i8
-            5 : i8
-            6 : i8
-            7 : i8
-            8 : i8
-            9 : i8
-            10 : i8
-            11 : i8
-            12 : () -> i8
-            l0 : i8
-            l1 : i8
+            main::main : main::main() -> i8
+              12 : main::main() -> i8
+            main::lambda#main : main::main() -> i8
+              1 : i8
+              2 : bool
+              3 : i8
+              4 : i8
+              5 : i8
+              6 : i8
+              7 : i8
+              8 : i8
+              9 : i8
+              10 : i8
+              11 : i8
+              12 : main::main() -> i8
+              l0 : i8
+              l1 : i8
         "#]],
         |_| [],
     );
@@ -182,21 +194,23 @@ fn inference_complex_by_return_err() {
             };
         "#,
         expect![[r#"
-            main::main : () -> u8
-            1 : {int}
-            2 : bool
-            3 : {int}
-            4 : {int}
-            5 : {int}
-            6 : {int}
-            7 : {int}
-            8 : {int}
-            9 : {int}
-            10 : {int}
-            11 : <unknown>
-            12 : () -> u8
-            l0 : {int}
-            l1 : {int}
+            main::main : main::main() -> u8
+              12 : main::main() -> u8
+            main::lambda#main : main::main() -> u8
+              1 : {int}
+              2 : bool
+              3 : {int}
+              4 : {int}
+              5 : {int}
+              6 : {int}
+              7 : {int}
+              8 : {int}
+              9 : {int}
+              10 : {int}
+              11 : <unknown>
+              12 : main::main() -> u8
+              l0 : {int}
+              l1 : {int}
         "#]],
         |_| {
             [(
@@ -228,14 +242,16 @@ fn local_auto_small_to_big_same_sign() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> i16
-            2 : i8
-            4 : i8
-            5 : i16
-            6 : i16
-            7 : () -> i16
-            l0 : i8
-            l1 : i16
+            main::foo : main::foo() -> i16
+              7 : main::foo() -> i16
+            main::lambda#foo : main::foo() -> i16
+              2 : i8
+              4 : i8
+              5 : i16
+              6 : i16
+              7 : main::foo() -> i16
+              l0 : i8
+              l1 : i16
         "#]],
         |_| [],
     );
@@ -252,14 +268,16 @@ fn local_auto_big_to_small_same_sign() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> u8
-            2 : u16
-            4 : u16
-            5 : u8
-            6 : u8
-            7 : () -> u8
-            l0 : u16
-            l1 : u8
+            main::foo : main::foo() -> u8
+              7 : main::foo() -> u8
+            main::lambda#foo : main::foo() -> u8
+              2 : u16
+              4 : u16
+              5 : u8
+              6 : u8
+              7 : main::foo() -> u8
+              l0 : u16
+              l1 : u8
         "#]],
         |_| {
             [(
@@ -285,14 +303,16 @@ fn local_auto_small_unsigned_to_big_signed() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> i16
-            2 : u8
-            4 : u8
-            5 : i16
-            6 : i16
-            7 : () -> i16
-            l0 : u8
-            l1 : i16
+            main::foo : main::foo() -> i16
+              7 : main::foo() -> i16
+            main::lambda#foo : main::foo() -> i16
+              2 : u8
+              4 : u8
+              5 : i16
+              6 : i16
+              7 : main::foo() -> i16
+              l0 : u8
+              l1 : i16
         "#]],
         |_| [],
     );
@@ -309,14 +329,16 @@ fn local_auto_small_signed_to_big_unsigned() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> u16
-            2 : i8
-            4 : i8
-            5 : u16
-            6 : u16
-            7 : () -> u16
-            l0 : i8
-            l1 : u16
+            main::foo : main::foo() -> u16
+              7 : main::foo() -> u16
+            main::lambda#foo : main::foo() -> u16
+              2 : i8
+              4 : i8
+              5 : u16
+              6 : u16
+              7 : main::foo() -> u16
+              l0 : i8
+              l1 : u16
         "#]],
         |_| {
             // should fail due to loss of sign
@@ -343,14 +365,16 @@ fn local_auto_signed_to_unsigned() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> u16
-            2 : i16
-            4 : i16
-            5 : u16
-            6 : u16
-            7 : () -> u16
-            l0 : i16
-            l1 : u16
+            main::foo : main::foo() -> u16
+              7 : main::foo() -> u16
+            main::lambda#foo : main::foo() -> u16
+              2 : i16
+              4 : i16
+              5 : u16
+              6 : u16
+              7 : main::foo() -> u16
+              l0 : i16
+              l1 : u16
         "#]],
         |_| {
             [(
@@ -376,14 +400,16 @@ fn local_auto_big_signed_to_small_unsigned() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> u8
-            2 : i16
-            4 : i16
-            5 : u8
-            6 : u8
-            7 : () -> u8
-            l0 : i16
-            l1 : u8
+            main::foo : main::foo() -> u8
+              7 : main::foo() -> u8
+            main::lambda#foo : main::foo() -> u8
+              2 : i16
+              4 : i16
+              5 : u8
+              6 : u8
+              7 : main::foo() -> u8
+              l0 : i16
+              l1 : u8
         "#]],
         |_| {
             [(
@@ -415,23 +441,27 @@ fn reinfer_usages() {
             bar :: (x: usize) {};
         "#,
         expect![[r#"
-            main::bar : (usize) -> void
-            main::main : () -> void
-            0 : usize
-            1 : usize
-            2 : usize
-            3 : usize
-            4 : usize
-            5 : usize
-            6 : (usize) -> void
-            7 : usize
-            8 : void
-            9 : void
-            10 : () -> void
-            12 : void
-            13 : (usize) -> void
-            l0 : usize
-            l1 : usize
+            main::main : main::main() -> void
+              10 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : usize
+              1 : usize
+              2 : usize
+              3 : usize
+              4 : usize
+              5 : usize
+              6 : main::bar(usize) -> void
+              7 : usize
+              8 : void
+              9 : void
+              10 : main::main() -> void
+              l0 : usize
+              l1 : usize
+            main::bar : main::bar(usize) -> void
+              13 : main::bar(usize) -> void
+            main::lambda#bar : main::bar(usize) -> void
+              12 : void
+              13 : main::bar(usize) -> void
         "#]],
         |_| [],
     );
@@ -453,19 +483,23 @@ fn reinfer_params() {
             }
         "#,
         expect![[r#"
-            main::accept_any : (any) -> void
-            main::foo : () -> void
-            1 : void
-            2 : (any) -> void
-            3 : i16
-            4 : (any) -> void
-            5 : i16
-            6 : void
-            7 : i16
-            9 : i16
-            10 : void
-            11 : () -> void
-            l0 : i16
+            main::accept_any : main::accept_any(any) -> void
+              2 : main::accept_any(any) -> void
+            main::lambda#accept_any : main::accept_any(any) -> void
+              1 : void
+              2 : main::accept_any(any) -> void
+            main::foo : main::foo() -> void
+              11 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              3 : i16
+              4 : main::accept_any(any) -> void
+              5 : i16
+              6 : void
+              7 : i16
+              9 : i16
+              10 : void
+              11 : main::foo() -> void
+              l0 : i16
         "#]],
         |_| [],
     )
@@ -489,59 +523,61 @@ fn weak_to_strong_u8_array_of_arrays() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : u8
-            3 : u8
-            5 : u8
-            6 : usize
-            7 : usize
-            8 : usize
-            13 : u8
-            14 : u8
-            15 : u8
-            16 : [3]u8
-            17 : u8
-            18 : u8
-            19 : u8
-            20 : [3]u8
-            21 : u8
-            22 : u8
-            23 : u8
-            24 : [3]u8
-            25 : [3][3]u8
-            26 : u8
-            27 : u8
-            28 : u8
-            29 : [3]u8
-            30 : u8
-            31 : u8
-            32 : u8
-            33 : [3]u8
-            34 : u8
-            35 : u8
-            36 : u8
-            37 : [3]u8
-            38 : [3][3]u8
-            39 : u8
-            40 : u8
-            41 : u8
-            42 : [3]u8
-            43 : u8
-            44 : u8
-            45 : u8
-            46 : [3]u8
-            47 : u8
-            48 : u8
-            49 : u8
-            50 : [3]u8
-            51 : [3][3]u8
-            52 : [3][3][3]u8
-            53 : void
-            54 : () -> void
-            l0 : u8
-            l1 : u8
-            l2 : u8
-            l3 : [3][3][3]u8
+            main::main : main::main() -> void
+              54 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : u8
+              3 : u8
+              5 : u8
+              6 : usize
+              7 : usize
+              8 : usize
+              13 : u8
+              14 : u8
+              15 : u8
+              16 : [3]u8
+              17 : u8
+              18 : u8
+              19 : u8
+              20 : [3]u8
+              21 : u8
+              22 : u8
+              23 : u8
+              24 : [3]u8
+              25 : [3][3]u8
+              26 : u8
+              27 : u8
+              28 : u8
+              29 : [3]u8
+              30 : u8
+              31 : u8
+              32 : u8
+              33 : [3]u8
+              34 : u8
+              35 : u8
+              36 : u8
+              37 : [3]u8
+              38 : [3][3]u8
+              39 : u8
+              40 : u8
+              41 : u8
+              42 : [3]u8
+              43 : u8
+              44 : u8
+              45 : u8
+              46 : [3]u8
+              47 : u8
+              48 : u8
+              49 : u8
+              50 : [3]u8
+              51 : [3][3]u8
+              52 : [3][3][3]u8
+              53 : void
+              54 : main::main() -> void
+              l0 : u8
+              l1 : u8
+              l2 : u8
+              l3 : [3][3][3]u8
         "#]],
         |_| [],
     )
@@ -565,59 +601,61 @@ fn weak_to_strong_uint_array_of_arrays() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : u8
-            1 : u8
-            2 : u8
-            3 : usize
-            4 : usize
-            5 : usize
-            10 : u8
-            11 : u8
-            12 : u8
-            13 : [3]u8
-            14 : u8
-            15 : u8
-            16 : u8
-            17 : [3]u8
-            18 : u8
-            19 : u8
-            20 : u8
-            21 : [3]u8
-            22 : [3][3]u8
-            23 : u8
-            24 : u8
-            25 : u8
-            26 : [3]u8
-            27 : u8
-            28 : u8
-            29 : u8
-            30 : [3]u8
-            31 : u8
-            32 : u8
-            33 : u8
-            34 : [3]u8
-            35 : [3][3]u8
-            36 : u8
-            37 : u8
-            38 : u8
-            39 : [3]u8
-            40 : u8
-            41 : u8
-            42 : u8
-            43 : [3]u8
-            44 : u8
-            45 : u8
-            46 : u8
-            47 : [3]u8
-            48 : [3][3]u8
-            49 : [3][3][3]u8
-            50 : void
-            51 : () -> void
-            l0 : u8
-            l1 : u8
-            l2 : u8
-            l3 : [3][3][3]u8
+            main::main : main::main() -> void
+              51 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : u8
+              1 : u8
+              2 : u8
+              3 : usize
+              4 : usize
+              5 : usize
+              10 : u8
+              11 : u8
+              12 : u8
+              13 : [3]u8
+              14 : u8
+              15 : u8
+              16 : u8
+              17 : [3]u8
+              18 : u8
+              19 : u8
+              20 : u8
+              21 : [3]u8
+              22 : [3][3]u8
+              23 : u8
+              24 : u8
+              25 : u8
+              26 : [3]u8
+              27 : u8
+              28 : u8
+              29 : u8
+              30 : [3]u8
+              31 : u8
+              32 : u8
+              33 : u8
+              34 : [3]u8
+              35 : [3][3]u8
+              36 : u8
+              37 : u8
+              38 : u8
+              39 : [3]u8
+              40 : u8
+              41 : u8
+              42 : u8
+              43 : [3]u8
+              44 : u8
+              45 : u8
+              46 : u8
+              47 : [3]u8
+              48 : [3][3]u8
+              49 : [3][3][3]u8
+              50 : void
+              51 : main::main() -> void
+              l0 : u8
+              l1 : u8
+              l2 : u8
+              l3 : [3][3][3]u8
         "#]],
         |_| [],
     )
@@ -645,27 +683,29 @@ fn reinfer_final_usages() {
             }
         "#,
         expect![[r#"
-            main::log2_u64 : (u64) -> u64
-            2 : u64
-            3 : u64
-            4 : u64
-            5 : u64
-            6 : bool
-            7 : u64
-            8 : u64
-            9 : u64
-            10 : u64
-            11 : u64
-            12 : u64
-            13 : u64
-            14 : u64
-            15 : void
-            16 : void
-            17 : u64
-            18 : u64
-            19 : (u64) -> u64
-            l0 : u64
-            l1 : u64
+            main::log2_u64 : main::log2_u64(u64) -> u64
+              19 : main::log2_u64(u64) -> u64
+            main::lambda#log2_u64 : main::log2_u64(u64) -> u64
+              2 : u64
+              3 : u64
+              4 : u64
+              5 : u64
+              6 : bool
+              7 : u64
+              8 : u64
+              9 : u64
+              10 : u64
+              11 : u64
+              12 : u64
+              13 : u64
+              14 : u64
+              15 : void
+              16 : void
+              17 : u64
+              18 : u64
+              19 : main::log2_u64(u64) -> u64
+              l0 : u64
+              l1 : u64
         "#]],
         |_| [],
     )

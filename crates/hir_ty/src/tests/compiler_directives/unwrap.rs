@@ -28,20 +28,22 @@ fn unwrap_directive() {
         "#,
         expect![[r#"
             main::Web_Event : type
-            main::foo : () -> void
-            5 : type
-            7 : type
-            9 : i64
-            10 : i64
-            11 : main::Web_Event.Click
-            12 : main::Web_Event
-            13 : type
-            14 : type
-            15 : main::Web_Event.Click
-            16 : void
-            17 : () -> void
-            l0 : main::Web_Event
-            l1 : main::Web_Event.Click
+              5 : type
+            main::foo : main::foo() -> void
+              17 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              7 : type
+              9 : i64
+              10 : i64
+              11 : main::Web_Event.Click
+              12 : main::Web_Event
+              13 : type
+              14 : type
+              15 : main::Web_Event.Click
+              16 : void
+              17 : main::foo() -> void
+              l0 : main::Web_Event
+              l1 : main::Web_Event.Click
         "#]],
         |_| [],
     )
@@ -56,11 +58,13 @@ fn unwrap_directive_no_args() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : <unknown>
-            1 : void
-            2 : () -> void
-            l0 : <unknown>
+            main::foo : main::foo() -> void
+              2 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : <unknown>
+              1 : void
+              2 : main::foo() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -83,12 +87,14 @@ fn unwrap_directive_non_sum_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : <unknown>
-            2 : void
-            3 : () -> void
-            l0 : <unknown>
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : <unknown>
+              2 : void
+              3 : main::foo() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -129,19 +135,21 @@ fn unwrap_directive_enum_with_non_type() {
         "#,
         expect![[r#"
             main::Web_Event : type
-            main::foo : () -> void
-            5 : type
-            7 : type
-            9 : i64
-            10 : i64
-            11 : main::Web_Event.Click
-            12 : main::Web_Event
-            13 : {uint}
-            14 : <unknown>
-            15 : void
-            16 : () -> void
-            l0 : main::Web_Event
-            l1 : <unknown>
+              5 : type
+            main::foo : main::foo() -> void
+              16 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              7 : type
+              9 : i64
+              10 : i64
+              11 : main::Web_Event.Click
+              12 : main::Web_Event
+              13 : {uint}
+              14 : <unknown>
+              15 : void
+              16 : main::foo() -> void
+              l0 : main::Web_Event
+              l1 : <unknown>
         "#]],
         |_| {
             [(
@@ -182,19 +190,21 @@ fn unwrap_directive_enum_with_type_incorrect() {
         "#,
         expect![[r#"
             main::Web_Event : type
-            main::foo : () -> void
-            5 : type
-            7 : type
-            9 : i64
-            10 : i64
-            11 : main::Web_Event.Click
-            12 : main::Web_Event
-            13 : type
-            14 : <unknown>
-            15 : void
-            16 : () -> void
-            l0 : main::Web_Event
-            l1 : <unknown>
+              5 : type
+            main::foo : main::foo() -> void
+              16 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              7 : type
+              9 : i64
+              10 : i64
+              11 : main::Web_Event.Click
+              12 : main::Web_Event
+              13 : type
+              14 : <unknown>
+              15 : void
+              16 : main::foo() -> void
+              l0 : main::Web_Event
+              l1 : <unknown>
         "#]],
         |i| {
             [(
@@ -205,7 +215,7 @@ fn unwrap_directive_enum_with_type_incorrect() {
                         variants: vec![
                             Ty::EnumVariant {
                                 enum_uid: 6,
-                                variant_name: hir::Name(i.intern("Page_Load")),
+                                variant_name: Name(i.intern("Page_Load")),
                                 uid: 0,
                                 sub_ty: Ty::Void.into(),
                                 discriminant: 0,
@@ -213,7 +223,7 @@ fn unwrap_directive_enum_with_type_incorrect() {
                             .into(),
                             Ty::EnumVariant {
                                 enum_uid: 6,
-                                variant_name: hir::Name(i.intern("Page_Unload")),
+                                variant_name: Name(i.intern("Page_Unload")),
                                 uid: 1,
                                 sub_ty: Ty::Void.into(),
                                 discriminant: 1,
@@ -221,7 +231,7 @@ fn unwrap_directive_enum_with_type_incorrect() {
                             .into(),
                             Ty::EnumVariant {
                                 enum_uid: 6,
-                                variant_name: hir::Name(i.intern("Key_Press")),
+                                variant_name: Name(i.intern("Key_Press")),
                                 uid: 2,
                                 sub_ty: Ty::Char.into(),
                                 discriminant: 2,
@@ -229,7 +239,7 @@ fn unwrap_directive_enum_with_type_incorrect() {
                             .into(),
                             Ty::EnumVariant {
                                 enum_uid: 6,
-                                variant_name: hir::Name(i.intern("Paste")),
+                                variant_name: Name(i.intern("Paste")),
                                 uid: 3,
                                 sub_ty: Ty::String.into(),
                                 discriminant: 3,
@@ -237,17 +247,17 @@ fn unwrap_directive_enum_with_type_incorrect() {
                             .into(),
                             Ty::EnumVariant {
                                 enum_uid: 6,
-                                variant_name: hir::Name(i.intern("Click")),
+                                variant_name: Name(i.intern("Click")),
                                 uid: 5,
                                 sub_ty: Ty::ConcreteStruct {
                                     uid: 4,
                                     members: vec![
                                         MemberTy {
-                                            name: hir::Name(i.intern("x")),
+                                            name: Name(i.intern("x")),
                                             ty: Ty::IInt(64).into(),
                                         },
                                         MemberTy {
-                                            name: hir::Name(i.intern("y")),
+                                            name: Name(i.intern("y")),
                                             ty: Ty::IInt(64).into(),
                                         },
                                     ],
@@ -293,22 +303,24 @@ fn unwrap_directive_enum_extra_arg() {
         "#,
         expect![[r#"
             main::Web_Event : type
-            main::foo : () -> void
-            5 : type
-            7 : type
-            9 : i64
-            10 : i64
-            11 : main::Web_Event.Click
-            12 : main::Web_Event
-            13 : type
-            14 : type
-            15 : {uint}
-            16 : type
-            17 : <unknown>
-            18 : void
-            19 : () -> void
-            l0 : main::Web_Event
-            l1 : <unknown>
+              5 : type
+            main::foo : main::foo() -> void
+              19 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              7 : type
+              9 : i64
+              10 : i64
+              11 : main::Web_Event.Click
+              12 : main::Web_Event
+              13 : type
+              14 : type
+              15 : {uint}
+              16 : type
+              17 : <unknown>
+              18 : void
+              19 : main::foo() -> void
+              l0 : main::Web_Event
+              l1 : <unknown>
         "#]],
         |_| {
             [
@@ -342,15 +354,17 @@ fn unwrap_directive_optional_without_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : str
-            6 : void
-            7 : () -> void
-            l0 : ?str
-            l1 : str
+            main::foo : main::foo() -> void
+              7 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : str
+              6 : void
+              7 : main::foo() -> void
+              l0 : ?str
+              l1 : str
         "#]],
         |_| [],
     )
@@ -367,16 +381,18 @@ fn unwrap_directive_optional_with_type_correct() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : type
-            6 : str
-            7 : void
-            8 : () -> void
-            l0 : ?str
-            l1 : str
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : type
+              6 : str
+              7 : void
+              8 : main::foo() -> void
+              l0 : ?str
+              l1 : str
         "#]],
         |_| [],
     )
@@ -393,16 +409,18 @@ fn unwrap_directive_optional_with_nil_correct() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : nil
-            6 : nil
-            7 : void
-            8 : () -> void
-            l0 : ?str
-            l1 : nil
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : nil
+              6 : nil
+              7 : void
+              8 : main::foo() -> void
+              l0 : ?str
+              l1 : nil
         "#]],
         |_| [],
     )
@@ -419,16 +437,18 @@ fn unwrap_directive_optional_with_type_incorrect() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : type
-            6 : <unknown>
-            7 : void
-            8 : () -> void
-            l0 : ?str
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : type
+              6 : <unknown>
+              7 : void
+              8 : main::foo() -> void
+              l0 : ?str
+              l1 : <unknown>
         "#]],
         |_| {
             [(
@@ -458,18 +478,20 @@ fn unwrap_directive_optional_with_type_incorrect_extra_arg() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : type
-            6 : str
-            7 : bool
-            8 : <unknown>
-            9 : void
-            10 : () -> void
-            l0 : ?str
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              10 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : type
+              6 : str
+              7 : bool
+              8 : <unknown>
+              9 : void
+              10 : main::foo() -> void
+              l0 : ?str
+              l1 : <unknown>
         "#]],
         |_| {
             [(
@@ -498,18 +520,20 @@ fn unwrap_directive_optional_with_type_correct_extra_arg() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            3 : ?str
-            4 : ?str
-            5 : type
-            6 : str
-            7 : bool
-            8 : <unknown>
-            9 : void
-            10 : () -> void
-            l0 : ?str
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              10 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              3 : ?str
+              4 : ?str
+              5 : type
+              6 : str
+              7 : bool
+              8 : <unknown>
+              9 : void
+              10 : main::foo() -> void
+              l0 : ?str
+              l1 : <unknown>
         "#]],
         |_| {
             [
@@ -543,16 +567,18 @@ fn unwrap_directive_error_union_with_payload_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            4 : str!u64
-            5 : str!u64
-            6 : type
-            7 : u64
-            8 : void
-            9 : () -> void
-            l0 : str!u64
-            l1 : u64
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              4 : str!u64
+              5 : str!u64
+              6 : type
+              7 : u64
+              8 : void
+              9 : main::foo() -> void
+              l0 : str!u64
+              l1 : u64
         "#]],
         |_| [],
     )
@@ -570,16 +596,18 @@ fn unwrap_directive_error_union_with_error_type() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            4 : str!u64
-            5 : str!u64
-            6 : type
-            7 : str
-            8 : void
-            9 : () -> void
-            l0 : str!u64
-            l1 : str
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              4 : str!u64
+              5 : str!u64
+              6 : type
+              7 : str
+              8 : void
+              9 : main::foo() -> void
+              l0 : str!u64
+              l1 : str
         "#]],
         |_| [],
     )
@@ -597,16 +625,18 @@ fn unwrap_directive_error_union_with_type_incorrect() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            4 : str!u64
-            5 : str!u64
-            6 : type
-            7 : <unknown>
-            8 : void
-            9 : () -> void
-            l0 : str!u64
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              4 : str!u64
+              5 : str!u64
+              6 : type
+              7 : <unknown>
+              8 : void
+              9 : main::foo() -> void
+              l0 : str!u64
+              l1 : <unknown>
         "#]],
         |_| {
             [(
@@ -636,18 +666,20 @@ fn unwrap_directive_error_union_extra_arg() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            4 : str!u64
-            5 : str!u64
-            6 : type
-            7 : str
-            8 : bool
-            9 : <unknown>
-            10 : void
-            11 : () -> void
-            l0 : str!u64
-            l1 : <unknown>
+            main::foo : main::foo() -> void
+              11 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              4 : str!u64
+              5 : str!u64
+              6 : type
+              7 : str
+              8 : bool
+              9 : <unknown>
+              10 : void
+              11 : main::foo() -> void
+              l0 : str!u64
+              l1 : <unknown>
         "#]],
         |_| {
             [

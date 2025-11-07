@@ -9,11 +9,50 @@ mem :: #import("mem.capy");
 meta :: #import("meta.capy");
 ptr :: #import("ptr.capy");
 
-list :: #import("structs/list.capy");
+dyn_list :: #import("structs/dyn_list.capy");
+stack_list :: #import("structs/stack_list.capy");
 string_builder :: #import("structs/string_builder.capy");
 
 // this gets populated with `argc` and `argv` just before `main` gets called
 args : [] str : #builtin("commandline_args");
+
+// Allocates a new T in the heap.
+//
+// Usage:
+// ```
+// User :: struct {
+//     name: str,
+//     age: u8,
+// };
+//
+// bob := new(User);
+// bob.name = "Hi";
+// bob.age = 20;
+// ```
+//
+// TODO: fill the new struct with whatever the type default is
+new :: (comptime T: type) -> ?^mut T {
+    raw := libc.malloc(meta.size_of(T));
+
+    ?^mut T.(raw)
+}
+
+dupe :: (comptime T: type, value: T) -> ?^mut T {
+    dst := new(T);
+
+    switch dst in dst {
+        ^mut T => {
+            cast_into_const(value, T, dst);
+        },
+        nil => {}
+    }
+
+    dst
+}
+
+free :: (data: ?mut rawptr) {
+    libc.free(data)
+}
 
 // for testing.
 // exits the program if a check failed, and prints the specificed message
@@ -219,13 +258,13 @@ print :: (values: ...any) {
                 idx := 0;
                 while idx < info.len {
                     addr := ptr.const_offset(data, elem_stride * idx);
-                    
+
                     print(any_from_raw_parts(addr, info.sub_ty));
 
                     if idx < info.len - 1 {
                         _print_str(", ");
                     }
-                    
+
                     idx += 1;
                 }
 
@@ -267,10 +306,10 @@ print :: (values: ...any) {
                     defer string_builder.free(^mut str);
 
                     string_builder.print(^str);
-                 
+
                     break `struct_blk;
                 }
-            
+
                 _print_str("{ ");
 
                 idx := 0;
@@ -515,6 +554,10 @@ str_len :: (s: str) -> usize {
     idx
 }
 
+cast_into_const :: (value: any, comptime Expected: type, into: ^mut Expected) -> any {
+    cast_into(value, Expected, into)
+}
+
 // casts an `any` into the specificied memory.
 // the buffer must have enough space for `expected`.
 //
@@ -585,7 +628,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                         ^mut u128.(into) ^= u128.(num);
                     } else {
                         unreachable();
-                    }       
+                    }
                 },
                 .Float => {
                     // int -> float
@@ -631,7 +674,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                         ^mut u128.(into) ^= u128.(num);
                     } else {
                         unreachable();
-                    }       
+                    }
                 },
                 .Float => {
                     // float -> float
@@ -670,7 +713,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                         ^mut u128.(into) ^= u128.(value);
                     } else {
                         unreachable();
-                    }       
+                    }
                 },
                 .Float => {
                     // bool -> float
@@ -718,7 +761,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                         ^mut u128.(into) ^= u128.(value);
                     } else {
                         unreachable();
-                    }       
+                    }
                 },
                 .Float => {
                     // char -> float
@@ -801,7 +844,7 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
                 ),
                 expected,
                 into
-            );    
+            );
         },
         .Struct => {
             assert(
@@ -907,4 +950,3 @@ cast_into :: (value: any, expected: type, into: mut rawptr) -> any {
 type_of :: (val: any) -> type {
     val.ty
 }
-

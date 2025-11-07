@@ -15,6 +15,7 @@ mod enums;
 mod error_unions;
 mod r#extern;
 mod functions;
+mod generics;
 mod globals;
 mod if_else;
 mod inference;
@@ -97,7 +98,7 @@ fn check_impl<const N: usize>(
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
         let (index, _) = hir::index(root, &tree, &mut interner);
 
-        let module = hir::FileName(interner.intern(name));
+        let module = FileName(interner.intern(name));
 
         let (bodies, _) = hir::lower(
             root,
@@ -118,7 +119,7 @@ fn check_impl<const N: usize>(
     }
 
     let text = &modules["main.capy"];
-    let module = hir::FileName(interner.intern("main.capy"));
+    let module = FileName(interner.intern("main.capy"));
     let tokens = lexer::lex(text);
     let parse = parser::parse_source_file(&tokens, text);
     parse_diags.extend(parse.errors());
@@ -158,37 +159,45 @@ fn check_impl<const N: usize>(
         println!("lowering errors: {:#?}", lowering_diags);
     }
 
-    let entry_point = entry_point.map(|entry_point| hir::Fqn {
+    let entry_point = entry_point.map(|entry_point| Fqn {
         file: module,
-        name: hir::Name(interner.intern(entry_point)),
+        name: Name(interner.intern(entry_point)),
     });
 
-    let mut comptime_results = FxHashMap::default();
+    let mut comptime_results = ComptimeResultMap::default();
+
+    let mut generic_values = Arena::new();
 
     let InferenceResult {
         tys,
         diagnostics: actual_diagnostics,
         any_were_unsafe_to_compile,
-    } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
-        codegen::eval_comptime_blocks(
-            Verbosity::AllFunctions {
-                include_disasm: true,
-            },
-            vec![comptime],
-            &mut comptime_results,
-            Path::new(""),
-            &interner,
-            &world_bodies,
-            // transmute to get past cyclic dependencies
-            #[allow(clippy::missing_transmute_annotations)]
-            unsafe {
-                std::mem::transmute(tys)
-            },
-            Triple::host().pointer_width().unwrap().bits(),
-        );
+    } = InferenceCtx::new(
+        &world_index,
+        &world_bodies,
+        &interner,
+        &mut generic_values,
+        |comptime, tys| {
+            codegen::eval_comptime_blocks(
+                Verbosity::AllFunctions {
+                    include_disasm: true,
+                },
+                &mut std::iter::once(unsafe { std::mem::transmute(comptime) }),
+                unsafe { std::mem::transmute(&mut comptime_results) },
+                Path::new(""),
+                &interner,
+                &world_bodies,
+                // transmute to get past cyclic dependencies
+                #[allow(clippy::missing_transmute_annotations)]
+                unsafe {
+                    std::mem::transmute(tys)
+                },
+                Triple::host().pointer_width().unwrap().bits(),
+            );
 
-        unsafe { std::mem::transmute(comptime_results[&comptime].clone()) }
-    })
+            unsafe { std::mem::transmute(comptime_results[comptime].clone()) }
+        },
+    )
     .finish(entry_point, true);
 
     let tys_debug = tys.debug(Path::new(""), &interner, true, false);
@@ -224,11 +233,11 @@ fn check_impl<const N: usize>(
     // todo: make better choices
     let our_map = ENUM_MAP.with_borrow(|map| map.clone());
     #[allow(clippy::missing_transmute_annotations)]
-    diagnostics::hir_ty::ENUM_MAP.set(unsafe { std::mem::transmute(our_map) });
+    diagnostics::hir::common::ENUM_MAP.set(unsafe { std::mem::transmute(our_map) });
 
     let our_map = TYPE_NAMES.with_borrow(|map| map.clone());
     #[allow(clippy::missing_transmute_annotations)]
-    diagnostics::hir_ty::TYPE_NAMES.set(unsafe { std::mem::transmute(our_map) });
+    diagnostics::hir::common::TYPE_NAMES.set(unsafe { std::mem::transmute(our_map) });
 
     // I display the diagnostics here so if there's a mismatch one can visually see it
 
@@ -311,4 +320,5 @@ fn check_impl<const N: usize>(
             panic!("errors but safe to compile");
         }
     }
+    assert_eq!(any_errs, any_were_unsafe_to_compile);
 }

@@ -11,14 +11,16 @@ fn anon_array() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : ~[3]{uint}
-            4 : void
-            5 : () -> void
-            l0 : ~[3]{uint}
+            main::anon : main::anon() -> void
+              5 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : ~[3]{uint}
+              4 : void
+              5 : main::anon() -> void
+              l0 : ~[3]{uint}
         "#]],
         |_| [],
     )
@@ -33,15 +35,17 @@ fn anon_array_into_known_array() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : usize
-            3 : u16
-            4 : u16
-            5 : u16
-            6 : [3]u16
-            7 : void
-            8 : () -> void
-            l0 : [3]u16
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : usize
+              3 : u16
+              4 : u16
+              5 : u16
+              6 : [3]u16
+              7 : void
+              8 : main::anon() -> void
+              l0 : [3]u16
         "#]],
         |_| [],
     )
@@ -56,14 +60,16 @@ fn anon_array_into_known_slice() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            2 : u16
-            3 : u16
-            4 : u16
-            5 : [3]u16
-            6 : void
-            7 : () -> void
-            l0 : []u16
+            main::anon : main::anon() -> void
+              7 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              2 : u16
+              3 : u16
+              4 : u16
+              5 : [3]u16
+              6 : void
+              7 : main::anon() -> void
+              l0 : []u16
         "#]],
         |_| [],
     )
@@ -78,16 +84,18 @@ fn anon_array_as_known_array() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : u128
-            1 : u128
-            2 : u128
-            3 : [3]u128
-            4 : usize
-            7 : [3]u128
-            8 : void
-            9 : () -> void
-            l0 : [3]u128
+            main::anon : main::anon() -> void
+              9 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : u128
+              1 : u128
+              2 : u128
+              3 : [3]u128
+              4 : usize
+              7 : [3]u128
+              8 : void
+              9 : main::anon() -> void
+              l0 : [3]u128
         "#]],
         |_| [],
     )
@@ -102,15 +110,17 @@ fn anon_array_as_known_slice() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : i8
-            1 : i8
-            2 : i8
-            3 : [3]i8
-            6 : []i8
-            7 : void
-            8 : () -> void
-            l0 : []i8
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : i8
+              1 : i8
+              2 : i8
+              3 : [3]i8
+              6 : []i8
+              7 : void
+              8 : main::anon() -> void
+              l0 : []i8
         "#]],
         |_| [],
     )
@@ -125,16 +135,18 @@ fn anon_array_into_known_array_too_large() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : usize
-            3 : {uint}
-            4 : {uint}
-            5 : {uint}
-            6 : {uint}
-            7 : ~[4]{uint}
-            8 : void
-            9 : () -> void
-            l0 : [3]i16
+            main::anon : main::anon() -> void
+              9 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : usize
+              3 : {uint}
+              4 : {uint}
+              5 : {uint}
+              6 : {uint}
+              7 : ~[4]{uint}
+              8 : void
+              9 : main::anon() -> void
+              l0 : [3]i16
         "#]],
         |_| {
             [(
@@ -168,14 +180,16 @@ fn anon_array_into_known_array_too_small() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : usize
-            3 : {uint}
-            4 : {uint}
-            5 : ~[2]{uint}
-            6 : void
-            7 : () -> void
-            l0 : [3]i16
+            main::anon : main::anon() -> void
+              7 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : usize
+              3 : {uint}
+              4 : {uint}
+              5 : ~[2]{uint}
+              6 : void
+              7 : main::anon() -> void
+              l0 : [3]i16
         "#]],
         |_| {
             [(
@@ -211,16 +225,18 @@ fn anon_array_into_known_array_by_inference() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : i128
-            1 : i128
-            2 : [2]i128
-            3 : usize
-            6 : [2]i128
-            7 : void
-            8 : () -> void
-            l0 : [2]i128
-            l1 : [2]i128
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : i128
+              1 : i128
+              2 : [2]i128
+              3 : usize
+              6 : [2]i128
+              7 : void
+              8 : main::anon() -> void
+              l0 : [2]i128
+              l1 : [2]i128
         "#]],
         |_| [],
     )
@@ -237,15 +253,17 @@ fn anon_array_into_known_slice_by_inference() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : u128
-            1 : u128
-            2 : [2]u128
-            5 : [2]u128
-            6 : void
-            7 : () -> void
-            l0 : [2]u128
-            l1 : []u128
+            main::anon : main::anon() -> void
+              7 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : u128
+              1 : u128
+              2 : [2]u128
+              5 : [2]u128
+              6 : void
+              7 : main::anon() -> void
+              l0 : [2]u128
+              l1 : []u128
         "#]],
         |_| [],
     )
@@ -260,15 +278,17 @@ fn anon_array_signed_int_inner_type() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {int}
-            1 : {int}
-            2 : {int}
-            3 : {int}
-            4 : ~[3]{int}
-            5 : void
-            6 : () -> void
-            l0 : ~[3]{int}
+            main::anon : main::anon() -> void
+              6 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {int}
+              1 : {int}
+              2 : {int}
+              3 : {int}
+              4 : ~[3]{int}
+              5 : void
+              6 : main::anon() -> void
+              l0 : ~[3]{int}
         "#]],
         |_| [],
     )
@@ -285,16 +305,18 @@ fn anon_array_i64_inner_type() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            1 : i64
-            2 : i64
-            3 : i64
-            4 : i64
-            5 : ~[3]i64
-            6 : void
-            7 : () -> void
-            l0 : i64
-            l1 : ~[3]i64
+            main::anon : main::anon() -> void
+              7 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              1 : i64
+              2 : i64
+              3 : i64
+              4 : i64
+              5 : ~[3]i64
+              6 : void
+              7 : main::anon() -> void
+              l0 : i64
+              l1 : ~[3]i64
         "#]],
         |_| [],
     )
@@ -312,19 +334,21 @@ fn anon_array_i64_i128_inner_type() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            1 : i64
-            3 : i128
-            4 : i128
-            5 : i64
-            6 : i128
-            7 : i128
-            8 : ~[4]i128
-            9 : void
-            10 : () -> void
-            l0 : i64
-            l1 : i128
-            l2 : ~[4]i128
+            main::anon : main::anon() -> void
+              10 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              1 : i64
+              3 : i128
+              4 : i128
+              5 : i64
+              6 : i128
+              7 : i128
+              8 : ~[4]i128
+              9 : void
+              10 : main::anon() -> void
+              l0 : i64
+              l1 : i128
+              l2 : ~[4]i128
         "#]],
         |_| [],
     )
@@ -341,17 +365,19 @@ fn anon_array_mismatch_inner_types() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : {int}
-            2 : {int}
-            3 : bool
-            4 : str
-            5 : {float}
-            6 : ~[5]<unknown>
-            7 : void
-            8 : () -> void
-            l0 : ~[5]<unknown>
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : {int}
+              2 : {int}
+              3 : bool
+              4 : str
+              5 : {float}
+              6 : ~[5]<unknown>
+              7 : void
+              8 : main::anon() -> void
+              l0 : ~[5]<unknown>
         "#]],
         |_| {
             [(
@@ -377,17 +403,19 @@ fn anon_array_index() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : ~[3]{uint}
-            4 : ~[3]{uint}
-            5 : usize
-            6 : {uint}
-            7 : void
-            8 : () -> void
-            l0 : ~[3]{uint}
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : ~[3]{uint}
+              4 : ~[3]{uint}
+              5 : usize
+              6 : {uint}
+              7 : void
+              8 : main::anon() -> void
+              l0 : ~[3]{uint}
         "#]],
         |_| [],
     )
@@ -405,18 +433,20 @@ fn anon_array_index_mutation() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : ~[3]{uint}
-            4 : ~[3]{uint}
-            5 : usize
-            6 : {uint}
-            7 : {uint}
-            8 : void
-            9 : () -> void
-            l0 : ~[3]{uint}
+            main::anon : main::anon() -> void
+              9 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : ~[3]{uint}
+              4 : ~[3]{uint}
+              5 : usize
+              6 : {uint}
+              7 : {uint}
+              8 : void
+              9 : main::anon() -> void
+              l0 : ~[3]{uint}
         "#]],
         |_| [],
     )

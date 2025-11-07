@@ -2,7 +2,7 @@ pub mod abi;
 use std::{cell::OnceCell, sync::Mutex};
 
 use cranelift::prelude::types;
-use hir_ty::Ty;
+use hir::common::Ty;
 use internment::Intern;
 use rustc_hash::FxHashMap;
 
@@ -160,12 +160,12 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
 
     let final_ty = match ty.as_ref() {
         _ if ty.is_zero_sized() => FinalTy::Void,
-        hir_ty::Ty::NotYetResolved | hir_ty::Ty::Unknown => FinalTy::Void,
-        hir_ty::Ty::IInt(bit_width) => finalize_int(*bit_width, true),
+        Ty::NotYetResolved | Ty::Unknown => FinalTy::Void,
+        Ty::IInt(bit_width) => finalize_int(*bit_width, true),
         // {uint} => i32
-        hir_ty::Ty::UInt(0) => finalize_int(0, true),
-        hir_ty::Ty::UInt(bit_width) => finalize_int(*bit_width, false),
-        hir_ty::Ty::Float(bit_width) => match bit_width {
+        Ty::UInt(0) => finalize_int(0, true),
+        Ty::UInt(bit_width) => finalize_int(*bit_width, false),
+        Ty::Float(bit_width) => match bit_width {
             0 => FinalTy::Number(NumberType {
                 ty: types::F32,
                 float: true,
@@ -183,29 +183,37 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             }),
             _ => unreachable!(),
         },
-        hir_ty::Ty::Bool | hir_ty::Ty::Char => FinalTy::Number(NumberType {
+        Ty::Bool | Ty::Char => FinalTy::Number(NumberType {
             ty: types::I8,
             float: false,
             signed: false,
         }),
-        hir_ty::Ty::String => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::AnonArray { sub_ty, .. } | hir_ty::Ty::ConcreteArray { sub_ty, .. } => {
+        Ty::String => FinalTy::Pointer(ptr_ty),
+        Ty::AnonArray { sub_ty, .. } | Ty::ConcreteArray { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Slice { sub_ty, .. } => {
+        Ty::Slice { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Pointer { sub_ty, .. } => {
+        Ty::Pointer { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Distinct { sub_ty, .. } => {
+        Ty::Distinct { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             sub_ty.get_final_ty()
         }
-        hir_ty::Ty::Function {
+        Ty::NaivePolymorphicFunction { .. } => {
+            unreachable!("these shouldn't get to codegen")
+        }
+        Ty::ConcreteFunction {
+            param_tys,
+            return_ty,
+            ..
+        }
+        | Ty::FunctionPointer {
             param_tys,
             return_ty,
         } => {
@@ -215,29 +223,29 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             calc_single(*return_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::AnonStruct { members } | hir_ty::Ty::ConcreteStruct { members, .. } => {
+        Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
             for member in members {
                 calc_single(member.ty, ptr_ty);
             }
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Enum { variants, .. } => {
+        Ty::Enum { variants, .. } => {
             for variant in variants {
                 calc_single(*variant, ptr_ty);
             }
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::EnumVariant { sub_ty, .. } => {
+        Ty::EnumVariant { sub_ty, .. } => {
             calc_single(*sub_ty, ptr_ty);
             sub_ty.get_final_ty()
         }
-        hir_ty::Ty::Optional { sub_ty } => {
+        Ty::Optional { sub_ty } => {
             calc_single(*sub_ty, ptr_ty);
             // if this is an optional pointer, the final type will be pointer
             // and if this is a normal optional, the final type will be an enum (so, a pointer)
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::ErrorUnion {
+        Ty::ErrorUnion {
             error_ty,
             payload_ty,
         } => {
@@ -245,18 +253,18 @@ fn calc_single(ty: Intern<Ty>, ptr_ty: types::Type) {
             calc_single(*payload_ty, ptr_ty);
             FinalTy::Pointer(ptr_ty)
         }
-        hir_ty::Ty::Nil => FinalTy::Void,
-        hir_ty::Ty::Type => FinalTy::Number(NumberType {
+        Ty::Nil => FinalTy::Void,
+        Ty::Type => FinalTy::Number(NumberType {
             ty: types::I32,
             float: false,
             signed: false,
         }),
-        hir_ty::Ty::Any => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::RawPtr { .. } => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::RawSlice => FinalTy::Pointer(ptr_ty),
-        hir_ty::Ty::Void => FinalTy::Void,
-        hir_ty::Ty::AlwaysJumps => FinalTy::Void,
-        hir_ty::Ty::File(_) => FinalTy::Void,
+        Ty::Any => FinalTy::Pointer(ptr_ty),
+        Ty::RawPtr { .. } => FinalTy::Pointer(ptr_ty),
+        Ty::RawSlice => FinalTy::Pointer(ptr_ty),
+        Ty::Void => FinalTy::Void,
+        Ty::AlwaysJumps => FinalTy::Void,
+        Ty::File(_) => FinalTy::Void,
     };
 
     {
@@ -416,13 +424,17 @@ impl ToTyId for Intern<Ty> {
 
                 id | list_id
             }
-            Ty::Function { .. } => {
+            Ty::NaivePolymorphicFunction { .. } => {
+                unreachable!("these shouldn't get to codegen")
+            }
+            Ty::ConcreteFunction { .. } | Ty::FunctionPointer { .. } => {
                 let id = FUNCTION_DISCRIMINANT << 26;
 
                 let list_id = meta_tys.function_uid_gen.generate_unique_id();
 
                 id | list_id
             }
+
             Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let id = STRUCT_DISCRIMINANT << 26;
 

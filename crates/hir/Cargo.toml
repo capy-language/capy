@@ -18,6 +18,10 @@ path-clean = "1.0.1"
 uid_gen = { path = "../uid_gen" }
 pathdiff = "0.2.1"
 bimap = "0.6.3"
+internment = "0.8.3"
+itertools = "0.14"
+tinyvec = { version = "1.6.1", features = ["tinyvec_macros"] }
+debug = { path = "../debug" }
 
 [dev-dependencies]
 ast = { path = "../ast" }

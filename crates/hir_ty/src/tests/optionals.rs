@@ -11,11 +11,13 @@ fn option_assign_nil() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            2 : nil
-            3 : void
-            4 : () -> void
-            l0 : ?u64
+            main::main : main::main() -> void
+              4 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              2 : nil
+              3 : void
+              4 : main::main() -> void
+              l0 : ?u64
         "#]],
         |_| [],
     )
@@ -30,11 +32,13 @@ fn option_assign_value() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            2 : u64
-            3 : void
-            4 : () -> void
-            l0 : ?u64
+            main::main : main::main() -> void
+              4 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              2 : u64
+              3 : void
+              4 : main::main() -> void
+              l0 : ?u64
         "#]],
         |_| [],
     )
@@ -53,15 +57,17 @@ fn option_value_or_nil() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : bool
-            1 : {uint}
-            2 : {uint}
-            3 : nil
-            4 : nil
-            5 : ?{uint}
-            6 : void
-            7 : () -> void
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : bool
+              1 : {uint}
+              2 : {uint}
+              3 : nil
+              4 : nil
+              5 : ?{uint}
+              6 : void
+              7 : main::main() -> void
         "#]],
         |_| [],
     )
@@ -81,17 +87,19 @@ fn option_infer() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : u64
-            1 : u64
-            2 : u64
-            5 : u64
-            6 : void
-            7 : () -> void
-            l0 : u64
-            l1 : u64
-            l2 : u64
-            l3 : ?u64
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : u64
+              1 : u64
+              2 : u64
+              5 : u64
+              6 : void
+              7 : main::main() -> void
+              l0 : u64
+              l1 : u64
+              l2 : u64
+              l3 : ?u64
         "#]],
         |_| [],
     )
@@ -104,9 +112,11 @@ fn option_from_nothing() {
             walrus :: () -> ?void {}
         "#,
         expect![[r#"
-            main::walrus : () -> ?void
-            2 : ?void
-            3 : () -> ?void
+            main::walrus : main::walrus() -> ?void
+              3 : main::walrus() -> ?void
+            main::lambda#walrus : main::walrus() -> ?void
+              2 : ?void
+              3 : main::walrus() -> ?void
         "#]],
         |_| [],
     )
@@ -123,13 +133,15 @@ fn option_try() {
             }
         "#,
         expect![[r#"
-            main::walrus : () -> ?void
-            4 : nil
-            5 : ?u64
-            6 : u64
-            7 : ?void
-            8 : () -> ?void
-            l0 : ?u64
+            main::walrus : main::walrus() -> ?void
+              8 : main::walrus() -> ?void
+            main::lambda#walrus : main::walrus() -> ?void
+              4 : nil
+              5 : ?u64
+              6 : u64
+              7 : ?void
+              8 : main::walrus() -> ?void
+              l0 : ?u64
         "#]],
         |_| [],
     )
@@ -146,14 +158,16 @@ fn option_compare() {
             }
         "#,
         expect![[r#"
-            main::walrus : () -> bool
-            3 : nil
-            4 : ?u64
-            5 : nil
-            6 : bool
-            7 : bool
-            8 : () -> bool
-            l0 : ?u64
+            main::walrus : main::walrus() -> bool
+              8 : main::walrus() -> bool
+            main::lambda#walrus : main::walrus() -> bool
+              3 : nil
+              4 : ?u64
+              5 : nil
+              6 : bool
+              7 : bool
+              8 : main::walrus() -> bool
+              l0 : ?u64
         "#]],
         |_| [],
     )
@@ -182,27 +196,33 @@ fn try_different_payloads() {
             }
         "#,
         expect![[r#"
-            main::bar : () -> ?bool
-            main::baz : () -> ?str
-            main::foo : () -> ?i64
-            2 : () -> ?bool
-            3 : ?bool
-            4 : bool
-            5 : void
-            6 : void
-            7 : () -> ?str
-            8 : ?str
-            9 : str
-            10 : i64
-            11 : ?i64
-            12 : () -> ?i64
-            15 : nil
-            16 : ?bool
-            17 : () -> ?bool
-            20 : nil
-            21 : ?str
-            22 : () -> ?str
-            l0 : str
+            main::foo : main::foo() -> ?i64
+              12 : main::foo() -> ?i64
+            main::lambda#foo : main::foo() -> ?i64
+              2 : main::bar() -> ?bool
+              3 : ?bool
+              4 : bool
+              5 : void
+              6 : void
+              7 : main::baz() -> ?str
+              8 : ?str
+              9 : str
+              10 : i64
+              11 : ?i64
+              12 : main::foo() -> ?i64
+              l0 : str
+            main::bar : main::bar() -> ?bool
+              17 : main::bar() -> ?bool
+            main::lambda#bar : main::bar() -> ?bool
+              15 : nil
+              16 : ?bool
+              17 : main::bar() -> ?bool
+            main::baz : main::baz() -> ?str
+              22 : main::baz() -> ?str
+            main::lambda#baz : main::baz() -> ?str
+              20 : nil
+              21 : ?str
+              22 : main::baz() -> ?str
         "#]],
         |_| [],
     )
@@ -258,18 +278,20 @@ fn switch_optional() {
         }
     "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i64
-            3 : ?i64
-            4 : type
-            5 : i64
-            6 : void
-            7 : nil
-            8 : nil
-            9 : void
-            10 : void
-            11 : void
-            12 : () -> void
+            main::foo : main::foo() -> void
+              12 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i64
+              3 : ?i64
+              4 : type
+              5 : i64
+              6 : void
+              7 : nil
+              8 : nil
+              9 : void
+              10 : void
+              11 : void
+              12 : main::foo() -> void
         "#]],
         |_| [],
     )
@@ -294,21 +316,23 @@ fn switch_optional_extra_arms() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i64
-            3 : ?i64
-            4 : type
-            5 : i64
-            6 : void
-            7 : nil
-            8 : nil
-            9 : void
-            10 : type
-            11 : str
-            12 : void
-            13 : <unknown>
-            14 : <unknown>
-            15 : () -> void
+            main::foo : main::foo() -> void
+              15 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i64
+              3 : ?i64
+              4 : type
+              5 : i64
+              6 : void
+              7 : nil
+              8 : nil
+              9 : void
+              10 : type
+              11 : str
+              12 : void
+              13 : <unknown>
+              14 : <unknown>
+              15 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -339,15 +363,17 @@ fn switch_optional_missing_arms() {
         }
     "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i64
-            3 : ?i64
-            4 : type
-            5 : i64
-            6 : void
-            7 : void
-            8 : void
-            9 : () -> void
+            main::foo : main::foo() -> void
+              9 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i64
+              3 : ?i64
+              4 : type
+              5 : i64
+              6 : void
+              7 : void
+              8 : void
+              9 : main::foo() -> void
         "#]],
         |_| {
             [(
@@ -375,17 +401,19 @@ fn switch_optional_default() {
         }
     "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i64
-            3 : ?i64
-            4 : type
-            5 : i64
-            6 : void
-            7 : ?i64
-            8 : void
-            9 : void
-            10 : void
-            11 : () -> void
+            main::foo : main::foo() -> void
+              11 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i64
+              3 : ?i64
+              4 : type
+              5 : i64
+              6 : void
+              7 : ?i64
+              8 : void
+              9 : void
+              10 : void
+              11 : main::foo() -> void
         "#]],
         |_| [],
     )

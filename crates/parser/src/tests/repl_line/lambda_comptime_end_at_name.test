@@ -1,0 +1,12 @@
+(comptime foo
+===
+Root@0..13
+  ExprStmt@0..13
+    ParenExpr@0..13
+      LParen@0..1 "("
+      ComptimeExpr@1..13
+        Comptime@1..9 "comptime"
+        Whitespace@9..10 " "
+        VarRef@10..13
+          Ident@10..13 "foo"
+error at 13: missing RParen

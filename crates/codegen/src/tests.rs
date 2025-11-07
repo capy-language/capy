@@ -2,9 +2,13 @@ use core::panic;
 use std::{collections::HashMap, env, fs, path::Path};
 
 use ast::AstNode;
-use expect_test::{expect, Expect};
-use hir_ty::{InferenceCtx, InferenceResult};
+use expect_test::{Expect, expect};
+use hir::common::{FileName, Fqn, Name};
+use hir_ty::{InferenceCtx, InferenceResult, WorldTys};
+use la_arena::Arena;
+use line_index::LineIndex;
 use path_clean::PathClean;
+use rustc_hash::FxHashMap;
 use target_lexicon::HOST;
 use uid_gen::UIDGenerator;
 
@@ -174,6 +178,8 @@ fn check_impl(
     let mut uid_gen = UIDGenerator::default();
     let mut world_bodies = hir::WorldBodies::default();
 
+    let mut line_indicies = FxHashMap::default();
+
     for (file, text) in &modules {
         if *file == main_file {
             continue;
@@ -181,15 +187,36 @@ fn check_impl(
 
         let tokens = lexer::lex(text);
         let parse = parser::parse_source_file(&tokens, text);
-        assert_eq!(parse.errors(), &[]);
+
+        let module = FileName(interner.intern(file));
+        line_indicies.insert(module, LineIndex::new(text));
+        let line_index = &line_indicies[&module];
+
+        let no_diagnostics = parse.errors().is_empty();
+        for d in parse.errors() {
+            println!(
+                "{}",
+                diagnostics::Diagnostic::from_syntax(*d)
+                    .display(*file, text, &mod_dir, &interner, &line_index, true,)
+                    .join("\n")
+            );
+        }
+        assert!(no_diagnostics);
 
         let tree = parse.into_syntax_tree();
         let root = ast::Root::cast(tree.root(), &tree).unwrap();
         let (index, diagnostics) = hir::index(root, &tree, &mut interner);
 
-        assert_eq!(diagnostics, vec![]);
-
-        let module = hir::FileName(interner.intern(file));
+        let no_diagnostics = diagnostics.is_empty();
+        for d in diagnostics {
+            println!(
+                "{}",
+                diagnostics::Diagnostic::from_indexing(d)
+                    .display(*file, text, &mod_dir, &interner, &line_index, true,)
+                    .join("\n")
+            );
+        }
+        assert!(no_diagnostics);
 
         let (bodies, diagnostics) = hir::lower(
             root,
@@ -201,24 +228,60 @@ fn check_impl(
             &mod_dir,
             fake_file_system,
         );
+        let debug = bodies.debug(module, &mod_dir, &interner, true, true);
+        if !debug.is_empty() {
+            println!("{}", debug);
+        }
 
-        assert_eq!(diagnostics, vec![]);
+        let no_diagnostics = diagnostics.is_empty();
+        for d in diagnostics {
+            println!(
+                "{}",
+                diagnostics::Diagnostic::from_lowering(d)
+                    .display(*file, text, &mod_dir, &interner, &line_index, true,)
+                    .join("\n")
+            );
+        }
+        assert!(no_diagnostics);
 
         world_index.add_file(module, index);
         world_bodies.add_file(module, bodies);
     }
 
     let text = &modules[main_file];
-    let file = hir::FileName(interner.intern(main_file));
+
+    let file = FileName(interner.intern(main_file));
+    line_indicies.insert(file, LineIndex::new(text));
+    let line_index = &line_indicies[&file];
+
     let tokens = lexer::lex(text);
     let parse = parser::parse_source_file(&tokens, text);
-    assert_eq!(parse.errors(), &[]);
+
+    let no_diagnostics = parse.errors().is_empty();
+    for d in parse.errors() {
+        println!(
+            "{}",
+            diagnostics::Diagnostic::from_syntax(*d)
+                .display(main_file, text, &mod_dir, &interner, line_index, true,)
+                .join("\n")
+        );
+    }
+    assert!(no_diagnostics);
 
     let tree = parse.into_syntax_tree();
     let root = ast::Root::cast(tree.root(), &tree).unwrap();
     let (index, diagnostics) = hir::index(root, &tree, &mut interner);
 
-    assert_eq!(diagnostics, vec![]);
+    let no_diagnostics = diagnostics.is_empty();
+    for d in diagnostics {
+        println!(
+            "{}",
+            diagnostics::Diagnostic::from_indexing(d)
+                .display(main_file, text, &mod_dir, &interner, line_index, true,)
+                .join("\n")
+        );
+    }
+    assert!(no_diagnostics);
 
     let (bodies, diagnostics) = hir::lower(
         root,
@@ -230,37 +293,81 @@ fn check_impl(
         &mod_dir,
         fake_file_system,
     );
-    assert_eq!(diagnostics, vec![]);
+    let debug = bodies.debug(file, &mod_dir, &interner, true, true);
+    if !debug.is_empty() {
+        println!("{}", debug);
+    }
+
+    let no_diagnostics = diagnostics.is_empty();
+    for d in diagnostics {
+        println!(
+            "{}",
+            diagnostics::Diagnostic::from_lowering(d)
+                .display(main_file, text, &mod_dir, &interner, line_index, true,)
+                .join("\n")
+        );
+    }
+    assert!(no_diagnostics);
     world_index.add_file(file, index);
     world_bodies.add_file(file, bodies);
 
-    let entry_point = hir::Fqn {
+    let entry_point = Fqn {
         file,
-        name: hir::Name(interner.intern(entry_point)),
-    };
+        name: Name(interner.intern(entry_point)),
+    }
+    .make_concrete(None);
 
-    let mut comptime_results = FxHashMap::default();
+    let mut comptime_results = ComptimeResultMap::default();
+
+    let mut generic_vals = Arena::new();
 
     let InferenceResult {
         tys, diagnostics, ..
-    } = InferenceCtx::new(&world_index, &world_bodies, &interner, |comptime, tys| {
-        eval_comptime_blocks(
-            Verbosity::AllFunctions {
-                include_disasm: true,
-            },
-            vec![comptime],
-            &mut comptime_results,
-            Path::new(""),
-            &interner,
-            &world_bodies,
-            tys,
-            HOST.pointer_width().unwrap().bits(),
-        );
+    } = InferenceCtx::new(
+        &world_index,
+        &world_bodies,
+        &interner,
+        &mut generic_vals,
+        |comptime, tys| {
+            eval_comptime_blocks(
+                Verbosity::AllFunctions {
+                    include_disasm: true,
+                },
+                &mut std::iter::once(comptime),
+                &mut comptime_results,
+                &mod_dir,
+                &interner,
+                &world_bodies,
+                tys,
+                HOST.pointer_width().unwrap().bits(),
+            );
 
-        comptime_results[&comptime].clone()
-    })
-    .finish(Some(entry_point), false);
-    assert_eq!(diagnostics, vec![]);
+            comptime_results[comptime].clone()
+        },
+    )
+    .finish(Some(entry_point.to_naive()), false);
+
+    println!("{}", tys.debug(&mod_dir, &interner, true, true));
+
+    let no_diagnostics = diagnostics.is_empty();
+    for d in diagnostics {
+        let file = d.file;
+        let file_name = interner.lookup(file.0);
+        println!(
+            "{}",
+            diagnostics::Diagnostic::from_ty(d)
+                .display(
+                    file_name,
+                    modules[file_name],
+                    Path::new(""),
+                    &interner,
+                    &line_indicies[&file],
+                    true,
+                )
+                .join("\n")
+        );
+    }
+    assert!(no_diagnostics);
 
     println!("comptime:");
 
@@ -269,7 +376,7 @@ fn check_impl(
         Verbosity::AllFunctions {
             include_disasm: true,
         },
-        world_bodies.find_comptimes(),
+        &mut world_bodies.find_comptimes(),
         &mut comptime_results,
         &mod_dir,
         &interner,
@@ -446,7 +553,7 @@ fn arrays() {
         16
         23
         42
-        
+
         "#]],
         0,
     )
@@ -531,7 +638,7 @@ fn slices() {
         [ 1, 2, 3 ]
         [ 4, 5, 6, 7, 8 ]
         [ 4, 8, 15, 16, 23, 42 ]
-        
+
         "#]],
         0,
     )
@@ -540,7 +647,7 @@ fn slices() {
 #[test]
 fn files() {
     check_files(
-        "../../examples/files.capy",
+        "../../examples/file_system.capy",
         &[],
         "main",
         expect![[r#"
@@ -760,7 +867,7 @@ fn reflection() {
         "main",
         expect![[r#"
             Reflection!
-            
+
             i32                (0x8000284) : size = 4, align = 4, stride = 4
             i64                (0x8000308) : size = 8, align = 8, stride = 8
             u64                (0x8000108) : size = 8, align = 8, stride = 8
@@ -792,7 +899,7 @@ fn reflection() {
             (x: i32) -> f32    (0x54000001) : size = 8, align = 8, stride = 8
             ?i32               (0x60000000) : size = 5, align = 4, stride = 8
             ?^i32              (0x60000001) : size = 8, align = 8, stride = 8
-            
+
             i32 == i16 : false
             i32 == u32 : false
             i32 == i32 : true
@@ -823,36 +930,36 @@ fn reflection() {
             () -> void == () -> void : true
             ?u64 == ?u64 : true
             ?u64 == ?bool : false
-            
+
             INT
             bit_width = 32
             signed    = true
-            
+
             INT
             bit_width = 8
             signed    = false
-            
+
             INT
             bit_width = 128
             signed    = false
-            
+
             INT
             bit_width = 64
             signed    = true
-            
+
             FLOAT
             bit_width = 32
-            
+
             FLOAT
             bit_width = 64
-            
+
             ARRAY
             len = 5
             ty =
              INT
              bit_width = 32
              signed    = true
-            
+
             ARRAY
             len = 1000
             ty =
@@ -861,19 +968,19 @@ fn reflection() {
              ty =
               FLOAT
               bit_width = 64
-            
+
             SLICE
             ty =
              INT
              bit_width = 32
              signed    = true
-            
+
             POINTER
             ty =
              INT
              bit_width = 32
              signed    = true
-            
+
             POINTER
             ty =
              POINTER
@@ -883,13 +990,13 @@ fn reflection() {
                INT
                bit_width = 128
                signed    = true
-            
+
             DISTINCT
             ty =
              INT
              bit_width = 32
              signed    = true
-            
+
             DISTINCT
             ty =
              ARRAY
@@ -900,14 +1007,14 @@ fn reflection() {
                INT
                bit_width = 8
                signed    = true
-            
+
             STRUCT
             members =
              name = a
              offset = 0
              ty =
               BOOL
-            
+
             STRUCT
             members =
              name = text
@@ -927,7 +1034,7 @@ fn reflection() {
                INT
                bit_width = 16
                signed    = true
-            
+
             STRUCT
             members =
              name = name
@@ -940,9 +1047,9 @@ fn reflection() {
               INT
               bit_width = 32
               signed    = true
-            
+
             ANY
-            
+
             DISTINCT
             ty =
              STRUCT
@@ -1083,7 +1190,7 @@ fn reflection() {
              POINTER
              ty =
               BOOL
-            
+
             123
             [ 4, 8, 15, 16, 23, 42 ]
             [ 1, 2, 3 ]
@@ -1121,22 +1228,37 @@ fn reflection() {
             1715004
             0x1a2b3c
             0b110100010101100111100
-            
+
         "#]],
         0,
     )
 }
 
 #[test]
-fn lists() {
+fn runtime_generic_lists() {
     check_files(
-        "../../examples/lists.capy",
+        "../../examples/lists_runtime_generic.capy",
         &[],
         "main",
         expect![[r#"
-            42
-            [ 4, 8, 15, 16, 23 ]
-            
+            ^42
+            u128.[ 4, 8, 15, 16, 23 ]
+
+        "#]],
+        0,
+    )
+}
+
+#[test]
+fn comptime_generic_lists() {
+    check_files(
+        "../../examples/lists_comptime_generic.capy",
+        &[],
+        "main",
+        expect![[r#"
+            ^42
+            u128.[ 4, 8, 15, 16, 23 ]
+
         "#]],
         0,
     )
@@ -1173,12 +1295,12 @@ fn local_tys() {
                     real_part: int,
                     imaginary_part: imaginary,
                 };
-            
+
                 my_complex := complex.{
                     real_part = 5,
                     imaginary_part = 42,
                 };
-            
+
                 do_math :: (c: complex) -> imaginary_vec3 {
                     // this is kind of akward because while we can access locals
                     // in the parameters and return type, we can't access `imaginary`
@@ -1186,7 +1308,7 @@ fn local_tys() {
                     // this could be alleviated by adding a `type_of` builtin
                     i32.[1, c.real_part * i32.(c.imaginary_part), 3]
                 };
-            
+
                 i32.(do_math(my_complex)[1])
             }
         "#,
@@ -1391,10 +1513,10 @@ fn control_flow() {
                 if n <= 1 {
                     return n;
                 }
-            
+
                 fib(n - 1) + fib(n - 2)
             }
-            
+
             main :: () -> i32 {
                 {
                     puts("before return");
@@ -1415,12 +1537,12 @@ fn control_flow() {
                     puts("after return");
                     1 + 1
                 }
-            
+
                 puts("hello!");
-            
+
                 0
             }
-            
+
             puts :: (s: str) -> i32 extern;
         "#,
         "main",
@@ -1469,7 +1591,7 @@ fn bitwise_operators() {
                 print(" 5032 &  25 =     ", 5032 & 32);
                 print(" 5000 |  20 =   ", 5000 | 32);
                 print(" 5032 ~  36 =   ", 5032 ~ 36);
-                print(" 5032 &~ 36 =   ", 5032 &~ 36); 
+                print(" 5032 &~ 36 =   ", 5032 &~ 36);
                 print(" 5032 <<  2 =  ", 5032 << 2);
                 print(" 5032 >>  2 =   ", 5032 >> 2);
                 print("-5032 >>  2 =  ", -5032 >> 2);
@@ -1493,7 +1615,7 @@ fn bitwise_operators() {
 
             iprint :: (n: i64) {
                 n := n;
-                
+
                 if n < 0 {
                     n = -n;
                     putchar('-');
@@ -1544,9 +1666,9 @@ fn early_return() {
                         return x;
                     }
                 } else {
-            
+
                 }
-            
+
                 // always early return
                 {
                     {
@@ -1557,7 +1679,7 @@ fn early_return() {
                         }
                     }
                 }
-            
+
                 0
             }
         "#,
@@ -1582,7 +1704,7 @@ fn void_ptr() {
 
                 y := ^x;
                 z := ^x;
-            
+
                 y_raw := ^usize.(rawptr.(^y))^;
                 z_raw := ^usize.(rawptr.(^z))^;
 
@@ -1606,19 +1728,19 @@ fn r#continue() {
                 i := 0;
                 loop {
                     i += 1;
-            
+
                     if i == 10 {
                         break;
                     }
-            
+
                     if i % 2 == 0 {
                         continue;
                     }
-            
+
                     printf("%i\n", i);
                 }
             }
-            
+
             printf :: (fmt: str, n: i32) extern;
         "#,
         "main",
@@ -1651,7 +1773,7 @@ fn defers() {
                     }
                 }
             }
-            
+
             printf :: (text: str) extern;
         "#,
         "main",
@@ -1674,7 +1796,7 @@ fn defers_within_defers() {
                     printf("Hello ");
                 };
             }
-            
+
             printf :: (text: str) extern;
         "#,
         "main",
@@ -1693,7 +1815,7 @@ fn extern_fn_global() {
             main :: () {
                 printf("Hello World!");
             }
-            
+
             printf : (text: str) -> void : extern;
         "#,
         "main",
@@ -1712,7 +1834,7 @@ fn extern_fn_lambda() {
             main :: () {
                 printf("Hello World!");
             }
-            
+
             printf :: (text: str) extern;
         "#,
         "main",
@@ -1747,7 +1869,7 @@ fn comptime_globals_in_comptime_globals() {
 
                 baz
             }
-            
+
             puts :: (text: str) extern;
         "#,
         "main",
@@ -1863,7 +1985,7 @@ fn reorder_struct_literal_fields() {
 
             iprint :: (n: i64) {
                 n := n;
-                
+
                 if n < 0 {
                     n = -n;
                     putchar('-');
@@ -2012,7 +2134,7 @@ fn hex_and_bin() {
 
             iprint :: (n: i64) {
                 n := n;
-                
+
                 if n < 0 {
                     n = -n;
                     putchar('-');
@@ -2055,7 +2177,7 @@ fn default_values() {
 
             main :: () {
                 x: Foo;
-                
+
                 core.println(x);
             }
         "#,
@@ -2376,7 +2498,7 @@ fn enums_and_switch_statements() {
             [500] chicken >>>
             [700] sheep: Prof. Bahh, wool: 1.000, fullness: 0.500
             [600] oink oink
-            
+
         "#]],
         0,
     )
@@ -2721,7 +2843,7 @@ fn complex_comparison() {
                 core.println(^42 == ^42, " ", ^42 != ^42); // true false
                 core.println(^42 == ^32, " ", ^42 != ^32); // false true
                 core.println();
-                
+
                 // structs
                 Foo :: struct { temp: f64, cond: bool, age: usize };
                 core.println(Foo.{temp=2.4,cond=false,age=5} == Foo.{temp=2.4,cond=false,age=5}, " ", Foo.{temp=2.4,cond=false,age=5} != Foo.{temp=2.4,cond=false,age=5}); // true false
@@ -3217,7 +3339,7 @@ fn try_to_void_option_complex() {
 
             main :: () {
                 do_stuff_on_stack();
-                
+
                 {
                     vals := .[make_void(), make_nil(), make_void(), make_nil()];
 
@@ -3250,7 +3372,7 @@ fn try_to_void_option_complex() {
 
             do_stuff_on_stack :: () {
                 arr: [100]u8;
-                
+
                 idx := 0;
                 while idx < arr.len {
                     arr[idx] = 0xa0;

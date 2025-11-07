@@ -2,24 +2,24 @@
 #![allow(clippy::too_many_arguments)]
 
 mod globals;
-mod ty;
 
 #[cfg(test)]
 mod tests;
 
 use std::str::FromStr;
 
+use debug::debug;
 use globals::{ExprExpected, GlobalInferenceCtx};
-use hir::{FQComptime, FQLambda, FileName};
+use hir::{WorldBodies, common::*};
 use interner::{Interner, Key};
 use internment::Intern;
 use itertools::Itertools;
-use la_arena::{ArenaMap, Idx};
+use la_arena::{Arena, ArenaMap, Idx};
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use text_size::TextRange;
 
 use topo::TopoSort;
-pub use ty::*;
 
 macro_rules! trait_alias {
     ($vis:vis $name:ident : $trait:path) => {
@@ -31,38 +31,121 @@ macro_rules! trait_alias {
 
 pub(crate) use trait_alias;
 
-pub(crate) type InferResult<T> = Result<T, Vec<Inferrable>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NaiveLookupErr {
+    /// If there's a generic function `add :: (comptime T: type, a: T, b: T) -> T {}` and the user
+    /// references this as a first class expression `add`, then this will tell the compiler that this has happened.
+    IsPolymorphic,
+    NotFound,
+}
 
+/// `infer_expr` and `infer_stmt` will stop execution and return a list of Concrete Locations
+/// to globals they come across that they don't immediately know.
+///
+/// The operator (`InferenceCtx::finish`) then handles making sure the dependencies of globals
+/// are resolved before trying to rerun those original globals.
+pub(crate) type InferResult<T> = Result<T, Vec<ConcreteLoc>>;
+
+/// The final result returned from `hir_ty`
 #[derive(Debug, Clone, Default)]
-pub struct ProjectInference {
-    signatures: FxHashMap<hir::Fqn, Signature>,
-    files: FxHashMap<hir::FileName, FileInference>,
+pub struct WorldTys {
+    // The signature of a location is the type of that location
+    // e.g.
+    // ```
+    // foo : i32 = 42;
+    // ```
+    // foo has a signature of i32
+    // TODO: signatures only really have use when global
+    signatures: FxHashMap<ConcreteLoc, Intern<Ty>>,
+    // each concrete location corresponds to a type area.
+    //
+    // e.g. in the example above `foo` has the area including
+    // 1. its type annotation, and
+    // 2. the value "42"
+    //
+    // in this case:
+    // ```
+    // bar :: () {
+    //  //..
+    // };
+    // ```
+    //
+    // `bar`s area includes the headers of the lambda,
+    // and the lambda itself has an area which includes both the header (again)
+    // and its entire body
+    areas: FxHashMap<ConcreteLoc, AreaTys>,
 }
 
-impl std::ops::Index<hir::Fqn> for ProjectInference {
-    type Output = Signature;
+impl WorldTys {
+    #[track_caller]
+    pub fn sig(&self, loc: ConcreteLoc) -> Intern<Ty> {
+        self.signatures[&loc]
+    }
 
-    fn index(&self, fqn: hir::Fqn) -> &Self::Output {
-        &self.signatures[&fqn]
+    pub fn try_sig(&self, loc: ConcreteLoc) -> Option<Intern<Ty>> {
+        self.signatures.get(&loc).copied()
+    }
+
+    pub fn try_naive(
+        &self,
+        naive: NaiveLoc,
+        world_bodies: &WorldBodies,
+    ) -> Result<Intern<Ty>, NaiveLookupErr> {
+        if let Some(sig) = self.signatures.get(&naive.make_concrete(None)) {
+            return Ok(*sig);
+        }
+
+        if world_bodies.has_polymorphic_body(naive) {
+            return Err(NaiveLookupErr::IsPolymorphic);
+        }
+
+        for loc in self.signatures.keys() {
+            if loc.to_naive() == naive {
+                return Err(NaiveLookupErr::IsPolymorphic);
+            }
+        }
+
+        Err(NaiveLookupErr::NotFound)
+    }
+
+    pub fn create_area_if_not_exists(&mut self, loc: ConcreteLoc) -> &mut AreaTys {
+        self.areas.entry(loc).or_default()
+    }
+
+    pub fn remove_area(&mut self, loc: ConcreteLoc) {
+        self.areas.remove(&loc);
+    }
+
+    pub fn has_area(&self, loc: ConcreteLoc) -> bool {
+        self.areas.contains_key(&loc)
     }
 }
 
-impl std::ops::Index<hir::FileName> for ProjectInference {
-    type Output = FileInference;
+impl std::ops::Index<ConcreteLoc> for WorldTys {
+    type Output = AreaTys;
 
-    fn index(&self, module: hir::FileName) -> &Self::Output {
-        &self.files[&module]
+    #[track_caller]
+    fn index(&self, loc: ConcreteLoc) -> &Self::Output {
+        match self.areas.get(&loc) {
+            Some(area) => area,
+            None => panic!("the location {loc:?} does not have an area"),
+        }
     }
 }
 
-impl std::ops::IndexMut<hir::FileName> for ProjectInference {
-    fn index_mut(&mut self, module: hir::FileName) -> &mut Self::Output {
-        self.files.get_mut(&module).unwrap()
+impl std::ops::IndexMut<ConcreteLoc> for WorldTys {
+    #[track_caller]
+    fn index_mut(&mut self, loc: ConcreteLoc) -> &mut Self::Output {
+        match self.areas.get_mut(&loc) {
+            Some(area) => area,
+            None => panic!("the location {loc:?} does not have an area"),
+        }
     }
 }
 
+// The inference of expressions and statements within a global or function body
 #[derive(Debug, Clone, Default)]
-pub struct FileInference {
+pub struct AreaTys {
     expr_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
     /// the actual types of type expressions
     meta_tys: ArenaMap<Idx<hir::Expr>, Intern<Ty>>,
@@ -70,8 +153,8 @@ pub struct FileInference {
     switch_local_tys: ArenaMap<Idx<hir::SwitchArg>, Intern<Ty>>,
 }
 
-impl FileInference {
-    pub fn get_meta_ty(&self, expr: Idx<hir::Expr>) -> Option<Intern<Ty>> {
+impl AreaTys {
+    pub fn meta_ty(&self, expr: Idx<hir::Expr>) -> Option<Intern<Ty>> {
         self.meta_tys.get(expr).copied()
     }
 
@@ -80,23 +163,29 @@ impl FileInference {
     }
 }
 
-impl std::ops::Index<Idx<hir::Expr>> for FileInference {
+impl std::ops::Index<Idx<hir::Expr>> for AreaTys {
     type Output = Intern<Ty>;
 
     #[track_caller]
     fn index(&self, expr: Idx<hir::Expr>) -> &Self::Output {
-        &self.expr_tys[expr]
+        match self.expr_tys.get(expr) {
+            Some(ty) => ty,
+            None => panic!("expr #{} was not given a type", expr.into_raw()),
+        }
     }
 }
 
-impl std::ops::IndexMut<Idx<hir::Expr>> for FileInference {
+impl std::ops::IndexMut<Idx<hir::Expr>> for AreaTys {
     #[track_caller]
     fn index_mut(&mut self, expr: Idx<hir::Expr>) -> &mut Self::Output {
-        self.expr_tys.get_mut(expr).unwrap()
+        match self.expr_tys.get_mut(expr) {
+            Some(ty) => ty,
+            None => panic!("expr #{} was not given a type", expr.into_raw()),
+        }
     }
 }
 
-impl std::ops::Index<Idx<hir::LocalDef>> for FileInference {
+impl std::ops::Index<Idx<hir::LocalDef>> for AreaTys {
     type Output = Intern<Ty>;
 
     #[track_caller]
@@ -105,7 +194,7 @@ impl std::ops::Index<Idx<hir::LocalDef>> for FileInference {
     }
 }
 
-impl std::ops::Index<Idx<hir::SwitchArg>> for FileInference {
+impl std::ops::Index<Idx<hir::SwitchArg>> for AreaTys {
     type Output = Intern<Ty>;
 
     #[track_caller]
@@ -114,8 +203,78 @@ impl std::ops::Index<Idx<hir::SwitchArg>> for FileInference {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Signature(pub Intern<Ty>);
+pub trait LocationResolver {
+    /// Returns None if the given location is a global that does
+    /// not contain a lambda body.
+    ///
+    /// TODO: How does this work with aliased functions?
+    /// e.g.
+    /// ```text
+    /// add :: () {}
+    /// foo :: add;
+    /// ```
+    ///
+    /// TODO: maybe just check the signature of the global and take the
+    /// `fn_loc` from `ConcreteFn`
+    fn resolve_to_lambda(
+        self,
+        world_bodies: &WorldBodies,
+        tys: &WorldTys,
+        interner: &Interner,
+    ) -> Option<ConcreteLambdaLoc>;
+}
+
+impl LocationResolver for ConcreteGlobalLoc {
+    fn resolve_to_lambda(
+        self,
+        world_bodies: &WorldBodies,
+        tys: &WorldTys,
+        interner: &Interner,
+    ) -> Option<ConcreteLambdaLoc> {
+        let body = world_bodies.global_body(self.to_naive());
+
+        let hir::Expr::Lambda(lambda) = world_bodies[self.file()][body] else {
+            return None;
+        };
+
+        let lambda_loc = NaiveLambdaLoc {
+            file: self.file(),
+            expr: body,
+            lambda,
+        }
+        .make_concrete(self.comptime_args());
+
+        // This just checks that the lambda exists.
+        // TODO: this is the only use I found for giving lambdas
+        // signatures. I'm thinking that maybe it's unnecessary.
+        // The same check could be done by checking for an existing
+        // area as opposed to an existing signature.
+        // Maybe signatures should only be for globals.
+        // And maybe even just naive globals.
+        assert!(
+            tys.try_sig(lambda_loc.wrap()).is_some(),
+            "{} exists but {} doesn't for some reason",
+            self.debug(interner),
+            lambda_loc.debug(interner),
+        );
+
+        Some(lambda_loc)
+    }
+}
+
+impl LocationResolver for ConcreteLoc {
+    fn resolve_to_lambda(
+        self,
+        world_bodies: &WorldBodies,
+        tys: &WorldTys,
+        interner: &Interner,
+    ) -> Option<ConcreteLambdaLoc> {
+        match self {
+            ConcreteLoc::Global(global) => global.resolve_to_lambda(world_bodies, tys, interner),
+            ConcreteLoc::Lambda(lambda) => Some(lambda),
+        }
+    }
+}
 
 #[cfg(test)]
 use derivative::Derivative;
@@ -126,7 +285,7 @@ use derivative::Derivative;
 #[cfg_attr(test, derivative(Debug, PartialEq))]
 pub struct TyDiagnostic {
     pub kind: TyDiagnosticKind,
-    pub file: hir::FileName,
+    pub file: FileName,
     // it's important to set this as `Some(_)` as much as possible,
     // even if the given expression isn't technically the source of the error.
     // this field is used for scanning through a group of expressions to see if they have any
@@ -248,7 +407,7 @@ pub enum TyDiagnosticKind {
     CannotMutate,
     MutableRefToImmutableData,
     NotYetResolved {
-        fqn: hir::Fqn,
+        fqn: Fqn,
     },
     CantUseAsTy,
     /// this is a more specific case of `CantUseAsTy` that shows more information
@@ -263,7 +422,7 @@ pub enum TyDiagnosticKind {
         file: FileName,
     },
     UnknownFqn {
-        fqn: hir::Fqn,
+        fqn: Fqn,
     },
     NonExistentMember {
         member: Key,
@@ -278,9 +437,12 @@ pub enum TyDiagnosticKind {
     EntryNotFunction,
     EntryHasParams,
     EntryBadReturn,
-    ArraySizeNotInt,
+    FunctionTypeWithComptimeParameters,
+    ComptimeArgNotConst {
+        param_name: Key,
+        param_ty: Intern<Ty>,
+    },
     ArraySizeNotConst,
-    DiscriminantNotInt,
     DiscriminantNotConst,
     DiscriminantUsedAlready {
         value: u64,
@@ -361,51 +523,13 @@ pub enum TyDiagnosticHelpKind {
     },
 }
 
-// todo: I want to make this more expansive. `Data` should be removed and
-// there should be variants for structs, arrays, etc. This will allow indexing
-// and member access at compile-time.
-#[derive(Debug, Clone)]
-pub enum ComptimeResult {
-    Type(Intern<Ty>),
-    Integer { num: u64, bit_width: u8 },
-    Float { num: f64, bit_width: u8 },
-    Data(Box<[u8]>),
-    Void,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Inferrable {
-    Global(hir::Fqn),
-    Lambda(FQLambda),
-}
-
-impl Inferrable {
-    fn to_string(self, interner: &Interner) -> String {
-        match self {
-            Inferrable::Global(fqn) => fqn.to_string(std::path::Path::new(""), interner),
-            Inferrable::Lambda(lambda) => format!(
-                "lambda {} #{}",
-                lambda.file.debug(interner),
-                lambda.expr.into_raw()
-            ),
-        }
-    }
-
-    fn file(&self) -> FileName {
-        match self {
-            Inferrable::Global(fqn) => fqn.file,
-            Inferrable::Lambda(fql) => fql.file,
-        }
-    }
-}
-
 trait_alias! {
     pub EvalComptimeFn:
-    FnMut(FQComptime, &ProjectInference) -> ComptimeResult
+    FnMut(ComptimeLoc, &WorldTys) -> ComptimeResult
 }
 
 pub struct InferenceResult {
-    pub tys: ProjectInference,
+    pub tys: WorldTys,
     pub diagnostics: Vec<TyDiagnostic>,
     pub any_were_unsafe_to_compile: bool,
 }
@@ -414,10 +538,12 @@ pub struct InferenceCtx<'a, F: EvalComptimeFn> {
     world_index: &'a hir::WorldIndex,
     world_bodies: &'a hir::WorldBodies,
     interner: &'a Interner,
-    tys: ProjectInference,
-    all_inferred: FxHashSet<Inferrable>,
-    to_infer: TopoSort<Inferrable>,
-    inferred_stmts: FxHashSet<(hir::FileName, Idx<hir::Stmt>)>,
+    tys: WorldTys,
+    all_finished_locations: FxHashSet<ConcreteLoc>,
+    to_infer: TopoSort<ConcreteLoc>,
+    generics_arena: &'a mut Arena<ComptimeResult>,
+    call_associated_generics: FxHashMap<(ConcreteLoc, Idx<hir::Expr>), ComptimeArgs>,
+    inferred_stmts: FxHashSet<(ConcreteLoc, Idx<hir::Stmt>)>,
     diagnostics: Vec<TyDiagnostic>,
     eval_comptime: F,
 }
@@ -427,15 +553,18 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         world_index: &'a hir::WorldIndex,
         world_bodies: &'a hir::WorldBodies,
         interner: &'a Interner,
+        generics_arena: &'a mut Arena<ComptimeResult>,
         eval_comptime: F,
     ) -> Self {
         Self {
             world_index,
             world_bodies,
             interner,
-            diagnostics: Vec::new(),
+            generics_arena,
+            call_associated_generics: Default::default(),
+            diagnostics: Default::default(),
             tys: Default::default(),
-            all_inferred: Default::default(),
+            all_finished_locations: Default::default(),
             to_infer: Default::default(),
             inferred_stmts: Default::default(),
             eval_comptime,
@@ -446,12 +575,12 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
     /// about the entry point
     pub fn finish(
         mut self,
-        entry_point: Option<hir::Fqn>,
+        entry_point: Option<NaiveGlobalLoc>,
         track_unsafe_to_compile: bool,
     ) -> InferenceResult {
-        for (module, _) in self.world_index.get_all_files() {
-            self.tys.files.insert(module, FileInference::default());
-        }
+        // for (module, _) in self.world_index.get_all_files() {
+        //     self.tys.globals.insert(module, GlobalInference::default());
+        // }
 
         self.to_infer.extend(
             self.world_index
@@ -460,7 +589,9 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                 .flat_map(|(file, index)| {
                     index
                         .definitions()
-                        .map(move |name| Inferrable::Global(hir::Fqn { file, name }))
+                        .map(|name| Fqn { file, name }.wrap())
+                        .filter(|naive_loc| !self.world_bodies.has_polymorphic_body(*naive_loc))
+                        .map(|naive_loc| naive_loc.make_concrete(None))
                         .sorted()
                 }), // .inspect(|to_infer| {
                     //     print!("{to_infer:?}");
@@ -481,13 +612,7 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             };
         }
 
-        const DEBUG: bool = false;
-
         loop {
-            if DEBUG {
-                println!("another loop");
-            }
-
             let leaves = match self.to_infer.peek_all() {
                 Ok(leaves) => leaves.into_iter().cloned().collect_vec(),
                 Err(_) => {
@@ -504,16 +629,35 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     // for now i'm gonna sort this list, but maybe a different solution would be
                     // better
 
-                    cyclic.sort();
+                    // I'm doing a custom sort here because the implementation of sort I chose
+                    // will cause lots of incorrect circular definition errors.
+                    // It seems to be because the cyclic globals need to be run
+                    // before the cyclic lambdas are run.
+                    cyclic.sort_by(|left, right| match (left, right) {
+                        (ConcreteLoc::Global(l_global), ConcreteLoc::Global(r_global)) => {
+                            l_global.cmp(r_global)
+                        }
+                        (ConcreteLoc::Lambda(l_lambda), ConcreteLoc::Lambda(r_lambda)) => {
+                            l_lambda.cmp(r_lambda)
+                        }
+                        (ConcreteLoc::Global(_), ConcreteLoc::Lambda(_)) => {
+                            std::cmp::Ordering::Less
+                        }
+                        (ConcreteLoc::Lambda(_), ConcreteLoc::Global(_)) => {
+                            std::cmp::Ordering::Greater
+                        }
+                    });
 
-                    let nyr = Signature(Ty::NotYetResolved.into());
+                    let nyr = Ty::NotYetResolved.into();
 
-                    for inferrable in &cyclic {
-                        println!("cyclic: {:?}", inferrable);
-                        if let Inferrable::Global(fqn) = inferrable {
-                            self.tys.signatures.insert(*fqn, nyr);
+                    let mut res = format!("!!!! CYCLIC !!!!");
+                    for def_loc in &cyclic {
+                        res.push_str(&format!("\n- {}", def_loc.debug(self.interner)));
+                        if let ConcreteLoc::Global(_) = def_loc {
+                            self.tys.signatures.insert(*def_loc, nyr);
                         }
                     }
+                    debug!("{}", &res);
 
                     cyclic
                 }
@@ -521,20 +665,39 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
 
             assert!(!leaves.is_empty());
 
-            for inferrable in leaves {
-                if DEBUG {
-                    println!("- {}", inferrable.to_string(self.interner));
-                }
+            // println!("inferring leaves: {leaves:#?}");
 
+            for inferrable in leaves {
+                debug!(
+                    "--- ATTEMPING TO TYPE {} ---",
+                    inferrable.debug(self.interner)
+                );
+
+                // println!(" + {}", inferrable.debug(self.interner));
                 match self.infer(inferrable) {
                     Ok(_) => {
+                        debug!(
+                            "--- FINISHED TYPING {} ---",
+                            inferrable.debug(self.interner)
+                        );
                         self.to_infer.remove(&inferrable);
                     }
                     Err(deps) => {
+                        // println!(" - requires deps");
                         self.to_infer.insert_deps(inferrable, deps);
                     }
                 }
             }
+
+            // println!("\nsignatures -");
+            // for (loc, sig) in &self.tys.signatures {
+            //     println!(
+            //         "{} : {}",
+            //         loc.debug(self.interner),
+            //         sig.simple_display(self.interner, false)
+            //     );
+            // }
+            // println!();
 
             if self.to_infer.is_empty() {
                 break;
@@ -544,48 +707,67 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         let mut any_were_unsafe_to_compile = false;
 
         if track_unsafe_to_compile {
-            for fqn in self
-                .all_inferred
-                .clone()
-                .into_iter()
-                .filter_map(|i| match i {
-                    Inferrable::Global(fqn) => Some(fqn),
-                    _ => None,
-                })
-            {
-                if self.world_bodies.is_extern(fqn) {
+            for todo_loc in self.all_finished_locations.clone().into_iter() {
+                let is_extern = match todo_loc {
+                    ConcreteLoc::Global(global) => {
+                        self.world_bodies.global_is_extern(global.to_naive())
+                    }
+                    ConcreteLoc::Lambda(lambda) => {
+                        if let Some(global) = get_naive_lambda_global(lambda.to_naive()) {
+                            self.world_bodies.global_is_extern(global)
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if is_extern {
                     continue;
                 }
 
                 let mut global_ctx = GlobalInferenceCtx {
-                    file: fqn.file,
-                    currently_inferring: Inferrable::Global(fqn),
+                    loc: todo_loc,
                     world_index: self.world_index,
                     world_bodies: self.world_bodies,
-                    bodies: &self.world_bodies[fqn.file],
+                    bodies: &self.world_bodies[todo_loc.file()],
                     interner: self.interner,
                     expected_tys: Default::default(),
                     local_usages: Default::default(),
+                    generics_arena: self.generics_arena,
+                    call_associated_generics: &mut self.call_associated_generics,
                     tys: &mut self.tys,
                     param_tys: Vec::new(),
-                    all_inferred: &self.all_inferred,
+                    inline_comptime_args: Vec::new(),
+                    inline_comptime_tys: Vec::new(),
+                    all_finished_locations: &self.all_finished_locations,
                     inferred_stmts: &mut self.inferred_stmts,
                     to_infer: &mut self.to_infer,
                     diagnostics: &mut self.diagnostics,
                     eval_comptime: &mut self.eval_comptime,
                 };
 
-                let body = self.world_bodies.body(fqn);
-                let ty = self.world_bodies.ty(fqn);
+                match todo_loc {
+                    ConcreteLoc::Global(global) => {
+                        let body = self.world_bodies.global_body(global.to_naive());
+                        let ty = self.world_bodies.global_ty(global.to_naive());
 
-                if !global_ctx.is_safe_to_compile(body).unwrap()
-                    || ty.is_some_and(|ty| !global_ctx.is_safe_to_compile(ty).unwrap())
-                {
-                    println!(
-                        "{} is unsafe to compile",
-                        fqn.to_string(std::path::Path::new(""), self.interner)
-                    );
-                    any_were_unsafe_to_compile = true;
+                        if !global_ctx.is_safe_to_compile(todo_loc, body).unwrap()
+                            || ty.is_some_and(|ty| {
+                                !global_ctx.is_safe_to_compile(todo_loc, ty).unwrap()
+                            })
+                        {
+                            debug!("{} is unsafe to compile", todo_loc.debug(self.interner));
+                            any_were_unsafe_to_compile = true;
+                        }
+                    }
+                    ConcreteLoc::Lambda(lambda) => {
+                        if !global_ctx
+                            .is_safe_to_compile(todo_loc, lambda.expr())
+                            .unwrap()
+                        {
+                            debug!("{} is unsafe to compile", todo_loc.debug(self.interner));
+                            any_were_unsafe_to_compile = true;
+                        }
+                    }
                 }
             }
         }
@@ -601,11 +783,14 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     None => break 'entry,
                 };
 
-                let ty = self.tys.signatures[&entry_point].0;
+                assert!(!self.world_bodies.has_polymorphic_body(entry_point.wrap()));
+                let loc = entry_point.make_concrete(None).wrap();
+
+                let ty = self.tys.sig(loc);
 
                 if let Some((param_tys, return_ty)) = ty.as_function() {
                     let lambda = match self.world_bodies[entry_point.file]
-                        [self.world_bodies.body(entry_point)]
+                        [self.world_bodies.global_body(entry_point)]
                     {
                         hir::Expr::Lambda(lambda) => &self.world_bodies[entry_point.file][lambda],
                         _ => todo!("entry point doesn't have lambda body"),
@@ -656,41 +841,55 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         }
     }
 
-    fn infer(&mut self, inferrable: Inferrable) -> InferResult<()> {
-        if self.all_inferred.contains(&inferrable) {
+    fn infer(&mut self, loc: ConcreteLoc) -> InferResult<()> {
+        if self.all_finished_locations.contains(&loc) {
             return Ok(());
         }
 
-        match inferrable {
-            Inferrable::Global(fqn) => self.infer_fqn(fqn)?,
-            Inferrable::Lambda(lambda) => self.infer_lambda(lambda)?,
+        match loc {
+            ConcreteLoc::Global(global) => self.infer_global(global)?,
+            ConcreteLoc::Lambda(lambda) => self.infer_lambda(lambda)?,
         }
 
-        self.all_inferred.insert(inferrable);
+        self.all_finished_locations.insert(loc);
 
         Ok(())
     }
 
-    fn infer_fqn(&mut self, fqn: hir::Fqn) -> InferResult<()> {
+    fn infer_global(&mut self, global: ConcreteGlobalLoc) -> InferResult<()> {
+        // make sure we didn't accidentally send a generic function to be inferred as an ungeneric function
+        if global.comptime_args().is_none() {
+            assert!(
+                !self
+                    .world_bodies
+                    .has_polymorphic_body(global.to_naive().wrap())
+            );
+        }
+
         let mut global_ctx = GlobalInferenceCtx {
-            file: fqn.file,
-            currently_inferring: Inferrable::Global(fqn),
+            loc: global.wrap(),
             world_index: self.world_index,
             world_bodies: self.world_bodies,
-            bodies: &self.world_bodies[fqn.file],
+            bodies: &self.world_bodies[global.file()],
             interner: self.interner,
             expected_tys: Default::default(),
             local_usages: Default::default(),
+            generics_arena: &mut self.generics_arena,
+            call_associated_generics: &mut self.call_associated_generics,
             inferred_stmts: &mut self.inferred_stmts,
             tys: &mut self.tys,
             param_tys: Default::default(),
-            all_inferred: &self.all_inferred,
+            inline_comptime_args: Vec::new(),
+            inline_comptime_tys: Vec::new(),
+            all_finished_locations: &self.all_finished_locations,
             to_infer: &mut self.to_infer,
             diagnostics: &mut self.diagnostics,
             eval_comptime: &mut self.eval_comptime,
         };
 
-        let had_previous = global_ctx.tys.signatures.contains_key(&fqn);
+        let had_previous = global_ctx.tys.signatures.contains_key(&global.wrap());
+
+        // TODO: I think had_previous is impossible
 
         if !had_previous {
             // we do this before parsing the possible type annotation to avoid a recursion like this:
@@ -698,10 +897,12 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
             global_ctx
                 .tys
                 .signatures
-                .insert(fqn, Signature(Intern::new(Ty::NotYetResolved)));
+                .insert(global.wrap(), Ty::NotYetResolved.into());
         }
 
-        let ty_annotation = match self.world_bodies.ty(fqn) {
+        global_ctx.tys.create_area_if_not_exists(global.wrap());
+
+        let ty_annotation = match self.world_bodies.global_ty(global.to_naive()) {
             Some(ty_expr) => match global_ctx.const_ty(ty_expr) {
                 Ok(ty) => Some(ExprExpected {
                     expected_ty: ty,
@@ -710,22 +911,22 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     is_default: false,
                 }),
                 Err(why) => {
-                    global_ctx.tys.signatures.remove(&fqn);
+                    global_ctx.tys.signatures.remove(&global.wrap());
                     return Err(why);
                 }
             },
             None => None,
         };
 
-        if self.world_bodies.is_extern(fqn) {
+        if self.world_bodies.global_is_extern(global.to_naive()) {
             let ty_annotation = match ty_annotation {
                 Some(expected) => expected.expected_ty,
                 None => {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::ExternGlobalMissingTy,
-                        file: fqn.file,
+                        file: global.file(),
                         expr: None,
-                        range: self.world_index.range_info(fqn).whole,
+                        range: self.world_index.range_info(global.to_naive()).whole,
                         help: None,
                     });
 
@@ -733,12 +934,12 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                 }
             };
 
-            self.tys.signatures.insert(fqn, Signature(ty_annotation));
+            self.tys.signatures.insert(global.wrap(), ty_annotation);
 
             return Ok(());
         }
 
-        let body = self.world_bodies.body(fqn);
+        let body = self.world_bodies.global_body(global.to_naive());
 
         // we don't need to do anything fancy to allow recursion.
         // the `infer_surface` stage should have already figured out the
@@ -747,25 +948,26 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
         let ty = match global_ctx.finish_body(body, ty_annotation, true) {
             Ok(ty) => ty,
             Err(why) => {
-                global_ctx.tys.signatures.remove(&fqn);
+                global_ctx.tys.signatures.remove(&global.wrap());
                 return Err(why);
             }
         };
 
-        self.tys.signatures.insert(fqn, Signature(ty));
+        self.tys.signatures.insert(global.wrap(), ty);
 
         Ok(())
     }
 
-    fn infer_lambda(&mut self, fql: FQLambda) -> InferResult<()> {
+    fn infer_lambda(&mut self, lambda_loc: ConcreteLambdaLoc) -> InferResult<()> {
         let hir::Lambda {
             body,
             return_ty: return_ty_expr,
             params_range,
             ..
-        } = self.world_bodies[fql.file][fql.lambda];
+        } = self.world_bodies[lambda_loc.file()][lambda_loc.lambda()];
 
-        let fn_type = self.tys[fql.file][fql.expr];
+        // debug!("trying to load {}...", lambda_loc.debug(self.interner));
+        let fn_type = self.tys[lambda_loc.wrap()][lambda_loc.expr()];
 
         match body {
             hir::LambdaBody::Extern => {}
@@ -780,8 +982,8 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                 let Ok(kind) = BuiltinKind::from_str(self.interner.lookup(name)) else {
                     self.diagnostics.push(TyDiagnostic {
                         kind: TyDiagnosticKind::NotABuiltin { name },
-                        file: fql.file,
-                        expr: Some(fql.expr),
+                        file: lambda_loc.file(),
+                        expr: Some(lambda_loc.expr()),
                         range: literal_range,
                         help: None,
                     });
@@ -798,9 +1000,10 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                             expected,
                             found: fn_type,
                         },
-                        file: fql.file,
-                        expr: Some(fql.expr),
-                        range: self.world_bodies[fql.file].range_for_expr(fql.expr),
+                        file: lambda_loc.file(),
+                        expr: Some(lambda_loc.expr()),
+                        range: self.world_bodies[lambda_loc.file()]
+                            .range_for_expr(lambda_loc.expr()),
                         help: None,
                     });
                 }
@@ -809,25 +1012,28 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                 // todo: does this range look good?
                 let return_ty_range = return_ty_expr
                     .map(|return_ty_expr| {
-                        self.world_bodies[fql.file].range_for_expr(return_ty_expr)
+                        self.world_bodies[lambda_loc.file()].range_for_expr(return_ty_expr)
                     })
                     .unwrap_or_else(|| TextRange::new(params_range.end(), params_range.end()));
 
-                let (param_tys, return_ty) = self.tys[fql.file][fql.expr].as_function().unwrap();
+                let (param_tys, return_ty) = fn_type.as_function().unwrap();
 
                 let mut global_ctx = GlobalInferenceCtx {
-                    file: fql.file,
-                    currently_inferring: Inferrable::Lambda(fql),
+                    loc: lambda_loc.wrap(),
                     world_index: self.world_index,
                     world_bodies: self.world_bodies,
-                    bodies: &self.world_bodies[fql.file],
+                    bodies: &self.world_bodies[lambda_loc.file()],
                     interner: self.interner,
                     expected_tys: Default::default(),
                     local_usages: Default::default(),
+                    generics_arena: &mut self.generics_arena,
+                    call_associated_generics: &mut self.call_associated_generics,
                     inferred_stmts: &mut self.inferred_stmts,
                     tys: &mut self.tys,
                     param_tys,
-                    all_inferred: &self.all_inferred,
+                    inline_comptime_args: Vec::new(),
+                    inline_comptime_tys: Vec::new(),
+                    all_finished_locations: &self.all_finished_locations,
                     to_infer: &mut self.to_infer,
                     diagnostics: &mut self.diagnostics,
                     eval_comptime: &mut self.eval_comptime,
@@ -843,6 +1049,11 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
                     }),
                     false,
                 )?;
+
+                self.tys.signatures.insert(
+                    lambda_loc.wrap(),
+                    self.tys[lambda_loc.wrap()][lambda_loc.expr()],
+                );
             }
         }
 
@@ -850,13 +1061,13 @@ impl<'a, F: EvalComptimeFn> InferenceCtx<'a, F> {
     }
 }
 
-impl ProjectInference {
+impl WorldTys {
     /// This might be slightly superficial in some scenarios, I'm not sure
     pub fn all_tys(&self) -> impl Iterator<Item = Intern<Ty>> + '_ {
         self.signatures
             .values()
-            .map(|Signature(ty)| *ty)
-            .chain(self.files.values().flat_map(|tys| {
+            .copied()
+            .chain(self.areas.values().flat_map(|tys| {
                 tys.meta_tys
                     .values()
                     .copied()
@@ -869,10 +1080,10 @@ impl ProjectInference {
     fn shrink_to_fit(&mut self) {
         let Self {
             signatures,
-            files: modules,
+            areas: globals,
         } = self;
         signatures.shrink_to_fit();
-        modules.shrink_to_fit();
+        globals.shrink_to_fit();
     }
 
     pub fn debug(
@@ -887,55 +1098,60 @@ impl ProjectInference {
         let mut signatures = self
             .signatures
             .iter()
-            .filter(|(fqn, _)| include_mods || !fqn.file.is_mod(mod_dir, interner))
-            .map(|(fqn, sig)| (fqn.to_string(mod_dir, interner), sig))
+            .filter(|(cloc, _)| include_mods || !cloc.file().is_mod(mod_dir, interner))
+            // if the global has a signature AND inner expression types, we will display it later
+            // TODO! do globals with signatures but without inner expression types even exist?
+            .filter(|(cloc, _)| !self.areas.contains_key(cloc))
             .collect::<Vec<_>>();
 
         signatures.sort_by(|(fqn1, _), (fqn2, _)| fqn1.cmp(fqn2));
 
-        for (fqn, sig) in signatures {
-            s.push_str(&fqn);
+        for (cloc, ty) in signatures {
+            s.push_str(&cloc.to_string(mod_dir, interner));
             s.push_str(" : ");
-            s.push_str(&format!(
-                "{}\n",
-                sig.0.named_display(mod_dir, interner, true)
-            ));
+            s.push_str(&format!("{}\n", ty.display(mod_dir, interner, true)));
         }
 
-        let mut files = self
-            .files
+        let mut globals = self
+            .areas
             .iter()
-            .filter(|(fqn, _)| include_mods || !fqn.is_mod(mod_dir, interner))
+            .filter(|(cloc, _)| include_mods || !cloc.file().is_mod(mod_dir, interner))
             .collect::<Vec<_>>();
-        files.sort_by_key(|(name, _)| **name);
+        globals.sort_by_key(|(cloc, _)| **cloc);
 
-        for (name, tys) in files {
-            if fancy || self.files.len() > 1 {
-                s.push_str(&format!("{}:\n", name.to_string(mod_dir, interner)));
+        for (cloc, tys) in globals {
+            let ty = self.try_sig(*cloc);
+
+            // display the global name & type
+            s.push_str(&cloc.to_string(mod_dir, interner));
+            s.push_str(" : ");
+            match ty {
+                Some(ty) => s.push_str(&ty.display(mod_dir, interner, true).to_string()),
+                None => s.push('?'),
             }
+            s.push('\n');
+
+            // display the global's inner expression types
             for (expr_idx, ty) in tys.expr_tys.iter() {
                 if fancy {
                     s.push_str(&format!("  \x1B[90m#{}\x1B[0m", expr_idx.into_raw(),));
                 } else {
-                    if self.files.len() > 1 {
+                    if self.areas.len() > 1 {
                         s.push_str("  ");
                     }
                     s.push_str(&format!("{}", expr_idx.into_raw(),));
                 }
-                s.push_str(&format!(
-                    " : {}\n",
-                    ty.named_display(mod_dir, interner, true)
-                ));
+                s.push_str(&format!(" : {}\n", ty.display(mod_dir, interner, true)));
             }
 
             for (local_def_idx, ty) in tys.local_tys.iter() {
-                if fancy || self.files.len() > 1 {
+                if fancy || self.areas.len() > 1 {
                     s.push_str("  ");
                 }
                 s.push_str(&format!(
                     "l{} : {}\n",
                     local_def_idx.into_raw(),
-                    ty.named_display(mod_dir, interner, true)
+                    ty.display(mod_dir, interner, true)
                 ));
             }
         }
@@ -971,19 +1187,21 @@ pub enum BuiltinKind {
 impl BuiltinKind {
     fn to_expected(self) -> Intern<Ty> {
         match self {
-            BuiltinKind::PtrToRaw { opt } => Ty::Function {
+            BuiltinKind::PtrToRaw { opt } => Ty::FunctionPointer {
                 param_tys: if opt {
                     vec![ParamTy {
                         ty: Ty::Optional {
                             sub_ty: Ty::RawPtr { mutable: false }.into(),
                         }
                         .into(),
+                        comptime: None,
                         varargs: false,
                         impossible_to_differentiate: false,
                     }]
                 } else {
                     vec![ParamTy {
                         ty: Ty::RawPtr { mutable: false }.into(),
+                        comptime: None,
                         varargs: false,
                         impossible_to_differentiate: false,
                     }]
@@ -991,9 +1209,10 @@ impl BuiltinKind {
                 return_ty: Ty::UInt(u8::MAX).into(),
             }
             .into(),
-            BuiltinKind::PtrFromRaw { mutable, opt } => Ty::Function {
+            BuiltinKind::PtrFromRaw { mutable, opt } => Ty::FunctionPointer {
                 param_tys: vec![ParamTy {
                     ty: Ty::UInt(u8::MAX).into(),
+                    comptime: None,
                     varargs: false,
                     impossible_to_differentiate: false,
                 }],
@@ -1007,9 +1226,10 @@ impl BuiltinKind {
                 },
             }
             .into(),
-            BuiltinKind::MetaToRaw => Ty::Function {
+            BuiltinKind::MetaToRaw => Ty::FunctionPointer {
                 param_tys: vec![ParamTy {
                     ty: Ty::Type.into(),
+                    comptime: None,
                     varargs: false,
                     impossible_to_differentiate: false,
                 }],
@@ -1020,11 +1240,11 @@ impl BuiltinKind {
                 sub_ty: Ty::AnonStruct {
                     members: vec![
                         MemberTy {
-                            name: hir::Name(Key::size()),
+                            name: Name(Key::size()),
                             ty: Ty::UInt(u8::MAX).into(),
                         },
                         MemberTy {
-                            name: hir::Name(Key::align()),
+                            name: Name(Key::align()),
                             ty: Ty::UInt(u8::MAX).into(),
                         },
                     ],
@@ -1036,11 +1256,11 @@ impl BuiltinKind {
             BuiltinKind::SingleLayout { .. } => Ty::AnonStruct {
                 members: vec![
                     MemberTy {
-                        name: hir::Name(Key::size()),
+                        name: Name(Key::size()),
                         ty: Ty::UInt(u8::MAX).into(),
                     },
                     MemberTy {
-                        name: hir::Name(Key::align()),
+                        name: Name(Key::align()),
                         ty: Ty::UInt(u8::MAX).into(),
                     },
                 ],
@@ -1051,47 +1271,47 @@ impl BuiltinKind {
                     members: match sub_kind {
                         BuiltinSubKind::Array => vec![
                             MemberTy {
-                                name: hir::Name(Key::len()),
+                                name: Name(Key::len()),
                                 ty: Ty::UInt(u8::MAX).into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::sub_ty()),
+                                name: Name(Key::sub_ty()),
                                 ty: Ty::Type.into(),
                             },
                         ],
                         BuiltinSubKind::Slice => vec![MemberTy {
-                            name: hir::Name(Key::sub_ty()),
+                            name: Name(Key::sub_ty()),
                             ty: Ty::Type.into(),
                         }],
                         BuiltinSubKind::Pointer => vec![
                             MemberTy {
-                                name: hir::Name(Key::sub_ty()),
+                                name: Name(Key::sub_ty()),
                                 ty: Ty::Type.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::mutable()),
+                                name: Name(Key::mutable()),
                                 ty: Ty::Bool.into(),
                             },
                         ],
                         BuiltinSubKind::Distinct => vec![MemberTy {
-                            name: hir::Name(Key::sub_ty()),
+                            name: Name(Key::sub_ty()),
                             ty: Ty::Type.into(),
                         }],
                         BuiltinSubKind::Struct => vec![MemberTy {
-                            name: hir::Name(Key::members()),
+                            name: Name(Key::members()),
                             ty: Ty::Slice {
                                 sub_ty: Ty::AnonStruct {
                                     members: vec![
                                         MemberTy {
-                                            name: hir::Name(Key::name()),
+                                            name: Name(Key::name()),
                                             ty: Ty::String.into(),
                                         },
                                         MemberTy {
-                                            name: hir::Name(Key::ty()),
+                                            name: Name(Key::ty()),
                                             ty: Ty::Type.into(),
                                         },
                                         MemberTy {
-                                            name: hir::Name(Key::offset()),
+                                            name: Name(Key::offset()),
                                             ty: Ty::UInt(u8::MAX).into(),
                                         },
                                     ],
@@ -1102,52 +1322,52 @@ impl BuiltinKind {
                         }],
                         BuiltinSubKind::Enum => vec![
                             MemberTy {
-                                name: hir::Name(Key::variants()),
+                                name: Name(Key::variants()),
                                 ty: Ty::Slice {
                                     sub_ty: Ty::Type.into(),
                                 }
                                 .into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::discriminant_offset()),
+                                name: Name(Key::discriminant_offset()),
                                 ty: Ty::UInt(u8::MAX).into(),
                             },
                         ],
                         BuiltinSubKind::Variant => vec![
                             MemberTy {
-                                name: hir::Name(Key::sub_ty()),
+                                name: Name(Key::sub_ty()),
                                 ty: Ty::Type.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::discriminant()),
+                                name: Name(Key::discriminant()),
                                 ty: Ty::UInt(32).into(),
                             },
                         ],
                         BuiltinSubKind::Optional => vec![
                             MemberTy {
-                                name: hir::Name(Key::sub_ty()),
+                                name: Name(Key::sub_ty()),
                                 ty: Ty::Type.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::is_non_zero()),
+                                name: Name(Key::is_non_zero()),
                                 ty: Ty::Bool.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::discriminant_offset()),
+                                name: Name(Key::discriminant_offset()),
                                 ty: Ty::UInt(u8::MAX).into(),
                             },
                         ],
                         BuiltinSubKind::ErrorUnion => vec![
                             MemberTy {
-                                name: hir::Name(Key::error_ty()),
+                                name: Name(Key::error_ty()),
                                 ty: Ty::Type.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::payload_ty()),
+                                name: Name(Key::payload_ty()),
                                 ty: Ty::Type.into(),
                             },
                             MemberTy {
-                                name: hir::Name(Key::discriminant_offset()),
+                                name: Name(Key::discriminant_offset()),
                                 ty: Ty::UInt(u8::MAX).into(),
                             },
                         ],

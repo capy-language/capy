@@ -27,13 +27,15 @@ fn global_and_usage() {
         };
     "#,
         expect![[r#"
-        main::bar : () -> void
-        main::foo : i32
-        0 : i32
-        1 : i32
-        2 : void
-        3 : () -> void
-    "#]],
+            main::foo : i32
+              0 : i32
+            main::bar : main::bar() -> void
+              3 : main::bar() -> void
+            main::lambda#bar : main::bar() -> void
+              1 : i32
+              2 : void
+              3 : main::bar() -> void
+        "#]],
         |_| [],
     );
 }
@@ -78,15 +80,16 @@ fn ty_in_other_file() {
             };
         "#,
         expect![[r#"
-            main::fun : () -> numbers::imaginary
-            main::numbers : file numbers
-            numbers::Magic_Struct : type
             numbers::imaginary : type
-            numbers:
               1 : type
+            numbers::Magic_Struct : type
               3 : type
-            main:
+            main::numbers : file numbers
               0 : file numbers
+            main::fun : main::fun() -> numbers::imaginary
+              1 : file numbers
+              16 : main::fun() -> numbers::imaginary
+            main::lambda#fun : main::fun() -> numbers::imaginary
               1 : file numbers
               3 : file numbers
               5 : numbers::imaginary
@@ -98,7 +101,7 @@ fn ty_in_other_file() {
               13 : numbers::Magic_Struct
               14 : numbers::imaginary
               15 : numbers::imaginary
-              16 : () -> numbers::imaginary
+              16 : main::fun() -> numbers::imaginary
               l0 : numbers::imaginary
               l1 : numbers::Magic_Struct
         "#]],
@@ -120,16 +123,18 @@ fn alias_ty() {
             }
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::fun : () -> main::Foo
-            1 : type
-            2 : type
-            5 : main::Foo
-            6 : main::Foo
-            7 : main::Foo
-            8 : () -> main::Foo
-            l0 : main::Foo
+              1 : type
+            main::Bar : type
+              2 : type
+            main::fun : main::fun() -> main::Foo
+              8 : main::fun() -> main::Foo
+            main::lambda#fun : main::fun() -> main::Foo
+              5 : main::Foo
+              6 : main::Foo
+              7 : main::Foo
+              8 : main::fun() -> main::Foo
+              l0 : main::Foo
         "#]],
         |_| [],
     );
@@ -150,25 +155,25 @@ fn non_existent_global_in_other_file() {
             // nothing here
         "#,
         expect![[r#"
-            main::bar : <unknown>
             main::foo : file foo
-            main::fun : () -> void
-            foo:
-            main:
               0 : file foo
+            main::bar : <unknown>
               1 : file foo
               2 : <unknown>
+            main::fun : main::fun() -> void
+              6 : main::fun() -> void
+            main::lambda#fun : main::fun() -> void
               4 : {uint}
               5 : void
-              6 : () -> void
+              6 : main::fun() -> void
               l0 : <unknown>
         "#]],
         |i| {
             [(
                 TyDiagnosticKind::UnknownFqn {
-                    fqn: hir::Fqn {
-                        file: hir::FileName(i.intern("foo.capy")),
-                        name: hir::Name(i.intern("bar")),
+                    fqn: Fqn {
+                        file: FileName(i.intern("foo.capy")),
+                        name: Name(i.intern("bar")),
                     },
                 },
                 59..66,
@@ -210,44 +215,44 @@ fn depend_depend_depend() {
             thud :: comptime xyzzy;
         "#,
         expect![[r#"
-            main::bar : i32
-            main::baz : i32
-            main::corge : i32
             main::foo : i32
-            main::fred : i32
-            main::garply : i32
-            main::grault : i32
-            main::plugh : i32
-            main::quux : i32
+              0 : i32
+            main::bar : i32
+              1 : i32
+              2 : i32
+            main::baz : i32
+              3 : i32
+              4 : i32
             main::qux : i32
-            main::thud : i32
+              5 : i32
+              6 : i32
+            main::quux : i32
+              7 : i32
+              8 : i32
+            main::corge : i32
+              9 : i32
+              10 : i32
+            main::grault : i32
+              11 : i32
+              12 : i32
+            main::garply : i32
+              13 : i32
+              14 : i32
             main::waldo : i32
+              15 : i32
+              16 : i32
+            main::fred : i32
+              17 : i32
+              18 : i32
+            main::plugh : i32
+              19 : i32
+              20 : i32
             main::xyzzy : i32
-            0 : i32
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : i32
-            8 : i32
-            9 : i32
-            10 : i32
-            11 : i32
-            12 : i32
-            13 : i32
-            14 : i32
-            15 : i32
-            16 : i32
-            17 : i32
-            18 : i32
-            19 : i32
-            20 : i32
-            21 : i32
-            22 : i32
-            23 : i32
-            24 : i32
+              21 : i32
+              22 : i32
+            main::thud : i32
+              23 : i32
+              24 : i32
         "#]],
         |_| [],
     );

@@ -15,6 +15,7 @@ internment = "0.8.3"
 indexmap = "2.0.0"
 itertools = "0.14"
 topo = { path = "../topo" }
+debug = { path = "../debug" }
 
 [dev-dependencies]
 ast = { path = "../ast" }
@@ -27,6 +28,6 @@ uid_gen = { path = "../uid_gen" }
 derivative = "2.2.0"
 codegen = { path = "../codegen" }
 target-lexicon = "0.13.1"
-diagnostics = { path = "../diagnostics", features = ["expose_hir_ty"] }
+diagnostics = { path = "../diagnostics", features = ["expose_hir"] }
 line_index = { path = "../line_index" }
 pretty_assertions = "1.4"

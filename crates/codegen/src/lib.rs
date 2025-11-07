@@ -14,19 +14,17 @@ mod tests;
 
 use compiler::program::compile_program;
 use cranelift::prelude::isa::{self};
-use cranelift::prelude::{settings, Configurable};
+use cranelift::prelude::{Configurable, settings};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_object::object::write;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
-use hir::FQComptime;
-use hir_ty::ComptimeResult;
+use hir::common::{ComptimeResultMap, ConcreteGlobalLoc};
 use interner::Interner;
-use rustc_hash::FxHashMap;
 use std::ffi::c_char;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command, Output};
+use std::process::{Command, Output, exit};
 use target_lexicon::{OperatingSystem, Triple};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,12 +58,12 @@ pub use compiler::comptime::eval_comptime_blocks;
 
 pub fn compile_jit(
     verbosity: Verbosity,
-    entry_point: hir::Fqn,
+    entry_point: ConcreteGlobalLoc,
     mod_dir: &std::path::Path,
     interner: &Interner,
     world_bodies: &hir::WorldBodies,
-    tys: &hir_ty::ProjectInference,
-    comptime_results: &FxHashMap<FQComptime, ComptimeResult>,
+    tys: &hir_ty::WorldTys,
+    comptime_results: &ComptimeResultMap,
 ) -> fn(usize, *const *const c_char) -> usize {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -104,16 +102,18 @@ pub fn compile_jit(
 
 pub fn compile_obj(
     verbosity: Verbosity,
-    entry_point: hir::Fqn,
+    entry_point: ConcreteGlobalLoc,
     mod_dir: &std::path::Path,
     interner: &Interner,
     world_bodies: &hir::WorldBodies,
-    tys: &hir_ty::ProjectInference,
-    comptime_results: &FxHashMap<FQComptime, ComptimeResult>,
+    tys: &hir_ty::WorldTys,
+    comptime_results: &ComptimeResultMap,
     target: Triple,
 ) -> Result<Vec<u8>, write::Error> {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    // if "is_pic=false" does not work on macos
+    // i spent a LOT of time narrowing down a crash to that issue
     flag_builder.set("is_pic", "true").unwrap();
 
     let isa_builder = isa::lookup(target).unwrap_or_else(|msg| {
@@ -126,7 +126,7 @@ pub fn compile_obj(
 
     let builder = ObjectBuilder::new(
         isa,
-        entry_point.file.to_string(mod_dir, interner),
+        entry_point.file().to_string(mod_dir, interner),
         cranelift_module::default_libcall_names(),
     )
     .unwrap();

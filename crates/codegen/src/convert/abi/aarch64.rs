@@ -1,7 +1,7 @@
 // TODO: other kinds of aarch64 abis then apple
 
-use cranelift::prelude::types::{I128, I64};
-use hir_ty::{ParamTy, Ty};
+use cranelift::prelude::types::{I64, I128};
+use hir::common::{ParamTy, Ty};
 use internment::Intern;
 use tinyvec::ArrayVec;
 

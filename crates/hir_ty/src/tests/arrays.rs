@@ -11,17 +11,19 @@ fn array() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : [6]i32
-            8 : void
-            9 : () -> void
-            l0 : [6]i32
+            main::main : main::main() -> void
+              9 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : i32
+              5 : i32
+              6 : i32
+              7 : [6]i32
+              8 : void
+              9 : main::main() -> void
+              l0 : [6]i32
         "#]],
         |_| [],
     );
@@ -36,18 +38,20 @@ fn array_ty_with_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : usize
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : i32
-            8 : i32
-            9 : i32
-            10 : [6]i32
-            11 : void
-            12 : () -> void
-            l0 : [6]i32
+            main::main : main::main() -> void
+              12 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : usize
+              4 : i32
+              5 : i32
+              6 : i32
+              7 : i32
+              8 : i32
+              9 : i32
+              10 : [6]i32
+              11 : void
+              12 : main::main() -> void
+              l0 : [6]i32
         "#]],
         |_| [],
     );
@@ -64,17 +68,19 @@ fn array_ty_with_global_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
             main::size : usize
-            1 : usize
-            2 : usize
-            6 : i32
-            7 : i32
-            8 : i32
-            9 : [3]i32
-            10 : void
-            11 : () -> void
-            l0 : [3]i32
+              1 : usize
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              2 : usize
+              6 : i32
+              7 : i32
+              8 : i32
+              9 : [3]i32
+              10 : void
+              11 : main::main() -> void
+              l0 : [3]i32
         "#]],
         |_| [],
     );
@@ -97,20 +103,20 @@ fn array_ty_with_imported_global_size() {
             size : usize : 2;
         "#,
         expect![[r#"
-            main::main : () -> void
-            main::other : file other
             other::size : usize
-            other:
               1 : usize
-            main:
+            main::other : file other
               0 : file other
+            main::main : main::main() -> void
+              10 : main::main() -> void
+            main::lambda#main : main::main() -> void
               1 : file other
               2 : usize
               6 : bool
               7 : bool
               8 : [2]bool
               9 : void
-              10 : () -> void
+              10 : main::main() -> void
               l0 : [2]bool
         "#]],
         |_| [],
@@ -128,13 +134,15 @@ fn array_ty_with_extern_global_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
             main::size : usize
-            1 : usize
-            5 : [0]i32
-            6 : void
-            7 : () -> void
-            l0 : <unknown>
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : usize
+              5 : [0]i32
+              6 : void
+              7 : main::main() -> void
+              l0 : <unknown>
         "#]],
         |_| [(TyDiagnosticKind::ArraySizeNotConst, 90..94, None)],
     );
@@ -157,17 +165,17 @@ fn array_ty_with_extern_imported_global_size() {
             size : usize : extern;
         "#,
         expect![[r#"
-            main::main : () -> void
-            main::other : file other
             other::size : usize
-            other:
-            main:
+            main::other : file other
               0 : file other
+            main::main : main::main() -> void
+              8 : main::main() -> void
+            main::lambda#main : main::main() -> void
               1 : file other
               2 : usize
               6 : [0]bool
               7 : void
-              8 : () -> void
+              8 : main::main() -> void
               l0 : <unknown>
         "#]],
         |_| [(TyDiagnosticKind::ArraySizeNotConst, 99..109, None)],
@@ -190,15 +198,17 @@ fn array_ty_with_extern_global_through_regular_global_size() {
             };
         "#,
         expect![[r#"
-            main::bar : usize
             main::foo : usize
-            main::main : () -> void
-            1 : usize
-            2 : usize
-            6 : [0]i32
-            7 : void
-            8 : () -> void
-            l0 : <unknown>
+            main::bar : usize
+              1 : usize
+            main::main : main::main() -> void
+              8 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              2 : usize
+              6 : [0]i32
+              7 : void
+              8 : main::main() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [
@@ -218,13 +228,15 @@ fn array_ty_with_float_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {float}
-            4 : i32
-            5 : [1]i32
-            6 : void
-            7 : () -> void
-            l0 : <unknown>
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {float}
+              4 : i32
+              5 : [1]i32
+              6 : void
+              7 : main::main() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -250,18 +262,20 @@ fn array_ty_with_local_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : usize
-            1 : usize
-            5 : i32
-            6 : i32
-            7 : i32
-            8 : i32
-            9 : [4]i32
-            10 : void
-            11 : () -> void
-            l0 : usize
-            l1 : [4]i32
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : usize
+              1 : usize
+              5 : i32
+              6 : i32
+              7 : i32
+              8 : i32
+              9 : [4]i32
+              10 : void
+              11 : main::main() -> void
+              l0 : usize
+              l1 : [4]i32
         "#]],
         |_| [],
     );
@@ -280,22 +294,24 @@ fn array_ty_with_non_const_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : usize
-            1 : usize
-            2 : usize
-            3 : usize
-            4 : usize
-            5 : usize
-            9 : i32
-            10 : i32
-            11 : i32
-            12 : i32
-            13 : [4]i32
-            14 : void
-            15 : () -> void
-            l0 : usize
-            l1 : <unknown>
+            main::main : main::main() -> void
+              15 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : usize
+              1 : usize
+              2 : usize
+              3 : usize
+              4 : usize
+              5 : usize
+              9 : i32
+              10 : i32
+              11 : i32
+              12 : i32
+              13 : [4]i32
+              14 : void
+              15 : main::main() -> void
+              l0 : usize
+              l1 : <unknown>
         "#]],
         |_| [(TyDiagnosticKind::ArraySizeNotConst, 116..120, None)],
     );
@@ -318,26 +334,28 @@ fn array_ty_with_comptime_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : bool
-            1 : usize
-            2 : usize
-            3 : usize
-            4 : usize
-            5 : usize
-            6 : usize
-            7 : usize
-            8 : usize
-            12 : i64
-            13 : i64
-            14 : i64
-            15 : i64
-            16 : i64
-            17 : [5]i64
-            18 : void
-            19 : () -> void
-            l0 : usize
-            l1 : [5]i64
+            main::main : main::main() -> void
+              19 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : bool
+              1 : usize
+              2 : usize
+              3 : usize
+              4 : usize
+              5 : usize
+              6 : usize
+              7 : usize
+              8 : usize
+              12 : i64
+              13 : i64
+              14 : i64
+              15 : i64
+              16 : i64
+              17 : [5]i64
+              18 : void
+              19 : main::main() -> void
+              l0 : usize
+              l1 : [5]i64
         "#]],
         |_| [],
     );
@@ -352,13 +370,15 @@ fn array_ty_with_negative_size() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {int}
-            1 : {int}
-            5 : [0]i32
-            6 : void
-            7 : () -> void
-            l0 : <unknown>
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {int}
+              1 : {int}
+              5 : [0]i32
+              6 : void
+              7 : main::main() -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -384,20 +404,22 @@ fn index() {
             };
         "#,
         expect![[r#"
-            main::main : () -> i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : i32
-            8 : [6]i32
-            9 : [6]i32
-            10 : usize
-            11 : i32
-            12 : i32
-            13 : () -> i32
-            l0 : [6]i32
+            main::main : main::main() -> i32
+              13 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              2 : i32
+              3 : i32
+              4 : i32
+              5 : i32
+              6 : i32
+              7 : i32
+              8 : [6]i32
+              9 : [6]i32
+              10 : usize
+              11 : i32
+              12 : i32
+              13 : main::main() -> i32
+              l0 : [6]i32
         "#]],
         |_| [],
     );
@@ -414,20 +436,22 @@ fn index_too_large() {
             };
         "#,
         expect![[r#"
-            main::main : () -> i32
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : i32
-            6 : i32
-            7 : i32
-            8 : [6]i32
-            9 : [6]i32
-            10 : usize
-            11 : i32
-            12 : i32
-            13 : () -> i32
-            l0 : [6]i32
+            main::main : main::main() -> i32
+              13 : main::main() -> i32
+            main::lambda#main : main::main() -> i32
+              2 : i32
+              3 : i32
+              4 : i32
+              5 : i32
+              6 : i32
+              7 : i32
+              8 : [6]i32
+              9 : [6]i32
+              10 : usize
+              11 : i32
+              12 : i32
+              13 : main::main() -> i32
+              l0 : [6]i32
         "#]],
         |_| {
             [(
@@ -458,14 +482,16 @@ fn index_non_array() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : str
-            1 : str
-            2 : usize
-            3 : <unknown>
-            4 : void
-            5 : () -> void
-            l0 : str
+            main::foo : main::foo() -> void
+              5 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : str
+              1 : str
+              2 : usize
+              3 : <unknown>
+              4 : void
+              5 : main::foo() -> void
+              l0 : str
         "#]],
         |_| {
             [(
@@ -492,20 +518,22 @@ fn index_of_array_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : [3]i32
-            5 : [3]i32
-            6 : ^[3]i32
-            7 : ^[3]i32
-            8 : usize
-            9 : i32
-            10 : void
-            11 : () -> void
-            l0 : [3]i32
-            l1 : ^[3]i32
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : [3]i32
+              5 : [3]i32
+              6 : ^[3]i32
+              7 : ^[3]i32
+              8 : usize
+              9 : i32
+              10 : void
+              11 : main::main() -> void
+              l0 : [3]i32
+              l1 : ^[3]i32
         "#]],
         |_| [],
     );
@@ -524,21 +552,23 @@ fn index_of_array_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : [3]i32
-            5 : [3]i32
-            6 : ^[3]i32
-            7 : ^^[3]i32
-            8 : ^^[3]i32
-            9 : usize
-            10 : i32
-            11 : void
-            12 : () -> void
-            l0 : [3]i32
-            l1 : ^^[3]i32
+            main::main : main::main() -> void
+              12 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : [3]i32
+              5 : [3]i32
+              6 : ^[3]i32
+              7 : ^^[3]i32
+              8 : ^^[3]i32
+              9 : usize
+              10 : i32
+              11 : void
+              12 : main::main() -> void
+              l0 : [3]i32
+              l1 : ^^[3]i32
         "#]],
         |_| [],
     );
@@ -557,18 +587,20 @@ fn index_of_non_array_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : ^{uint}
-            3 : ^^{uint}
-            4 : ^^{uint}
-            5 : usize
-            6 : <unknown>
-            7 : void
-            8 : () -> void
-            l0 : {uint}
-            l1 : ^^{uint}
+            main::main : main::main() -> void
+              8 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : ^{uint}
+              3 : ^^{uint}
+              4 : ^^{uint}
+              5 : usize
+              6 : <unknown>
+              7 : void
+              8 : main::main() -> void
+              l0 : {uint}
+              l1 : ^^{uint}
         "#]],
         |_| {
             [(
@@ -603,21 +635,23 @@ fn index_too_large_of_array_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : [3]i32
-            5 : [3]i32
-            6 : ^[3]i32
-            7 : ^^[3]i32
-            8 : ^^[3]i32
-            9 : usize
-            10 : i32
-            11 : void
-            12 : () -> void
-            l0 : [3]i32
-            l1 : ^^[3]i32
+            main::main : main::main() -> void
+              12 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : [3]i32
+              5 : [3]i32
+              6 : ^[3]i32
+              7 : ^^[3]i32
+              8 : ^^[3]i32
+              9 : usize
+              10 : i32
+              11 : void
+              12 : main::main() -> void
+              l0 : [3]i32
+              l1 : ^^[3]i32
         "#]],
         |_| {
             [(
@@ -658,22 +692,24 @@ fn mutable_index_of_array_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : [3]i32
-            5 : [3]i32
-            6 : ^mut [3]i32
-            7 : ^mut ^mut [3]i32
-            8 : ^mut ^mut [3]i32
-            9 : usize
-            10 : i32
-            11 : i32
-            12 : void
-            13 : () -> void
-            l0 : [3]i32
-            l1 : ^mut ^mut [3]i32
+            main::main : main::main() -> void
+              13 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : [3]i32
+              5 : [3]i32
+              6 : ^mut [3]i32
+              7 : ^mut ^mut [3]i32
+              8 : ^mut ^mut [3]i32
+              9 : usize
+              10 : i32
+              11 : i32
+              12 : void
+              13 : main::main() -> void
+              l0 : [3]i32
+              l1 : ^mut ^mut [3]i32
         "#]],
         |_| [],
     );
@@ -692,22 +728,24 @@ fn immutable_index_of_array_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            2 : i32
-            3 : i32
-            4 : [3]i32
-            5 : [3]i32
-            6 : ^[3]i32
-            7 : ^^[3]i32
-            8 : ^^[3]i32
-            9 : usize
-            10 : i32
-            11 : {uint}
-            12 : void
-            13 : () -> void
-            l0 : [3]i32
-            l1 : ^^[3]i32
+            main::main : main::main() -> void
+              13 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              2 : i32
+              3 : i32
+              4 : [3]i32
+              5 : [3]i32
+              6 : ^[3]i32
+              7 : ^^[3]i32
+              8 : ^^[3]i32
+              9 : usize
+              10 : i32
+              11 : {uint}
+              12 : void
+              13 : main::main() -> void
+              l0 : [3]i32
+              l1 : ^^[3]i32
         "#]],
         |_| {
             [(

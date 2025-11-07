@@ -18,19 +18,21 @@ fn defer() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : {uint}
-            3 : () -> void
-            4 : void
-            5 : bool
-            6 : bool
-            7 : void
-            8 : str
-            9 : str
-            10 : void
-            11 : () -> void
+            main::foo : main::foo() -> void
+              11 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : {uint}
+              3 : main::foo() -> void
+              4 : void
+              5 : bool
+              6 : bool
+              7 : void
+              8 : str
+              9 : str
+              10 : void
+              11 : main::foo() -> void
         "#]],
         |_| [],
     )

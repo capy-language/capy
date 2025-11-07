@@ -11,11 +11,13 @@ fn int_too_large_for_type() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            1 : i8
-            2 : void
-            3 : () -> void
-            l0 : i8
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              1 : i8
+              2 : void
+              3 : main::foo() -> void
+              l0 : i8
         "#]],
         |_| {
             [(
@@ -42,13 +44,15 @@ fn int_too_large_for_type_by_inference() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i8
-            2 : i8
-            3 : void
-            4 : () -> void
-            l0 : i8
-            l1 : i8
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i8
+              2 : i8
+              3 : void
+              4 : main::foo() -> void
+              l0 : i8
+              l1 : i8
         "#]],
         |_| {
             [(
@@ -74,11 +78,13 @@ fn inference_by_too_large_for_u32() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : u64
-            1 : void
-            2 : () -> void
-            l0 : u64
+            main::foo : main::foo() -> void
+              2 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : u64
+              1 : void
+              2 : main::foo() -> void
+              l0 : u64
         "#]],
         |_| [],
     );
@@ -93,12 +99,14 @@ fn inference_by_too_large_for_i32() {
             };
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : i64
-            1 : i64
-            2 : void
-            3 : () -> void
-            l0 : i64
+            main::foo : main::foo() -> void
+              3 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : i64
+              1 : i64
+              2 : void
+              3 : main::foo() -> void
+              l0 : i64
         "#]],
         |_| [],
     );

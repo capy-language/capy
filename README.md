@@ -119,7 +119,7 @@ The type of this above array is `[6]i32`.
 
 If you won't know the size of the array until runtime, *slices* can be used instead.
 
-Slices can reference any array, no matter the size. To get a *slice* of `i32`s, you'd write `[]i32` 
+Slices can reference any array, no matter the size. To get a *slice* of `i32`s, you'd write `[]i32`
 
 ```cpp
 list_one: [6]i32 = i32.[4, 8, 15, 16, 23, 42];
@@ -220,7 +220,7 @@ x : My_Int = 42; // ERROR! My_Int's value might change at runtime! uncompilable!
 There are two requirements which determine if a variable is *const*.
 
 1. It must be immutable (it must use `::` and not `:=`)
-2. It must contain a literal value, a reference to another const variable, or a `comptime` block.
+2. It must contain a literal value, a reference to another const variable, a `comptime` block, or a reference to a `comptime` parameter.
 
 Beyond just being used for types, Const variables can also be used for enum discriminants (explained later) and array sizes.
 
@@ -317,7 +317,7 @@ It's very similar to creating distincts. The only real difference is that enums 
 
 Being able to operate on each variant as its own type can be quite useful, and doing things like this in Rust can be verbose.
 
-<details> 
+<details>
 <summary>Extra Information About Enums</summary>
 
 If you're doing FFI and you need to specify the discriminant you can do that with `|`
@@ -524,7 +524,7 @@ do_networking :: () -> My_Error_Type!u32 {
     body := switch inner in get_request("https://example.com") {
         str => inner,
         My_Error_Type => {
-            return inner;  
+            return inner;
         },
     };
 
@@ -552,7 +552,7 @@ save_number_to_disk :: (number: u64) -> My_Error_Type!void {}
 
 The above example uses `.try` with error unions, but `.try` works for optionals as well.
 
-<details> 
+<details>
 <summary>Extra Information About Optionals & Error Unions</summary>
 
 Optionals and Error Unions are stored in memory as tagged unions, just like enums.
@@ -638,15 +638,36 @@ My_Type :: comptime {
 x : My_Type = 42;
 ```
 
-Something more pragmatic than the above (but far too complex to fit in a readme) might be an ORM that automatically downloads the latest schema and uses it to assemble struct types.
+When you combine this with reflection, you end up with an extremely powerful system of generics
 
-As this feature continues to be fleshed out, this will become the basis of Capy's compile-time generic system.
+```cpp
+InlineVec :: (comptime SubType, comptime capacity: usize) -> type {
+    struct {
+        buffer: [capacity] SubType,
+        len: usize,
+    }
+}
 
-Additionally, at some point I'd like to make it so code within the comptime block can directly interface with the compiler, like a build.zig file, but within a `comptime { .. }` block.
+my_list : comptime InlineVec(i32, 10);
+```
+
+You can truly do whatever calculations you want in creating your types. Go as far as generating table and row types from a schema for an ORM, or as simple as generating stack based data structures (as shown above).
+
+As can be seen above, functions can also take in compile-time parameters, which can be used as const values.
+
+```cpp
+add :: (comptime Int: type, left: Int, right: Int) -> Int {
+    left + right
+}
+
+add(i32, 2, 3);
+```
+
+At some point I'd like to make it so code within comptime blocks can directly interface with the compiler, like a `build.zig` file, but within a `comptime { .. }` block.
 
 ### Reflection
 
-Reflection is another powerful feature of Capy, and powers the language's [runtime generic system](./core/src/structs/list.capy).
+Reflection is another powerful feature of Capy, and powers the language's [runtime generic system](./examples/lists_runtime_generic.capy).
 
 All types in a Capy program become 32 bit IDs at runtime. The [`meta.capy`](./core/src/meta.capy) file of the [`core`](./core) module contains reflection related code for inspecting these IDs and getting information such as the length of an array type,
 
@@ -715,7 +736,9 @@ Functions like `core.println` use reflection on this type ID to determine how to
 
 Reflection is extremely useful, and allows for things like a `debug` or `serialize` function that doesn't need to be implemented manually for all types (like Rust).
 
-If `comptime` powers Capy's compile-time generic system, reflection powers Capy's [runtime generic system](./core/src/structs/list.capy).
+If `comptime` powers Capy's [compile-time generic system](./examples/lists_comptime_generic.capy), reflection powers Capy's [runtime generic system](./examples/lists_runtime_generic.capy).
+
+These systems allow you to make the choice yourself between fast polymorphic functions that take up lots of program space, and slightly slower runtime generic functions that save a significant amount of space. The difference between these two can be seen in the two links above.
 
 In the future reflection will be made to embrace functions. When user-defined annotations are added, this will result in automation far more powerful than Rust macros.
 
@@ -874,7 +897,7 @@ some_event : Web_Event = Web_Event.Click.{
     y = 80
 };
 
-clicked : Web_Event.Click = #unwrap(some_event, Web_Event.Click); 
+clicked : Web_Event.Click = #unwrap(some_event, Web_Event.Click);
 ```
 
 `#unwrap` requires the first argument to be a sum type value, and the second argument to be the expected "true" type.

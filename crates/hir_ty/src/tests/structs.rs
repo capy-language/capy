@@ -20,14 +20,16 @@ fn struct_literal() {
         "#,
         expect![[r#"
             main::Person : type
-            main::foo : () -> void
-            2 : type
-            4 : str
-            5 : i32
-            6 : main::Person
-            7 : void
-            8 : () -> void
-            l0 : main::Person
+              2 : type
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              4 : str
+              5 : i32
+              6 : main::Person
+              7 : void
+              8 : main::foo() -> void
+              l0 : main::Person
         "#]],
         |_| [],
     );
@@ -52,25 +54,27 @@ fn struct_literal_wrong_fields() {
         "#,
         expect![[r#"
             main::Person : type
-            main::foo : () -> void
-            2 : type
-            4 : bool
-            5 : str
-            6 : main::Person
-            7 : void
-            8 : () -> void
-            l0 : main::Person
+              2 : type
+            main::foo : main::foo() -> void
+              8 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              4 : bool
+              5 : str
+              6 : main::Person
+              7 : void
+              8 : main::foo() -> void
+              l0 : main::Person
         "#]],
         |i| {
             let person_ty = Ty::ConcreteStruct {
                 uid: 0,
                 members: vec![
                     MemberTy {
-                        name: hir::Name(i.intern("name")),
+                        name: Name(i.intern("name")),
                         ty: Ty::String.into(),
                     },
                     MemberTy {
-                        name: hir::Name(i.intern("age")),
+                        name: Name(i.intern("age")),
                         ty: Ty::IInt(32).into(),
                     },
                 ],
@@ -127,16 +131,18 @@ fn get_struct_field() {
         "#,
         expect![[r#"
             main::Person : type
-            main::foo : () -> i32
-            2 : type
-            5 : str
-            6 : i32
-            7 : main::Person
-            8 : main::Person
-            9 : i32
-            10 : i32
-            11 : () -> i32
-            l0 : main::Person
+              2 : type
+            main::foo : main::foo() -> i32
+              11 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              5 : str
+              6 : i32
+              7 : main::Person
+              8 : main::Person
+              9 : i32
+              10 : i32
+              11 : main::foo() -> i32
+              l0 : main::Person
         "#]],
         |_| [],
     );
@@ -162,16 +168,18 @@ fn non_existent_field() {
         "#,
         expect![[r#"
             main::Person : type
-            main::foo : () -> i32
-            2 : type
-            5 : str
-            6 : i32
-            7 : main::Person
-            8 : main::Person
-            9 : <unknown>
-            10 : <unknown>
-            11 : () -> i32
-            l0 : main::Person
+              2 : type
+            main::foo : main::foo() -> i32
+              11 : main::foo() -> i32
+            main::lambda#foo : main::foo() -> i32
+              5 : str
+              6 : i32
+              7 : main::Person
+              8 : main::Person
+              9 : <unknown>
+              10 : <unknown>
+              11 : main::foo() -> i32
+              l0 : main::Person
         "#]],
         |i| {
             [(
@@ -181,11 +189,11 @@ fn non_existent_field() {
                         uid: 0,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("name")),
+                                name: Name(i.intern("name")),
                                 ty: Ty::String.into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("age")),
+                                name: Name(i.intern("age")),
                                 ty: Ty::IInt(32).into(),
                             },
                         ],
@@ -223,19 +231,21 @@ fn no_implicit_struct_cast() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            5 : type
-            8 : i32
-            9 : i8
-            10 : main::Foo
-            12 : main::Foo
-            13 : void
-            14 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              5 : type
+            main::main : main::main() -> void
+              14 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : i32
+              9 : i8
+              10 : main::Foo
+              12 : main::Foo
+              13 : void
+              14 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |i| {
             [(
@@ -245,11 +255,11 @@ fn no_implicit_struct_cast() {
                             uid: 1,
                             members: vec![
                                 MemberTy {
-                                    name: hir::Name(i.intern("a")),
+                                    name: Name(i.intern("a")),
                                     ty: Ty::IInt(32).into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("b")),
+                                    name: Name(i.intern("b")),
                                     ty: Ty::IInt(8).into(),
                                 },
                             ],
@@ -260,11 +270,11 @@ fn no_implicit_struct_cast() {
                         uid: 0,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::IInt(8).into(),
                             },
                         ],
@@ -302,20 +312,22 @@ fn cast_struct_same_fields() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            5 : type
-            8 : i32
-            9 : i8
-            10 : main::Foo
-            12 : main::Foo
-            14 : main::Bar
-            15 : void
-            16 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              5 : type
+            main::main : main::main() -> void
+              16 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : i32
+              9 : i8
+              10 : main::Foo
+              12 : main::Foo
+              14 : main::Bar
+              15 : void
+              16 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |_| [],
     );
@@ -345,20 +357,22 @@ fn cast_struct_diff_field_order() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            5 : type
-            8 : i32
-            9 : i8
-            10 : main::Foo
-            12 : main::Foo
-            14 : main::Bar
-            15 : void
-            16 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              5 : type
+            main::main : main::main() -> void
+              16 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : i32
+              9 : i8
+              10 : main::Foo
+              12 : main::Foo
+              14 : main::Bar
+              15 : void
+              16 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |_| [],
     );
@@ -388,20 +402,22 @@ fn cast_struct_diff_field_ty_castable() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            5 : type
-            8 : i32
-            9 : i8
-            10 : main::Foo
-            12 : main::Foo
-            14 : main::Bar
-            15 : void
-            16 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              5 : type
+            main::main : main::main() -> void
+              16 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : i32
+              9 : i8
+              10 : main::Foo
+              12 : main::Foo
+              14 : main::Bar
+              15 : void
+              16 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |_| [],
     );
@@ -431,24 +447,26 @@ fn cast_struct_diff_field_ty_uncastable() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            1 : usize
-            4 : type
-            6 : usize
-            9 : type
-            12 : i32
-            13 : i32
-            14 : i32
-            15 : [2]i32
-            16 : main::Foo
-            18 : main::Foo
-            20 : main::Bar
-            21 : void
-            22 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              1 : usize
+              4 : type
+            main::Bar : type
+              6 : usize
+              9 : type
+            main::main : main::main() -> void
+              22 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              12 : i32
+              13 : i32
+              14 : i32
+              15 : [2]i32
+              16 : main::Foo
+              18 : main::Foo
+              20 : main::Bar
+              21 : void
+              22 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |i| {
             [(
@@ -457,11 +475,11 @@ fn cast_struct_diff_field_ty_uncastable() {
                         uid: 0,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::ConcreteArray {
                                     size: 2,
                                     sub_ty: Ty::IInt(32).into(),
@@ -475,11 +493,11 @@ fn cast_struct_diff_field_ty_uncastable() {
                         uid: 1,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::ConcreteArray {
                                     size: 3,
                                     sub_ty: Ty::IInt(32).into(),
@@ -521,20 +539,22 @@ fn cast_struct_diff_field_name() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            5 : type
-            8 : i32
-            9 : i8
-            10 : main::Foo
-            12 : main::Foo
-            14 : main::Bar
-            15 : void
-            16 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              5 : type
+            main::main : main::main() -> void
+              16 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              8 : i32
+              9 : i8
+              10 : main::Foo
+              12 : main::Foo
+              14 : main::Bar
+              15 : void
+              16 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |i| {
             [(
@@ -543,11 +563,11 @@ fn cast_struct_diff_field_name() {
                         uid: 0,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::IInt(8).into(),
                             },
                         ],
@@ -557,11 +577,11 @@ fn cast_struct_diff_field_name() {
                         uid: 1,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("x")),
+                                name: Name(i.intern("x")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("y")),
+                                name: Name(i.intern("y")),
                                 ty: Ty::IInt(8).into(),
                             },
                         ],
@@ -600,20 +620,22 @@ fn cast_struct_diff_field_len() {
             };
         "#,
         expect![[r#"
-            main::Bar : type
             main::Foo : type
-            main::main : () -> void
-            2 : type
-            6 : type
-            9 : i32
-            10 : i8
-            11 : main::Foo
-            13 : main::Foo
-            15 : main::Bar
-            16 : void
-            17 : () -> void
-            l0 : main::Foo
-            l1 : main::Bar
+              2 : type
+            main::Bar : type
+              6 : type
+            main::main : main::main() -> void
+              17 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              9 : i32
+              10 : i8
+              11 : main::Foo
+              13 : main::Foo
+              15 : main::Bar
+              16 : void
+              17 : main::main() -> void
+              l0 : main::Foo
+              l1 : main::Bar
         "#]],
         |i| {
             [(
@@ -622,11 +644,11 @@ fn cast_struct_diff_field_len() {
                         uid: 0,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::IInt(8).into(),
                             },
                         ],
@@ -636,15 +658,15 @@ fn cast_struct_diff_field_len() {
                         uid: 1,
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::IInt(32).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::IInt(8).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("c")),
+                                name: Name(i.intern("c")),
                                 ty: Ty::String.into(),
                             },
                         ],
@@ -678,18 +700,20 @@ fn field_of_struct_ptr() {
         "#,
         expect![[r#"
             main::Foo : type
-            main::main : () -> void
-            1 : type
-            3 : i32
-            4 : main::Foo
-            5 : main::Foo
-            6 : ^main::Foo
-            7 : ^main::Foo
-            8 : i32
-            9 : void
-            10 : () -> void
-            l0 : main::Foo
-            l1 : ^main::Foo
+              1 : type
+            main::main : main::main() -> void
+              10 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              3 : i32
+              4 : main::Foo
+              5 : main::Foo
+              6 : ^main::Foo
+              7 : ^main::Foo
+              8 : i32
+              9 : void
+              10 : main::main() -> void
+              l0 : main::Foo
+              l1 : ^main::Foo
         "#]],
         |_| [],
     );
@@ -715,19 +739,21 @@ fn field_of_struct_ptr_ptr() {
         "#,
         expect![[r#"
             main::Foo : type
-            main::main : () -> void
-            1 : type
-            3 : i32
-            4 : main::Foo
-            5 : main::Foo
-            6 : ^main::Foo
-            7 : ^^main::Foo
-            8 : ^^main::Foo
-            9 : i32
-            10 : void
-            11 : () -> void
-            l0 : main::Foo
-            l1 : ^^main::Foo
+              1 : type
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              3 : i32
+              4 : main::Foo
+              5 : main::Foo
+              6 : ^main::Foo
+              7 : ^^main::Foo
+              8 : ^^main::Foo
+              9 : i32
+              10 : void
+              11 : main::main() -> void
+              l0 : main::Foo
+              l1 : ^^main::Foo
         "#]],
         |_| [],
     );
@@ -746,17 +772,19 @@ fn field_of_non_struct_ptr_ptr() {
             }
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {uint}
-            1 : {uint}
-            2 : ^{uint}
-            3 : ^^{uint}
-            4 : ^^{uint}
-            5 : <unknown>
-            6 : void
-            7 : () -> void
-            l0 : {uint}
-            l1 : ^^{uint}
+            main::main : main::main() -> void
+              7 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {uint}
+              1 : {uint}
+              2 : ^{uint}
+              3 : ^^{uint}
+              4 : ^^{uint}
+              5 : <unknown>
+              6 : void
+              7 : main::main() -> void
+              l0 : {uint}
+              l1 : ^^{uint}
         "#]],
         |i| {
             [(
@@ -799,19 +827,21 @@ fn non_existent_field_of_struct_ptr_ptr() {
         "#,
         expect![[r#"
             main::Foo : type
-            main::main : () -> void
-            1 : type
-            3 : i32
-            4 : main::Foo
-            5 : main::Foo
-            6 : ^main::Foo
-            7 : ^^main::Foo
-            8 : ^^main::Foo
-            9 : <unknown>
-            10 : void
-            11 : () -> void
-            l0 : main::Foo
-            l1 : ^^main::Foo
+              1 : type
+            main::main : main::main() -> void
+              11 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              3 : i32
+              4 : main::Foo
+              5 : main::Foo
+              6 : ^main::Foo
+              7 : ^^main::Foo
+              8 : ^^main::Foo
+              9 : <unknown>
+              10 : void
+              11 : main::main() -> void
+              l0 : main::Foo
+              l1 : ^^main::Foo
         "#]],
         |i| {
             [(
@@ -824,7 +854,7 @@ fn non_existent_field_of_struct_ptr_ptr() {
                             sub_ty: Ty::ConcreteStruct {
                                 uid: 0,
                                 members: vec![MemberTy {
-                                    name: hir::Name(i.intern("a")),
+                                    name: Name(i.intern("a")),
                                     ty: Ty::IInt(32).into(),
                                 }],
                             }
@@ -861,20 +891,22 @@ fn mutate_field_of_struct_ptr_ptr() {
         "#,
         expect![[r#"
             main::Foo : type
-            main::main : () -> void
-            1 : type
-            3 : i32
-            4 : main::Foo
-            5 : main::Foo
-            6 : ^mut main::Foo
-            7 : ^mut ^mut main::Foo
-            8 : ^mut ^mut main::Foo
-            9 : i32
-            10 : i32
-            11 : void
-            12 : () -> void
-            l0 : main::Foo
-            l1 : ^mut ^mut main::Foo
+              1 : type
+            main::main : main::main() -> void
+              12 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              3 : i32
+              4 : main::Foo
+              5 : main::Foo
+              6 : ^mut main::Foo
+              7 : ^mut ^mut main::Foo
+              8 : ^mut ^mut main::Foo
+              9 : i32
+              10 : i32
+              11 : void
+              12 : main::main() -> void
+              l0 : main::Foo
+              l1 : ^mut ^mut main::Foo
         "#]],
         |_| [],
     );

@@ -9,9 +9,11 @@ fn entry_point_void() {
             start :: () {};
         "#,
         expect![[r#"
-            main::start : () -> void
-            0 : void
-            1 : () -> void
+            main::start : main::start() -> void
+              1 : main::start() -> void
+            main::lambda#start : main::start() -> void
+              0 : void
+              1 : main::start() -> void
         "#]],
         |_| [],
         Some("start"),
@@ -25,10 +27,12 @@ fn entry_point_int() {
             entry :: () -> i16 { 0 };
         "#,
         expect![[r#"
-            main::entry : () -> i16
-            1 : i16
-            2 : i16
-            3 : () -> i16
+            main::entry : main::entry() -> i16
+              3 : main::entry() -> i16
+            main::lambda#entry : main::entry() -> i16
+              1 : i16
+              2 : i16
+              3 : main::entry() -> i16
         "#]],
         |_| [],
         Some("entry"),
@@ -42,10 +46,12 @@ fn entry_point_uint() {
             main :: () -> usize { 0 };
         "#,
         expect![[r#"
-            main::main : () -> usize
-            1 : usize
-            2 : usize
-            3 : () -> usize
+            main::main : main::main() -> usize
+              3 : main::main() -> usize
+            main::lambda#main : main::main() -> usize
+              1 : usize
+              2 : usize
+              3 : main::main() -> usize
         "#]],
         |_| [],
         Some("main"),
@@ -76,10 +82,12 @@ fn entry_point_bad_params_and_return() {
             }
         "#,
         expect![[r#"
-            main::foo : (i32, bool) -> str
-            3 : str
-            4 : str
-            5 : (i32, bool) -> str
+            main::foo : main::foo(i32, bool) -> str
+              5 : main::foo(i32, bool) -> str
+            main::lambda#foo : main::foo(i32, bool) -> str
+              3 : str
+              4 : str
+              5 : main::foo(i32, bool) -> str
         "#]],
         |_| {
             [

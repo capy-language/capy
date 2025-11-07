@@ -1,4 +1,4 @@
-use hir_ty::{ParamTy, Ty};
+use hir::common::{ParamTy, Ty};
 use internment::Intern;
 
 use crate::convert::GetFinalTy;

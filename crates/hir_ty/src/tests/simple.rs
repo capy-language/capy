@@ -31,19 +31,19 @@ fn alias_ty_in_other_file() {
         "#,
         expect![[r#"
             foo::Foo : type
-            main::Foo : type
-            main::foo : file foo
-            main::fun : () -> foo::Foo
-            foo:
               1 : type
-            main:
-              0 : file foo
+            main::Foo : type
               1 : file foo
               2 : type
+            main::foo : file foo
+              0 : file foo
+            main::fun : main::fun() -> foo::Foo
+              8 : main::fun() -> foo::Foo
+            main::lambda#fun : main::fun() -> foo::Foo
               5 : foo::Foo
               6 : foo::Foo
               7 : foo::Foo
-              8 : () -> foo::Foo
+              8 : main::fun() -> foo::Foo
               l0 : foo::Foo
         "#]],
         |_| [],

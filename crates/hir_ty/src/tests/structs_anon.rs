@@ -15,14 +15,16 @@ fn anon_struct() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : str
-            2 : {float}
-            3 : ~struct {a: {uint}, b: str, c: {float}}
-            4 : void
-            5 : () -> void
-            l0 : ~struct {a: {uint}, b: str, c: {float}}
+            main::anon : main::anon() -> void
+              5 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : str
+              2 : {float}
+              3 : ~struct {a: {uint}, b: str, c: {float}}
+              4 : void
+              5 : main::anon() -> void
+              l0 : ~struct {a: {uint}, b: str, c: {float}}
         "#]],
         |_| [],
     )
@@ -48,15 +50,17 @@ fn anon_struct_into_known_struct() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : u8
-            6 : str
-            7 : f64
-            8 : main::Foo_Type
-            9 : void
-            10 : () -> void
-            l0 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              10 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : u8
+              6 : str
+              7 : f64
+              8 : main::Foo_Type
+              9 : void
+              10 : main::anon() -> void
+              l0 : main::Foo_Type
         "#]],
         |_| [],
     )
@@ -82,15 +86,17 @@ fn anon_struct_into_known_struct_mixed_fields() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : str
-            6 : f64
-            7 : u8
-            8 : main::Foo_Type
-            9 : void
-            10 : () -> void
-            l0 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              10 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : str
+              6 : f64
+              7 : u8
+              8 : main::Foo_Type
+              9 : void
+              10 : main::anon() -> void
+              l0 : main::Foo_Type
         "#]],
         |_| [],
     )
@@ -118,17 +124,19 @@ fn anon_struct_into_known_struct_by_inference() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            4 : str
-            5 : f64
-            6 : u8
-            7 : main::Foo_Type
-            9 : main::Foo_Type
-            10 : void
-            11 : () -> void
-            l0 : main::Foo_Type
-            l1 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              11 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              4 : str
+              5 : f64
+              6 : u8
+              7 : main::Foo_Type
+              9 : main::Foo_Type
+              10 : void
+              11 : main::anon() -> void
+              l0 : main::Foo_Type
+              l1 : main::Foo_Type
         "#]],
         |_| [],
     )
@@ -156,18 +164,20 @@ fn anon_struct_as_known_struct() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            4 : str
-            5 : f64
-            6 : u8
-            7 : main::Foo_Type
-            8 : main::Foo_Type
-            10 : main::Foo_Type
-            11 : void
-            12 : () -> void
-            l0 : main::Foo_Type
-            l1 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              12 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              4 : str
+              5 : f64
+              6 : u8
+              7 : main::Foo_Type
+              8 : main::Foo_Type
+              10 : main::Foo_Type
+              11 : void
+              12 : main::anon() -> void
+              l0 : main::Foo_Type
+              l1 : main::Foo_Type
         "#]],
         |_| [],
     )
@@ -195,18 +205,20 @@ fn anon_struct_as_known_struct_diff_field_ty() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : f32
-            6 : str
-            7 : f32
-            8 : {float}
-            9 : ~struct {b: str, c: f32, a: {float}}
-            11 : main::Foo_Type
-            12 : void
-            13 : () -> void
-            l0 : f32
-            l1 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              13 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : f32
+              6 : str
+              7 : f32
+              8 : {float}
+              9 : ~struct {b: str, c: f32, a: {float}}
+              11 : main::Foo_Type
+              12 : void
+              13 : main::anon() -> void
+              l0 : f32
+              l1 : main::Foo_Type
         "#]],
         |_| [],
     )
@@ -234,14 +246,16 @@ fn anon_struct_into_known_struct_missing_field() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : {uint}
-            6 : str
-            7 : ~struct {a: {uint}, b: str}
-            8 : void
-            9 : () -> void
-            l0 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              9 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : {uint}
+              6 : str
+              7 : ~struct {a: {uint}, b: str}
+              8 : void
+              9 : main::anon() -> void
+              l0 : main::Foo_Type
         "#]],
         |i| {
             [(
@@ -251,15 +265,15 @@ fn anon_struct_into_known_struct_missing_field() {
                             uid: 0,
                             members: vec![
                                 MemberTy {
-                                    name: hir::Name(i.intern("a")),
+                                    name: Name(i.intern("a")),
                                     ty: Ty::UInt(8).into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("b")),
+                                    name: Name(i.intern("b")),
                                     ty: Ty::String.into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("c")),
+                                    name: Name(i.intern("c")),
                                     ty: Ty::Float(64).into(),
                                 },
                             ],
@@ -269,11 +283,11 @@ fn anon_struct_into_known_struct_missing_field() {
                     found: Ty::AnonStruct {
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::UInt(0).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::String.into(),
                             },
                         ],
@@ -308,16 +322,18 @@ fn anon_struct_into_known_struct_extra_field() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : {uint}
-            6 : str
-            7 : {float}
-            8 : bool
-            9 : ~struct {a: {uint}, b: str, c: {float}, d: bool}
-            10 : void
-            11 : () -> void
-            l0 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              11 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : {uint}
+              6 : str
+              7 : {float}
+              8 : bool
+              9 : ~struct {a: {uint}, b: str, c: {float}, d: bool}
+              10 : void
+              11 : main::anon() -> void
+              l0 : main::Foo_Type
         "#]],
         |i| {
             [(
@@ -327,15 +343,15 @@ fn anon_struct_into_known_struct_extra_field() {
                             uid: 0,
                             members: vec![
                                 MemberTy {
-                                    name: hir::Name(i.intern("a")),
+                                    name: Name(i.intern("a")),
                                     ty: Ty::UInt(8).into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("b")),
+                                    name: Name(i.intern("b")),
                                     ty: Ty::String.into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("c")),
+                                    name: Name(i.intern("c")),
                                     ty: Ty::Float(64).into(),
                                 },
                             ],
@@ -345,19 +361,19 @@ fn anon_struct_into_known_struct_extra_field() {
                     found: Ty::AnonStruct {
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::UInt(0).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::String.into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("c")),
+                                name: Name(i.intern("c")),
                                 ty: Ty::Float(0).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("d")),
+                                name: Name(i.intern("d")),
                                 ty: Ty::Bool.into(),
                             },
                         ],
@@ -391,15 +407,17 @@ fn anon_struct_into_known_struct_misnamed_field() {
         "#,
         expect![[r#"
             main::Foo_Type : type
-            main::anon : () -> void
-            3 : type
-            5 : {uint}
-            6 : str
-            7 : {float}
-            8 : ~struct {a: {uint}, b: str, last: {float}}
-            9 : void
-            10 : () -> void
-            l0 : main::Foo_Type
+              3 : type
+            main::anon : main::anon() -> void
+              10 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              5 : {uint}
+              6 : str
+              7 : {float}
+              8 : ~struct {a: {uint}, b: str, last: {float}}
+              9 : void
+              10 : main::anon() -> void
+              l0 : main::Foo_Type
         "#]],
         |i| {
             [(
@@ -409,15 +427,15 @@ fn anon_struct_into_known_struct_misnamed_field() {
                             uid: 0,
                             members: vec![
                                 MemberTy {
-                                    name: hir::Name(i.intern("a")),
+                                    name: Name(i.intern("a")),
                                     ty: Ty::UInt(8).into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("b")),
+                                    name: Name(i.intern("b")),
                                     ty: Ty::String.into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("c")),
+                                    name: Name(i.intern("c")),
                                     ty: Ty::Float(64).into(),
                                 },
                             ],
@@ -427,15 +445,15 @@ fn anon_struct_into_known_struct_misnamed_field() {
                     found: Ty::AnonStruct {
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("a")),
+                                name: Name(i.intern("a")),
                                 ty: Ty::UInt(0).into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("b")),
+                                name: Name(i.intern("b")),
                                 ty: Ty::String.into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("last")),
+                                name: Name(i.intern("last")),
                                 ty: Ty::Float(0).into(),
                             },
                         ],
@@ -464,16 +482,18 @@ fn anon_struct_field() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : str
-            2 : {float}
-            3 : ~struct {a: {uint}, b: str, c: {float}}
-            4 : ~struct {a: {uint}, b: str, c: {float}}
-            5 : {uint}
-            6 : void
-            7 : () -> void
-            l0 : ~struct {a: {uint}, b: str, c: {float}}
+            main::anon : main::anon() -> void
+              7 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : str
+              2 : {float}
+              3 : ~struct {a: {uint}, b: str, c: {float}}
+              4 : ~struct {a: {uint}, b: str, c: {float}}
+              5 : {uint}
+              6 : void
+              7 : main::anon() -> void
+              l0 : ~struct {a: {uint}, b: str, c: {float}}
         "#]],
         |_| [],
     )
@@ -495,17 +515,19 @@ fn anon_struct_field_mutation() {
             }
         "#,
         expect![[r#"
-            main::anon : () -> void
-            0 : {uint}
-            1 : str
-            2 : {float}
-            3 : ~struct {a: {uint}, b: str, c: {float}}
-            4 : ~struct {a: {uint}, b: str, c: {float}}
-            5 : {uint}
-            6 : {uint}
-            7 : void
-            8 : () -> void
-            l0 : ~struct {a: {uint}, b: str, c: {float}}
+            main::anon : main::anon() -> void
+              8 : main::anon() -> void
+            main::lambda#anon : main::anon() -> void
+              0 : {uint}
+              1 : str
+              2 : {float}
+              3 : ~struct {a: {uint}, b: str, c: {float}}
+              4 : ~struct {a: {uint}, b: str, c: {float}}
+              5 : {uint}
+              6 : {uint}
+              7 : void
+              8 : main::anon() -> void
+              l0 : ~struct {a: {uint}, b: str, c: {float}}
         "#]],
         |_| [],
     )

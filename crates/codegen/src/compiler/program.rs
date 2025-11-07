@@ -5,8 +5,7 @@ use cranelift::{
     prelude::{AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, Signature},
 };
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
-use hir::FQComptime;
-use hir_ty::ComptimeResult;
+use hir::common::{ComptimeResultMap, ConcreteGlobalLoc};
 use interner::Interner;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
@@ -14,34 +13,34 @@ use uid_gen::UIDGenerator;
 
 use crate::Verbosity;
 
-use super::{cast_ty_to_cranelift, Compiler, FunctionToCompile, MetaTyData};
+use super::{Compiler, FunctionToCompile, MetaTyData, cast_ty_to_cranelift};
 
 pub(crate) fn compile_program<'a>(
     verbosity: Verbosity,
-    entry_point: hir::Fqn,
+    entry_point: ConcreteGlobalLoc,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
     world_bodies: &'a hir::WorldBodies,
-    tys: &'a hir_ty::ProjectInference,
+    tys: &'a hir_ty::WorldTys,
     module: &'a mut dyn Module,
-    comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
+    comptime_results: &'a ComptimeResultMap,
 ) -> FuncId {
     let entry_point_ftc = {
-        let (param_tys, return_ty) = tys[entry_point]
-            .0
+        let (param_tys, return_ty) = tys
+            .sig(entry_point.wrap())
             .as_function()
             .expect("tried to compile non-function as entry point");
 
-        let global_body = world_bodies.body(entry_point);
+        let global_body = world_bodies.global_body(entry_point.to_naive());
 
-        let lambda = match world_bodies[entry_point.file][global_body] {
+        let lambda = match world_bodies[entry_point.file()][global_body] {
             hir::Expr::Lambda(lambda) => lambda,
             _ => todo!("entry point does not have a lambda as it's body"),
         };
 
         FunctionToCompile {
-            file_name: entry_point.file,
-            function_name: Some(entry_point.name),
+            loc: entry_point.wrap(),
+            is_function: true,
             lambda,
             param_tys: param_tys.clone(),
             return_ty,
@@ -84,7 +83,7 @@ pub(crate) fn compile_program<'a>(
     generate_main_function(compiler, entry_point)
 }
 
-fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> FuncId {
+fn generate_main_function(mut compiler: Compiler, entry_point: ConcreteGlobalLoc) -> FuncId {
     let entry_point_func = compiler.get_func_id(entry_point);
 
     let cmain_sig = Signature {
@@ -139,7 +138,7 @@ fn generate_main_function(mut compiler: Compiler, entry_point: hir::Fqn) -> Func
 
     let call = builder.ins().call(local_entry_point, &[]);
 
-    let (_, entry_return_ty) = compiler.tys[entry_point].0.as_function().unwrap();
+    let (_, entry_return_ty) = compiler.tys.sig(entry_point.wrap()).as_function().unwrap();
 
     let exit_code = if entry_return_ty.is_void() {
         builder.ins().iconst(compiler.ptr_ty, 0)

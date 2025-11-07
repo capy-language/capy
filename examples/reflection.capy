@@ -1,6 +1,6 @@
 core :: #mod("core");
 meta :: core.meta;
-fmt  :: core.fmt; 
+fmt  :: core.fmt;
 
 io   :: #import("io.capy");
 
@@ -111,12 +111,12 @@ check_equality :: () {
     core.println("Person == distinct 'a Person : ", Person == d1Person);
     core.println("distinct 'a Person == distinct 'b Person : ", d1Person == d2Person);
     core.println("distinct 'b Person == distinct 'b Person : ", d2Person == d2Person);
-    
+
     core.println("Dessert == Farm_Animal : ", Dessert == Farm_Animal);
     core.println("Dessert == Dessert : ", Dessert == Dessert);
 
     // This compares the types of enum variants.
-    
+
     // `Dessert.Apple_Pie` is a type, and this is comparing the type Apple_Pie to the type Cheesecake
     core.println("type.(Dessert.Apple_Pie) == type.(Dessert.Cheesecake) : ", Dessert.Apple_Pie == Dessert.Cheesecake);
     // `Dessert.Cheesecake` is a zero-sized type, and by default zero-sized types will refer to the singleton they represent.
@@ -192,11 +192,11 @@ check_any :: () {
     // as a result, it can represent *any* possible value in your program.
     // `any` powers the `core.println` function, which uses the type id
     // to figure out how the data should be printed
-    
+
     num : any = u8.(123);
     core.println(num);
 
-    the_numbers : any = i32.[4, 8, 15, 16, 23, 42]; 
+    the_numbers : any = i32.[4, 8, 15, 16, 23, 42];
     core.println(the_numbers);
 
     one_two_three : any = u16.[1, 2, 3];
@@ -206,7 +206,7 @@ check_any :: () {
     core.println(retirement_age_ptr);
 
     // `any` within `any` (for testing)
-    
+
     the_answer : any = u64.(42);
     core.println(the_answer);
     core.println(core.any_from_raw_parts(^the_answer, any));
@@ -216,7 +216,7 @@ check_any :: () {
     core.println(256);
     core.println("hello");
     core.println({});
-    
+
     // printing types
     core.println(i32);
     core.println(^Bar);
@@ -316,6 +316,7 @@ print_indent :: (indent: i32) {
     }
 };
 
+// examples.reflection::lambda#15 : (itself)
 print_info_with_args :: (ty: type, indent: i32) {
     print_front :: (indent: i32, values: ...any) {
         print_indent(indent);

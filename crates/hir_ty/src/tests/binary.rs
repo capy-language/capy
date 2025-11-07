@@ -9,12 +9,14 @@ fn binary_expr() {
             twenty :: () -> u8 { 10 + 10 };
         "#,
         expect![[r#"
-            main::twenty : () -> u8
-            1 : u8
-            2 : u8
-            3 : u8
-            4 : u8
-            5 : () -> u8
+            main::twenty : main::twenty() -> u8
+              5 : main::twenty() -> u8
+            main::lambda#twenty : main::twenty() -> u8
+              1 : u8
+              2 : u8
+              3 : u8
+              4 : u8
+              5 : main::twenty() -> u8
         "#]],
         |_| [],
     );
@@ -31,18 +33,20 @@ fn binary_expr_diff_types() {
             };
         "#,
         expect![[r#"
-            main::calc : () -> isize
-            1 : i128
-            3 : i128
-            4 : u16
-            6 : u16
-            7 : i128
-            8 : u16
-            9 : i128
-            10 : isize
-            11 : () -> isize
-            l0 : i128
-            l1 : u16
+            main::calc : main::calc() -> isize
+              11 : main::calc() -> isize
+            main::lambda#calc : main::calc() -> isize
+              1 : i128
+              3 : i128
+              4 : u16
+              6 : u16
+              7 : i128
+              8 : u16
+              9 : i128
+              10 : isize
+              11 : main::calc() -> isize
+              l0 : i128
+              l1 : u16
         "#]],
         |_| [],
     );
@@ -58,15 +62,17 @@ fn binary_expr_weak_uint_type() {
             };
         "#,
         expect![[r#"
-            main::calc : () -> u128
-            1 : u16
-            3 : u16
-            4 : u16
-            5 : u16
-            6 : u16
-            7 : u128
-            8 : () -> u128
-            l0 : u16
+            main::calc : main::calc() -> u128
+              8 : main::calc() -> u128
+            main::lambda#calc : main::calc() -> u128
+              1 : u16
+              3 : u16
+              4 : u16
+              5 : u16
+              6 : u16
+              7 : u128
+              8 : main::calc() -> u128
+              l0 : u16
         "#]],
         |_| [],
     );
@@ -82,15 +88,17 @@ fn binary_expr_weak_int_type() {
             };
         "#,
         expect![[r#"
-            main::calc : () -> i128
-            2 : u16
-            3 : u16
-            4 : i128
-            5 : i128
-            6 : i128
-            7 : i128
-            8 : () -> i128
-            l0 : u16
+            main::calc : main::calc() -> i128
+              8 : main::calc() -> i128
+            main::lambda#calc : main::calc() -> i128
+              2 : u16
+              3 : u16
+              4 : i128
+              5 : i128
+              6 : i128
+              7 : i128
+              8 : main::calc() -> i128
+              l0 : u16
         "#]],
         |_| {
             [(
@@ -118,16 +126,18 @@ fn binary_expr_float_and_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : f32
-            3 : f64
-            4 : f32
-            5 : f64
-            6 : f64
-            7 : void
-            8 : () -> void
-            l0 : f32
-            l1 : f64
+            main::main : main::main() -> void
+              8 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : f32
+              3 : f64
+              4 : f32
+              5 : f64
+              6 : f64
+              7 : void
+              8 : main::main() -> void
+              l0 : f32
+              l1 : f64
         "#]],
         |_| [],
     );
@@ -145,16 +155,18 @@ fn binary_expr_strong_int_and_strong_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : i32
-            3 : f64
-            4 : i32
-            5 : f64
-            6 : f64
-            7 : void
-            8 : () -> void
-            l0 : i32
-            l1 : f64
+            main::main : main::main() -> void
+              8 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : i32
+              3 : f64
+              4 : i32
+              5 : f64
+              6 : f64
+              7 : void
+              8 : main::main() -> void
+              l0 : i32
+              l1 : f64
         "#]],
         |_| [],
     );
@@ -171,14 +183,16 @@ fn binary_expr_weak_int_and_strong_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            1 : f64
-            2 : f64
-            3 : f64
-            4 : f64
-            5 : void
-            6 : () -> void
-            l0 : f64
+            main::main : main::main() -> void
+              6 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              1 : f64
+              2 : f64
+              3 : f64
+              4 : f64
+              5 : void
+              6 : main::main() -> void
+              l0 : f64
         "#]],
         |_| [],
     );
@@ -193,12 +207,14 @@ fn binary_expr_weak_int_and_weak_float() {
             };
         "#,
         expect![[r#"
-            main::main : () -> void
-            0 : {float}
-            1 : {float}
-            2 : {float}
-            3 : void
-            4 : () -> void
+            main::main : main::main() -> void
+              4 : main::main() -> void
+            main::lambda#main : main::main() -> void
+              0 : {float}
+              1 : {float}
+              2 : {float}
+              3 : void
+              4 : main::main() -> void
         "#]],
         |_| [],
     );
@@ -211,12 +227,14 @@ fn non_int_binary_expr() {
             sum :: () -> i32 { "foo" + 1 };
         "#,
         expect![[r#"
-            main::sum : () -> i32
-            1 : str
-            2 : i32
-            3 : i32
-            4 : i32
-            5 : () -> i32
+            main::sum : main::sum() -> i32
+              5 : main::sum() -> i32
+            main::lambda#sum : main::sum() -> i32
+              1 : str
+              2 : i32
+              3 : i32
+              4 : i32
+              5 : main::sum() -> i32
         "#]],
         |_| {
             [(
@@ -239,12 +257,14 @@ fn binary_expr_with_missing_operand() {
             f :: () -> i32 { 5 + };
         "#,
         expect![[r#"
-            main::f : () -> i32
-            1 : i32
-            2 : <unknown>
-            3 : i32
-            4 : i32
-            5 : () -> i32
+            main::f : main::f() -> i32
+              5 : main::f() -> i32
+            main::lambda#f : main::f() -> i32
+              1 : i32
+              2 : <unknown>
+              3 : i32
+              4 : i32
+              5 : main::f() -> i32
         "#]],
         |_| [],
     );
@@ -257,12 +277,14 @@ fn invalid_binary_expr_with_missing_operand() {
             f :: () -> str { "hello" + };
         "#,
         expect![[r#"
-            main::f : () -> str
-            1 : str
-            2 : <unknown>
-            3 : str
-            4 : str
-            5 : () -> str
+            main::f : main::f() -> str
+              5 : main::f() -> str
+            main::lambda#f : main::f() -> str
+              1 : str
+              2 : <unknown>
+              3 : str
+              4 : str
+              5 : main::f() -> str
         "#]],
         |_| [],
     );
@@ -275,12 +297,14 @@ fn invalid_num_cmp_binary_expr() {
             f :: () -> bool { true < 5 };
         "#,
         expect![[r#"
-            main::f : () -> bool
-            1 : bool
-            2 : {uint}
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::f : main::f() -> bool
+              5 : main::f() -> bool
+            main::lambda#f : main::f() -> bool
+              1 : bool
+              2 : {uint}
+              3 : bool
+              4 : bool
+              5 : main::f() -> bool
         "#]],
         |_| {
             [(
@@ -303,12 +327,14 @@ fn invalid_bool_cmp_binary_expr() {
             f :: () -> bool { "hello" && "world" };
         "#,
         expect![[r#"
-            main::f : () -> bool
-            1 : str
-            2 : str
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::f : main::f() -> bool
+              5 : main::f() -> bool
+            main::lambda#f : main::f() -> bool
+              1 : str
+              2 : str
+              3 : bool
+              4 : bool
+              5 : main::f() -> bool
         "#]],
         |_| {
             [(
@@ -331,12 +357,14 @@ fn bool_binary_expr() {
             both :: () -> bool { true && false };
         "#,
         expect![[r#"
-            main::both : () -> bool
-            1 : bool
-            2 : bool
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::both : main::both() -> bool
+              5 : main::both() -> bool
+            main::lambda#both : main::both() -> bool
+              1 : bool
+              2 : bool
+              3 : bool
+              4 : bool
+              5 : main::both() -> bool
         "#]],
         |_| [],
     );
@@ -349,12 +377,14 @@ fn bool_binary_expr_with_missing_operand() {
             either :: () -> bool { true || };
         "#,
         expect![[r#"
-            main::either : () -> bool
-            1 : bool
-            2 : <unknown>
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::either : main::either() -> bool
+              5 : main::either() -> bool
+            main::lambda#either : main::either() -> bool
+              1 : bool
+              2 : <unknown>
+              3 : bool
+              4 : bool
+              5 : main::either() -> bool
         "#]],
         |_| [],
     );
@@ -367,12 +397,14 @@ fn cmp_binary_expr() {
             less :: () -> bool { 5 <= 10 };
         "#,
         expect![[r#"
-            main::less : () -> bool
-            1 : {uint}
-            2 : {uint}
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::less : main::less() -> bool
+              5 : main::less() -> bool
+            main::lambda#less : main::less() -> bool
+              1 : {uint}
+              2 : {uint}
+              3 : bool
+              4 : bool
+              5 : main::less() -> bool
         "#]],
         |_| [],
     );
@@ -385,12 +417,14 @@ fn cmp_binary_expr_with_missing_operands() {
             equality :: () -> bool { 42 == };
         "#,
         expect![[r#"
-            main::equality : () -> bool
-            1 : {uint}
-            2 : <unknown>
-            3 : bool
-            4 : bool
-            5 : () -> bool
+            main::equality : main::equality() -> bool
+              5 : main::equality() -> bool
+            main::lambda#equality : main::equality() -> bool
+              1 : {uint}
+              2 : <unknown>
+              3 : bool
+              4 : bool
+              5 : main::equality() -> bool
         "#]],
         |_| [],
     );
@@ -405,12 +439,14 @@ fn compare_bool_to_bool() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> void
-            0 : bool
-            1 : bool
-            2 : bool
-            3 : void
-            4 : () -> void
+            main::foo : main::foo() -> void
+              4 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              0 : bool
+              1 : bool
+              2 : bool
+              3 : void
+              4 : main::foo() -> void
         "#]],
         |_| [],
     )

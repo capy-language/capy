@@ -654,6 +654,11 @@ fn parse_lambda(p: &mut Parser, recovery_set: TokenSet) -> CompletedMarker {
         }
 
         let param_m = p.start();
+
+        if p.at(TokenKind::Comptime) {
+            p.bump();
+        }
+
         {
             let _guard = p.expected_syntax_name("parameter name");
             p.expect_with_recovery_set(TokenKind::Ident, PARAM_RECOVERY_SET);

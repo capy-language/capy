@@ -1,24 +1,21 @@
 use std::{collections::HashSet, str::FromStr};
 
+use debug::debug;
 use hir::{
-    ArmVariant, Descendant, Expr, FQComptime, FQLambda, LocalDef, MemberLiteral, ScopeId,
-    ScopeUsage, Stmt,
+    ArmVariant, Descendant, Expr, LocalDef, MemberLiteral, ScopeId, ScopeUsage, Stmt, common::*,
 };
 use indexmap::IndexMap;
 use interner::Interner;
 use internment::Intern;
 use itertools::Itertools;
-use la_arena::{ArenaMap, Idx};
+use la_arena::{Arena, ArenaMap, Idx, IdxRange};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use text_size::{TextRange, TextSize};
 use topo::TopoSort;
 
 use crate::{
-    set_type_name,
-    ty::{self, BinaryOutput},
-    BuiltinKind, ComptimeResult, EvalComptimeFn, ExpectedTy, FileInference, InferResult,
-    Inferrable, InternTyExt, MemberTy, ParamTy, ProjectInference, Ty, TyDiagnostic,
-    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, TyName, TypedOp, UnaryOutput,
+    AreaTys, BuiltinKind, EvalComptimeFn, ExpectedTy, InferResult, NaiveLookupErr, TyDiagnostic,
+    TyDiagnosticHelp, TyDiagnosticHelpKind, TyDiagnosticKind, WorldTys,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,26 +94,101 @@ pub(crate) struct ExprExpected {
     pub(crate) is_default: bool,
 }
 
+struct TypedLambdaHeaders {
+    param_tys: Vec<ParamTy>,
+    return_ty: Intern<Ty>,
+    any_comptime: bool,
+    is_type: bool,
+}
+
+/// This is used when `infer_lambda_headers` needs the comptime args in order to evaluate
+/// the types of the headers.
+#[derive(Debug)]
+struct RequiresComptimeArgs;
+
+/// This is used by `evaluate_comptime_args` when there are errors in the arguments which prevent
+/// them from being evaluated
+#[derive(Debug)]
+struct ArgsContainDiagnostics;
+
+/// Note: this is "global" as in "global variable,"
+/// not global as in "including everything from all over the project".
+///
+/// the project-wide struct which holds context for resolving type information
+/// is `ProjectInferenceCtx`
+///
+/// Even though this is called "ctx," it's extremely impermanent, and will be
+/// very likely destroyed even in the middle of a global being resolved.
+///
+/// see the comment on `inferred_stmts`
 pub(crate) struct GlobalInferenceCtx<'a> {
-    pub(crate) file: hir::FileName,
-    pub(crate) currently_inferring: Inferrable,
+    /// This is the TypedFqn we are currently inside of,
+    /// even if it's not the actual body we're resolving.
+    /// This could be because of several layers of lambdas within a global function.
+    pub(crate) loc: ConcreteLoc,
     pub(crate) world_index: &'a hir::WorldIndex,
     pub(crate) world_bodies: &'a hir::WorldBodies,
     pub(crate) bodies: &'a hir::Bodies,
     pub(crate) interner: &'a Interner,
-    // This is used primarily by blocks so that e.g. if a block is not expected to be anything,
-    // returned values of `str` and `u64` will cause a type mismatch error to be reported.
-    // But if a block is expected to be `str!u64` (via a type annotation or return type),
-    // returned values of `str` and `u64` will combine to `str!u64` and there will be no error
+    /// This is used primarily by blocks so that e.g. if a block is not expected to be anything,
+    /// returned values of `str` and `u64` will cause a type mismatch error to be reported.
+    /// But if a block is expected to be `str!u64` (via a type annotation or return type),
+    /// returned values of `str` and `u64` will combine to `str!u64` and there will be no error
     pub(crate) expected_tys: ArenaMap<Idx<hir::Expr>, ExprExpected>,
     // todo: what happens to this when an uninferred global is reached?
-    // should this be stored in `InferenceCtx`?
+    // should this be stored in `ProjectInferenceCtx`?
     pub(crate) local_usages: ArenaMap<Idx<hir::LocalDef>, FxHashSet<Idx<hir::Stmt>>>,
-    pub(crate) inferred_stmts: &'a mut FxHashSet<(hir::FileName, Idx<hir::Stmt>)>,
-    pub(crate) tys: &'a mut ProjectInference,
+    /// this is just an arena that physically stores the compile-time results
+    /// associated with each comptime argument in a generic function call.
+    pub(crate) generics_arena: &'a mut Arena<ComptimeResult>,
+    /// this is the map that associates each call expression with a range of comptime results
+    /// in the above arena.
+    ///
+    /// These are stored so that the "second stage" of Expr::Call (see infer_expr) will know
+    /// to activate
+    pub(crate) call_associated_generics: &'a mut FxHashMap<(ConcreteLoc, Idx<Expr>), ComptimeArgs>,
+    /// this is used because the way `infer_stmt` and `infer_expr` operate is that
+    /// they can run multiple times in a row. In a way it's similar to how async works
+    /// under the hood. Both functions are state machines that will return to the operator
+    /// if they encounter another global that hasn't been resolved yet.
+    ///
+    /// The operator will then make sure that the "dependency" is resolved first before trying
+    /// to to resolve this global again.
+    ///
+    /// These dependencies are found *during* expression and statment inference, which means
+    /// that the operator will start inferring global A, then it returns because it has to
+    /// infer dependency B, then the operator starts with A again, then it has to stop again,
+    /// and so on.
+    ///
+    /// This means that the first expressions and statements in a global will be gone over
+    /// many times in a row while the function is getting back to where it was the last time.
+    ///
+    /// For expressions it's easy to figure out what's already been done because one can simply
+    /// check `tys[global_location].expr_tys`, but statments don't really have "types."
+    ///
+    /// So I just mark statements in this hashset when I'm done resolving them.
+    ///
+    /// Probably isn't the most efficient way to do it, but this crate is already so complex that I didn't
+    /// want to implement ANOTHER function that analyzes the graph for some other obscure reason.
+    ///
+    /// TODO: make this a local struct instead of a reference, and make it just Idx<hir::Stmt>
+    pub(crate) inferred_stmts: &'a mut FxHashSet<(ConcreteLoc, Idx<hir::Stmt>)>,
+    pub(crate) tys: &'a mut WorldTys,
+    /// This has values if self.loc is a ConcreteLambdaLoc
     pub(crate) param_tys: Vec<ParamTy>,
-    pub(crate) all_inferred: &'a FxHashSet<Inferrable>,
-    pub(crate) to_infer: &'a mut TopoSort<Inferrable>,
+    /// This stores the current comptime args while evaluating the headers of a lambda.
+    /// These may or may not be the comptime args stored in self.loc
+    ///
+    /// This is updated in-place, so later arguments may depend on the comptime value
+    /// of earlier arguments
+    /// TODO: test that
+    pub(crate) inline_comptime_args: Vec<Idx<ComptimeResult>>,
+    /// Unlike `inline_comptime_args`, this doesn't store ALL the results all at once.
+    /// it is updated in place, as the parameters are typed, and then cleared after
+    /// the lambda headers have been fully typed
+    pub(crate) inline_comptime_tys: Vec<Intern<Ty>>,
+    pub(crate) all_finished_locations: &'a FxHashSet<ConcreteLoc>,
+    pub(crate) to_infer: &'a mut TopoSort<ConcreteLoc>,
     pub(crate) diagnostics: &'a mut Vec<TyDiagnostic>,
     pub(crate) eval_comptime: &'a mut dyn EvalComptimeFn,
 }
@@ -164,7 +236,7 @@ impl GlobalInferenceCtx<'_> {
         if global && self.get_const(body).should_report_not_const() && !is_builtin {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::GlobalNotConst,
-                file: self.file,
+                file: self.loc.file(),
                 range: self.bodies.range_for_expr(body),
                 expr: Some(body),
                 help: None,
@@ -172,6 +244,9 @@ impl GlobalInferenceCtx<'_> {
 
             // println!("not const: {:#?}", &self.bodies[body]);
         }
+
+        assert!(self.inline_comptime_args.is_empty());
+        assert!(self.inline_comptime_tys.is_empty());
 
         Ok(actual_ty)
     }
@@ -187,7 +262,7 @@ impl GlobalInferenceCtx<'_> {
 
                         // if there is no type annotation on the user, then replace it's type
                         if user_local_body.ty.is_none() {
-                            self.tys[self.file]
+                            self.tys[self.loc]
                                 .local_tys
                                 .insert(user_local_def, user_local_ty);
                         }
@@ -278,7 +353,16 @@ impl GlobalInferenceCtx<'_> {
             return false;
         }
 
-        let found_ty = self.tys[self.file].expr_tys[expr];
+        // `or_insert` happens in the following case:
+        // ```
+        // foo :: (comptime T: type) {
+        //     x: T;
+        // }
+        // ```
+        // when T is evaluated it will go through `expect_match`
+        // which will send it to here, despite the fact it doesn't
+        // actually have an entry in expr_tys.
+        let found_ty = *self.tys[self.loc].expr_tys.entry(expr).or_insert(new_ty);
 
         let mut really_replaced = true;
 
@@ -289,8 +373,8 @@ impl GlobalInferenceCtx<'_> {
         assert!(
             found_ty.can_fit_into(&new_ty),
             "`is_weak_replaceable_by` is not a subset of `can_fit_into` for `{}` -> `{}`\n(`is_weak_replaceable_by` returned true but `can_fit_into` returned false)",
-            found_ty.simple_display(self.interner, true),
-            new_ty.simple_display(self.interner, true),
+            found_ty.debug(self.interner, true),
+            new_ty.debug(self.interner, true),
         );
 
         // if we're trying to replace {uint} with ?u64,
@@ -304,7 +388,7 @@ impl GlobalInferenceCtx<'_> {
 
         // println!(
         //     "{} #{} : WEAK TYPE {found_ty:?} -> {new_ty:?}",
-        //     self.file.debug(self.interner),
+        //     self.loc.debug(self.interner),
         //     expr.into_raw(),
         // );
 
@@ -320,7 +404,7 @@ impl GlobalInferenceCtx<'_> {
         }
         let expr_body = expr_body.clone();
 
-        self.tys[self.file].expr_tys.insert(expr, new_ty);
+        self.tys[self.loc].expr_tys.insert(expr, new_ty);
 
         match expr_body {
             Expr::IntLiteral(num) => {
@@ -332,7 +416,7 @@ impl GlobalInferenceCtx<'_> {
                                 max: max_size,
                                 ty: new_ty,
                             },
-                            file: self.file,
+                            file: self.loc.file(),
                             expr: Some(expr),
                             range: self.bodies.range_for_expr(expr),
                             help: None,
@@ -353,7 +437,7 @@ impl GlobalInferenceCtx<'_> {
                     }
                     .into();
 
-                    self.tys[self.file].expr_tys.insert(expr, new_ty);
+                    self.tys[self.loc].expr_tys.insert(expr, new_ty);
 
                     for item in items {
                         self.replace_weak_tys(item, *sub_ty);
@@ -435,7 +519,7 @@ impl GlobalInferenceCtx<'_> {
                 self.replace_weak_tys(body, new_ty);
             }
             Expr::Deref { pointer } => {
-                let mutable = self.tys[self.file].expr_tys[expr]
+                let mutable = self.tys[self.loc].expr_tys[expr]
                     .as_pointer()
                     .map(|(mutable, _)| mutable)
                     .unwrap_or_default();
@@ -458,7 +542,7 @@ impl GlobalInferenceCtx<'_> {
 
                 self.replace_weak_tys(inner, sub_ty);
 
-                self.tys[self.file].expr_tys.insert(
+                self.tys[self.loc].expr_tys.insert(
                     expr,
                     Ty::Pointer {
                         mutable: old_mutable,
@@ -479,7 +563,7 @@ impl GlobalInferenceCtx<'_> {
 
                 if let Some(value) = local_body.value {
                     if self.replace_weak_tys(value, new_ty) {
-                        self.tys[self.file].local_tys.insert(local_def, new_ty);
+                        self.tys[self.loc].local_tys.insert(local_def, new_ty);
                     }
                 }
 
@@ -500,7 +584,7 @@ impl GlobalInferenceCtx<'_> {
                 // self.reinfer_expr(self.bodies[local_def].value);
             }
             Expr::StructLiteral { members, .. } => {
-                let member_tys: FxHashMap<hir::Name, Intern<Ty>> = new_ty
+                let member_tys: FxHashMap<Name, Intern<Ty>> = new_ty
                     .as_struct()
                     .unwrap()
                     .iter()
@@ -522,11 +606,11 @@ impl GlobalInferenceCtx<'_> {
 
     // `get_const` determines whether or not `const_data` can be called
     fn get_const(&self, expr: Idx<Expr>) -> ExprIsConst {
-        let mut to_check = vec![(self.file, expr)];
+        let mut to_check = vec![(self.loc, expr)];
 
         let mut idx = 0;
-        while let Some((file, expr)) = to_check.get(idx).copied() {
-            let result = match &self.world_bodies[file][expr] {
+        while let Some((loc, expr)) = to_check.get(idx).copied() {
+            let result = match &self.world_bodies[loc.file()][expr] {
                 Expr::Missing
                 | Expr::Lambda(_)
                 | Expr::Import(_)
@@ -538,35 +622,40 @@ impl GlobalInferenceCtx<'_> {
                 | Expr::IntLiteral(_)
                 | Expr::FloatLiteral(_)
                 | Expr::BoolLiteral(_) => ExprIsConst::Const,
-                Expr::ArrayLiteral { items, .. } if self.tys[file][expr].is_array() => {
-                    to_check.extend(items.iter().map(|e| (file, *e)));
+                Expr::ArrayLiteral { items, .. } if self.tys[loc][expr].is_array() => {
+                    to_check.extend(items.iter().map(|e| (loc, *e)));
                     ExprIsConst::Const
                 }
                 Expr::LocalGlobal(global) => {
-                    let fqn = hir::Fqn {
-                        file,
+                    let new_naive = NaiveGlobalLoc {
+                        file: loc.file(),
                         name: global.name,
                     };
 
-                    if self.world_bodies.is_extern(fqn) {
+                    assert!(!self.world_bodies.has_polymorphic_body(new_naive.wrap()));
+                    let new_loc = new_naive.make_concrete(None);
+
+                    if self.world_bodies.global_is_extern(new_loc.to_naive()) {
                         ExprIsConst::Runtime
                     } else {
-                        let inferrable = Inferrable::Global(fqn);
-                        if !self.all_inferred.contains(&inferrable) {
+                        if !self.all_finished_locations.contains(&new_loc.wrap()) {
                             // this can only happen if there's been a cyclic error
-                            assert_eq!(*self.tys[fqn].0, Ty::NotYetResolved);
+                            assert_eq!(*self.tys.sig(new_loc.wrap()), Ty::NotYetResolved);
                             return ExprIsConst::Unknown;
                         }
 
-                        to_check.push((file, self.world_bodies.body(fqn)));
+                        to_check.push((
+                            new_loc.wrap(),
+                            self.world_bodies.global_body(new_loc.to_naive()),
+                        ));
                         ExprIsConst::Const
                     }
                 }
                 Expr::Local(local) => {
-                    let local_def = &self.world_bodies[file][*local];
+                    let local_def = &self.world_bodies[loc.file()][*local];
 
                     if let Some(value) = local_def.value {
-                        to_check.push((file, value));
+                        to_check.push((loc, value));
                     }
 
                     if local_def.mutable {
@@ -582,37 +671,43 @@ impl GlobalInferenceCtx<'_> {
                     previous,
                     name: field,
                 } => {
-                    let old_file = file;
+                    let old_tfqn = loc;
 
-                    if let Ty::File(file) = self.tys[old_file][*previous].as_ref() {
-                        to_check.push((old_file, *previous));
+                    if let Ty::File(file) = self.tys[old_tfqn][*previous].as_ref() {
+                        to_check.push((old_tfqn, *previous));
 
-                        let fqn = hir::Fqn {
+                        let new_loc = Fqn {
                             file: *file,
                             name: field.name,
                         };
 
-                        if !self.world_bodies.exists(fqn) {
+                        if !self.world_bodies.global_exists(new_loc) {
                             ExprIsConst::Unknown
-                        } else if self.world_bodies.is_extern(fqn) {
+                        } else if self.world_bodies.global_is_extern(new_loc) {
                             ExprIsConst::Runtime
                         } else {
-                            let inferrable = Inferrable::Global(fqn);
-                            if !self.all_inferred.contains(&inferrable) {
+                            assert!(!self.world_bodies.has_polymorphic_body(new_loc.wrap()));
+                            let new_loc = new_loc.make_concrete(None);
+
+                            if !self.all_finished_locations.contains(&new_loc.wrap()) {
                                 // this can only happen if there's been a cyclic error
-                                assert_eq!(*self.tys[fqn].0, Ty::NotYetResolved);
+                                assert_eq!(*self.tys.sig(new_loc.wrap()), Ty::NotYetResolved);
                                 return ExprIsConst::Unknown;
                             }
 
-                            to_check.push((*file, self.world_bodies.body(fqn)));
+                            to_check.push((
+                                new_loc.wrap(),
+                                self.world_bodies.global_body(new_loc.to_naive()),
+                            ));
                             ExprIsConst::Const
                         }
                     } else {
                         ExprIsConst::Runtime
                     }
                 }
+                Expr::ComptimeParam { .. } => ExprIsConst::Const,
                 _ => {
-                    if matches!(*(self.tys[file][expr]), Ty::Type | Ty::File(_)) {
+                    if matches!(*(self.tys[loc][expr]), Ty::Type | Ty::File(_)) {
                         ExprIsConst::Const
                     } else {
                         ExprIsConst::Runtime
@@ -648,7 +743,7 @@ impl GlobalInferenceCtx<'_> {
             Expr::Index { source: array, .. } => self.get_mutability(
                 *array,
                 assignment,
-                deref || self.tys[self.file][*array].is_pointer(),
+                deref || self.tys[self.loc][*array].is_pointer(),
             ),
             Expr::Block {
                 tail_expr: Some(tail_expr),
@@ -698,8 +793,8 @@ impl GlobalInferenceCtx<'_> {
                 }
             }
             Expr::LocalGlobal(name) => {
-                let fqn = hir::Fqn {
-                    file: self.file,
+                let fqn = Fqn {
+                    file: self.loc.file(),
                     name: name.name,
                 };
 
@@ -709,22 +804,22 @@ impl GlobalInferenceCtx<'_> {
                 previous,
                 name: field,
             } => {
-                let previous_ty = self.tys[self.file][*previous];
+                let previous_ty = self.tys[self.loc][*previous];
                 match previous_ty.as_ref() {
                     Ty::File(file) => {
-                        let fqn = hir::Fqn {
+                        let fqn = Fqn {
                             file: *file,
                             name: field.name,
                         };
 
-                        if *file == self.file {
+                        if *file == self.loc.file() {
                             ExprMutability::ImmutableGlobal(self.world_index.range_info(fqn).whole)
                         } else {
                             ExprMutability::ImmutableGlobal(field.range)
                         }
                     }
                     _ if deref => {
-                        let path_ty = &self.tys[self.file][expr];
+                        let path_ty = &self.tys[self.loc][expr];
 
                         if path_ty
                             .as_pointer()
@@ -746,7 +841,7 @@ impl GlobalInferenceCtx<'_> {
             }
             Expr::Call { .. } if deref => ExprMutability::Mutable,
             Expr::Cast { .. } if deref => {
-                let ty = self.tys[self.file][expr];
+                let ty = self.tys[self.loc][expr];
 
                 let ty = match ty.absolute_ty() {
                     Ty::Optional { sub_ty } => *sub_ty,
@@ -808,10 +903,11 @@ impl GlobalInferenceCtx<'_> {
             self.bodies
                 .descendants(expr, hir::DescentOpts::Reinfer)
                 .filter_map(|desc| match desc {
-                    Descendant::Expr(expr) => match self.bodies[expr] {
+                    Descendant::PreExpr(expr) => match self.bodies[expr] {
                         Expr::Local(local) => Some(local),
                         _ => None,
                     },
+                    Descendant::PostExpr(_) => unreachable!(),
                     Descendant::PreStmt(_) => None,
                     Descendant::PostStmt(_) => unreachable!(),
                 }),
@@ -819,7 +915,7 @@ impl GlobalInferenceCtx<'_> {
     }
 
     fn reinfer_expr(&mut self, expr: Idx<hir::Expr>) -> Intern<Ty> {
-        let previous_ty = self.tys[self.file][expr];
+        let previous_ty = self.tys[self.loc][expr];
         if *previous_ty == Ty::Unknown {
             return previous_ty;
         }
@@ -836,7 +932,7 @@ impl GlobalInferenceCtx<'_> {
             for usage in usages.iter() {
                 let ty = match usage {
                     ScopeUsage::Expr(expr) => match ctx.bodies[*expr] {
-                        hir::Expr::Propagate { expr, .. } => ctx.tys[ctx.file][expr]
+                        hir::Expr::Propagate { expr, .. } => ctx.tys[ctx.loc][expr]
                             .propagated_ty()
                             .expect("there should be a propagated type"),
                         _ => unreachable!(),
@@ -844,7 +940,7 @@ impl GlobalInferenceCtx<'_> {
                     ScopeUsage::Stmt(stmt) => match ctx.bodies[*stmt] {
                         hir::Stmt::Break {
                             value: Some(value), ..
-                        } => ctx.tys[ctx.file][value],
+                        } => ctx.tys[ctx.loc][value],
                         hir::Stmt::Break { value: None, .. } => Ty::Void.into(),
                         _ => continue,
                     },
@@ -946,16 +1042,16 @@ impl GlobalInferenceCtx<'_> {
 
                     panic!(
                         "{} #{} : `{}` is not weak replaceable by `{}`",
-                        ctx.file.debug(ctx.interner),
+                        ctx.loc.debug(ctx.interner),
                         expr.into_raw(),
-                        previous_ty.simple_display(ctx.interner, true),
-                        new_ty.simple_display(ctx.interner, true)
+                        previous_ty.debug(ctx.interner, true),
+                        new_ty.debug(ctx.interner, true)
                     );
                 }
 
                 // println!(
                 //     "{} #{} : replacing {:?} with {:?}",
-                //     self.file.debug(self.interner),
+                //     self.loc.debug(self.interner),
                 //     expr.into_raw(),
                 //     previous_ty,
                 //     new_ty
@@ -971,6 +1067,7 @@ impl GlobalInferenceCtx<'_> {
             .descendants(
                 expr,
                 hir::DescentOpts::Infer {
+                    include_post_exprs: false,
                     include_post_stmts: false,
                 },
             )
@@ -979,15 +1076,15 @@ impl GlobalInferenceCtx<'_> {
             .rev()
         {
             match next {
-                Descendant::Expr(expr) => {
-                    let previous_ty = self.tys[self.file]
+                Descendant::PreExpr(expr) => {
+                    let previous_ty = self.tys[self.loc]
                         .expr_tys
                         .get(expr)
                         .copied()
                         .unwrap_or_else(|| {
                             panic!(
                                 "{} #{} : TYPE DOES NOT EXIST",
-                                self.file.debug(self.interner),
+                                self.loc.debug(self.interner),
                                 expr.into_raw()
                             );
                         });
@@ -1006,7 +1103,7 @@ impl GlobalInferenceCtx<'_> {
                             mutable,
                             expr: inner,
                         } => {
-                            let inner_ty = self.tys[self.file][*inner];
+                            let inner_ty = self.tys[self.loc][*inner];
 
                             if *inner_ty == Ty::Type {
                                 inner_ty
@@ -1019,7 +1116,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Deref { pointer } => {
-                            let inner_ty = self.tys[self.file][*pointer];
+                            let inner_ty = self.tys[self.loc][*pointer];
 
                             inner_ty
                                 .as_pointer()
@@ -1027,8 +1124,8 @@ impl GlobalInferenceCtx<'_> {
                                 .unwrap_or_else(|| Ty::Unknown.into())
                         }
                         Expr::Binary { lhs, rhs, op } => {
-                            let lhs_ty = self.tys[self.file][*lhs];
-                            let rhs_ty = self.tys[self.file][*rhs];
+                            let lhs_ty = self.tys[self.loc][*lhs];
+                            let rhs_ty = self.tys[self.loc][*rhs];
 
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
                                 let max_ty = output_ty.max_ty.into();
@@ -1041,7 +1138,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Unary { expr: inner, op } => {
-                            let inner_ty = self.tys[self.file][*inner];
+                            let inner_ty = self.tys[self.loc][*inner];
                             if op.can_perform(&inner_ty) {
                                 op.get_possible_output_ty(inner_ty)
                             } else {
@@ -1049,7 +1146,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Index { source, .. } => {
-                            let mut source_ty = self.tys[self.file][*source];
+                            let mut source_ty = self.tys[self.loc][*source];
 
                             while let Some(ptr) = source_ty.as_pointer() {
                                 source_ty = ptr.1;
@@ -1062,7 +1159,7 @@ impl GlobalInferenceCtx<'_> {
                                 .unwrap_or_else(|| Ty::Unknown.into())
                         }
                         Expr::Block { tail_expr, .. } => {
-                            let tail_ty = tail_expr.map(|tail_expr| self.tys[self.file][tail_expr]);
+                            let tail_ty = tail_expr.map(|tail_expr| self.tys[self.loc][tail_expr]);
 
                             if let Some(label_id) = self.bodies.block_to_scope_id(expr) {
                                 let usages_ty = all_usages_ty(self, label_id);
@@ -1084,10 +1181,10 @@ impl GlobalInferenceCtx<'_> {
                         Expr::If {
                             body, else_branch, ..
                         } => {
-                            let body_ty = self.tys[self.file][*body];
+                            let body_ty = self.tys[self.loc][*body];
 
                             if let Some(else_branch) = else_branch {
-                                let new_else = self.tys[self.file][*else_branch];
+                                let new_else = self.tys[self.loc][*else_branch];
 
                                 body_ty.max(&new_else).unwrap_or(Ty::Unknown).into()
                             } else if *body_ty == Ty::AlwaysJumps {
@@ -1105,13 +1202,13 @@ impl GlobalInferenceCtx<'_> {
                                 Ty::Void.into()
                             }
                         }
-                        Expr::Local(local) => self.tys[self.file].local_tys[*local],
+                        Expr::Local(local) => self.tys[self.loc].local_tys[*local],
                         Expr::Member {
                             previous,
                             name: field,
                         } => {
                             // make sure this matches up with the one in infer_expr
-                            let super_ty = self.tys[self.file][*previous];
+                            let super_ty = self.tys[self.loc][*previous];
                             match super_ty.as_ref() {
                                 Ty::File(_) => continue,
                                 Ty::Type => continue,
@@ -1169,9 +1266,10 @@ impl GlobalInferenceCtx<'_> {
                     };
 
                     if should_actually_replace(self, expr, previous_ty, new_ty) {
-                        self.tys[self.file].expr_tys.insert(expr, new_ty);
+                        self.tys[self.loc].expr_tys.insert(expr, new_ty);
                     }
                 }
+                Descendant::PostExpr(_) => unreachable!(),
                 Descendant::PreStmt(stmt) => match &self.bodies[stmt] {
                     Stmt::Expr(_) => {}
                     Stmt::LocalDef(local_def) => {
@@ -1187,11 +1285,11 @@ impl GlobalInferenceCtx<'_> {
                             continue;
                         };
 
-                        let previous_ty = self.tys[self.file][*local_def];
-                        let new_ty = self.tys[self.file][value];
+                        let previous_ty = self.tys[self.loc][*local_def];
+                        let new_ty = self.tys[self.loc][value];
 
                         if should_actually_replace(self, expr, previous_ty, new_ty) {
-                            self.tys[self.file].local_tys.insert(*local_def, new_ty);
+                            self.tys[self.loc].local_tys.insert(*local_def, new_ty);
                         }
                     }
                     Stmt::Assign(_) => {}
@@ -1203,13 +1301,13 @@ impl GlobalInferenceCtx<'_> {
             }
         }
 
-        self.tys[self.file][expr]
+        self.tys[self.loc][expr]
     }
 
     // This function is indent hell but it's worth it to make it stack overflow free
     pub(crate) fn infer_expr(&mut self, expr: Idx<Expr>) -> InferResult<Intern<Ty>> {
         if let (Some(ty), None) = (
-            self.tys[self.file].expr_tys.get(expr),
+            self.tys[self.loc].expr_tys.get(expr),
             self.bodies.block_to_scope_id(expr),
         ) {
             return Ok(*ty);
@@ -1220,16 +1318,29 @@ impl GlobalInferenceCtx<'_> {
             .descendants(
                 expr,
                 hir::DescentOpts::Infer {
+                    include_post_exprs: false,
                     include_post_stmts: true,
                 },
             )
             .collect_vec();
 
+        // let mut res = String::new();
+        // hir::debug_descendants(
+        //     &mut res,
+        //     self.bodies,
+        //     descendants.iter().rev().copied(),
+        //     false,
+        //     true,
+        // );
+        // debug!("INFER EXPR {}\n{res}", self.loc.debug(self.interner));
+
+        // ..., 357, 61
+
         // This works without recursion because children will ALWAYS come before parents
         for descendant in descendants.into_iter().rev() {
             match descendant {
-                Descendant::Expr(expr) => {
-                    if self.tys[self.file].expr_tys.contains_idx(expr)
+                Descendant::PreExpr(expr) => {
+                    if self.tys[self.loc].expr_tys.contains_idx(expr)
                         && self.bodies.block_to_scope_id(expr).is_none()
                     {
                         continue;
@@ -1252,7 +1363,7 @@ impl GlobalInferenceCtx<'_> {
                         } => {
                             let sub_ty = self.const_ty(*ty)?;
                             for item in items {
-                                let item_ty = self.tys[self.file][*item];
+                                let item_ty = self.tys[self.loc][*item];
                                 self.expect_match(item_ty, ExpectedTy::Concrete(sub_ty), *item);
                             }
 
@@ -1266,7 +1377,7 @@ impl GlobalInferenceCtx<'_> {
                             let mut max_ty = None;
                             let mut any_error = false;
                             for item in items {
-                                let item_ty = self.tys[self.file][*item];
+                                let item_ty = self.tys[self.loc][*item];
 
                                 match max_ty {
                                     None => max_ty = Some(item_ty),
@@ -1284,7 +1395,7 @@ impl GlobalInferenceCtx<'_> {
                                                                     ),
                                                                     found: item_ty,
                                                                 },
-                                                                file: self.file,
+                                                                file: self.loc.file(),
                                                                 expr: Some(*item),
                                                                 range: self
                                                                     .bodies
@@ -1322,14 +1433,14 @@ impl GlobalInferenceCtx<'_> {
                             .into()
                         }
                         Expr::Index { source, index } => {
-                            let source_ty = self.tys[self.file][*source];
+                            let source_ty = self.tys[self.loc][*source];
                             // because it's annoying to do `foo^[0]`, this code lets you do `foo[0]`
                             let mut deref_source_ty = source_ty;
                             while let Some((_, sub_ty)) = deref_source_ty.as_pointer() {
                                 deref_source_ty = sub_ty;
                             }
 
-                            let index_ty = self.tys[self.file][*index];
+                            let index_ty = self.tys[self.loc][*index];
 
                             self.expect_match(
                                 index_ty,
@@ -1342,7 +1453,7 @@ impl GlobalInferenceCtx<'_> {
                             } else if *deref_source_ty == Ty::RawSlice {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::IndexRaw,
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -1360,7 +1471,7 @@ impl GlobalInferenceCtx<'_> {
                                                 actual_size,
                                                 array_ty: source_ty,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(expr),
                                             help: None,
@@ -1374,7 +1485,7 @@ impl GlobalInferenceCtx<'_> {
                             } else {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::IndexNonArray { found: source_ty },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -1395,7 +1506,7 @@ impl GlobalInferenceCtx<'_> {
                                             from: Ty::Void.into(),
                                             to: cast_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
@@ -1409,7 +1520,7 @@ impl GlobalInferenceCtx<'_> {
                             ty,
                             expr: Some(sub_expr),
                         } => {
-                            let cast_from = self.tys[self.file][*sub_expr];
+                            let cast_from = self.tys[self.loc][*sub_expr];
 
                             if *cast_from == Ty::Unknown {
                                 Ty::Unknown.into()
@@ -1425,7 +1536,7 @@ impl GlobalInferenceCtx<'_> {
                                                 from: cast_from,
                                                 to: cast_to,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(expr),
                                             help: None,
@@ -1446,7 +1557,7 @@ impl GlobalInferenceCtx<'_> {
                             mutable,
                             expr: inner,
                         } => {
-                            let inner_ty = self.tys[self.file][*inner];
+                            let inner_ty = self.tys[self.loc][*inner];
 
                             if *inner_ty == Ty::Type {
                                 self.const_ty(expr)?;
@@ -1459,7 +1570,7 @@ impl GlobalInferenceCtx<'_> {
                                     if help.is_some() {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::MutableRefToImmutableData,
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(expr),
                                             help,
@@ -1476,13 +1587,13 @@ impl GlobalInferenceCtx<'_> {
                         }
 
                         Expr::Deref { pointer } => {
-                            let deref_ty = self.tys[self.file][*pointer];
+                            let deref_ty = self.tys[self.loc][*pointer];
 
                             match *deref_ty {
                                 Ty::RawPtr { .. } => {
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::DerefRaw,
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
@@ -1497,7 +1608,7 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::DerefNonPointer {
                                                 found: deref_ty,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(expr),
                                             help: None,
@@ -1509,8 +1620,8 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Binary { lhs, rhs, op } => {
-                            let lhs_ty = self.tys[self.file][*lhs];
-                            let rhs_ty = self.tys[self.file][*rhs];
+                            let lhs_ty = self.tys[self.loc][*lhs];
+                            let rhs_ty = self.tys[self.loc][*rhs];
 
                             if let Some(output_ty) = op.get_possible_output_ty(&lhs_ty, &rhs_ty) {
                                 if *lhs_ty != Ty::Unknown
@@ -1523,7 +1634,7 @@ impl GlobalInferenceCtx<'_> {
                                             first: lhs_ty,
                                             second: rhs_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
@@ -1544,7 +1655,7 @@ impl GlobalInferenceCtx<'_> {
                                         first: lhs_ty,
                                         second: rhs_ty,
                                     },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -1554,7 +1665,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Unary { expr, op } => {
-                            let expr_ty = self.tys[self.file][*expr];
+                            let expr_ty = self.tys[self.loc][*expr];
 
                             if *op == hir::UnaryOp::BNot && *expr_ty == Ty::Type {
                                 // this transforms expressions like `!u64` into error unions
@@ -1566,7 +1677,7 @@ impl GlobalInferenceCtx<'_> {
                                         op: *op,
                                         ty: expr_ty,
                                     },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(*expr),
                                     range: self.bodies.range_for_expr(*expr),
                                     help: None,
@@ -1582,7 +1693,7 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Paren(expr) => match expr {
-                            Some(expr) => self.tys[self.file][*expr],
+                            Some(expr) => self.tys[self.loc][*expr],
                             None => Ty::Void.into(),
                         },
                         Expr::Block { stmts, tail_expr } => {
@@ -1595,7 +1706,7 @@ impl GlobalInferenceCtx<'_> {
                                     Stmt::Break { .. } | Stmt::Continue { .. } => no_eval = true,
                                     Stmt::Expr(expr)
                                         if label.is_none()
-                                            && *self.tys[self.file][*expr] == Ty::AlwaysJumps =>
+                                            && *self.tys[self.loc][*expr] == Ty::AlwaysJumps =>
                                     {
                                         no_eval = true
                                     }
@@ -1605,7 +1716,7 @@ impl GlobalInferenceCtx<'_> {
 
                             match tail_expr {
                                 Some(tail) => {
-                                    let tail_ty = self.tys[self.file][*tail];
+                                    let tail_ty = self.tys[self.loc][*tail];
 
                                     // there might've been a break within this block
                                     // that break would've set the type of this block.
@@ -1665,7 +1776,7 @@ impl GlobalInferenceCtx<'_> {
                                             } else {
                                                 // println!(
                                                 //     "{} #{} : prev_ty={previous_ty:?}, tail_ty={tail_ty:?}",
-                                                //     self.file.debug(self.interner),
+                                                //     self.loc.debug(self.interner),
                                                 //     expr.into_raw(),
                                                 // );
                                                 Ty::Unknown.into()
@@ -1701,7 +1812,7 @@ impl GlobalInferenceCtx<'_> {
                                         } else {
                                             // println!(
                                             //     "{} #{} : prev_ty={previous_ty:?}",
-                                            //     self.file.debug(self.interner),
+                                            //     self.loc.debug(self.interner),
                                             //     expr.into_raw(),
                                             // );
                                             Ty::Unknown.into()
@@ -1717,17 +1828,17 @@ impl GlobalInferenceCtx<'_> {
                             body,
                             else_branch,
                         } => {
-                            let cond_ty = self.tys[self.file][*condition];
+                            let cond_ty = self.tys[self.loc][*condition];
                             self.expect_match(
                                 cond_ty,
                                 ExpectedTy::Concrete(Ty::Bool.into()),
                                 *condition,
                             );
 
-                            let body_ty = self.tys[self.file][*body];
+                            let body_ty = self.tys[self.loc][*body];
 
                             if let Some(else_branch) = else_branch {
-                                let else_ty = self.tys[self.file][*else_branch];
+                                let else_ty = self.tys[self.loc][*else_branch];
 
                                 if *else_ty == Ty::Unknown {
                                     else_ty
@@ -1742,7 +1853,7 @@ impl GlobalInferenceCtx<'_> {
                                             first: body_ty,
                                             second: else_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
@@ -1767,7 +1878,7 @@ impl GlobalInferenceCtx<'_> {
 
                                     self.diagnostics.push(TyDiagnostic {
                                         kind: TyDiagnosticKind::MissingElse { expected: body_ty },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: Some(TyDiagnosticHelp {
@@ -1793,21 +1904,21 @@ impl GlobalInferenceCtx<'_> {
                         }
                         Expr::While { condition, body } => {
                             if let Some(condition) = condition {
-                                let cond_ty = self.tys[self.file][*condition];
+                                let cond_ty = self.tys[self.loc][*condition];
                                 self.expect_match(
                                     cond_ty,
                                     ExpectedTy::Concrete(Ty::Bool.into()),
                                     *condition,
                                 );
                             }
-                            let body_ty = self.tys[self.file][*body];
+                            let body_ty = self.tys[self.loc][*body];
                             self.expect_match(
                                 body_ty,
                                 ExpectedTy::Concrete(Ty::Void.into()),
                                 *body,
                             );
 
-                            if let Some(previous_ty) = self.tys[self.file].expr_tys.get(expr) {
+                            if let Some(previous_ty) = self.tys[self.loc].expr_tys.get(expr) {
                                 *previous_ty
                             } else {
                                 Ty::Void.into()
@@ -1819,7 +1930,7 @@ impl GlobalInferenceCtx<'_> {
                             default,
                             ..
                         } => 'switch: {
-                            let scrutinee_ty = self.tys[self.file][*scrutinee];
+                            let scrutinee_ty = self.tys[self.loc][*scrutinee];
 
                             if !self.expect_match(scrutinee_ty, ExpectedTy::SumType, *scrutinee) {
                                 break 'switch Ty::Unknown.into();
@@ -1831,7 +1942,7 @@ impl GlobalInferenceCtx<'_> {
                                 match arm.variant {
                                     Some(ArmVariant::FullyQualified(ty)) => {
                                         if !self.expect_match(
-                                            self.tys[self.file][ty],
+                                            self.tys[self.loc][ty],
                                             ExpectedTy::Concrete(Ty::Type.into()),
                                             ty,
                                         ) {
@@ -1847,7 +1958,7 @@ impl GlobalInferenceCtx<'_> {
                                                     ty,
                                                     sum_ty: scrutinee_ty,
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(arm.body),
                                                 range: arm.variant_range,
                                                 help: None,
@@ -1882,7 +1993,7 @@ impl GlobalInferenceCtx<'_> {
                                                     ty: name.name.0,
                                                     sum_ty: scrutinee_ty,
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(arm.body),
                                                 range: arm.variant_range,
                                                 help: None,
@@ -1903,14 +2014,10 @@ impl GlobalInferenceCtx<'_> {
                             }
 
                             impl VariantToCheck {
-                                fn matches_arm(
-                                    &self,
-                                    tys: &FileInference,
-                                    variant: ArmVariant,
-                                ) -> bool {
+                                fn matches_arm(&self, tys: &AreaTys, variant: ArmVariant) -> bool {
                                     match variant {
                                         ArmVariant::FullyQualified(ty) => {
-                                            self.variant_ty == tys.get_meta_ty(ty).expect("all the arms should be resolved before calling `matches_arm`")
+                                            self.variant_ty == tys.meta_ty(ty).expect("all the arms should be resolved before calling `matches_arm`")
                                         }
                                         ArmVariant::Shorthand(name) => {
                                             let Ty::EnumVariant { variant_name, .. } = *self.variant_ty else {
@@ -1956,7 +2063,7 @@ impl GlobalInferenceCtx<'_> {
 
                                 let Some(arm_variant) = variants
                                     .iter_mut()
-                                    .find(|v| v.matches_arm(&self.tys[self.file], variant))
+                                    .find(|v| v.matches_arm(&self.tys[self.loc], variant))
                                 else {
                                     unreachable!()
                                 };
@@ -1966,7 +2073,7 @@ impl GlobalInferenceCtx<'_> {
                                         kind: TyDiagnosticKind::SwitchAlreadyCoversVariant {
                                             ty: arm_variant.variant_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: arm.variant_range,
                                         help: None, // todo: show the previous arm
@@ -1976,7 +2083,7 @@ impl GlobalInferenceCtx<'_> {
                                     arm_variant.included_in_switch = true;
                                 }
 
-                                let found_arm_ty = self.tys[self.file][arm.body];
+                                let found_arm_ty = self.tys[self.loc][arm.body];
 
                                 match first_arm_ty {
                                     None => {
@@ -1993,7 +2100,7 @@ impl GlobalInferenceCtx<'_> {
                                                     other: found_arm_ty,
                                                     first: first_ty,
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(arm.body),
                                                 range: self.bodies.range_for_expr(arm.body),
                                                 help: None,
@@ -2006,7 +2113,7 @@ impl GlobalInferenceCtx<'_> {
                             }
 
                             if let Some(default) = default {
-                                let default_ty = self.tys[self.file][default.body];
+                                let default_ty = self.tys[self.loc][default.body];
 
                                 match first_arm_ty {
                                     None => {
@@ -2024,7 +2131,7 @@ impl GlobalInferenceCtx<'_> {
                                                     other: default_ty,
                                                     first: first_ty,
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(default.body),
                                                 range: self.bodies.range_for_expr(default.body),
                                                 help: None,
@@ -2048,7 +2155,7 @@ impl GlobalInferenceCtx<'_> {
                                         kind: TyDiagnosticKind::SwitchDoesNotCoverVariant {
                                             ty: variant_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         range: self.bodies.range_for_expr(expr),
                                         expr: Some(expr),
                                         help: None,
@@ -2065,16 +2172,15 @@ impl GlobalInferenceCtx<'_> {
 
                             first_arm_ty.unwrap_or_else(|| Ty::Void.into())
                         }
-                        Expr::Local(local) => self.tys[self.file].local_tys[*local],
+                        Expr::Local(local) => self.tys[self.loc].local_tys[*local],
                         Expr::SwitchArgument(switch_local) => 'switch_arg: {
-                            if let Some(ty) =
-                                self.tys[self.file].switch_local_tys.get(*switch_local)
+                            if let Some(ty) = self.tys[self.loc].switch_local_tys.get(*switch_local)
                             {
                                 break 'switch_arg *ty;
                             }
 
                             let switch_local_body = &self.bodies[*switch_local];
-                            let scrutinee_ty = self.tys[self.file][switch_local_body.scrutinee];
+                            let scrutinee_ty = self.tys[self.loc][switch_local_body.scrutinee];
                             if switch_local_body.is_default {
                                 // default branches just receive the scrutinee as-is
                                 break 'switch_arg scrutinee_ty;
@@ -2108,29 +2214,42 @@ impl GlobalInferenceCtx<'_> {
                                 ArmVariant::FullyQualified(ty) => self.const_ty(ty)?,
                             };
 
-                            self.tys[self.file]
+                            self.tys[self.loc]
                                 .switch_local_tys
                                 .insert(*switch_local, variant_ty);
 
                             variant_ty
                         }
-                        Expr::Param { idx, .. } => self.param_tys[*idx as usize].ty,
-                        Expr::LocalGlobal(name) => {
-                            let fqn = hir::Fqn {
-                                file: self.file,
+                        Expr::Param { idx, .. } | Expr::ComptimeParam { real_idx: idx, .. } => {
+                            self.param_tys[*idx as usize].ty
+                        }
+                        Expr::InlineParam {
+                            comptime_idx: idx, ..
+                        } => self.inline_comptime_tys[*idx as usize],
+                        Expr::LocalGlobal(name) => 'local_global: {
+                            let fqn = Fqn {
+                                file: self.loc.file(),
                                 name: name.name,
                             };
 
-                            let sig = self
-                                .tys
-                                .signatures
-                                .get(&fqn)
-                                .ok_or_else(|| vec![Inferrable::Global(fqn)])?;
+                            let sig = match self.tys.try_naive(fqn.wrap(), &self.world_bodies) {
+                                Ok(sig) => sig,
+                                Err(NaiveLookupErr::NotFound) => {
+                                    assert!(!self.world_bodies.has_polymorphic_body(fqn.wrap()));
+                                    return Err(vec![fqn.make_concrete(None).wrap()]);
+                                }
+                                Err(NaiveLookupErr::IsPolymorphic) => {
+                                    break 'local_global Ty::NaivePolymorphicFunction {
+                                        fn_loc: fqn.wrap(),
+                                    }
+                                    .into();
+                                }
+                            };
 
-                            if *sig.0 == Ty::NotYetResolved {
+                            if *sig == Ty::NotYetResolved {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::NotYetResolved { fqn },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -2138,7 +2257,7 @@ impl GlobalInferenceCtx<'_> {
 
                                 Ty::Unknown.into()
                             } else {
-                                sig.0
+                                sig
                             }
                         }
                         Expr::Member {
@@ -2146,26 +2265,40 @@ impl GlobalInferenceCtx<'_> {
                             name: field,
                         } => {
                             // make sure this matches up with the one in reinfer_expr
-                            let super_ty = self.tys[self.file][*previous];
+                            let super_ty = self.tys[self.loc][*previous];
                             match super_ty.as_ref() {
                                 Ty::File(file) => {
-                                    let fqn = hir::Fqn {
+                                    let fn_loc = Fqn {
                                         file: *file,
                                         name: field.name,
                                     };
 
-                                    match self.world_index.definition(fqn) {
+                                    match self.world_index.definition(fn_loc) {
                                         hir::DefinitionStatus::Defined => {
-                                            let sig = self
+                                            let sig = match self
                                                 .tys
-                                                .signatures
-                                                .get(&fqn)
-                                                .ok_or_else(|| vec![Inferrable::Global(fqn)])?;
+                                                .try_naive(fn_loc.wrap(), self.world_bodies)
+                                            {
+                                                Ok(sig) => sig,
+                                                Err(NaiveLookupErr::NotFound) => {
+                                                    return Err(vec![
+                                                        fn_loc.make_concrete(None).wrap(),
+                                                    ]);
+                                                }
+                                                Err(NaiveLookupErr::IsPolymorphic) => {
+                                                    Ty::NaivePolymorphicFunction {
+                                                        fn_loc: fn_loc.wrap(),
+                                                    }
+                                                    .into()
+                                                }
+                                            };
 
-                                            if *sig.0 == Ty::NotYetResolved {
+                                            if *sig == Ty::NotYetResolved {
                                                 self.diagnostics.push(TyDiagnostic {
-                                                    kind: TyDiagnosticKind::NotYetResolved { fqn },
-                                                    file: self.file,
+                                                    kind: TyDiagnosticKind::NotYetResolved {
+                                                        fqn: fn_loc,
+                                                    },
+                                                    file: self.loc.file(),
                                                     expr: Some(expr),
                                                     range: self.bodies.range_for_expr(expr),
                                                     help: None,
@@ -2173,16 +2306,19 @@ impl GlobalInferenceCtx<'_> {
 
                                                 Ty::Unknown.into()
                                             } else {
-                                                sig.0
+                                                sig
                                             }
                                         }
                                         hir::DefinitionStatus::UnknownFile => {
-                                            unreachable!("a module wasn't added: {:?}", file)
+                                            unreachable!(
+                                                "a module wasn't added: {:?}",
+                                                file.debug(self.interner)
+                                            )
                                         }
                                         hir::DefinitionStatus::UnknownDefinition => {
                                             self.diagnostics.push(TyDiagnostic {
-                                                kind: TyDiagnosticKind::UnknownFqn { fqn },
-                                                file: self.file,
+                                                kind: TyDiagnosticKind::UnknownFqn { fqn: fn_loc },
+                                                file: self.loc.file(),
                                                 expr: Some(expr),
                                                 range: self.bodies.range_for_expr(expr),
                                                 help: None,
@@ -2231,7 +2367,7 @@ impl GlobalInferenceCtx<'_> {
                                                             member: field.name.0,
                                                             found_ty: super_ty,
                                                         },
-                                                        file: self.file,
+                                                        file: self.loc.file(),
                                                         expr: Some(expr),
                                                         range: self.bodies.range_for_expr(expr),
                                                         help: None,
@@ -2264,7 +2400,7 @@ impl GlobalInferenceCtx<'_> {
                                                         member: field.name.0,
                                                         found_ty: super_ty,
                                                     },
-                                                    file: self.file,
+                                                    file: self.loc.file(),
                                                     expr: Some(expr),
                                                     range: self.bodies.range_for_expr(expr),
                                                     help: None,
@@ -2277,223 +2413,505 @@ impl GlobalInferenceCtx<'_> {
                                 }
                             }
                         }
-                        Expr::Call { callee, args } => {
-                            let callee_ty = self.tys[self.file][*callee];
+                        Expr::Call { callee, args } => 'call: {
+                            let mut callee_ty = self.tys[self.loc][*callee];
 
-                            if let Some((params, return_ty)) = callee_ty.clone().as_function() {
-                                let mut params_iter = params.iter();
-                                let mut args_iter = args.iter();
+                            // This is the second stage of handling generic function calls.
+                            // After the generic function has been fully resolved with its
+                            // generic arguments we need to fetch the new signature
+                            if let Ty::NaivePolymorphicFunction { fn_loc } = callee_ty.absolute_ty()
+                                && let Some(comptime_args) =
+                                    self.call_associated_generics.get(&(self.loc, expr))
+                            {
+                                debug!(
+                                    "STAGE 2 : {}\n        : {}\n        : #{}",
+                                    match fn_loc {
+                                        NaiveLoc::Global(_) => "global",
+                                        NaiveLoc::Lambda(_) => "lambda",
+                                    },
+                                    fn_loc.debug(self.interner),
+                                    callee.into_raw()
+                                );
 
-                                let mut current_param = params_iter.next();
-                                let mut current_arg = args_iter.next();
+                                let actual_fn_loc = fn_loc.make_concrete(Some(*comptime_args));
 
-                                loop {
-                                    let Some(arg) = current_arg else {
-                                        if let Some(param) = current_param {
-                                            // there are more params than args
+                                debug!("sig of {}", actual_fn_loc.debug(self.interner));
+                                let sig = self.tys.sig(actual_fn_loc);
+                                debug!("     = {}", sig.debug(self.interner, true));
 
-                                            if param.varargs {
-                                                current_param = params_iter.next();
-                                                continue; // continue without reporting error
-                                            }
+                                callee_ty = sig;
 
-                                            let param_ty = param.ty;
+                                // todo: is replacing the weak types good?
+                                // What if a generic function is alaised?
+                                self.replace_weak_tys(*callee, sig);
+                            }
 
-                                            let call_range = self.bodies.range_for_expr(expr);
-                                            let call_end = call_range
-                                                .end()
-                                                .checked_sub(TextSize::new(1))
-                                                .unwrap_or(call_range.end());
+                            match callee_ty.absolute_ty() {
+                                // This is the first stage of handling generic function calls.
+                                // It evaluates all the comptime arguments,
+                                // and then returns with an error which will force the generic
+                                // function to be reevaluated with these new comptime arguments
+                                Ty::NaivePolymorphicFunction { fn_loc } => {
+                                    debug!(
+                                        "STAGE 1 : {}\n        : {}\n        : #{}",
+                                        match fn_loc {
+                                            NaiveLoc::Global(_) => "global",
+                                            NaiveLoc::Lambda(_) => "lambda",
+                                        },
+                                        fn_loc.debug(self.interner),
+                                        callee.into_raw()
+                                    );
 
-                                            // TODO: add tests for this != Ty::Unknown
-                                            if !param.impossible_to_differentiate
-                                                && *param_ty != Ty::Unknown
-                                            {
-                                                self.diagnostics.push(TyDiagnostic {
-                                                    kind: TyDiagnosticKind::MissingArg {
-                                                        expected: ExpectedTy::Concrete(param_ty),
-                                                    },
-                                                    file: self.file,
-                                                    expr: Some(expr),
-                                                    range: TextRange::new(call_end, call_end),
-                                                    help: None,
-                                                });
-                                            }
-                                        } else {
-                                            break;
+                                    assert_eq!(
+                                        self.tys.try_naive(*fn_loc, self.world_bodies),
+                                        Err(NaiveLookupErr::IsPolymorphic)
+                                    );
+
+                                    let generic_body = match fn_loc {
+                                        NaiveLoc::Global(global) => self.world_bodies
+                                            [fn_loc.file()]
+                                        .global_body(global.name()),
+                                        NaiveLoc::Lambda(lambda) => lambda.expr(),
+                                    };
+
+                                    let Expr::Lambda(lambda) =
+                                        self.world_bodies[fn_loc.file()][generic_body]
+                                    else {
+                                        todo!("figure out what to do when this happens")
+                                    };
+
+                                    for arg in args {
+                                        // done beforehand so that errors don't get reported twice
+                                        self.is_safe_to_compile(self.loc, *arg)?;
+                                    }
+
+                                    let comptime_args = match self.evaluate_comptime_args(
+                                        NaiveLambdaLoc {
+                                            file: fn_loc.file(),
+                                            expr: generic_body,
+                                            lambda,
+                                        },
+                                        args,
+                                        expr,
+                                    ) {
+                                        Ok(Ok(comptime_args)) => comptime_args,
+                                        Ok(Err(ArgsContainDiagnostics)) => {
+                                            debug!(
+                                                "clearing inline on args contain diagnostics error"
+                                            );
+                                            self.inline_comptime_args.clear();
+                                            self.inline_comptime_tys.clear();
+                                            break 'call Ty::Unknown.into();
                                         }
-                                        current_param = params_iter.next();
-                                        continue;
-                                    };
-                                    let arg_ty = self.tys[self.file][*arg];
-
-                                    let Some(param) = current_param else {
-                                        // there are more args than params
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind: TyDiagnosticKind::ExtraArg { found: arg_ty },
-                                            file: self.file,
-                                            expr: Some(*arg),
-                                            range: self.bodies.range_for_expr(*arg),
-                                            help: None,
-                                        });
-                                        current_arg = args_iter.next();
-                                        continue;
+                                        Err(why) => {
+                                            debug!("clearing inline on InferResult Err");
+                                            // TODO: I don't think this should be done.
+                                            // The inline info should be saved so that it can
+                                            // be used on the next run.
+                                            self.inline_comptime_args.clear();
+                                            self.inline_comptime_tys.clear();
+                                            return Err(why);
+                                        }
                                     };
 
-                                    if param.varargs {
-                                        let actual_sub_ty = param.ty.as_slice().unwrap();
+                                    if let NaiveLoc::Lambda(lambda_loc) = fn_loc {
+                                        let lambda_headers = self
+                                            .infer_lambda_headers(
+                                                generic_body,
+                                                lambda,
+                                                Some(comptime_args),
+                                                false,
+                                            )?
+                                            .expect("comptime arguments were already passed");
 
-                                        if arg_ty.can_fit_into(&actual_sub_ty) {
-                                            self.replace_weak_tys(*arg, actual_sub_ty);
+                                        let lambda_loc =
+                                            lambda_loc.make_concrete(Some(comptime_args));
 
-                                            current_arg = args_iter.next();
-                                        } else if let Some(next_param) = params_iter.next() {
-                                            // go to the next param but don't go to the next arg.
-                                            // this basically just reevaluates the current argument
-                                            // under the next parameter.
-                                            current_param = Some(next_param);
-                                        } else {
-                                            // `can_fit_into` should return true for unknowns
-                                            assert!(!arg_ty.is_unknown());
-                                            // this will just return an error
+                                        let hir::Lambda {
+                                            params: param_exprs,
+                                            return_ty: return_ty_expr,
+                                            ..
+                                        } = &self.bodies[lambda];
+
+                                        self.init_new_concrete(
+                                            lambda_loc,
+                                            param_exprs,
+                                            return_ty_expr,
+                                            lambda_headers.param_tys,
+                                            lambda_headers.return_ty,
+                                        );
+                                    } else {
+                                        assert!(
+                                            comptime_args
+                                                .into_value_range()
+                                                .eq(self.inline_comptime_args.iter().copied()),
+                                            "self.comptime_args was unexpectedly updated during `infer_lambda_headers`",
+                                        );
+                                        assert_eq!(
+                                            comptime_args.into_value_range().len(),
+                                            self.inline_comptime_tys.len(),
+                                            "self.comptime_tys was unexpectedly updated during `infer_lambda_headers`",
+                                        );
+
+                                        self.inline_comptime_args.clear();
+                                        self.inline_comptime_tys.clear();
+                                        debug!("  clear inline info");
+                                    }
+
+                                    self.call_associated_generics
+                                        .insert((self.loc, expr), comptime_args);
+
+                                    let specialized_loc = fn_loc.make_concrete(Some(comptime_args));
+
+                                    debug!(
+                                        "generic call submit {}",
+                                        specialized_loc.debug(self.interner)
+                                    );
+
+                                    // this will cause the function to be reevaluated
+                                    // its brand new compile-time arguments.
+                                    //
+                                    // This call expression will also then be reevaluated,
+                                    // and the "second stage" listed above will activate
+                                    return Err(vec![specialized_loc]);
+                                }
+                                Ty::ConcreteFunction {
+                                    param_tys,
+                                    return_ty,
+                                    ..
+                                }
+                                | Ty::FunctionPointer {
+                                    param_tys,
+                                    return_ty,
+                                } => {
+                                    let mut params_iter = param_tys.iter();
+                                    let mut args_iter = args.iter();
+
+                                    let mut current_param = params_iter.next();
+                                    let mut current_arg = args_iter.next();
+
+                                    loop {
+                                        let Some(arg) = current_arg else {
+                                            if let Some(param) = current_param {
+                                                // there are more params than args
+
+                                                if param.varargs {
+                                                    current_param = params_iter.next();
+                                                    continue; // continue without reporting error
+                                                }
+
+                                                let param_ty = param.ty;
+
+                                                let call_range = self.bodies.range_for_expr(expr);
+                                                let call_end = call_range
+                                                    .end()
+                                                    .checked_sub(TextSize::new(1))
+                                                    .unwrap_or(call_range.end());
+
+                                                // TODO: add tests for this != Ty::Unknown
+                                                if !param.impossible_to_differentiate
+                                                    && *param_ty != Ty::Unknown
+                                                {
+                                                    self.diagnostics.push(TyDiagnostic {
+                                                        kind: TyDiagnosticKind::MissingArg {
+                                                            expected: ExpectedTy::Concrete(
+                                                                param_ty,
+                                                            ),
+                                                        },
+                                                        file: self.loc.file(),
+                                                        expr: Some(expr),
+                                                        range: TextRange::empty(call_end),
+                                                        help: None,
+                                                    });
+                                                }
+                                            } else {
+                                                break;
+                                            }
+                                            current_param = params_iter.next();
+                                            continue;
+                                        };
+                                        let arg_ty = self.tys[self.loc][*arg];
+
+                                        let Some(param) = current_param else {
+                                            // there are more args than params
                                             self.diagnostics.push(TyDiagnostic {
-                                                kind: TyDiagnosticKind::Mismatch {
-                                                    expected: ExpectedTy::Concrete(actual_sub_ty),
-                                                    found: arg_ty,
-                                                },
-                                                file: self.file,
+                                                kind: TyDiagnosticKind::ExtraArg { found: arg_ty },
+                                                file: self.loc.file(),
                                                 expr: Some(*arg),
                                                 range: self.bodies.range_for_expr(*arg),
                                                 help: None,
                                             });
                                             current_arg = args_iter.next();
-                                        }
-                                    } else {
-                                        self.expect_match(
-                                            arg_ty,
-                                            ExpectedTy::Concrete(param.ty),
-                                            *arg,
-                                        );
+                                            continue;
+                                        };
 
-                                        current_param = params_iter.next();
-                                        current_arg = args_iter.next();
+                                        if param.varargs {
+                                            let actual_sub_ty = param.ty.as_slice().unwrap();
+
+                                            if arg_ty.can_fit_into(&actual_sub_ty) {
+                                                self.replace_weak_tys(*arg, actual_sub_ty);
+
+                                                current_arg = args_iter.next();
+                                            } else if let Some(next_param) = params_iter.next() {
+                                                // go to the next param but don't go to the next arg.
+                                                // this basically just reevaluates the current argument
+                                                // under the next parameter.
+                                                current_param = Some(next_param);
+                                            } else {
+                                                // `can_fit_into` should return true for unknowns
+                                                assert!(!arg_ty.is_unknown());
+                                                // this will just return an error
+                                                self.diagnostics.push(TyDiagnostic {
+                                                    kind: TyDiagnosticKind::Mismatch {
+                                                        expected: ExpectedTy::Concrete(
+                                                            actual_sub_ty,
+                                                        ),
+                                                        found: arg_ty,
+                                                    },
+                                                    file: self.loc.file(),
+                                                    expr: Some(*arg),
+                                                    range: self.bodies.range_for_expr(*arg),
+                                                    help: None,
+                                                });
+                                                current_arg = args_iter.next();
+                                            }
+                                        } else {
+                                            self.expect_match(
+                                                arg_ty,
+                                                ExpectedTy::Concrete(param.ty),
+                                                *arg,
+                                            );
+
+                                            current_param = params_iter.next();
+                                            current_arg = args_iter.next();
+                                        }
                                     }
+
+                                    *return_ty
+                                }
+                                _ => {
+                                    if *callee_ty != Ty::Unknown {
+                                        debug!(
+                                            "{} #{} is not a function ({})",
+                                            self.loc.debug(self.interner),
+                                            callee.into_raw(),
+                                            callee_ty.debug(self.interner, true)
+                                        );
+                                        self.diagnostics.push(TyDiagnostic {
+                                            kind: TyDiagnosticKind::CalledNonFunction {
+                                                found: callee_ty,
+                                            },
+                                            file: self.loc.file(),
+                                            expr: Some(expr),
+                                            range: self.bodies.range_for_expr(expr),
+                                            help: None,
+                                        });
+                                    }
+
+                                    Ty::Unknown.into()
+                                }
+                            }
+                        }
+                        // Type inference for lambda expressions.
+                        //
+                        // Typically how these are handled is that the Expr::Lambda
+                        // (the headers) are type-checked in the current scope.
+                        //
+                        // The body of the lambda itself is not type-checked here
+                        // or in this scope.
+                        //
+                        // The block which is the body of the lambda will be type-checked
+                        // with its own GlobalInferenceCtx.
+                        //
+                        // The type-checking of the lambda will submit its own
+                        // body to be type-checked if it is either
+                        // a) not polymorphic, or
+                        // b) polymorphic, but `self.loc` refers to this lambda
+                        //    and contains the comptime arguments
+                        //
+                        // A polymorphic function that never gets called will
+                        // never has its body type-checked.
+                        // TODO: maybe change that
+                        Expr::Lambda(lambda) => 'lambda: {
+                            let hir::Lambda {
+                                params,
+                                return_ty: return_ty_expr,
+                                ..
+                            } = &self.bodies[*lambda];
+
+                            let lambda_loc = NaiveLambdaLoc {
+                                file: self.loc.file(),
+                                expr,
+                                lambda: *lambda,
+                            };
+
+                            // if the lambda is directly attached to a global,
+                            // then associate the lambda with that global name
+
+                            let self_loc_expr = match self.loc {
+                                ConcreteLoc::Global(global) => {
+                                    self.world_bodies.global_body(global.to_naive())
+                                }
+                                ConcreteLoc::Lambda(lambda) => lambda.expr(),
+                            };
+                            // "is the entire GlobalInferenceCtx dedicated to this lambda"
+                            let this_is_special = expr == self_loc_expr;
+
+                            if this_is_special && let ConcreteLoc::Global(global) = self.loc {
+                                set_lambda_global(lambda_loc, global.to_naive());
+                            }
+
+                            assert!(self.inline_comptime_tys.is_empty());
+                            assert!(self.inline_comptime_args.is_empty());
+
+                            let loc_expr = match self.loc {
+                                ConcreteLoc::Global(global) => {
+                                    self.world_bodies.global_body(global.to_naive())
+                                }
+                                ConcreteLoc::Lambda(lambda) => lambda.expr(),
+                            };
+                            // "is the entire GlobalInferenceCtx dedicated to this lambda"
+                            let this_is_special = expr == loc_expr;
+
+                            debug!(
+                                "inferring = {}\n self.loc = #{}\n   lambda = #{}\n  special = {}",
+                                self.loc.debug(self.interner),
+                                loc_expr.into_raw(),
+                                expr.into_raw(),
+                                this_is_special,
+                            );
+
+                            let comptime_args = if this_is_special {
+                                self.loc.comptime_args()
+                            } else {
+                                None
+                            };
+
+                            debug!("{comptime_args:?}");
+
+                            assert!(self.inline_comptime_args.is_empty());
+                            assert!(self.inline_comptime_tys.is_empty());
+
+                            self.inline_comptime_args
+                                .extend(comptime_args.iter().flat_map(|c| c.into_value_range()));
+
+                            // try to type the headers of the lambda
+                            let lambda_headers = match self.infer_lambda_headers(
+                                expr,
+                                *lambda,
+                                comptime_args,
+                                true,
+                            )? {
+                                Ok(typed) => typed,
+                                Err(RequiresComptimeArgs) => {
+                                    debug!("giving up");
+                                    break 'lambda Ty::NaivePolymorphicFunction {
+                                        // TODO: use the global_loc if its available
+                                        fn_loc: lambda_loc.wrap(),
+                                    }
+                                    .into();
+                                }
+                            };
+
+                            // todo: what if one lambda does an inline access WITHIN
+                            // the headers of a second lambda which also has inline accesses
+
+                            // This takes in a newly minted ConcreteLambdaLoc,
+                            // and will do the needed initialization so it can
+                            // be used as a new type location
+
+                            if !lambda_headers.any_comptime {
+                                // this is a regular function (not polymorphic)
+
+                                // debug!("   non-polymorphic");
+                                // debug!("   @{}", self.loc.debug(self.interner));
+
+                                if lambda_headers.is_type {
+                                    // debug!("  metaty insert #{expr:?} <- function pointer");
+                                    self.tys[self.loc].meta_tys.insert(
+                                        expr,
+                                        Ty::FunctionPointer {
+                                            param_tys: lambda_headers.param_tys,
+                                            return_ty: lambda_headers.return_ty,
+                                        }
+                                        .into(),
+                                    );
+                                    break 'lambda Ty::Type.into();
                                 }
 
-                                return_ty
+                                // this is not a polymorphic function.
+                                let lambda_loc = lambda_loc.make_concrete(None);
+
+                                self.init_new_concrete(
+                                    lambda_loc,
+                                    params,
+                                    return_ty_expr,
+                                    lambda_headers.param_tys,
+                                    lambda_headers.return_ty,
+                                );
+
+                                return Err(vec![lambda_loc.wrap()]);
                             } else {
-                                if *callee_ty != Ty::Unknown {
+                                // this is a polymorphic function
+
+                                // debug!("   polymorphic");
+                                // debug!("   @{}", self.loc.debug(self.interner));
+
+                                if lambda_headers.is_type {
+                                    // generic function types cannot be first-class,
+                                    // that doesn't make sense with how the syntax works.
                                     self.diagnostics.push(TyDiagnostic {
-                                        kind: TyDiagnosticKind::CalledNonFunction {
-                                            found: callee_ty,
-                                        },
-                                        file: self.file,
+                                        kind: TyDiagnosticKind::FunctionTypeWithComptimeParameters,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
                                     });
-                                }
 
-                                Ty::Unknown.into()
-                            }
-                        }
-                        Expr::Lambda(lambda) => {
-                            let hir::Lambda {
-                                params,
-                                return_ty,
-                                body,
-                                ..
-                            } = &self.bodies[*lambda];
+                                    break 'lambda Ty::Unknown.into();
+                                } else if this_is_special {
+                                    // if this particular lambda header is the star of the show
+                                    // (we're the location being resolved),
+                                    // AND we were supplied with compile-time arguments,
+                                    // then we can resolve ourselves using those compile-time arguments
+                                    //
+                                    // otherwise, we couldn't evaluate this polymorphic lambda
+                                    // because we wouldn't have enough information.
 
-                            let is_type = *body == hir::LambdaBody::Empty && return_ty.is_some();
+                                    let lambda_loc =
+                                        lambda_loc.make_concrete(self.loc.comptime_args());
 
-                            let return_ty = if let Some(return_ty) = return_ty {
-                                self.const_ty(*return_ty)?
-                            } else {
-                                Ty::Void.into()
-                            };
+                                    self.init_new_concrete(
+                                        lambda_loc,
+                                        params,
+                                        return_ty_expr,
+                                        lambda_headers.param_tys,
+                                        lambda_headers.return_ty,
+                                    );
 
-                            let mut param_tys = Vec::with_capacity(params.len());
+                                    return Err(vec![lambda_loc.wrap()]);
+                                } else {
+                                    // we're just some rando third-wheel generic lambda with no
+                                    // idea what to use for our signature
 
-                            for (idx, param) in params.iter().enumerate() {
-                                let mut ty = self.const_ty(param.ty)?;
+                                    // println!("   unresolved polymorphic");
 
-                                let mut impossible_to_differentiate = false;
-
-                                if let Some(last_param) = idx
-                                    .checked_sub(1)
-                                    .and_then(|idx| params.get(idx))
-                                    .filter(|p| p.varargs)
-                                {
-                                    // we already called `const_ty` on the last param
-                                    let last_ty = self.tys[self.file].meta_tys[last_param.ty];
-
-                                    if !ty.can_differentiate_from(&last_ty) {
-                                        impossible_to_differentiate = true;
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind:
-                                                TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
-                                                    previous_ty: last_ty,
-                                                    current_ty: ty,
-                                                },
-                                            file: self.file,
-                                            expr: Some(expr),
-                                            range: param.range,
-                                            help: None,
-                                        });
+                                    break 'lambda Ty::NaivePolymorphicFunction {
+                                        fn_loc: lambda_loc.wrap(),
                                     }
+                                    .into();
                                 }
-
-                                if param.varargs {
-                                    ty = Ty::Slice { sub_ty: ty }.into();
-
-                                    if *body == hir::LambdaBody::Extern {
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind: TyDiagnosticKind::ExternVarargs,
-                                            file: self.file,
-                                            expr: Some(expr),
-                                            range: param.range,
-                                            help: None,
-                                        });
-                                    }
-                                }
-
-                                param_tys.push(ParamTy {
-                                    ty,
-                                    varargs: param.varargs,
-                                    impossible_to_differentiate,
-                                });
-                            }
-
-                            let ty = Ty::Function {
-                                param_tys,
-                                return_ty,
-                            }
-                            .into();
-
-                            if is_type {
-                                self.tys[self.file].meta_tys.insert(expr, ty);
-
-                                Ty::Type.into()
-                            } else {
-                                self.to_infer.insert(Inferrable::Lambda(FQLambda {
-                                    file: self.file,
-                                    expr,
-                                    lambda: *lambda,
-                                }));
-
-                                ty
                             }
                         }
                         Expr::Comptime(comptime) => {
                             let hir::Comptime { body } = self.bodies[*comptime];
 
-                            let ty = self.tys[self.file][body];
+                            let ty = self.tys[self.loc][body];
 
                             if ty.is_pointer() || ty.is_function() {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::ComptimePointer,
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -2520,7 +2938,7 @@ impl GlobalInferenceCtx<'_> {
                                 .copied()
                                 .filter_map(|MemberLiteral { name, value }| {
                                     name.map(|name| {
-                                        (name.name, (name.range, value, self.tys[self.file][value]))
+                                        (name.name, (name.range, value, self.tys[self.loc][value]))
                                     })
                                 })
                                 .collect::<IndexMap<_, _>>();
@@ -2528,9 +2946,7 @@ impl GlobalInferenceCtx<'_> {
                             let expected_tys = match expected_ty.as_struct() {
                                 Some(f) => f,
                                 None => {
-                                    self.tys[self.file]
-                                        .expr_tys
-                                        .insert(expr, Ty::Unknown.into());
+                                    self.tys[self.loc].expr_tys.insert(expr, Ty::Unknown.into());
 
                                     break 'struct_lit Ty::Unknown.into();
                                 }
@@ -2558,7 +2974,7 @@ impl GlobalInferenceCtx<'_> {
                                             member: found_member_name.0,
                                             found_ty: expected_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(*found_member_expr),
                                         range: *found_member_range,
                                         help: None,
@@ -2577,7 +2993,7 @@ impl GlobalInferenceCtx<'_> {
                                             member: expected_member_name.0,
                                             expected_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: self.bodies.range_for_expr(expr),
                                         help: None,
@@ -2597,7 +3013,7 @@ impl GlobalInferenceCtx<'_> {
                                 .filter_map(|MemberLiteral { name, value }| {
                                     name.map(|name| MemberTy {
                                         name: name.name,
-                                        ty: self.tys[self.file][value],
+                                        ty: self.tys[self.loc][value],
                                     })
                                 })
                                 .collect(),
@@ -2635,7 +3051,7 @@ impl GlobalInferenceCtx<'_> {
                             label: Some(label),
                             try_range,
                         } => {
-                            let inner_ty = self.tys[self.file][*inner];
+                            let inner_ty = self.tys[self.loc][*inner];
 
                             if let Ty::Optional { sub_ty } = inner_ty.as_ref() {
                                 self.break_with(
@@ -2660,7 +3076,7 @@ impl GlobalInferenceCtx<'_> {
                                     kind: TyDiagnosticKind::PropagateNonPropagatable {
                                         found: inner_ty,
                                     },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -2690,21 +3106,21 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::MissingArg {
                                                 expected: ExpectedTy::SumType,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: call_end,
                                             help: None,
                                         });
                                         break 'blk Ty::Unknown.into();
                                     };
-                                    let sum_ty = self.tys[self.file][*vary_val];
+                                    let sum_ty = self.tys[self.loc][*vary_val];
                                     if !self.expect_match(sum_ty, ExpectedTy::SumType, *vary_val) {
                                         break 'blk Ty::Unknown.into();
                                     }
 
                                     // second arg = variant type
                                     if let Some(variant_ty_val) = args.next() {
-                                        let variant_ty = self.tys[self.file][*variant_ty_val];
+                                        let variant_ty = self.tys[self.loc][*variant_ty_val];
                                         if !self.expect_match(
                                             variant_ty,
                                             ExpectedTy::Concrete(Ty::Type.into()),
@@ -2720,7 +3136,7 @@ impl GlobalInferenceCtx<'_> {
                                                     ty: variant_ty,
                                                     sum_ty,
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(expr),
                                                 range: self.bodies.range_for_expr(*variant_ty_val),
                                                 help: None,
@@ -2732,9 +3148,9 @@ impl GlobalInferenceCtx<'_> {
                                         for arg in args {
                                             self.diagnostics.push(TyDiagnostic {
                                                 kind: TyDiagnosticKind::ExtraArg {
-                                                    found: self.tys[self.file][*arg],
+                                                    found: self.tys[self.loc][*arg],
                                                 },
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(*arg),
                                                 range: self.bodies.range_for_expr(*arg),
                                                 help: None,
@@ -2753,7 +3169,7 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::MissingArg {
                                                 expected: ExpectedTy::Concrete(Ty::Type.into()),
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: call_end,
                                             help: None,
@@ -2771,14 +3187,14 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::MissingArg {
                                                 expected: ExpectedTy::SumType,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: call_end,
                                             help: None,
                                         });
                                         break 'blk Ty::Unknown.into();
                                     };
-                                    let sum_ty = self.tys[self.file][*vary_val];
+                                    let sum_ty = self.tys[self.loc][*vary_val];
                                     if !self.expect_match(sum_ty, ExpectedTy::SumType, *vary_val) {
                                         break 'blk Ty::Unknown.into();
                                     }
@@ -2792,7 +3208,7 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::MissingArg {
                                                 expected: ExpectedTy::Concrete(Ty::Type.into()),
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: call_end,
                                             help: None,
@@ -2800,7 +3216,7 @@ impl GlobalInferenceCtx<'_> {
                                         break 'blk Ty::Unknown.into();
                                     };
 
-                                    let variant_ty = self.tys[self.file][*variant_ty_val];
+                                    let variant_ty = self.tys[self.loc][*variant_ty_val];
                                     if !self.expect_match(
                                         variant_ty,
                                         ExpectedTy::Concrete(Ty::Type.into()),
@@ -2816,7 +3232,7 @@ impl GlobalInferenceCtx<'_> {
                                                 ty: variant_ty,
                                                 sum_ty,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: self.bodies.range_for_expr(*variant_ty_val),
                                             help: None,
@@ -2828,9 +3244,9 @@ impl GlobalInferenceCtx<'_> {
                                     for arg in args {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::ExtraArg {
-                                                found: self.tys[self.file][*arg],
+                                                found: self.tys[self.loc][*arg],
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(*arg),
                                             range: self.bodies.range_for_expr(*arg),
                                             help: None,
@@ -2853,14 +3269,14 @@ impl GlobalInferenceCtx<'_> {
                                             kind: TyDiagnosticKind::MissingArg {
                                                 expected: ExpectedTy::Concrete(Ty::String.into()),
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(expr),
                                             range: call_end,
                                             help: None,
                                         });
                                         break 'blk Ty::Unknown.into();
                                     };
-                                    let name_ty = self.tys[self.file][*name_val];
+                                    let name_ty = self.tys[self.loc][*name_val];
                                     if !self.expect_match(
                                         name_ty,
                                         ExpectedTy::Concrete(Ty::String.into()),
@@ -2873,7 +3289,7 @@ impl GlobalInferenceCtx<'_> {
                                     else {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::NotStringLit,
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(*name_val),
                                             range: self.bodies.range_for_expr(*name_val),
                                             help: None,
@@ -2886,7 +3302,7 @@ impl GlobalInferenceCtx<'_> {
                                     else {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::NotABuiltin { name: *name },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             expr: Some(*name_val),
                                             range: self.bodies.range_for_expr(*name_val),
                                             help: None,
@@ -2901,7 +3317,7 @@ impl GlobalInferenceCtx<'_> {
                                         kind: TyDiagnosticKind::UnknownDirective {
                                             name: name.name.0,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(expr),
                                         range: name.range,
                                         help: None,
@@ -2914,10 +3330,11 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Import(file_name) => Ty::File(*file_name).into(),
                     };
 
-                    self.tys[self.file].expr_tys.insert(expr, ty);
+                    self.tys[self.loc].expr_tys.insert(expr, ty);
                 }
+                Descendant::PostExpr(_) => unreachable!(),
                 Descendant::PreStmt(stmt) => {
-                    if self.inferred_stmts.contains(&(self.file, stmt)) {
+                    if self.inferred_stmts.contains(&(self.loc, stmt)) {
                         continue;
                     }
 
@@ -2931,13 +3348,19 @@ impl GlobalInferenceCtx<'_> {
                             if let Some(ty_annotation_expr) = def_body.ty {
                                 let ty_annotation = self.const_ty(ty_annotation_expr)?;
 
+                                debug!(
+                                    "l{:?} : {}",
+                                    local_def.into_raw(),
+                                    ty_annotation.debug(self.interner, true)
+                                );
+
                                 // the definition has an annotation, so the value should match
                                 if let Some(value) = def_body.value {
                                     // note: type annotations get inserted into `expected_tys`
                                     // in a different loop at the beginning of the `infer_expr`
                                     // function
 
-                                    let value_ty = self.tys[self.file][value];
+                                    let value_ty = self.tys[self.loc][value];
                                     self.expect_match(
                                         value_ty,
                                         ExpectedTy::Concrete(ty_annotation),
@@ -2948,14 +3371,14 @@ impl GlobalInferenceCtx<'_> {
                                         kind: TyDiagnosticKind::DeclTypeHasNoDefault {
                                             ty: ty_annotation,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         expr: Some(ty_annotation_expr),
                                         range: self.bodies.range_for_expr(ty_annotation_expr),
                                         help: None,
                                     });
                                 }
 
-                                self.tys[self.file]
+                                self.tys[self.loc]
                                     .local_tys
                                     .insert(local_def, ty_annotation);
                             } else {
@@ -2963,9 +3386,9 @@ impl GlobalInferenceCtx<'_> {
                                 // so use the type of it's value
                                 let value_ty = def_body
                                     .value
-                                    .map(|value| self.tys[self.file][value])
+                                    .map(|value| self.tys[self.loc][value])
                                     .unwrap_or(Ty::Unknown.into());
-                                self.tys[self.file].local_tys.insert(local_def, value_ty);
+                                self.tys[self.loc].local_tys.insert(local_def, value_ty);
                             }
 
                             if let Some(value) = def_body.value {
@@ -2982,7 +3405,7 @@ impl GlobalInferenceCtx<'_> {
                             if non_mut_help.is_some() {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::CannotMutate,
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     // making expr the dest isn't technically correct, but it works
                                     expr: Some(assign_body.dest),
                                     range: assign_body.range,
@@ -2991,8 +3414,8 @@ impl GlobalInferenceCtx<'_> {
                                 continue;
                             }
 
-                            let dest_ty = self.tys[self.file][assign_body.dest];
-                            let value_ty = self.tys[self.file][assign_body.value];
+                            let dest_ty = self.tys[self.loc][assign_body.dest];
+                            let value_ty = self.tys[self.loc][assign_body.value];
 
                             match assign_body
                                 .quick_assign_op
@@ -3009,7 +3432,7 @@ impl GlobalInferenceCtx<'_> {
                                                 first: dest_ty,
                                                 second: value_ty,
                                             },
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             // making expr the dest isn't technically correct, but it works
                                             expr: Some(assign_body.dest),
                                             range: assign_body.range,
@@ -3029,7 +3452,7 @@ impl GlobalInferenceCtx<'_> {
                                             first: dest_ty,
                                             second: value_ty,
                                         },
-                                        file: self.file,
+                                        file: self.loc.file(),
                                         // making expr the dest isn't technically correct, but it works
                                         expr: Some(assign_body.dest),
                                         range: assign_body.range,
@@ -3058,10 +3481,8 @@ impl GlobalInferenceCtx<'_> {
                             range,
                             ..
                         } => {
-                            let value_ty = value.map_or_else(
-                                || Ty::Void.into(),
-                                |value| self.tys[self.file][value],
-                            );
+                            let value_ty = value
+                                .map_or_else(|| Ty::Void.into(), |value| self.tys[self.loc][value]);
 
                             let range =
                                 value.map_or(range, |value| self.bodies.range_for_expr(value));
@@ -3074,7 +3495,7 @@ impl GlobalInferenceCtx<'_> {
                         }
                     }
 
-                    self.inferred_stmts.insert((self.file, stmt));
+                    self.inferred_stmts.insert((self.loc, stmt));
                 }
                 // Although the type is called *PostStmt*, since we reversed the list these
                 // actually come *before* all their inner subexpressions.
@@ -3082,7 +3503,7 @@ impl GlobalInferenceCtx<'_> {
                 // This is useful because inserting a value into `expected_tys` will change
                 // how types get resolved and how errors get reported
                 Descendant::PostStmt(stmt) => {
-                    if self.inferred_stmts.contains(&(self.file, stmt)) {
+                    if self.inferred_stmts.contains(&(self.loc, stmt)) {
                         continue;
                     }
 
@@ -3117,7 +3538,469 @@ impl GlobalInferenceCtx<'_> {
             };
         }
 
-        Ok(self.tys[self.file][expr])
+        Ok(self.tys[self.loc][expr])
+    }
+
+    /// This will clear `inline_comptime_args` and `inline_comptime_tys`
+    fn infer_lambda_headers(
+        &mut self,
+        expr: Idx<Expr>,
+        lambda: Idx<hir::Lambda>,
+        // this isn't actually used, `infer_lambda_headers` just ensures
+        // that it matches with the value in `self.inline_comptime_args`
+        comptime_args: Option<ComptimeArgs>,
+        // If you already called `evaluate_comptime_args`, set this to false.
+        // If you were only given `comptime_args`, then set this to true.
+        add_comptime_tys: bool,
+    ) -> InferResult<Result<TypedLambdaHeaders, RequiresComptimeArgs>> {
+        let hir::Lambda {
+            params,
+            return_ty: return_ty_expr,
+            body,
+            ..
+        } = &self.bodies[lambda];
+
+        let comptime_args_len = comptime_args.map_or(0, |args| args.into_value_range().len());
+
+        debug!("add_comptime_tys = {add_comptime_tys}");
+        debug!("comptime_args_len = {comptime_args_len}");
+
+        assert!(
+            comptime_args
+                .iter()
+                .flat_map(|c| c.into_value_range())
+                .eq(self.inline_comptime_args.iter().copied()),
+            "infer_lambda_headers was passed comptime args ({}), but these don't match self.inline_comptime_args ({})",
+            comptime_args_len,
+            self.inline_comptime_args.len()
+        );
+        if add_comptime_tys {
+            assert!(
+                self.inline_comptime_tys.is_empty(),
+                "infer_lambda_headers was told to handle inline comptime types itself, but self.inline_comptime_tys isn't empty ({})",
+                self.inline_comptime_tys.len()
+            );
+        } else {
+            assert_eq!(
+                comptime_args_len,
+                self.inline_comptime_tys.len(),
+                "infer_lambda_headers was passed comptime args ({}), but these don't match self.inline_comptime_tys ({})",
+                comptime_args_len,
+                self.inline_comptime_tys.len()
+            );
+        }
+
+        let is_type = *body == hir::LambdaBody::Empty && return_ty_expr.is_some();
+
+        // we first check for comptime + inline parameter references
+        let any_inline_param_refs = params
+            .iter()
+            .map(|p| p.ty)
+            .chain(return_ty_expr.iter().copied())
+            .flat_map(|expr| {
+                self.bodies
+                    .descendants(
+                        expr,
+                        hir::DescentOpts::All {
+                            include_lambdas: false,
+                            include_post_exprs: false,
+                            include_post_stmts: false,
+                        },
+                    )
+                    .filter_map(|d| match d {
+                        Descendant::PreExpr(idx) => Some(idx),
+                        Descendant::PostExpr(_) => unreachable!(),
+                        Descendant::PreStmt(_) => None,
+                        Descendant::PostStmt(_) => unreachable!(),
+                    })
+            })
+            .any(|expr| matches!(self.bodies[expr], Expr::InlineParam { .. }));
+
+        if any_inline_param_refs && self.inline_comptime_args.is_empty() {
+            return Ok(Err(RequiresComptimeArgs));
+        }
+
+        let mut param_tys = Vec::with_capacity(params.len());
+
+        let mut comptime_idx = 0;
+
+        for (idx, param) in params.iter().enumerate() {
+            // debug!("param p{idx}");
+
+            let mut ty = self.const_ty(param.ty)?;
+
+            if add_comptime_tys && any_inline_param_refs && param.comptime {
+                self.inline_comptime_tys.push(ty);
+                debug!("  push inline type {}", ty.debug(self.interner, true));
+            }
+
+            let mut impossible_to_differentiate = false;
+
+            if let Some(last_param) = idx
+                .checked_sub(1)
+                .and_then(|idx| params.get(idx))
+                .filter(|p| p.varargs)
+            {
+                // we already called `const_ty` on the last param
+                let last_ty = self.tys[self.loc].meta_tys[last_param.ty];
+
+                if !ty.can_differentiate_from(&last_ty) {
+                    impossible_to_differentiate = true;
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
+                            previous_ty: last_ty,
+                            current_ty: ty,
+                        },
+                        file: self.loc.file(),
+                        expr: Some(expr),
+                        range: param.range,
+                        help: None,
+                    });
+                }
+            }
+
+            if param.varargs {
+                ty = Ty::Slice { sub_ty: ty }.into();
+
+                if *body == hir::LambdaBody::Extern {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::ExternVarargs,
+                        file: self.loc.file(),
+                        expr: Some(expr),
+                        range: param.range,
+                        help: None,
+                    });
+                }
+            }
+
+            param_tys.push(ParamTy {
+                ty,
+                comptime: if param.comptime {
+                    comptime_idx += 1;
+
+                    Some(comptime_idx - 1)
+                } else {
+                    None
+                },
+                varargs: param.varargs,
+                impossible_to_differentiate,
+            });
+        }
+
+        let return_ty = if let Some(return_ty) = return_ty_expr {
+            self.const_ty(*return_ty)?
+        } else {
+            Ty::Void.into()
+        };
+
+        // assert a second time, to ensure the lists weren't changed or updated
+        assert!(
+            comptime_args
+                .iter()
+                .flat_map(|c| c.into_value_range())
+                .eq(self.inline_comptime_args.iter().copied()),
+            "self.comptime_args was unexpectedly updated during `infer_lambda_headers`",
+        );
+        if any_inline_param_refs {
+            assert_eq!(
+                comptime_args_len,
+                self.inline_comptime_tys.len(),
+                "self.comptime_tys was unexpectedly updated during `infer_lambda_headers`",
+            );
+        }
+
+        self.inline_comptime_tys.clear();
+        self.inline_comptime_args.clear();
+        debug!("  clear inline info");
+
+        Ok(Ok(TypedLambdaHeaders {
+            param_tys,
+            return_ty,
+            any_comptime: comptime_idx > 0,
+            is_type,
+        }))
+    }
+
+    /// This will add values to `inline_comptime_tys` and `inline_comptime_args`
+    ///
+    /// It is your responsibility to clear these lists
+    ///
+    /// TODO: detect and prevent recursive generic function calls
+    fn evaluate_comptime_args(
+        &mut self,
+        lambda_loc: NaiveLambdaLoc,
+        args: &[Idx<Expr>],
+        call_expr: Idx<Expr>,
+    ) -> InferResult<Result<ComptimeArgs, ArgsContainDiagnostics>> {
+        let lambda_body = &self.world_bodies[lambda_loc.file()][lambda_loc.lambda()];
+
+        let mut mismatch = false;
+
+        assert!(self.inline_comptime_args.is_empty());
+        if !self.inline_comptime_tys.is_empty() {
+            debug!("self.inline_comptime_tys = {:?}", self.inline_comptime_tys);
+        }
+        assert!(self.inline_comptime_tys.is_empty());
+
+        let dummy_loc = lambda_loc.make_concrete(None).wrap();
+
+        if lambda_loc.file() != self.loc.file() {
+            self.tys.create_area_if_not_exists(dummy_loc);
+        }
+
+        let call_range = self.bodies.range_for_expr(call_expr);
+        let call_end = call_range
+            .end()
+            .checked_sub(TextSize::new(1))
+            .unwrap_or(call_range.end());
+
+        let mut comptime_idx = 0;
+        for (idx, param) in lambda_body.params.iter().enumerate() {
+            // todo: can the param.name.is_some() screw things up in regards to
+            // inline_comptime_tys and inline_comptime_args
+            if param.comptime && param.name.is_some() {
+                // Parameters cannot reference themselves,
+                // inline parameter references are always earlier comptime
+                // parameters. For this reason, this should be safe
+                // TODO: assert that
+                let param_ty = if lambda_loc.file() != self.loc.file() {
+                    let mut dummy_env = GlobalInferenceCtx {
+                        loc: dummy_loc,
+                        world_index: self.world_index,
+                        world_bodies: self.world_bodies,
+                        bodies: &self.world_bodies[lambda_loc.file()],
+                        interner: self.interner,
+                        expected_tys: Default::default(),
+                        local_usages: Default::default(),
+                        generics_arena: self.generics_arena,
+                        call_associated_generics: self.call_associated_generics,
+                        inferred_stmts: self.inferred_stmts,
+                        tys: self.tys,
+                        param_tys: Default::default(),
+                        inline_comptime_args: Default::default(),
+                        inline_comptime_tys: self.inline_comptime_tys.clone(),
+                        all_finished_locations: self.all_finished_locations,
+                        to_infer: self.to_infer,
+                        diagnostics: self.diagnostics,
+                        eval_comptime: self.eval_comptime,
+                    };
+
+                    // TODO: handle the error properly, and test the error case
+                    dummy_env.const_ty(param.ty).unwrap()
+                } else {
+                    self.const_ty(param.ty)?
+                };
+
+                self.inline_comptime_tys.push(param_ty);
+                debug!("  push inline type {}", param_ty.debug(self.interner, true));
+
+                let Some(arg) = args.get(idx) else {
+                    self.diagnostics.push(TyDiagnostic {
+                        kind: TyDiagnosticKind::MissingArg {
+                            expected: ExpectedTy::Concrete(param_ty),
+                        },
+                        file: self.loc.file(),
+                        expr: Some(call_expr),
+                        range: TextRange::empty(call_end),
+                        help: None,
+                    });
+                    return Ok(Err(ArgsContainDiagnostics));
+                };
+
+                let arg_ty = self.tys[self.loc][*arg];
+
+                // if expect match throws an error, none of the other param types
+                // will be calculated and only the other comptime args will
+                // throw errors. idk if that's a good thing.
+                if !self.expect_match(arg_ty, ExpectedTy::Concrete(param_ty), *arg) {
+                    mismatch = true;
+                    continue;
+                }
+
+                let arg_const = self.get_const(*arg);
+                if !arg_const.is_const() {
+                    if arg_const.should_report_not_const() {
+                        self.diagnostics.push(TyDiagnostic {
+                            kind: TyDiagnosticKind::ComptimeArgNotConst {
+                                param_name: param.name.unwrap().0,
+                                param_ty,
+                            },
+                            file: self.loc.file(),
+                            range: self.bodies.range_for_expr(*arg),
+                            expr: Some(*arg),
+                            help: None,
+                        });
+                    }
+                    return Ok(Err(ArgsContainDiagnostics));
+                }
+
+                let res = self
+                    .const_data(self.loc, *arg)
+                    // the only reason const_data would return an Err
+                    // is because of is_safe_to_compile, but we already called
+                    // all of them.
+                    .expect("is_safe_to_compile was done beforehand")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "@{} expr #{} didn't work",
+                            self.loc.debug(self.interner),
+                            arg.into_raw()
+                        )
+                    });
+                let res = self.generics_arena.alloc(res);
+
+                self.inline_comptime_args.push(res);
+
+                assert_eq!(self.inline_comptime_args.len(), comptime_idx + 1);
+                comptime_idx += 1;
+            }
+        }
+
+        if lambda_loc.file() != self.loc.file() {
+            self.tys.remove_area(dummy_loc);
+        }
+
+        if mismatch {
+            return Ok(Err(ArgsContainDiagnostics));
+        }
+
+        // ensures that nothing else was allocated while the args were being allocated
+        for pair in self.inline_comptime_args.windows(2) {
+            let [prev, next] = pair else { unreachable!() };
+
+            assert!(prev.into_raw().into_u32() + 1 == next.into_raw().into_u32());
+        }
+
+        let range = if let Some(first) = self.inline_comptime_args.first() {
+            let last = self.inline_comptime_args.last().unwrap();
+
+            IdxRange::new_inclusive((*first)..=(*last))
+        } else {
+            // this is just to get an empty list
+            self.generics_arena.alloc_many([])
+        };
+
+        let comptime_args = ComptimeArgs::new(range);
+
+        Ok(Ok(comptime_args))
+    }
+
+    /// Type information is duplicated between the area in which the lambda header resides,
+    /// and the area in which the lambda body resides.
+    ///
+    /// This function does that copying
+    fn init_new_concrete(
+        &mut self,
+        lambda_loc: ConcreteLambdaLoc,
+        param_exprs: &Vec<hir::Param>,
+        ret_ty_expr: &Option<Idx<Expr>>,
+        param_tys: Vec<ParamTy>,
+        return_ty: Intern<Ty>,
+    ) {
+        // // set the body of the lambda ready to be processed
+        // // with those comptime args
+        // self.to_infer.insert(lambda_loc);
+
+        let lambda_ty: Intern<Ty> = Ty::ConcreteFunction {
+            param_tys,
+            return_ty,
+            fn_loc: lambda_loc,
+        }
+        .into();
+
+        // The type of the lambda headers will appear in both
+        // the concrete location that contained the lambda,
+        // and the body of the lambda itself.
+        //
+        // e.g.
+        // ```
+        // foo :: () -> u32 {
+        //   42
+        // }
+        // ```
+        //
+        // will produce:
+        // ```
+        // main::foo
+        // - #2 () -> u32
+        //
+        // main::lambda#0
+        // - #0 {uint}
+        // - #1 {uint}
+        // - #2 () -> u32
+        // ```
+        if self.loc != lambda_loc.wrap() {
+            debug!(
+                "copying the concrete function type `{}` at #{} from {} -> {}",
+                lambda_ty.debug(self.interner, true),
+                lambda_loc.expr().into_raw(),
+                self.loc.debug(self.interner),
+                lambda_loc.debug(self.interner)
+            );
+            self.tys
+                .create_area_if_not_exists(lambda_loc.wrap())
+                .expr_tys
+                .insert(lambda_loc.expr(), lambda_ty);
+
+            // the meta types have to be copied over.
+            // these store the meta type value of each parameter.
+            // e.g. for (x: i32, y: bool) -> void,
+            // the meta type "i32" will be copied to the new location
+            // of the type annotation,
+            // and the same for "bool"
+            let exprs_to_copy = param_exprs
+                .iter()
+                .map(|p| p.ty)
+                .chain(ret_ty_expr.iter().copied())
+                .flat_map(|expr| {
+                    self.bodies
+                        .descendants(
+                            expr,
+                            hir::DescentOpts::All {
+                                include_lambdas: false,
+                                include_post_exprs: false,
+                                include_post_stmts: false,
+                            },
+                        )
+                        .filter_map(|d| match d {
+                            Descendant::PreExpr(idx) => Some(idx),
+                            Descendant::PostExpr(_) => unreachable!(),
+                            Descendant::PreStmt(_) => None,
+                            Descendant::PostStmt(_) => unreachable!(),
+                        })
+                });
+
+            // see earlier
+            for to_copy in exprs_to_copy {
+                if let Some(ty) = self.tys[self.loc].try_get_expr(to_copy) {
+                    debug!(
+                        "  copying the expr type `{}` at #{} from {} -> {}",
+                        ty.debug(self.interner, true),
+                        to_copy.into_raw(),
+                        self.loc.debug(self.interner),
+                        lambda_loc.debug(self.interner)
+                    );
+
+                    self.tys[lambda_loc.wrap()].expr_tys.insert(to_copy, ty);
+                }
+
+                if let Some(ty) = self.tys[self.loc].meta_ty(to_copy) {
+                    debug!(
+                        "  copying the meta type `{}` at #{} from {} -> {}",
+                        ty.debug(self.interner, true),
+                        to_copy.into_raw(),
+                        self.loc.debug(self.interner),
+                        lambda_loc.debug(self.interner)
+                    );
+
+                    self.tys[lambda_loc.wrap()].meta_tys.insert(to_copy, ty);
+                }
+            }
+        }
+
+        self.tys[self.loc]
+            .expr_tys
+            .insert(lambda_loc.expr(), lambda_ty);
     }
 
     fn break_with(
@@ -3159,25 +4042,25 @@ impl GlobalInferenceCtx<'_> {
                             expected: ExpectedTy::Concrete(Ty::Void.into()),
                             found: ty,
                         },
-                        file: self.file,
+                        file: self.loc.file(),
                         expr: value,
                         range: self.bodies.range_for_expr(value.unwrap()),
                         help: None,
                     });
 
-                    self.tys[self.file]
+                    self.tys[self.loc]
                         .expr_tys
                         .insert(referenced_expr, Ty::Unknown.into());
                 } else {
                     // the type just hasn't been set yet
-                    self.tys[self.file].expr_tys.insert(referenced_expr, ty);
+                    self.tys[self.loc].expr_tys.insert(referenced_expr, ty);
                 }
             }
         }
     }
 
     fn try_get_previous_ty(&self, expr: Idx<Expr>) -> Option<Intern<Ty>> {
-        self.tys[self.file]
+        self.tys[self.loc]
             .expr_tys
             .get(expr)
             .copied()
@@ -3205,7 +4088,7 @@ impl GlobalInferenceCtx<'_> {
 
         if let Some(max) = block_ty.max(&found_ty) {
             let max = max.into();
-            self.tys[self.file].expr_tys.insert(block_expr, max);
+            self.tys[self.loc].expr_tys.insert(block_expr, max);
             if replace_found_with_new_max && let Some(found_expr) = found_expr {
                 self.replace_weak_tys(found_expr, max);
             }
@@ -3294,14 +4177,14 @@ impl GlobalInferenceCtx<'_> {
                     expected: ExpectedTy::Concrete(block_ty),
                     found: found_ty,
                 },
-                file: self.file,
+                file: self.loc.file(),
                 expr: Some(found_expr.unwrap_or(block_expr)),
                 range: found_range,
                 help: Some(help),
             });
 
             // make the block type unknown so errors don't get reported twice in a row
-            self.tys[self.file]
+            self.tys[self.loc]
                 .expr_tys
                 .insert(block_expr, Ty::Unknown.into());
 
@@ -3314,7 +4197,7 @@ impl GlobalInferenceCtx<'_> {
         if *expr_ty == Ty::Type {
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::CantUseAsTy,
-                file: self.file,
+                file: self.loc.file(),
                 expr: Some(expr),
                 range: self.bodies.range_for_expr(expr),
                 help: None,
@@ -3325,7 +4208,7 @@ impl GlobalInferenceCtx<'_> {
                     expected: ExpectedTy::Concrete(Ty::Type.into()),
                     found: expr_ty,
                 },
-                file: self.file,
+                file: self.loc.file(),
                 expr: Some(expr),
                 range: self.bodies.range_for_expr(expr),
                 help: None,
@@ -3350,7 +4233,7 @@ impl GlobalInferenceCtx<'_> {
         {
             let expected = expected.get_concrete().expect("already checked for Some");
 
-            self.tys[self.file].expr_tys[expr] = expected;
+            self.tys[self.loc].expr_tys[expr] = expected;
 
             if let Some(max_size) = expected.get_max_int_size() {
                 if *num > max_size {
@@ -3360,7 +4243,7 @@ impl GlobalInferenceCtx<'_> {
                             max: max_size,
                             ty: expected,
                         },
-                        file: self.file,
+                        file: self.loc.file(),
                         expr: Some(expr),
                         range: self.bodies.range_for_expr(expr),
                         help: None,
@@ -3397,8 +4280,8 @@ impl GlobalInferenceCtx<'_> {
                 assert!(
                     !found.is_weak_replaceable_by(&expected_ty),
                     "`is_weak_replaceable_by` is not a subset of `can_fit_into` for `{}` -> `{}`\n(`is_weak_replaceable_by` returned true but `can_fit_into` returned false)",
-                    found.simple_display(self.interner, true),
-                    expected_ty.simple_display(self.interner, true),
+                    found.debug(self.interner, true),
+                    expected_ty.debug(self.interner, true),
                 );
             }
 
@@ -3415,7 +4298,7 @@ impl GlobalInferenceCtx<'_> {
 
             self.diagnostics.push(TyDiagnostic {
                 kind: TyDiagnosticKind::Mismatch { expected, found },
-                file: self.file,
+                file: self.loc.file(),
                 expr: Some(expr),
                 range: self.bodies.range_for_expr(expr),
                 help,
@@ -3425,22 +4308,34 @@ impl GlobalInferenceCtx<'_> {
         }
     }
 
-    fn fqn_to_ty(
+    fn naive_global_to_ty(
         &mut self,
-        fqn: hir::Fqn,
+        naive: NaiveGlobalLoc,
         file_expr: Option<Idx<hir::Expr>>,
         total_expr: Idx<hir::Expr>,
         name_range: TextRange,
     ) -> InferResult<Intern<Ty>> {
-        match self.world_index.definition(fqn) {
+        // println!("naive_location_to_ty {}", naive.debug(self.interner));
+
+        match self.world_index.definition(naive) {
             hir::DefinitionStatus::Defined => {
+                // println!("defined {}", naive.debug(self.interner));
+
                 // this should also set the meta type
-                let ty = self
-                    .tys
-                    .signatures
-                    .get(&fqn)
-                    .ok_or_else(|| vec![Inferrable::Global(fqn)])?
-                    .0;
+                let ty = match self.tys.try_naive(naive.wrap(), self.world_bodies) {
+                    Ok(sig) => sig,
+                    Err(NaiveLookupErr::IsPolymorphic) => todo!(),
+                    Err(NaiveLookupErr::NotFound) => {
+                        // println!(" - not found");
+                        assert!(!self.world_bodies.has_polymorphic_body(naive.wrap()));
+                        let tfqn = naive.make_concrete(None);
+                        return Err(vec![tfqn.wrap()]);
+                    }
+                };
+
+                // println!(" - found");
+
+                let tfqn = naive.make_concrete(None);
 
                 if *ty == Ty::Unknown {
                     return Ok(Ty::Unknown.into());
@@ -3448,8 +4343,8 @@ impl GlobalInferenceCtx<'_> {
 
                 if *ty == Ty::NotYetResolved {
                     self.diagnostics.push(TyDiagnostic {
-                        kind: TyDiagnosticKind::NotYetResolved { fqn },
-                        file: self.file,
+                        kind: TyDiagnosticKind::NotYetResolved { fqn: naive },
+                        file: self.loc.file(),
                         expr: Some(total_expr),
                         range: name_range,
                         help: None,
@@ -3465,7 +4360,7 @@ impl GlobalInferenceCtx<'_> {
                                 expected: ExpectedTy::Concrete(Ty::Type.into()),
                                 found: ty,
                             },
-                            file: self.file,
+                            file: self.loc.file(),
                             expr: Some(total_expr),
                             range: name_range,
                             help: None,
@@ -3474,7 +4369,7 @@ impl GlobalInferenceCtx<'_> {
                     return Ok(Ty::Unknown.into());
                 }
 
-                let global_body = self.world_bodies.body(fqn);
+                let global_body = self.world_bodies.global_body(naive);
 
                 // most global bodies will already have set `meta_tys` with the
                 // actual type, but occasionally something slips through, and since
@@ -3493,20 +4388,20 @@ impl GlobalInferenceCtx<'_> {
                 // in this case we might code something special in the `infer_expr`
                 // code to calculate the meta type if the local is constant, but that
                 // would waste a lot of space and what about members? it's just too much
-                let old_file = std::mem::replace(&mut self.file, fqn.file);
+                let old_tfqn = std::mem::replace(&mut self.loc, tfqn.wrap());
                 let actual_ty = self.const_ty(global_body)?;
-                self.file = old_file;
+                self.loc = old_tfqn;
 
                 if actual_ty.can_have_a_name() {
-                    set_type_name(actual_ty, TyName::Global(fqn));
+                    set_type_name(actual_ty, TyName::Global(tfqn));
                 }
 
                 Ok(actual_ty)
             }
             hir::DefinitionStatus::UnknownFile => {
                 self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownFile { file: fqn.file },
-                    file: self.file,
+                    kind: TyDiagnosticKind::UnknownFile { file: naive.file() },
+                    file: self.loc.file(),
                     expr: file_expr,
                     range: self.bodies.range_for_expr(file_expr.unwrap()),
                     help: None,
@@ -3515,8 +4410,8 @@ impl GlobalInferenceCtx<'_> {
             }
             hir::DefinitionStatus::UnknownDefinition => {
                 self.diagnostics.push(TyDiagnostic {
-                    kind: TyDiagnosticKind::UnknownFqn { fqn },
-                    file: self.file,
+                    kind: TyDiagnosticKind::UnknownFqn { fqn: naive },
+                    file: self.loc.file(),
                     expr: file_expr,
                     range: self.bodies.range_for_expr(file_expr.unwrap()),
                     help: None,
@@ -3526,14 +4421,15 @@ impl GlobalInferenceCtx<'_> {
         }
     }
 
+    // todo! get rid of this somehow and just have const_data
     pub(crate) fn const_ty(&mut self, expr: Idx<hir::Expr>) -> InferResult<Intern<Ty>> {
-        if let Some(meta_ty) = self.tys[self.file].get_meta_ty(expr) {
+        if let Some(meta_ty) = self.tys[self.loc].meta_ty(expr) {
             return Ok(meta_ty);
         }
 
         let include_local_value = |local| {
             let local_def = &self.bodies[local];
-            let local_ty = self.tys[self.file].local_tys[local];
+            let local_ty = self.tys[self.loc].local_tys[local];
 
             *local_ty == Ty::Type && !local_def.mutable
         };
@@ -3548,19 +4444,27 @@ impl GlobalInferenceCtx<'_> {
             )
             .collect_vec();
 
-        // println!("CONST TYPE\n{descendants:#?}");
+        // let mut res = String::new();
+        // hir::debug_descendants(
+        //     &mut res,
+        //     self.bodies,
+        //     descendants.iter().rev().copied(),
+        //     false,
+        //     true,
+        // );
+        // debug!("CONST TYPE {}\n{res}", self.loc.debug(self.interner));
 
         for descendant in descendants.into_iter().rev() {
             match descendant {
-                Descendant::Expr(expr) => {
-                    if self.tys[self.file].get_meta_ty(expr).is_some() {
+                Descendant::PreExpr(expr) => {
+                    if self.tys[self.loc].meta_ty(expr).is_some() {
                         continue;
                     }
 
                     let ty = match &self.bodies[expr] {
                         Expr::Missing => Ty::Unknown.into(),
                         Expr::Ref { mutable, expr } => {
-                            let sub_ty = self.tys[self.file].get_meta_ty(*expr).unwrap();
+                            let sub_ty = self.tys[self.loc].meta_ty(*expr).unwrap();
 
                             Ty::Pointer {
                                 mutable: *mutable,
@@ -3569,14 +4473,16 @@ impl GlobalInferenceCtx<'_> {
                             .into()
                         }
                         Expr::Local(local_def) => 'branch: {
-                            let local_ty = self.tys[self.file].local_tys[*local_def];
+                            let local_ty = self.tys[self.loc].local_tys[*local_def];
 
                             if *local_ty == Ty::Unknown {
+                                debug!("local unknown");
                                 break 'branch Ty::Unknown.into();
                             }
 
                             if *local_ty != Ty::Type {
                                 self.report_non_type(expr, local_ty);
+                                println!("local not type");
                                 break 'branch Ty::Unknown.into();
                             }
 
@@ -3585,7 +4491,7 @@ impl GlobalInferenceCtx<'_> {
                             if local_def.mutable {
                                 self.diagnostics.push(TyDiagnostic {
                                     kind: TyDiagnosticKind::LocalTyIsMutable,
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: Some(TyDiagnosticHelp {
@@ -3593,36 +4499,89 @@ impl GlobalInferenceCtx<'_> {
                                         range: local_def.range,
                                     }),
                                 });
+                                println!("local mutable");
 
                                 break 'branch Ty::Unknown.into();
                             }
 
                             // this protects against cases like `x ::;`
                             if let Some(value) = local_def.value {
-                                self.tys[self.file].get_meta_ty(value).unwrap()
+                                let ty = self.tys[self.loc].meta_ty(value).unwrap();
+                                debug!("  local get meta ty (#{value:?}) = {ty:?}");
+                                ty
                             } else {
+                                debug!("local has no value");
                                 Ty::Unknown.into()
                             }
                         }
-                        Expr::LocalGlobal(name) => self.fqn_to_ty(
-                            hir::Fqn {
-                                file: self.file,
+                        Expr::LocalGlobal(name) => self.naive_global_to_ty(
+                            Fqn {
+                                file: self.loc.file(),
                                 name: name.name,
                             },
                             None,
                             expr,
                             name.range,
                         )?,
-                        Expr::Param { .. } => {
+                        Expr::Param { idx, .. } => {
+                            let param_ty = &self.param_tys[*idx as usize];
+                            assert!(param_ty.comptime.is_none());
+
                             self.diagnostics.push(TyDiagnostic {
                                 kind: TyDiagnosticKind::ParamNotATy,
-                                file: self.file,
+                                file: self.loc.file(),
                                 expr: Some(expr),
                                 range: self.bodies.range_for_expr(expr),
                                 help: None,
                             });
 
                             Ty::Unknown.into()
+                        }
+                        Expr::ComptimeParam {
+                            real_idx,
+                            comptime_idx,
+                            ..
+                        } => 'param: {
+                            let param_ty = &self.param_tys[*real_idx as usize];
+                            assert_eq!(param_ty.comptime, Some(*comptime_idx as usize));
+
+                            if !self.expect_match(
+                                param_ty.ty,
+                                ExpectedTy::Concrete(Ty::Type.into()),
+                                expr,
+                            ) {
+                                break 'param Ty::Unknown.into();
+                            }
+
+                            let comptime_result = self.loc
+                                .comptime_args()
+                                .expect("If we're referencing comptime args, we must be in a location that has comptime args")
+                                .into_value_range()
+                                .nth(*comptime_idx as usize)
+                                .unwrap();
+
+                            match self.generics_arena[comptime_result] {
+                                ComptimeResult::Type(ty) => ty,
+                                _ => unreachable!(),
+                            }
+                        }
+                        Expr::InlineParam { comptime_idx, .. } => 'param: {
+                            let param_ty = self.inline_comptime_tys[*comptime_idx as usize];
+
+                            if !self.expect_match(
+                                param_ty,
+                                ExpectedTy::Concrete(Ty::Type.into()),
+                                expr,
+                            ) {
+                                break 'param Ty::Unknown.into();
+                            }
+
+                            let comptime_result = self.inline_comptime_args[*comptime_idx as usize];
+
+                            match self.generics_arena[comptime_result] {
+                                ComptimeResult::Type(ty) => ty,
+                                _ => unreachable!(),
+                            }
                         }
                         Expr::Member { previous, name } => {
                             // todo: remove recursion
@@ -3633,8 +4592,8 @@ impl GlobalInferenceCtx<'_> {
                             let previous_ty = self.infer_expr(*previous)?;
 
                             match previous_ty.as_ref() {
-                                Ty::File(file) => self.fqn_to_ty(
-                                    hir::Fqn {
+                                Ty::File(file) => self.naive_global_to_ty(
+                                    Fqn {
                                         file: *file,
                                         name: name.name,
                                     },
@@ -3646,7 +4605,7 @@ impl GlobalInferenceCtx<'_> {
                                     // todo: remove recursion
                                     // println!("ty get #{}", previous.into_raw());
                                     // let const_ty =
-                                    //     self.tys[self.file].get_meta_ty(*previous).unwrap();
+                                    //     self.tys[self.loc].get_meta_ty(*previous).unwrap();
                                     let const_ty = self.const_ty(*previous)?;
                                     match const_ty.as_ref() {
                                         Ty::Enum { variants, .. } => variants
@@ -3669,7 +4628,7 @@ impl GlobalInferenceCtx<'_> {
                                                         ty: name.name.0,
                                                         sum_ty: const_ty,
                                                     },
-                                                    file: self.file,
+                                                    file: self.loc.file(),
                                                     expr: Some(expr),
                                                     range: self.bodies.range_for_expr(expr),
                                                     help: None,
@@ -3680,7 +4639,7 @@ impl GlobalInferenceCtx<'_> {
                                         _ => {
                                             self.diagnostics.push(TyDiagnostic {
                                                 kind: TyDiagnosticKind::CantUseAsTy,
-                                                file: self.file,
+                                                file: self.loc.file(),
                                                 expr: Some(expr),
                                                 range: self.bodies.range_for_expr(expr),
                                                 help: None,
@@ -3702,14 +4661,14 @@ impl GlobalInferenceCtx<'_> {
                         }
                         Expr::PrimitiveTy(ty) => Ty::from_primitive(*ty).into(),
                         Expr::ArrayDecl { size, ty } => 'branch: {
-                            let sub_ty = self.tys[self.file].meta_tys[*ty];
+                            let sub_ty = self.tys[self.loc].meta_tys[*ty];
 
                             if let Some(size) = size {
                                 // we must infer it manually because it might not
                                 // have been inferred.
                                 let usize_ty = Ty::UInt(u8::MAX).into();
                                 if !self.expect_match(
-                                    self.tys[self.file][*size],
+                                    self.tys[self.loc][*size],
                                     ExpectedTy::Concrete(usize_ty),
                                     *size,
                                 ) {
@@ -3720,11 +4679,10 @@ impl GlobalInferenceCtx<'_> {
 
                                 let expr_const = self.get_const(*size);
                                 if !expr_const.is_const() {
-                                    println!("not const {expr_const:?}");
                                     if expr_const.should_report_not_const() {
                                         self.diagnostics.push(TyDiagnostic {
                                             kind: TyDiagnosticKind::ArraySizeNotConst,
-                                            file: self.file,
+                                            file: self.loc.file(),
                                             range: self.bodies.range_for_expr(*size),
                                             expr: Some(*size),
                                             help: None,
@@ -3733,22 +4691,32 @@ impl GlobalInferenceCtx<'_> {
                                     break 'branch Ty::Unknown.into();
                                 }
 
-                                match self.const_data(self.file, *size)? {
+                                debug!(
+                                    "  starting to calc const_data of {size:?} at {:?}",
+                                    self.loc.debug(self.interner)
+                                );
+                                match self.const_data(self.loc, *size)? {
                                     Some(ComptimeResult::Integer { num, .. }) => {
                                         Ty::ConcreteArray { size: num, sub_ty }.into()
                                     }
-                                    _ => {
-                                        // todo: we check that the array size is a `usize` above,
-                                        // soo... is this even reachable?
-                                        self.diagnostics.push(TyDiagnostic {
-                                            kind: TyDiagnosticKind::ArraySizeNotInt,
-                                            file: self.file,
-                                            range: self.bodies.range_for_expr(*size),
-                                            expr: Some(*size),
-                                            help: None,
-                                        });
+                                    actual_data => {
+                                        panic!(
+                                            "{} #{} already checked that the constant was an integer, and yet the data is {actual_data:?}",
+                                            self.loc.debug(self.interner),
+                                            expr.into_raw()
+                                        );
 
-                                        Ty::Unknown.into()
+                                        // // todo: we check that the array size is a `usize` above,
+                                        // // soo... is this even reachable?
+                                        // self.diagnostics.push(TyDiagnostic {
+                                        //     kind: TyDiagnosticKind::ArraySizeNotInt,
+                                        //     file: self.loc.file(),
+                                        //     range: self.bodies.range_for_expr(*size),
+                                        //     expr: Some(*size),
+                                        //     help: None,
+                                        // });
+
+                                        // Ty::Unknown.into()
                                     }
                                 }
                             } else {
@@ -3757,7 +4725,7 @@ impl GlobalInferenceCtx<'_> {
                         }
                         Expr::Distinct { uid, ty } => Ty::Distinct {
                             uid: *uid,
-                            sub_ty: self.tys[self.file].meta_tys[*ty],
+                            sub_ty: self.tys[self.loc].meta_tys[*ty],
                         }
                         .into(),
                         Expr::StructDecl { uid, members } => Ty::ConcreteStruct {
@@ -3768,7 +4736,7 @@ impl GlobalInferenceCtx<'_> {
                                 .filter_map(|hir::MemberDecl { name, ty }| {
                                     name.map(|name| MemberTy {
                                         name: name.name,
-                                        ty: self.tys[self.file].meta_tys[ty],
+                                        ty: self.tys[self.loc].meta_tys[ty],
                                     })
                                 })
                                 .collect(),
@@ -3801,7 +4769,7 @@ impl GlobalInferenceCtx<'_> {
                                         // we must infer it manually because it might not
                                         // have been inferred.
                                         if !self.expect_match(
-                                            self.tys[self.file][discrim_expr],
+                                            self.tys[self.loc][discrim_expr],
                                             ExpectedTy::Concrete(ty_u8),
                                             discrim_expr,
                                         ) {
@@ -3816,7 +4784,7 @@ impl GlobalInferenceCtx<'_> {
                                             if expr_const.should_report_not_const() {
                                                 self.diagnostics.push(TyDiagnostic {
                                                     kind: TyDiagnosticKind::DiscriminantNotConst,
-                                                    file: self.file,
+                                                    file: self.loc.file(),
                                                     range: self.bodies.range_for_expr(discrim_expr),
                                                     expr: Some(discrim_expr),
                                                     help: None,
@@ -3825,14 +4793,14 @@ impl GlobalInferenceCtx<'_> {
                                             break 'discrim_calc;
                                         }
 
-                                        match self.const_data(self.file, discrim_expr)? {
+                                        match self.const_data(self.loc, discrim_expr)? {
                                             Some(ComptimeResult::Integer { num, .. }) => {
                                                 if used_discriminants.contains(&num) {
                                                     self.diagnostics.push(TyDiagnostic {
                                                         kind: TyDiagnosticKind::DiscriminantUsedAlready {
                                                             value: num
                                                         },
-                                                        file: self.file,
+                                                        file: self.loc.file(),
                                                         range: self
                                                             .bodies
                                                             .range_for_expr(discrim_expr),
@@ -3844,17 +4812,7 @@ impl GlobalInferenceCtx<'_> {
                                                     manual_discriminants.insert(idx, num);
                                                 }
                                             }
-                                            _ => {
-                                                // todo: we check that the discriminant is a `usize` above,
-                                                // soo... is this even reachable?
-                                                self.diagnostics.push(TyDiagnostic {
-                                                    kind: TyDiagnosticKind::DiscriminantNotInt,
-                                                    file: self.file,
-                                                    range: self.bodies.range_for_expr(discrim_expr),
-                                                    expr: Some(discrim_expr),
-                                                    help: None,
-                                                });
-                                            }
+                                            _ => unreachable!(),
                                         }
                                     }
                                 }
@@ -3869,7 +4827,7 @@ impl GlobalInferenceCtx<'_> {
 
                                 let sub_ty = variant.ty.map_or_else(
                                     || Ty::Void.into(),
-                                    |ty| self.tys[self.file].meta_tys[ty],
+                                    |ty| self.tys[self.loc].meta_tys[ty],
                                 );
 
                                 let discriminant = match manual_discriminants.get(&idx) {
@@ -3905,20 +4863,20 @@ impl GlobalInferenceCtx<'_> {
                             }
                             .into();
 
-                            ty::set_enum_uid(*enum_uid, enum_ty);
+                            set_enum_uid(*enum_uid, enum_ty);
 
                             enum_ty
                         }
                         Expr::OptionalDecl { ty } => Ty::Optional {
-                            sub_ty: self.tys[self.file].meta_tys[*ty],
+                            sub_ty: self.tys[self.loc].meta_tys[*ty],
                         }
                         .into(),
                         Expr::ErrorUnionDecl {
                             error_ty,
                             payload_ty,
                         } => {
-                            let error_ty = self.tys[self.file].meta_tys[*error_ty];
-                            let payload_ty = self.tys[self.file].meta_tys[*payload_ty];
+                            let error_ty = self.tys[self.loc].meta_tys[*error_ty];
+                            let payload_ty = self.tys[self.loc].meta_tys[*payload_ty];
 
                             if !error_ty.can_differentiate_from(&payload_ty) {
                                 self.diagnostics.push(TyDiagnostic {
@@ -3926,7 +4884,7 @@ impl GlobalInferenceCtx<'_> {
                                         error_ty,
                                         payload_ty,
                                     },
-                                    file: self.file,
+                                    file: self.loc.file(),
                                     expr: Some(expr),
                                     range: self.bodies.range_for_expr(expr),
                                     help: None,
@@ -3941,87 +4899,74 @@ impl GlobalInferenceCtx<'_> {
                                 .into()
                             }
                         }
-                        Expr::Lambda(lambda) => {
-                            let hir::Lambda {
-                                params,
-                                return_ty,
-                                body,
-                                ..
-                            } = &self.bodies[*lambda];
+                        Expr::Lambda(lambda) => 'lambda: {
+                            let hir::Lambda { body, .. } = &self.bodies[*lambda];
 
-                            let return_ty = if let Some(return_ty) = return_ty {
-                                self.tys[self.file].meta_tys[*return_ty]
-                            } else {
-                                Ty::Void.into()
-                            };
-
-                            let mut param_tys = Vec::with_capacity(params.len());
-
-                            for (idx, param) in params.iter().enumerate() {
-                                let mut ty = self.tys[self.file].meta_tys[param.ty];
-
-                                let mut impossible_to_differentiate = false;
-                                if let Some(last_param) = idx
-                                    .checked_sub(1)
-                                    .and_then(|idx| params.get(idx))
-                                    .filter(|p| p.varargs)
-                                {
-                                    let last_ty = self.tys[self.file].meta_tys[last_param.ty];
-
-                                    if !ty.can_differentiate_from(&last_ty) {
-                                        impossible_to_differentiate = true;
+                            let lambda_headers =
+                                match self.infer_lambda_headers(expr, *lambda, None, false)? {
+                                    Ok(headers) => headers,
+                                    Err(RequiresComptimeArgs) => {
                                         self.diagnostics.push(TyDiagnostic {
-                                            kind:
-                                                TyDiagnosticKind::ImpossibleToDifferentiateVarArgs {
-                                                    previous_ty: last_ty,
-                                                    current_ty: ty,
-                                                },
-                                            file: self.file,
-                                            expr: Some(expr),
-                                            range: param.range,
-                                            help: None,
-                                        });
+                                        kind: TyDiagnosticKind::FunctionTypeWithComptimeParameters,
+                                        file: self.loc.file(),
+                                        expr: Some(expr),
+                                        range: self.bodies.range_for_expr(expr),
+                                        help: None,
+                                    });
+                                        break 'lambda Ty::Unknown.into();
                                     }
-                                }
+                                };
 
-                                if param.varargs {
-                                    ty = Ty::Slice { sub_ty: ty }.into();
-                                }
-
-                                param_tys.push(ParamTy {
-                                    ty,
-                                    varargs: param.varargs,
-                                    impossible_to_differentiate,
+                            if lambda_headers.any_comptime {
+                                self.diagnostics.push(TyDiagnostic {
+                                    kind: TyDiagnosticKind::FunctionTypeWithComptimeParameters,
+                                    file: self.loc.file(),
+                                    expr: Some(expr),
+                                    range: self.bodies.range_for_expr(expr),
+                                    help: None,
                                 });
+                                break 'lambda Ty::Unknown.into();
                             }
-
-                            let ty = Ty::Function {
-                                param_tys,
-                                return_ty,
-                            }
-                            .into();
 
                             // if the function has a body then it isn't a type
                             if *body != hir::LambdaBody::Empty {
-                                self.report_non_type(expr, ty);
+                                let lambda_body_loc = NaiveLambdaLoc {
+                                    file: self.loc.file(),
+                                    expr,
+                                    lambda: *lambda,
+                                };
 
-                                Ty::Unknown.into()
-                            } else {
-                                ty
+                                self.report_non_type(
+                                    expr,
+                                    Ty::ConcreteFunction {
+                                        param_tys: lambda_headers.param_tys,
+                                        return_ty: lambda_headers.return_ty,
+                                        fn_loc: lambda_body_loc.make_concrete(None),
+                                    }
+                                    .into(),
+                                );
+
+                                break 'lambda Ty::Unknown.into();
                             }
+
+                            Ty::FunctionPointer {
+                                param_tys: lambda_headers.param_tys,
+                                return_ty: lambda_headers.return_ty,
+                            }
+                            .into()
                         }
                         Expr::Comptime(comptime) => {
                             let hir::Comptime { body } = self.bodies[*comptime];
 
-                            let ty = self.tys[self.file][body];
+                            let ty = self.tys[self.loc][body];
 
                             if *ty == Ty::Type {
-                                self.tys[self.file].expr_tys.insert(expr, ty);
+                                self.tys[self.loc].expr_tys.insert(expr, ty);
 
-                                if self.is_safe_to_compile(body)? {
+                                if self.is_safe_to_compile(self.loc, body)? {
                                     match (self.eval_comptime)(
-                                        FQComptime {
-                                            file: self.file,
+                                        ComptimeLoc {
+                                            loc: self.loc,
                                             expr,
                                             comptime: *comptime,
                                         },
@@ -4039,18 +4984,19 @@ impl GlobalInferenceCtx<'_> {
                             }
                         }
                         Expr::Paren(Some(paren_expr)) => {
-                            self.tys[self.file].get_meta_ty(*paren_expr).unwrap()
+                            self.tys[self.loc].meta_ty(*paren_expr).unwrap()
                         }
                         _ => {
                             // TODO: remove recursion
                             let expr_ty = self.infer_expr(expr)?;
 
                             if expr_ty.is_zero_sized() {
-                                println!(
+                                debug!("{}", std::backtrace::Backtrace::force_capture());
+                                debug!(
                                     "converting #{} ({:?}) into a const `{}` type",
                                     expr.into_raw(),
                                     self.bodies[expr],
-                                    expr_ty.simple_display(self.interner, true),
+                                    expr_ty.debug(self.interner, true),
                                 );
                                 expr_ty
                             } else {
@@ -4061,30 +5007,43 @@ impl GlobalInferenceCtx<'_> {
                         }
                     };
 
-                    self.tys[self.file].meta_tys.insert(expr, ty);
+                    // debug!(
+                    //     "  metaty insert {} #{} <- {ty:?}",
+                    //     self.loc.debug(self.interner),
+                    //     expr.into_raw()
+                    // );
+                    self.tys[self.loc].meta_tys.insert(expr, ty);
                 }
+                Descendant::PostExpr(_) => unreachable!(),
                 Descendant::PreStmt(_) => unreachable!(),
                 Descendant::PostStmt(_) => unreachable!(),
             }
         }
 
-        Ok(self.tys[self.file].meta_tys[expr])
+        Ok(self.tys[self.loc].meta_tys[expr])
     }
 
+    #[track_caller]
     pub(crate) fn const_data(
         &mut self,
-        file: hir::FileName,
+        loc: ConcreteLoc,
         expr: Idx<hir::Expr>,
     ) -> InferResult<Option<ComptimeResult>> {
-        if !self.tys[file].expr_tys.contains_idx(expr) {
+        // println!(
+        //     "const_data @ {}, expr #{}",
+        //     loc.debug(self.interner),
+        //     expr.into_raw()
+        // );
+
+        if !self.tys[loc].expr_tys.contains_idx(expr) {
             panic!(
                 "You should have inferred {} #{} before trying to call `const_data` on it",
-                file.debug(self.interner),
+                loc.debug(self.interner),
                 expr.into_raw()
             );
         }
 
-        match &self.world_bodies[file][expr] {
+        match &self.world_bodies[loc.file()][expr] {
             Expr::IntLiteral(num) => Ok(Some(ComptimeResult::Integer {
                 num: *num,
                 bit_width: 32,
@@ -4094,12 +5053,12 @@ impl GlobalInferenceCtx<'_> {
                 bit_width: 32,
             })),
             Expr::Comptime(comptime) => {
-                let hir::Comptime { body } = self.world_bodies[file][*comptime];
+                let hir::Comptime { body } = self.world_bodies[loc.file()][*comptime];
 
-                if self.is_safe_to_compile(body)? {
+                if self.is_safe_to_compile(loc, body)? {
                     Ok(Some((self.eval_comptime)(
-                        FQComptime {
-                            file,
+                        ComptimeLoc {
+                            loc,
                             expr,
                             comptime: *comptime,
                         },
@@ -4111,7 +5070,7 @@ impl GlobalInferenceCtx<'_> {
                 }
             }
             Expr::Local(local_def) => {
-                let local_def = &self.world_bodies[file][*local_def];
+                let local_def = &self.world_bodies[loc.file()][*local_def];
 
                 assert!(
                     local_def.value.is_some(),
@@ -4119,48 +5078,77 @@ impl GlobalInferenceCtx<'_> {
                 );
 
                 // todo: remove recursion
-                self.const_data(file, local_def.value.unwrap())
+                self.const_data(loc, local_def.value.unwrap())
             }
             Expr::LocalGlobal(global) => {
-                let fqn = hir::Fqn {
-                    file,
+                let ufqn = Fqn {
+                    file: loc.file(),
                     name: global.name,
                 };
 
+                assert!(!self.world_bodies.has_polymorphic_body(ufqn.wrap()));
+                let tfqn = ufqn.make_concrete(None);
+
                 // todo: remove recursion
-                self.const_data(file, self.world_bodies.body(fqn))
+                self.const_data(tfqn.wrap(), self.world_bodies.global_body(tfqn.to_naive()))
             }
             Expr::Member {
                 previous,
                 name: field,
-            } => match self.tys[self.file][*previous].as_ref() {
+            } => match self.tys[self.loc][*previous].as_ref() {
                 Ty::File(file) => {
-                    let fqn = hir::Fqn {
+                    let ufqn = Fqn {
                         file: *file,
                         name: field.name,
                     };
 
+                    assert!(!self.world_bodies.has_polymorphic_body(ufqn.wrap()));
+                    let tfqn = ufqn.make_concrete(None);
+
                     // todo: remove recursion
-                    self.const_data(*file, self.world_bodies.body(fqn))
+                    self.const_data(tfqn.wrap(), self.world_bodies.global_body(tfqn.to_naive()))
                 }
                 _ => Ok(None),
             },
+            Expr::ComptimeParam { comptime_idx, .. } => {
+                let comptime_result = self.loc
+                        .comptime_args()
+                        .expect("If we're referencing comptime args, we must be in a location that has comptime args")
+                        .into_value_range()
+                        .nth(*comptime_idx as usize)
+                        .unwrap();
+
+                Ok(Some(self.generics_arena[comptime_result].clone()))
+            }
             // todo: add the rest of the possible expressions in `is_const`
-            _ => Ok(None),
+            _ => {
+                if *self.tys[loc].expr_tys[expr] == Ty::Type
+                    && let Some(meta_ty) = self.tys[loc].meta_ty(expr)
+                {
+                    Ok(Some(ComptimeResult::Type(meta_ty)))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
     // todo: this is actually a great opportunity for fuzzing to make sure this function never
     // returns true when something was actually unsafe. the fuzzer has already been updated it just
     // needs to be used.
-    pub(crate) fn is_safe_to_compile(&mut self, expr: Idx<hir::Expr>) -> InferResult<bool> {
+    pub(crate) fn is_safe_to_compile(
+        &mut self,
+        loc: ConcreteLoc,
+        expr: Idx<hir::Expr>,
+    ) -> InferResult<bool> {
         let mut checking_stack = vec![(
-            self.currently_inferring,
-            self.bodies
+            loc,
+            self.world_bodies[loc.file()]
                 .descendants(
                     expr,
                     hir::DescentOpts::All {
                         include_lambdas: false,
+                        include_post_exprs: false,
                         include_post_stmts: false,
                     },
                 )
@@ -4176,94 +5164,114 @@ impl GlobalInferenceCtx<'_> {
             .filter_map(|d| Some((d.file, d.expr?)))
             .collect();
 
+        // debug!("errors = {error_exprs:#?}");
+
         let mut checked = FxHashSet::default();
-        checked.insert(self.currently_inferring);
+        checked.insert(loc);
 
         loop {
-            let Some((top_inferring, top_list)) = checking_stack.last_mut() else {
+            let Some((loc, top_list)) = checking_stack.last_mut() else {
                 break;
             };
-
-            let file = top_inferring.file();
+            let loc = *loc;
 
             let Some(desc) = top_list.pop() else {
                 checking_stack.pop();
                 continue;
             };
 
-            let print_dbg = cfg!(debug_assertions);
-
             match desc {
-                Descendant::Expr(expr) => {
-                    // println!("checking #{}", expr.into_raw());
+                Descendant::PreExpr(expr) => {
+                    // debug!("checking {} #{}", loc.debug(self.interner), expr.into_raw());
 
-                    if error_exprs.contains(&(file, expr)) {
-                        if print_dbg {
-                            println!(
-                                "{}:{} unsafe {} #{}",
-                                file!(),
-                                line!(),
-                                file.debug(self.interner),
-                                expr.into_raw()
-                            );
-                        }
+                    if error_exprs.contains(&(loc.file(), expr)) {
+                        debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
                         return Ok(false);
                     }
 
-                    if let Some(ty) = self.tys[file].get_meta_ty(expr) {
+                    if let Some(ty) = self.tys[loc].meta_ty(expr) {
                         if ty.is_unknown() {
-                            if print_dbg {
-                                println!(
-                                    "{}:{} unsafe {} #{}",
-                                    file!(),
-                                    line!(),
-                                    file.debug(self.interner),
-                                    expr.into_raw()
-                                );
-                            }
+                            debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
                             return Ok(false);
                         }
 
                         continue;
                     }
 
-                    let Some(ty) = self.tys[file].expr_tys.get(expr) else {
-                        if print_dbg {
-                            println!(
-                                "{}:{} unsafe {} #{}",
-                                file!(),
-                                line!(),
-                                file.debug(self.interner),
-                                expr.into_raw()
-                            );
-                        }
+                    let Some(ty) = self.tys[loc].expr_tys.get(expr) else {
+                        debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
                         return Ok(false);
                     };
 
                     if ty.is_unknown() {
-                        if print_dbg {
-                            println!(
-                                "{}:{} unsafe {} #{}",
-                                file!(),
-                                line!(),
-                                file.debug(self.interner),
-                                expr.into_raw()
-                            );
-                        }
+                        debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
                         return Ok(false);
                     }
 
-                    match &self.world_bodies[file][expr] {
-                        Expr::Missing => {
-                            if print_dbg {
-                                println!(
-                                    "{}:{} unsafe {} #{}",
-                                    file!(),
-                                    line!(),
-                                    file.debug(self.interner),
-                                    expr.into_raw()
-                                );
+                    match ty.as_ref() {
+                        Ty::NaivePolymorphicFunction { .. } => {
+                            continue;
+                        }
+                        Ty::ConcreteFunction { fn_loc: loc, .. } => {
+                            // debug!(
+                            //     "{} <=> {}",
+                            //     fn_loc.debug(self.interner),
+                            //     loc.debug(self.interner)
+                            // );
+
+                            let Expr::Lambda(lambda) = &self.world_bodies[loc.file()][loc.expr()]
+                            else {
+                                unreachable!()
+                            };
+
+                            if checked.contains(&loc.wrap()) {
+                                continue;
                             }
+
+                            checked.insert(loc.wrap());
+
+                            let lambda_body = &self.world_bodies[loc.file()][*lambda];
+
+                            if !self.all_finished_locations.contains(&loc.wrap()) {
+                                debug!(
+                                    "submitting {} #{}",
+                                    loc.debug(self.interner),
+                                    expr.into_raw(),
+                                );
+                                return Err(vec![loc.wrap()]);
+                            }
+
+                            if lambda_body.body == hir::LambdaBody::Empty
+                                && lambda_body.return_ty.is_none()
+                            {
+                                debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
+                                return Ok(false);
+                            }
+
+                            if let hir::LambdaBody::Block(block) = lambda_body.body {
+                                checking_stack.push((
+                                    loc.wrap(),
+                                    self.world_bodies[loc.file()]
+                                        .descendants(
+                                            block,
+                                            hir::DescentOpts::All {
+                                                include_lambdas: false,
+                                                include_post_exprs: false,
+                                                include_post_stmts: false,
+                                            },
+                                        )
+                                        .collect(),
+                                ));
+                            }
+
+                            continue;
+                        }
+                        _ => {}
+                    }
+
+                    match &self.world_bodies[loc.file()][expr] {
+                        Expr::Missing => {
+                            println!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
                             return Ok(false);
                         }
                         Expr::IntLiteral(_) => {}
@@ -4287,81 +5295,113 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Local(_) => {}
                         Expr::SwitchArgument(_) => {}
                         Expr::LocalGlobal(name) => {
-                            let fqn = hir::Fqn {
-                                file,
+                            let new_loc = Fqn {
+                                file: loc.file(),
                                 name: name.name,
                             };
 
-                            let new_inf = Inferrable::Global(fqn);
+                            // generic functions should've been caught be the checks
+                            // for ConcreteFunction and NaivePolymorphicFunction earlier
+                            assert!(!self.world_bodies.has_polymorphic_body(new_loc.wrap()));
+                            assert!(!matches!(**ty, Ty::NaivePolymorphicFunction { .. }));
+                            assert!(!matches!(**ty, Ty::ConcreteFunction { .. }));
 
-                            if checked.contains(&new_inf) {
+                            let new_loc = new_loc.make_concrete(None);
+
+                            if checked.contains(&new_loc.wrap()) {
                                 continue;
                             }
 
-                            checked.insert(new_inf);
-
-                            if self.world_bodies.is_extern(fqn) {
+                            if self.world_bodies.global_is_extern(new_loc.to_naive()) {
                                 continue;
                             }
 
-                            if !self.all_inferred.contains(&new_inf) {
-                                return Err(vec![new_inf]);
+                            match self
+                                .tys
+                                .try_naive(new_loc.to_naive().wrap(), self.world_bodies)
+                            {
+                                Ok(_) => {
+                                    debug!("getting the body of {}", new_loc.debug(self.interner));
+                                    let body = self.world_bodies.global_body(new_loc.to_naive());
+
+                                    checking_stack.push((
+                                        new_loc.wrap(),
+                                        self.world_bodies[new_loc.file()]
+                                            .descendants(
+                                                body,
+                                                hir::DescentOpts::All {
+                                                    include_lambdas: false,
+                                                    include_post_exprs: false,
+                                                    include_post_stmts: false,
+                                                },
+                                            )
+                                            .collect(),
+                                    ));
+
+                                    checked.insert(new_loc.wrap());
+                                }
+                                Err(NaiveLookupErr::NotFound) => {
+                                    debug!(
+                                        "submitting {} #{}",
+                                        loc.debug(self.interner),
+                                        expr.into_raw()
+                                    );
+                                    return Err(vec![new_loc.wrap()]);
+                                }
+                                Err(NaiveLookupErr::IsPolymorphic) => unreachable!(
+                                    "the checks for naive and concrete fn earlier should've caught this"
+                                ),
                             }
-
-                            let body = self.world_bodies.body(fqn);
-
-                            checking_stack.push((
-                                Inferrable::Global(fqn),
-                                self.world_bodies[fqn.file]
-                                    .descendants(
-                                        body,
-                                        hir::DescentOpts::All {
-                                            include_lambdas: false,
-                                            include_post_stmts: false,
-                                        },
-                                    )
-                                    .collect(),
-                            ));
                         }
                         Expr::Param { .. } => {}
+                        Expr::ComptimeParam { .. } => {}
+                        Expr::InlineParam { .. } => {}
                         Expr::Member {
                             previous,
                             name: field,
                         } => {
-                            let previous_ty = self.tys[file][*previous];
+                            let previous_ty = self.tys[loc][*previous];
+
                             if let Ty::File(file) = previous_ty.as_ref() {
-                                let fqn = hir::Fqn {
+                                let new_loc = Fqn {
                                     file: *file,
                                     name: field.name,
                                 };
 
-                                let new_inf = Inferrable::Global(fqn);
+                                assert!(!matches!(
+                                    self.tys.try_naive(new_loc.wrap(), self.world_bodies),
+                                    Err(NaiveLookupErr::IsPolymorphic)
+                                ));
+                                let new_loc = new_loc.make_concrete(None);
 
-                                if checked.contains(&new_inf) {
+                                // todo! there's no checking here
+
+                                if checked.contains(&new_loc.wrap()) {
                                     continue;
                                 }
 
-                                checked.insert(new_inf);
+                                checked.insert(new_loc.wrap());
 
-                                if self.world_bodies.is_extern(fqn) {
+                                if self.world_bodies.global_is_extern(new_loc.to_naive()) {
                                     continue;
                                 }
 
-                                match self.world_index.definition(fqn) {
+                                match self.world_index.definition(new_loc.to_naive()) {
                                     hir::DefinitionStatus::Defined => {
                                         let mut deps = Vec::new();
 
-                                        if !self.all_inferred.contains(&Inferrable::Global(fqn)) {
-                                            deps.push(Inferrable::Global(fqn));
+                                        if !self.all_finished_locations.contains(&new_loc.wrap()) {
+                                            deps.push(new_loc.wrap());
                                         }
 
-                                        let body = self.world_bodies.body(fqn);
+                                        let body =
+                                            self.world_bodies.global_body(new_loc.to_naive());
 
                                         // if let Expr::Lambda(lambda) =
-                                        //     self.world_bodies[fqn.file][body]
+                                        //     self.world_bodies.file()][body]
                                         // {
                                         //     let lambda = Inferrable::Lambda(FQLambda {
-                                        //         file: fqn.file,
+                                        //         file:.file(),
                                         //         expr: body,
                                         //         lambda,
                                         //     });
@@ -4374,16 +5414,22 @@ impl GlobalInferenceCtx<'_> {
                                         // }
 
                                         if !deps.is_empty() {
+                                            debug!(
+                                                "submitting {} #{}",
+                                                new_loc.debug(self.interner),
+                                                expr.into_raw()
+                                            );
                                             return Err(deps);
                                         }
 
                                         checking_stack.push((
-                                            new_inf,
-                                            self.world_bodies[fqn.file]
+                                            new_loc.wrap(),
+                                            self.world_bodies[new_loc.file()]
                                                 .descendants(
                                                     body,
                                                     hir::DescentOpts::All {
                                                         include_lambdas: false,
+                                                        include_post_exprs: false,
                                                         include_post_stmts: false,
                                                     },
                                                 )
@@ -4391,67 +5437,31 @@ impl GlobalInferenceCtx<'_> {
                                         ));
                                     }
                                     _ => {
-                                        if print_dbg {
-                                            println!(
-                                                "{}:{} unsafe {} #{}",
-                                                file!(),
-                                                line!(),
-                                                file.debug(self.interner),
-                                                expr.into_raw()
-                                            );
-                                        }
+                                        debug!(
+                                            "unsafe {} #{}",
+                                            file.debug(self.interner),
+                                            expr.into_raw()
+                                        );
                                         return Ok(false);
                                     }
                                 }
                             }
                         }
-                        Expr::Call { .. } => {}
-                        Expr::Lambda(lambda) => {
-                            let lambda_body = &self.world_bodies[file][*lambda];
-                            let lambda = Inferrable::Lambda(FQLambda {
-                                file,
-                                expr,
-                                lambda: *lambda,
-                            });
-
-                            if checked.contains(&lambda) {
-                                continue;
-                            }
-
-                            checked.insert(lambda);
-
-                            if !self.all_inferred.contains(&lambda) {
-                                return Err(vec![lambda]);
-                            }
-
-                            if lambda_body.body == hir::LambdaBody::Empty
-                                && lambda_body.return_ty.is_none()
-                            {
-                                return Ok(false);
-                            }
-
-                            // println!(
-                            //     "lambda #{} : {} {}",
-                            //     expr.into_raw(),
-                            //     lambda_body.is_extern,
-                            //     is_type
-                            // );
-
-                            if let hir::LambdaBody::Block(block) = lambda_body.body {
-                                checking_stack.push((
-                                    lambda,
-                                    self.world_bodies[file]
-                                        .descendants(
-                                            block,
-                                            hir::DescentOpts::All {
-                                                include_lambdas: false,
-                                                include_post_stmts: false,
-                                            },
-                                        )
-                                        .collect(),
-                                ));
-                            }
+                        Expr::Call { callee, .. } => {
+                            // I don't even know if this is possible.
+                            // I'm gonna put an assert and test later
+                            // TODO: test this
+                            assert!(!matches!(
+                                self.tys[loc][*callee].as_ref(),
+                                Ty::NaivePolymorphicFunction { .. }
+                            ));
                         }
+                        Expr::Lambda(_) => unreachable!(
+                            "Lambda at {} #{} with type {} wasn't handled",
+                            loc.debug(self.interner),
+                            expr.into_raw(),
+                            ty.debug(self.interner, true)
+                        ),
                         Expr::Comptime(_) => {}
                         Expr::PrimitiveTy(_) => {}
                         Expr::Distinct { .. } => {}
@@ -4466,26 +5476,26 @@ impl GlobalInferenceCtx<'_> {
                         Expr::Directive { .. } => {}
                     }
                 }
-                Descendant::PreStmt(stmt) => match &self.world_bodies[file][stmt] {
-                    Stmt::Expr(_) => {}
-                    Stmt::LocalDef(_) => {}
-                    Stmt::Assign(_) => {}
-                    Stmt::Break { label, .. } | Stmt::Continue { label, .. } => {
-                        if label.is_none() {
-                            if print_dbg {
-                                println!(
-                                    "{}:{} unsafe {} #{}",
-                                    file!(),
-                                    line!(),
-                                    file.debug(self.interner),
-                                    expr.into_raw()
-                                );
+                Descendant::PostExpr(_) => unreachable!(),
+                Descendant::PreStmt(stmt) => {
+                    debug!(
+                        "checking {} stmt#{}",
+                        loc.debug(self.interner),
+                        stmt.into_raw()
+                    );
+                    match &self.world_bodies[loc.file()][stmt] {
+                        Stmt::Expr(_) => {}
+                        Stmt::LocalDef(_) => {}
+                        Stmt::Assign(_) => {}
+                        Stmt::Break { label, .. } | Stmt::Continue { label, .. } => {
+                            if label.is_none() {
+                                debug!("unsafe {} #{}", loc.debug(self.interner), expr.into_raw());
+                                return Ok(false);
                             }
-                            return Ok(false);
                         }
+                        Stmt::Defer { .. } => {}
                     }
-                    Stmt::Defer { .. } => {}
-                },
+                }
                 Descendant::PostStmt(_) => unreachable!(),
             }
         }

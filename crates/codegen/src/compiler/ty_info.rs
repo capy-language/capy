@@ -1,11 +1,11 @@
 use cranelift::codegen::ir::Endianness;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
-use hir_ty::Ty;
+use hir::common::{MemberTy, Ty};
 use uid_gen::UIDGenerator;
 
 use crate::{extend::ExtendWithNumBytes, layout, mangle};
 
-use super::{comptime::IntBytes, Compiler, GetLayoutInfo, ToTyId};
+use super::{Compiler, GetLayoutInfo, ToTyId, comptime::IntBytes};
 
 fn define(
     module: &mut dyn Module,
@@ -426,7 +426,7 @@ fn compile_type_info(compiler: &mut Compiler) {
                 let starting_offset = member_info_data.len();
                 // member_array_starting_offsets.push(member_array_data.len());
 
-                for (idx, hir_ty::MemberTy { name, ty }) in members.iter().enumerate() {
+                for (idx, MemberTy { name, ty }) in members.iter().enumerate() {
                     // `name` field
 
                     // define the string bytes in the binary

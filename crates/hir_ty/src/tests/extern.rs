@@ -9,8 +9,10 @@ fn extern_function() {
             foo :: (s: str) -> void extern;
         "#,
         expect![[r#"
-            main::foo : (str) -> void
-            2 : (str) -> void
+            main::foo : main::foo(str) -> void
+              2 : main::foo(str) -> void
+            main::lambda#foo : ?
+              2 : main::foo(str) -> void
         "#]],
         |_| [],
     )
@@ -60,18 +62,18 @@ fn extern_global_reference() {
             baz : i32 : extern;
         "#,
         expect![[r#"
-            main::bar : () -> void
-            main::foo : i32
-            main::other : file other
             other::baz : i32
-            other:
-            main:
+            main::other : file other
               0 : file other
+            main::foo : i32
+            main::bar : main::bar() -> void
+              6 : main::bar() -> void
+            main::lambda#bar : main::bar() -> void
               2 : i32
               3 : file other
               4 : i32
               5 : void
-              6 : () -> void
+              6 : main::bar() -> void
         "#]],
         |_| [],
     )
@@ -84,8 +86,10 @@ fn extern_varargs() {
             foo :: (s: str, numbers: ...i32) -> void extern;
         "#,
         expect![[r#"
-            main::foo : (str, ...[]i32) -> void
-            3 : (str, ...[]i32) -> void
+            main::foo : main::foo(str, ...[]i32) -> void
+              3 : main::foo(str, ...[]i32) -> void
+            main::lambda#foo : ?
+              3 : main::foo(str, ...[]i32) -> void
         "#]],
         |_| [(TyDiagnosticKind::ExternVarargs, 29..44, None)],
     )

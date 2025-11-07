@@ -22,10 +22,14 @@ use std::{
 
 use clap::{ColorChoice, Parser, Subcommand};
 use enum_display::EnumDisplay;
-use hir::{FQComptime, WorldBodies, WorldIndex};
-use hir_ty::{ComptimeResult, InferenceResult};
+use hir::{
+    WorldBodies, WorldIndex,
+    common::{ComptimeResultMap, Fqn, Name},
+};
+use hir_ty::InferenceResult;
 use interner::Interner;
 use itertools::Itertools;
+use la_arena::Arena;
 use line_index::LineIndex;
 use path_clean::PathClean;
 use platform_dirs::AppDirs;
@@ -448,7 +452,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
     let world_bodies = Rc::new(RefCell::new(WorldBodies::default()));
     let uid_gen = Rc::new(RefCell::new(UIDGenerator::default()));
 
-    let entry_point_name = hir::Name(interner.borrow_mut().intern(&config.entry_point));
+    let entry_point_name = Name(interner.borrow_mut().intern(&config.entry_point));
 
     let mut line_indexes = FxHashMap::default();
     let mut source_files = FxHashMap::default();
@@ -525,14 +529,16 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         .map(|(name, _)| *name)
         .collect_vec();
     let main_file = main_files.first();
-    let entry_point = main_file.map(|file| hir::Fqn {
+    let entry_point = main_file.map(|file| Fqn {
         file: *file,
         name: entry_point_name,
     });
 
     let comptime_verbosity = config.verbose_comptime.into_verbosity();
 
-    let mut comptime_results = FxHashMap::<FQComptime, ComptimeResult>::default();
+    let mut comptime_results = ComptimeResultMap::default();
+
+    let mut generic_values = Arena::new();
 
     let InferenceResult {
         tys,
@@ -542,8 +548,9 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         &world_index.borrow(),
         &world_bodies.borrow(),
         &interner.borrow(),
+        &mut generic_values,
         |comptime, tys| {
-            if let Some(result) = comptime_results.get(&comptime) {
+            if let Some(result) = comptime_results.get(comptime) {
                 return result.clone();
             }
 
@@ -553,7 +560,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
             let interner: &Interner = &interner;
             let world_bodies: &hir::WorldBodies = &world_bodies;
 
-            let is_mod = comptime.file.is_mod(&mod_dir, interner);
+            let is_mod = comptime.loc.file().is_mod(&mod_dir, interner);
             if comptime_verbosity.should_show(is_mod) {
                 println!("comptime JIT:\n");
             }
@@ -563,7 +570,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
             std::panic::catch_unwind(AssertUnwindSafe(|| {
                 codegen::eval_comptime_blocks(
                     comptime_verbosity,
-                    vec![comptime],
+                    &mut std::iter::once(comptime),
                     &mut comptime_results,
                     &mod_dir,
                     interner,
@@ -579,7 +586,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
                 std::process::exit(1);
             });
 
-            comptime_results[&comptime].clone()
+            comptime_results[comptime].clone()
         },
     )
     .finish(entry_point, !config.verbose_types.is_none());
@@ -595,7 +602,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         println!("{}", debug);
 
         if any_were_unsafe_to_compile {
-            println!("\nSOMETHING WAS UNSAFE TO COMPILE");
+            println!("SOMETHING WAS UNSAFE TO COMPILE");
         }
     }
 
@@ -630,10 +637,15 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
         exit(1);
     }
 
+    assert!(
+        !any_were_unsafe_to_compile,
+        "some things were marked as unsafe to compile (which means they contained buggy or uncompilable code) and yet no errors were produced"
+    );
+
     // evaluate any comptimes that haven't been ran yet
     codegen::eval_comptime_blocks(
         comptime_verbosity,
-        world_bodies.borrow().find_comptimes(),
+        &mut world_bodies.borrow().find_comptimes(),
         &mut comptime_results,
         &mod_dir,
         &interner.borrow(),
@@ -681,7 +693,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
     if config.should_jit() {
         let jit_fn = codegen::compile_jit(
             final_verbosity,
-            entry_point.unwrap(),
+            entry_point.unwrap().make_concrete(None),
             &mod_dir,
             &interner,
             &world_bodies.borrow(),
@@ -727,7 +739,7 @@ fn compile_file(mut config: FinalConfig) -> io::Result<()> {
 
     let bytes = match codegen::compile_obj(
         final_verbosity,
-        entry_point.unwrap(),
+        entry_point.unwrap().make_concrete(None),
         &mod_dir,
         &interner,
         &world_bodies.borrow(),

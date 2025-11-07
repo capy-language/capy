@@ -1,0 +1,21 @@
+(comptime foo: str) {}
+===
+Root@0..22
+  ExprStmt@0..22
+    Lambda@0..22
+      ParamList@0..19
+        LParen@0..1 "("
+        Param@1..18
+          Comptime@1..9 "comptime"
+          Whitespace@9..10 " "
+          Ident@10..13 "foo"
+          Colon@13..14 ":"
+          Whitespace@14..15 " "
+          Ty@15..18
+            VarRef@15..18
+              Ident@15..18 "str"
+        RParen@18..19 ")"
+      Whitespace@19..20 " "
+      Block@20..22
+        LBrace@20..21 "{"
+        RBrace@21..22 "}"

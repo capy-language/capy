@@ -15,18 +15,20 @@ fn lambda_ret_expected_error_union() {
             }
         "#,
         expect![[r#"
-            main::do_work : (u64) -> str!u64
-            4 : u64
-            5 : u64
-            6 : bool
-            7 : str
-            8 : noeval
-            9 : void
-            10 : u64
-            11 : u64
-            12 : u64
-            13 : str!u64
-            14 : (u64) -> str!u64
+            main::do_work : main::do_work(u64) -> str!u64
+              14 : main::do_work(u64) -> str!u64
+            main::lambda#do_work : main::do_work(u64) -> str!u64
+              4 : u64
+              5 : u64
+              6 : bool
+              7 : str
+              8 : noeval
+              9 : void
+              10 : u64
+              11 : u64
+              12 : u64
+              13 : str!u64
+              14 : main::do_work(u64) -> str!u64
         "#]],
         |_| [],
     )
@@ -47,20 +49,22 @@ fn block_ret_expected_error_union() {
             }
         "#,
         expect![[r#"
-            main::do_work : (u64) -> void
-            4 : u64
-            5 : u64
-            6 : bool
-            7 : str
-            8 : noeval
-            9 : void
-            10 : u64
-            11 : u64
-            12 : u64
-            13 : str!u64
-            14 : void
-            15 : (u64) -> void
-            l0 : str!u64
+            main::do_work : main::do_work(u64) -> void
+              15 : main::do_work(u64) -> void
+            main::lambda#do_work : main::do_work(u64) -> void
+              4 : u64
+              5 : u64
+              6 : bool
+              7 : str
+              8 : noeval
+              9 : void
+              10 : u64
+              11 : u64
+              12 : u64
+              13 : str!u64
+              14 : void
+              15 : main::do_work(u64) -> void
+              l0 : str!u64
         "#]],
         |_| [],
     )
@@ -81,20 +85,22 @@ fn block_ret_unexpected_error_union() {
             }
         "#,
         expect![[r#"
-            main::do_work : (u64) -> void
-            1 : u64
-            2 : u64
-            3 : bool
-            4 : str
-            5 : noeval
-            6 : void
-            7 : u64
-            8 : u64
-            9 : u64
-            10 : <unknown>
-            11 : void
-            12 : (u64) -> void
-            l0 : <unknown>
+            main::do_work : main::do_work(u64) -> void
+              12 : main::do_work(u64) -> void
+            main::lambda#do_work : main::do_work(u64) -> void
+              1 : u64
+              2 : u64
+              3 : bool
+              4 : str
+              5 : noeval
+              6 : void
+              7 : u64
+              8 : u64
+              9 : u64
+              10 : <unknown>
+              11 : void
+              12 : main::do_work(u64) -> void
+              l0 : <unknown>
         "#]],
         |_| {
             [(
@@ -124,11 +130,13 @@ fn simple_val_expected_error_union() {
             }
         "#,
         expect![[r#"
-            main::do_work : (u64) -> void
-            4 : str
-            5 : void
-            6 : (u64) -> void
-            l0 : str!u64
+            main::do_work : main::do_work(u64) -> void
+              6 : main::do_work(u64) -> void
+            main::lambda#do_work : main::do_work(u64) -> void
+              4 : str
+              5 : void
+              6 : main::do_work(u64) -> void
+              l0 : str!u64
         "#]],
         |_| [],
     )
@@ -177,59 +185,65 @@ fn error_union_try() {
             }
         "#,
         expect![[r#"
-            main::Error : type
             main::Error_Kind : type
-            main::do_lots_of_work : (u64) -> main::Error!u64
-            main::do_work : (u64) -> main::Error!u64
-            main::foo : (bool) -> main::Error!void
-            0 : type
-            3 : type
-            8 : (u64) -> main::Error!u64
-            9 : u64
-            10 : main::Error!u64
-            11 : u64
-            12 : u64
-            13 : u64
-            14 : u64
-            15 : main::Error!u64
-            16 : (u64) -> main::Error!u64
-            21 : u64
-            22 : u64
-            23 : bool
-            24 : type
-            25 : main::Error_Kind.Not_Supported
-            26 : str
-            27 : ~struct {why: main::Error_Kind.Not_Supported, timestamp: str}
-            28 : noeval
-            29 : void
-            30 : (bool) -> main::Error!void
-            31 : u64
-            32 : u64
-            33 : bool
-            34 : u64
-            35 : u64
-            36 : u64
-            37 : u64
-            38 : bool
-            39 : bool
-            40 : main::Error!void
-            41 : void
-            42 : u64
-            43 : u64
-            44 : u64
-            45 : main::Error!u64
-            46 : (u64) -> main::Error!u64
-            51 : bool
-            52 : bool
-            53 : type
-            54 : main::Error_Kind.Foo_Failed
-            55 : str
-            56 : ~struct {why: main::Error_Kind.Foo_Failed, timestamp: str}
-            57 : noeval
-            58 : void
-            59 : main::Error!void
-            60 : (bool) -> main::Error!void
-            l0 : u64
+              0 : type
+            main::Error : type
+              3 : type
+            main::do_lots_of_work : main::do_lots_of_work(u64) -> main::Error!u64
+              16 : main::do_lots_of_work(u64) -> main::Error!u64
+            main::lambda#do_lots_of_work : main::do_lots_of_work(u64) -> main::Error!u64
+              8 : main::do_work(u64) -> main::Error!u64
+              9 : u64
+              10 : main::Error!u64
+              11 : u64
+              12 : u64
+              13 : u64
+              14 : u64
+              15 : main::Error!u64
+              16 : main::do_lots_of_work(u64) -> main::Error!u64
+              l0 : u64
+            main::do_work : main::do_work(u64) -> main::Error!u64
+              46 : main::do_work(u64) -> main::Error!u64
+            main::lambda#do_work : main::do_work(u64) -> main::Error!u64
+              21 : u64
+              22 : u64
+              23 : bool
+              24 : type
+              25 : main::Error_Kind.Not_Supported
+              26 : str
+              27 : ~struct {why: main::Error_Kind.Not_Supported, timestamp: str}
+              28 : noeval
+              29 : void
+              30 : main::foo(bool) -> main::Error!void
+              31 : u64
+              32 : u64
+              33 : bool
+              34 : u64
+              35 : u64
+              36 : u64
+              37 : u64
+              38 : bool
+              39 : bool
+              40 : main::Error!void
+              41 : void
+              42 : u64
+              43 : u64
+              44 : u64
+              45 : main::Error!u64
+              46 : main::do_work(u64) -> main::Error!u64
+            main::foo : main::foo(bool) -> main::Error!void
+              60 : main::foo(bool) -> main::Error!void
+            main::lambda#foo : main::foo(bool) -> main::Error!void
+              51 : bool
+              52 : bool
+              53 : type
+              54 : main::Error_Kind.Foo_Failed
+              55 : str
+              56 : ~struct {why: main::Error_Kind.Foo_Failed, timestamp: str}
+              57 : noeval
+              58 : void
+              59 : main::Error!void
+              60 : main::foo(bool) -> main::Error!void
         "#]],
         |_| [],
     )
@@ -278,59 +292,65 @@ fn error_union_try_mismatch() {
             }
         "#,
         expect![[r#"
-            main::Error : type
             main::Error_Kind : type
-            main::do_lots_of_work : (u64) -> str!u64
-            main::do_work : (u64) -> str!u64
-            main::foo : (bool) -> main::Error!void
-            0 : type
-            3 : type
-            8 : (u64) -> str!u64
-            9 : u64
-            10 : str!u64
-            11 : u64
-            12 : u64
-            13 : u64
-            14 : u64
-            15 : str!u64
-            16 : (u64) -> str!u64
-            21 : u64
-            22 : u64
-            23 : bool
-            24 : type
-            25 : main::Error_Kind.Not_Supported
-            26 : str
-            27 : ~struct {why: main::Error_Kind.Not_Supported, timestamp: str}
-            28 : noeval
-            29 : void
-            30 : (bool) -> main::Error!void
-            31 : u64
-            32 : u64
-            33 : bool
-            34 : u64
-            35 : u64
-            36 : u64
-            37 : u64
-            38 : bool
-            39 : bool
-            40 : main::Error!void
-            41 : void
-            42 : u64
-            43 : u64
-            44 : u64
-            45 : <unknown>
-            46 : (u64) -> str!u64
-            51 : bool
-            52 : bool
-            53 : type
-            54 : main::Error_Kind.Foo_Failed
-            55 : str
-            56 : ~struct {why: main::Error_Kind.Foo_Failed, timestamp: str}
-            57 : noeval
-            58 : void
-            59 : main::Error!void
-            60 : (bool) -> main::Error!void
-            l0 : u64
+              0 : type
+            main::Error : type
+              3 : type
+            main::do_lots_of_work : main::do_lots_of_work(u64) -> str!u64
+              16 : main::do_lots_of_work(u64) -> str!u64
+            main::lambda#do_lots_of_work : main::do_lots_of_work(u64) -> str!u64
+              8 : main::do_work(u64) -> str!u64
+              9 : u64
+              10 : str!u64
+              11 : u64
+              12 : u64
+              13 : u64
+              14 : u64
+              15 : str!u64
+              16 : main::do_lots_of_work(u64) -> str!u64
+              l0 : u64
+            main::do_work : main::do_work(u64) -> str!u64
+              46 : main::do_work(u64) -> str!u64
+            main::lambda#do_work : main::do_work(u64) -> str!u64
+              21 : u64
+              22 : u64
+              23 : bool
+              24 : type
+              25 : main::Error_Kind.Not_Supported
+              26 : str
+              27 : ~struct {why: main::Error_Kind.Not_Supported, timestamp: str}
+              28 : noeval
+              29 : void
+              30 : main::foo(bool) -> main::Error!void
+              31 : u64
+              32 : u64
+              33 : bool
+              34 : u64
+              35 : u64
+              36 : u64
+              37 : u64
+              38 : bool
+              39 : bool
+              40 : main::Error!void
+              41 : void
+              42 : u64
+              43 : u64
+              44 : u64
+              45 : <unknown>
+              46 : main::do_work(u64) -> str!u64
+            main::foo : main::foo(bool) -> main::Error!void
+              60 : main::foo(bool) -> main::Error!void
+            main::lambda#foo : main::foo(bool) -> main::Error!void
+              51 : bool
+              52 : bool
+              53 : type
+              54 : main::Error_Kind.Foo_Failed
+              55 : str
+              56 : ~struct {why: main::Error_Kind.Foo_Failed, timestamp: str}
+              57 : noeval
+              58 : void
+              59 : main::Error!void
+              60 : main::foo(bool) -> main::Error!void
         "#]],
         |i| {
             [(
@@ -345,10 +365,10 @@ fn error_union_try_mismatch() {
                     found: Ty::AnonStruct {
                         members: vec![
                             MemberTy {
-                                name: hir::Name(i.intern("why")),
+                                name: Name(i.intern("why")),
                                 ty: Ty::EnumVariant {
                                     enum_uid: 2,
-                                    variant_name: hir::Name(i.intern("Not_Supported")),
+                                    variant_name: Name(i.intern("Not_Supported")),
                                     uid: 0,
                                     sub_ty: Ty::Void.into(),
                                     discriminant: 0,
@@ -356,7 +376,7 @@ fn error_union_try_mismatch() {
                                 .into(),
                             },
                             MemberTy {
-                                name: hir::Name(i.intern("timestamp")),
+                                name: Name(i.intern("timestamp")),
                                 ty: Ty::String.into(),
                             },
                         ],
@@ -389,10 +409,12 @@ fn error_union_impossible_to_differentiate() {
             }
         "#,
         expect![[r#"
-            main::foo : () -> <unknown>
-            3 : {uint}
-            4 : <unknown>
-            5 : () -> <unknown>
+            main::foo : main::foo() -> <unknown>
+              5 : main::foo() -> <unknown>
+            main::lambda#foo : main::foo() -> <unknown>
+              3 : {uint}
+              4 : <unknown>
+              5 : main::foo() -> <unknown>
         "#]],
         |_| {
             [(

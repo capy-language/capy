@@ -4,32 +4,34 @@ use cranelift::{
     codegen::ir::{BlockArg, Endianness, FuncRef},
     frontend::Switch,
     prelude::{
-        types, AbiParam, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags,
-        StackSlotData, StackSlotKind, TrapCode, Value, Variable,
+        AbiParam, Block, FloatCC, FunctionBuilder, InstBuilder, IntCC, MemFlags, StackSlotData,
+        StackSlotKind, TrapCode, Value, Variable, types,
     },
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
-use hir::{FQComptime, LocalDef, ScopeId, SwitchArg};
-use hir_ty::{ComptimeResult, InternTyDisplay, InternTyExt, ParamTy, Ty};
+use debug::debug;
+use hir::common::*;
+use hir::{LocalDef, ScopeId, SwitchArg};
 use interner::Interner;
 use internment::Intern;
+use itertools::Itertools;
 use la_arena::Idx;
 use rustc_hash::FxHashMap;
 use uid_gen::UIDGenerator;
 
 use crate::{
+    FinalSignature,
     builtin::{self, BuiltinFunction, BuiltinGlobal},
     convert::{GetFinalTy, ToTyId},
-    debug::{write_nice_function, NiceFuncWriter},
+    debug::{NiceFuncWriter, write_nice_function},
     layout::{self, GetLayoutInfo},
     mangle::{self, Mangle},
-    FinalSignature,
 };
 
 use super::{
+    ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
     abi::{Abi, FnAbi},
     comptime::{ComptimeBytes, IntBytes},
-    ComptimeData, FunctionToCompile, MemoryLoc, MetaTyData, MetaTyInfoArrays, MetaTyLayoutArrays,
 };
 
 struct UnfinishedComptimeErr;
@@ -50,12 +52,13 @@ const TRAP_UNREACHABLE: TrapCode = TrapCode::unwrap_user(10);
 pub(crate) struct FunctionCompiler<'a> {
     pub(crate) final_binary: bool,
 
-    pub(crate) file_name: hir::FileName,
+    /// This is actually only ever ConcreteLambdaLoc
+    pub(crate) loc: ConcreteLoc,
 
     pub(crate) mod_dir: &'a std::path::Path,
     pub(crate) interner: &'a Interner,
     pub(crate) world_bodies: &'a hir::WorldBodies,
-    pub(crate) tys: &'a hir_ty::ProjectInference,
+    pub(crate) tys: &'a hir_ty::WorldTys,
 
     pub(crate) builder: FunctionBuilder<'a>,
     pub(crate) module: &'a mut dyn Module,
@@ -66,19 +69,18 @@ pub(crate) struct FunctionCompiler<'a> {
     pub(crate) meta_tys: &'a mut MetaTyData,
     pub(crate) cmd_args_slice: &'a mut Option<DataId>,
 
-    pub(crate) local_functions: FxHashMap<hir::Fqn, FuncRef>,
-    pub(crate) local_lambdas: FxHashMap<Idx<hir::Lambda>, FuncRef>,
+    pub(crate) local_functions: FxHashMap<ConcreteLoc, FuncRef>,
 
     // globals
-    pub(crate) functions: &'a mut FxHashMap<hir::Fqn, FuncId>,
-    pub(crate) user_extern_functions: &'a mut FxHashMap<hir::Name, FuncId>,
+    pub(crate) functions: &'a mut FxHashMap<ConcreteLoc, FuncId>,
+    pub(crate) user_extern_functions: &'a mut FxHashMap<Name, FuncId>,
     pub(crate) internal_extern_functions: &'a mut FxHashMap<&'static str, FuncId>,
     pub(crate) compiler_defined_functions: &'a mut FxHashMap<BuiltinFunction, FuncId>,
-    pub(crate) globals: &'a mut FxHashMap<hir::Fqn, DataId>,
+    pub(crate) globals: &'a mut FxHashMap<ConcreteGlobalLoc, DataId>,
     pub(crate) str_id_gen: &'a mut UIDGenerator,
     pub(crate) i128_id_gen: &'a mut UIDGenerator,
-    pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
-    pub(crate) comptime_data: &'a mut FxHashMap<FQComptime, ComptimeData>,
+    pub(crate) comptime_results: &'a ComptimeResultMap,
+    pub(crate) comptime_data: &'a mut FxHashMap<ComptimeLoc, ComptimeData>,
 
     // variables
     pub(crate) locals: FxHashMap<Idx<LocalDef>, Value>,
@@ -123,11 +125,11 @@ impl FunctionCompiler<'_> {
     /// Returns `None` if any inner comptime blocks haven't been evaluated yet
     fn expr_to_const_data(
         &mut self,
-        file_name: hir::FileName,
+        loc: ConcreteGlobalLoc,
         expr: Idx<hir::Expr>,
     ) -> Result<Box<[u8]>, UnfinishedComptimeErr> {
-        if let Some(meta_ty) = self.tys[file_name].get_meta_ty(expr)
-            && *self.tys[file_name][expr] == Ty::Type
+        if let Some(meta_ty) = self.tys[loc.wrap()].meta_ty(expr)
+            && *self.tys[loc.wrap()][expr] == Ty::Type
         {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
@@ -137,11 +139,11 @@ impl FunctionCompiler<'_> {
             });
         }
 
-        Ok(match self.world_bodies[file_name][expr].clone() {
+        Ok(match self.world_bodies[loc.file()][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
                 match (
-                    self.tys[file_name][expr]
+                    self.tys[loc.wrap()][expr]
                         .get_final_ty()
                         .into_number_type()
                         .unwrap()
@@ -164,7 +166,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::FloatLiteral(f) => match (
-                self.tys[file_name][expr]
+                self.tys[loc.wrap()][expr]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap()
@@ -190,14 +192,14 @@ impl FunctionCompiler<'_> {
             hir::Expr::ArrayLiteral { items, .. } => {
                 assert_ne!(items.len(), 0);
 
-                let item_ty = self.tys[file_name][items[0]];
+                let item_ty = self.tys[loc.wrap()][items[0]];
                 let item_size = item_ty.size();
                 let item_stride = item_ty.stride();
 
                 let mut array = Vec::<u8>::with_capacity(item_stride as usize * items.len());
 
                 for (idx, item) in items.into_iter().enumerate() {
-                    let item = self.expr_to_const_data(file_name, item)?;
+                    let item = self.expr_to_const_data(loc, item)?;
 
                     unsafe {
                         std::ptr::copy_nonoverlapping(
@@ -213,21 +215,21 @@ impl FunctionCompiler<'_> {
                 array.into()
             }
             hir::Expr::Comptime(comptime) => {
-                let ctc = FQComptime {
-                    file: file_name,
+                let fq_comptime = ComptimeLoc {
+                    loc: loc.wrap(),
                     expr,
                     comptime,
                 };
 
                 self.comptime_results
-                    .get(&ctc)
+                    .get(fq_comptime)
                     .ok_or_else(|| {
                         if self.final_binary {
-                            println!("{:#?}", self.comptime_results.keys().collect::<Vec<_>>());
+                            println!("{:#?}", self.comptime_results.all_blocks().collect_vec());
                             println!(
                                 "{} {:?}",
-                                self.file_name.to_string(self.mod_dir, self.interner),
-                                ctc
+                                self.loc.to_string(self.mod_dir, self.interner),
+                                fq_comptime
                             );
                             panic!("The final binary should not have uncompiled comptime blocks");
                         } else {
@@ -239,45 +241,51 @@ impl FunctionCompiler<'_> {
                     .unwrap()
             }
             hir::Expr::Local(local) => {
-                let local_def = &self.world_bodies[file_name][local];
+                let local_def = &self.world_bodies[loc.file()][local];
 
                 assert!(
                     local_def.value.is_some(),
                     "if the value doesn't exist, `get_const` should've returned non-const, and there should be an error before codegen"
                 );
 
-                return self.expr_to_const_data(file_name, local_def.value.unwrap());
+                return self.expr_to_const_data(loc, local_def.value.unwrap());
             }
             hir::Expr::LocalGlobal(global) => {
-                let fqn = hir::Fqn {
-                    file: file_name,
+                let fqn = Fqn {
+                    file: loc.file(),
                     name: global.name,
                 };
 
-                return self.expr_to_const_data(file_name, self.world_bodies.body(fqn));
+                assert!(!self.world_bodies.has_polymorphic_body(fqn.wrap()));
+                let tfqn = fqn.make_concrete(None);
+
+                return self.expr_to_const_data(tfqn, self.world_bodies.global_body(fqn));
             }
             hir::Expr::Member {
                 previous,
                 name: field,
             } => {
-                if let Ty::File(file) = self.tys[file_name][previous].as_ref() {
-                    let fqn = hir::Fqn {
+                if let Ty::File(file) = self.tys[loc.wrap()][previous].as_ref() {
+                    let fqn = Fqn {
                         file: *file,
                         name: field.name,
                     };
 
-                    return self.expr_to_const_data(fqn.file, self.world_bodies.body(fqn));
+                    assert!(!self.world_bodies.has_polymorphic_body(fqn.wrap()));
+                    let tfqn = fqn.make_concrete(None);
+
+                    return self.expr_to_const_data(tfqn, self.world_bodies.global_body(fqn));
                 } else {
                     panic!(
                         "constant members should only access files {} #{}",
-                        file_name.to_string(self.mod_dir, self.interner),
+                        loc.to_string(self.mod_dir, self.interner),
                         expr.into_raw()
                     )
                 }
             }
             _ => panic!(
                 "tried to compile const with non-compilable definition {}#{}",
-                file_name.to_string(self.mod_dir, self.interner),
+                loc.to_string(self.mod_dir, self.interner),
                 expr.into_raw()
             ),
         })
@@ -285,35 +293,38 @@ impl FunctionCompiler<'_> {
 
     fn compile_global_binding_data(
         &mut self,
-        fqn: hir::Fqn,
+        loc: ConcreteGlobalLoc,
     ) -> Result<DataId, UnfinishedComptimeErr> {
-        if let Some(global) = self.globals.get(&fqn) {
+        assert!(loc.comptime_args().is_none());
+
+        if let Some(global) = self.globals.get(&loc) {
             return Ok(*global);
         }
 
-        if self.world_bodies.is_extern(fqn) {
+        if self.world_bodies.global_is_extern(loc.to_naive()) {
             let global = self
                 .module
                 .declare_data(
-                    self.interner.lookup(fqn.name.0),
+                    self.interner.lookup(loc.name().0),
                     Linkage::Import,
                     true,
                     false,
                 )
                 .expect("error declaring data");
 
-            self.globals.insert(fqn, global);
+            self.globals.insert(loc, global);
 
             return Ok(global);
         }
 
-        let value = self.world_bodies.body(fqn);
+        let value = self.world_bodies.global_body(loc.to_naive());
 
-        if let hir::Expr::Directive { name, args } = &self.world_bodies[fqn.file][value]
+        if let hir::Expr::Directive { name, args } = &self.world_bodies[loc.file()][value]
             && self.interner.lookup(name.name.0) == "builtin"
         {
             let builtin_name = args[0];
-            let hir::Expr::StringLiteral(builtin_name) = &self.world_bodies[fqn.file][builtin_name]
+            let hir::Expr::StringLiteral(builtin_name) =
+                &self.world_bodies[loc.file()][builtin_name]
             else {
                 // todo: report an error
                 unreachable!("an error should have been reported")
@@ -326,16 +337,16 @@ impl FunctionCompiler<'_> {
             return Ok(self.compile_builtin_global(builtin_global));
         }
 
-        let bytes = self.expr_to_const_data(fqn.file, value)?;
+        let bytes = self.expr_to_const_data(loc, value)?;
 
         let global = self.create_global_data(
-            &fqn.to_mangled_name(self.mod_dir, self.interner),
+            &loc.to_mangled_name(self.mod_dir, self.interner),
             false,
             bytes,
-            self.tys[fqn].0.align() as u64,
+            self.tys.sig(loc.wrap()).align() as u64,
         );
 
-        self.globals.insert(fqn, global);
+        self.globals.insert(loc, global);
 
         Ok(global)
     }
@@ -404,7 +415,7 @@ impl FunctionCompiler<'_> {
         )
     }
 
-    fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
+    fn get_func_id(&mut self, tfqn: ConcreteGlobalLoc) -> FuncId {
         super::get_func_id(
             self.module,
             self.ptr_ty,
@@ -417,7 +428,7 @@ impl FunctionCompiler<'_> {
             self.tys,
             self.world_bodies,
             self.interner,
-            fqn,
+            tfqn,
         )
     }
 
@@ -430,7 +441,7 @@ impl FunctionCompiler<'_> {
         if let Some(func_id) = self.internal_extern_functions.get(name).or_else(|| {
             self.interner
                 .get_interned(name)
-                .and_then(|key| self.user_extern_functions.get(&hir::Name(key)))
+                .and_then(|key| self.user_extern_functions.get(&Name(key)))
         }) {
             return *func_id;
         }
@@ -453,39 +464,39 @@ impl FunctionCompiler<'_> {
         func_id
     }
 
-    fn get_local_func(&mut self, fqn: hir::Fqn) -> FuncRef {
-        if let Some(func_ref) = self.local_functions.get(&fqn) {
+    fn get_local_func(&mut self, tfqn: ConcreteGlobalLoc) -> FuncRef {
+        if let Some(func_ref) = self.local_functions.get(&tfqn.wrap()) {
             return *func_ref;
         }
 
-        let func_id = self.get_func_id(fqn);
+        let func_id = self.get_func_id(tfqn);
 
         let local_func = self.module.declare_func_in_func(func_id, self.builder.func);
 
-        self.local_functions.insert(fqn, local_func);
+        self.local_functions.insert(tfqn.wrap(), local_func);
 
         local_func
     }
 
-    fn compile_global(&mut self, fqn: hir::Fqn, no_load: bool) -> Option<Value> {
-        let ty = &self.tys[fqn].0;
+    fn compile_global(&mut self, loc: ConcreteGlobalLoc, no_load: bool) -> Option<Value> {
+        let ty = &self.tys.sig(loc.wrap());
 
         if ty.is_zero_sized() {
             return None;
         } else if ty.is_function() {
-            let local_func = self.get_local_func(fqn);
+            let local_func = self.get_local_func(loc);
 
             return Some(self.builder.ins().func_addr(self.ptr_ty, local_func));
         }
 
-        let Ok(global_data) = self.compile_global_binding_data(fqn) else {
+        let Ok(global_data) = self.compile_global_binding_data(loc) else {
             // there was an unfinished comptime
-            let body = self.world_bodies.body(fqn);
+            let body = self.world_bodies.global_body(loc.to_naive());
 
             // todo: could this cause issues?
-            let old_file_name = std::mem::replace(&mut self.file_name, fqn.file);
+            let old_loc = std::mem::replace(&mut self.loc, loc.wrap());
             let res = self.compile_expr_with_args(body, no_load);
-            self.file_name = old_file_name;
+            self.loc = old_loc;
 
             return res;
         };
@@ -513,19 +524,19 @@ impl FunctionCompiler<'_> {
     }
 
     fn compile_stmt(&mut self, stmt: &Idx<hir::Stmt>) {
-        match self.world_bodies[self.file_name][*stmt] {
+        match self.world_bodies[self.loc.file()][*stmt] {
             hir::Stmt::Expr(expr) => {
-                match *self.tys[self.file_name][expr] {
-                    hir_ty::Ty::Unknown => unreachable!(),
+                match *self.tys[self.loc][expr] {
+                    Ty::Unknown => unreachable!(),
                     _ => {
                         self.compile_expr(expr);
                     }
                 };
             }
             hir::Stmt::LocalDef(local_def) => {
-                let ty = self.tys[self.file_name][local_def];
+                let ty = self.tys[self.loc][local_def];
 
-                let value = self.world_bodies[self.file_name][local_def].value;
+                let value = self.world_bodies[self.loc.file()][local_def].value;
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -540,6 +551,7 @@ impl FunctionCompiler<'_> {
                     // declaration
                     self.compile_and_cast_into_memory(value, ty, memory);
                 } else {
+                    debug!("store default {}", ty.debug(self.interner, true));
                     self.store_default_in_memory(ty, memory);
                 }
 
@@ -547,14 +559,14 @@ impl FunctionCompiler<'_> {
                     .insert(local_def, memory.into_value(&mut self.builder, self.ptr_ty));
             }
             hir::Stmt::Assign(assign) => {
-                let assign_body = &self.world_bodies[self.file_name][assign];
+                let assign_body = &self.world_bodies[self.loc.file()][assign];
 
                 let Some(dest) = self.compile_expr_with_args(assign_body.dest, true) else {
                     return;
                 };
                 let dest = MemoryLoc::from_addr(dest, 0);
 
-                let dest_ty = &self.tys[self.file_name][assign_body.dest];
+                let dest_ty = &self.tys[self.loc][assign_body.dest];
 
                 if let Some(op) = assign_body.quick_assign_op {
                     let res = self.compile_binary(assign_body.dest, assign_body.value, op);
@@ -573,7 +585,7 @@ impl FunctionCompiler<'_> {
             } => {
                 let value = value.and_then(|value| {
                     let referenced_block_ty =
-                        self.tys[self.file_name][self.world_bodies[self.file_name][label]];
+                        self.tys[self.loc][self.world_bodies[self.loc.file()][label]];
 
                     self.compile_and_cast(value, referenced_block_ty)
                 });
@@ -692,11 +704,19 @@ impl FunctionCompiler<'_> {
             Ty::RawPtr { .. } => unreachable!("rawptr does not have a default value"),
             Ty::RawSlice => unreachable!("rawslice does not have a default value"),
             Ty::File(_) => unreachable!("files do not have default values"),
-            Ty::Function { .. } => unreachable!("functions do not have default values"),
+            Ty::ConcreteFunction { .. } => todo!(
+                "concrete functions should probably resolve to the function pointer as a default value"
+            ),
+            Ty::NaivePolymorphicFunction { .. } => {
+                unreachable!("these shouldn't get to codegen")
+            }
+            Ty::FunctionPointer { .. } => {
+                unreachable!("function pointers do not have default values")
+            }
             Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let struct_mem = expected_ty.struct_layout().unwrap();
 
-                for (idx, hir_ty::MemberTy { ty, .. }) in members.iter().enumerate() {
+                for (idx, MemberTy { ty, .. }) in members.iter().enumerate() {
                     self.store_default_in_memory(
                         *ty,
                         memory.with_offset(struct_mem.offsets()[idx]),
@@ -730,7 +750,7 @@ impl FunctionCompiler<'_> {
         expected_ty: Intern<Ty>,
         memory: MemoryLoc,
     ) {
-        let expr_ty = self.tys[self.file_name][expr];
+        let expr_ty = self.tys[self.loc][expr];
 
         // if the expression has to be casted in order to become the expected type, do that.
         // the one cast this applies to is `any` casting.
@@ -740,7 +760,7 @@ impl FunctionCompiler<'_> {
             return;
         }
 
-        match &self.world_bodies[self.file_name][expr] {
+        match &self.world_bodies[self.loc.file()][expr] {
             hir::Expr::ArrayLiteral { items, .. } => {
                 let (_, sub_ty) = expected_ty
                     .as_array()
@@ -808,18 +828,18 @@ impl FunctionCompiler<'_> {
     /// `no_load` will cause the first encountered deref to not deref at all.
     /// this is used for assignment
     fn compile_expr_with_args(&mut self, expr: Idx<hir::Expr>, no_load: bool) -> Option<Value> {
-        if let Some(meta_ty) = self.tys[self.file_name].get_meta_ty(expr)
-            && *self.tys[self.file_name][expr] == Ty::Type
+        if let Some(meta_ty) = self.tys[self.loc].meta_ty(expr)
+            && *self.tys[self.loc][expr] == Ty::Type
         {
             let id = meta_ty.to_type_id(self.meta_tys, self.ptr_ty);
 
             return Some(self.builder.ins().iconst(types::I32, id as i64));
         }
 
-        match self.world_bodies[self.file_name][expr].clone() {
+        match self.world_bodies[self.loc.file()][expr].clone() {
             hir::Expr::Missing => unreachable!(),
             hir::Expr::IntLiteral(n) => {
-                let number_ty = self.tys[self.file_name][expr]
+                let number_ty = self.tys[self.loc][expr]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap();
@@ -850,7 +870,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::FloatLiteral(f) => {
-                match self.tys[self.file_name][expr]
+                match self.tys[self.loc][expr]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap()
@@ -875,12 +895,12 @@ impl FunctionCompiler<'_> {
             hir::Expr::CharLiteral(char) => Some(self.builder.ins().iconst(types::I8, char as i64)),
             hir::Expr::ArrayDecl { .. } => None,
             hir::Expr::ArrayLiteral { items, .. } => {
-                let ty = self.tys[self.file_name][expr];
+                let ty = self.tys[self.loc][expr];
 
                 let (_, sub_ty) = ty.as_array().unwrap_or_else(|| {
                     panic!(
                         "{} #{} : array literal has type {ty:?} instead of an array type",
-                        self.file_name.debug(self.interner),
+                        self.loc.debug(self.interner),
                         expr.into_raw()
                     )
                 });
@@ -902,11 +922,11 @@ impl FunctionCompiler<'_> {
                 Some(memory.into_value(&mut self.builder, self.ptr_ty))
             }
             hir::Expr::Index { source, index } => {
-                if self.tys[self.file_name][expr].is_zero_sized() {
+                if self.tys[self.loc][expr].is_zero_sized() {
                     return None;
                 }
 
-                let mut source_ty = self.tys[self.file_name][source];
+                let mut source_ty = self.tys[self.loc][source];
                 let mut source = self.compile_expr(source).unwrap(); // this will be usize
 
                 let mut required_derefs = 0;
@@ -923,7 +943,7 @@ impl FunctionCompiler<'_> {
                         .load(self.ptr_ty, MemFlags::trusted(), source, 0);
                 }
 
-                let index_ty = self.tys[self.file_name][index];
+                let index_ty = self.tys[self.loc][index];
 
                 let index = self.compile_expr(index).unwrap();
 
@@ -966,7 +986,7 @@ impl FunctionCompiler<'_> {
                 // now we have to align the index, the elements of the array only start every
                 // so many bytes (4 bytes for i32, 8 bytes for i64)
                 // So the index has to be multiplied by the element stride
-                let element_ty = self.tys[self.file_name][expr];
+                let element_ty = self.tys[self.loc][expr];
 
                 let byte_offset = self
                     .builder
@@ -987,20 +1007,20 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Cast { expr: None, .. } => {
-                self.cast(None, Ty::Void.into(), self.tys[self.file_name][expr])
+                self.cast(None, Ty::Void.into(), self.tys[self.loc][expr])
             }
             hir::Expr::Cast {
                 expr: Some(inner_expr),
                 ..
             } => {
-                let cast_to = self.tys[self.file_name][expr];
+                let cast_to = self.tys[self.loc][expr];
 
                 self.compile_and_cast(inner_expr, cast_to)
             }
             hir::Expr::Ref { expr, .. } => {
-                if self.tys[self.file_name][expr].is_aggregate()
+                if self.tys[self.loc][expr].is_aggregate()
                     || matches!(
-                        self.world_bodies[self.file_name][expr],
+                        self.world_bodies[self.loc.file()][expr],
                         hir::Expr::Local(_)
                             | hir::Expr::LocalGlobal(_)
                             | hir::Expr::Index { .. }
@@ -1025,7 +1045,7 @@ impl FunctionCompiler<'_> {
                         Some(self.builder.ins().stack_addr(self.ptr_ty, stack_slot, 0))
                     }
                 } else {
-                    let inner_ty = self.tys[self.file_name][expr];
+                    let inner_ty = self.tys[self.loc][expr];
 
                     // println!("{:?} = {inner_size}", self.tys[self.fqn.module][expr]);
 
@@ -1043,7 +1063,7 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Deref { pointer } => {
-                let self_ty = self.tys[self.file_name][expr];
+                let self_ty = self.tys[self.loc][expr];
 
                 if self_ty.is_aggregate() {
                     return self.compile_expr_with_args(pointer, false);
@@ -1075,7 +1095,7 @@ impl FunctionCompiler<'_> {
                 op,
             } => self.compile_binary(lhs_expr, rhs_expr, op),
             hir::Expr::Unary { expr: inner, op } => {
-                let expr_ty = self.tys[self.file_name][inner]
+                let expr_ty = self.tys[self.loc][inner]
                     .get_final_ty()
                     .into_number_type()
                     .unwrap();
@@ -1102,10 +1122,8 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Call { callee, args } => {
-                let (param_tys, return_ty) = self.tys[self.file_name][callee]
-                    .clone()
-                    .as_function()
-                    .unwrap();
+                let callee_ty = self.tys[self.loc][callee];
+                let (param_tys, return_ty) = callee_ty.as_function().unwrap();
                 let fn_abi = Into::<Abi>::into(self.module.target_config())
                     .fn_to_target((&param_tys, return_ty));
 
@@ -1156,7 +1174,7 @@ impl FunctionCompiler<'_> {
                         }
                         break;
                     };
-                    let arg_ty = self.tys[self.file_name][*arg];
+                    let arg_ty = self.tys[self.loc][*arg];
 
                     let Some(param) = current_param else {
                         // there are more args than params
@@ -1267,97 +1285,48 @@ impl FunctionCompiler<'_> {
                 let ret_mem =
                     fn_abi.ret_addr(&mut arg_values, &mut self.builder, return_ty, self.ptr_ty);
 
-                let call = match self.world_bodies[self.file_name][callee] {
-                    hir::Expr::LocalGlobal(name) => {
-                        let fqn = hir::Fqn {
-                            file: self.file_name,
-                            name: name.name,
-                        };
-
-                        let local_func = self.get_local_func(fqn);
-
-                        self.builder.ins().call(local_func, &arg_values)
-                    }
-                    hir::Expr::Local(local)
-                        if !self.world_bodies[self.file_name][local].mutable =>
-                    {
-                        let value = self.world_bodies[self.file_name][local].value;
-
-                        if let Some(hir::Expr::Lambda(lambda)) =
-                            value.map(|value| &self.world_bodies[self.file_name][value])
-                        {
-                            let local_func = self.unnamed_func_to_local(callee, *lambda);
+                let call_inst = match callee_ty.as_ref() {
+                    Ty::NaivePolymorphicFunction { .. } => unreachable!(),
+                    Ty::ConcreteFunction { fn_loc, .. } => {
+                        if let Some(global_loc) = get_concrete_lambda_global(*fn_loc) {
+                            let local_func = self.get_local_func(global_loc);
 
                             self.builder.ins().call(local_func, &arg_values)
                         } else {
-                            let callee = self.compile_expr(callee).unwrap();
-
-                            let comp_sig = fn_abi
-                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
-
-                            let sig_ref = self.builder.import_signature(comp_sig);
-
-                            self.builder
-                                .ins()
-                                .call_indirect(sig_ref, callee, &arg_values)
-                        }
-                    }
-                    hir::Expr::Member {
-                        previous,
-                        name: field,
-                        ..
-                    } => match &self.tys[self.file_name][previous].as_ref() {
-                        Ty::File(file) => {
-                            let fqn = hir::Fqn {
-                                file: *file,
-                                name: field.name,
-                            };
-
-                            let local_func = self.get_local_func(fqn);
+                            let local_func = self.unnamed_func_to_local(callee_ty, *fn_loc);
 
                             self.builder.ins().call(local_func, &arg_values)
                         }
-                        _ => {
-                            let callee = self.compile_expr(callee).unwrap();
-
-                            let comp_sig = fn_abi
-                                .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
-
-                            let sig_ref = self.builder.import_signature(comp_sig);
-
-                            self.builder
-                                .ins()
-                                .call_indirect(sig_ref, callee, &arg_values)
-                        }
-                    },
-                    hir::Expr::Lambda(lambda) => {
-                        let local_func = self.unnamed_func_to_local(callee, lambda);
-
-                        self.builder.ins().call(local_func, &arg_values)
                     }
-                    _ => {
+                    Ty::FunctionPointer { .. } => {
+                        // let local_func = self.unnamed_func_to_local(callee, *lambda);
+
+                        // self.builder.ins().call(local_func, &arg_values)
+
                         let callee = self.compile_expr(callee).unwrap();
 
                         let comp_sig = fn_abi
                             .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
+
                         let sig_ref = self.builder.import_signature(comp_sig);
 
                         self.builder
                             .ins()
                             .call_indirect(sig_ref, callee, &arg_values)
                     }
+                    _ => unreachable!(),
                 };
 
                 if return_ty.is_zero_sized() {
                     None
                 } else {
-                    fn_abi.handle_ret(call, self, ret_mem)
+                    fn_abi.handle_ret(call_inst, self, ret_mem)
                 }
             }
             hir::Expr::Paren(Some(inner)) => self.compile_expr_with_args(inner, no_load),
             hir::Expr::Paren(None) => None,
             hir::Expr::Block { stmts, tail_expr } => {
-                let expr_ty = self.tys[self.file_name][expr];
+                let expr_ty = self.tys[self.loc][expr];
                 let final_ty = expr_ty.get_final_ty();
 
                 let body_block = self.builder.create_block();
@@ -1367,7 +1336,7 @@ impl FunctionCompiler<'_> {
                 if let Some(ty) = final_ty.into_real_type() {
                     self.builder.append_block_param(exit_block, ty);
                 }
-                let scope_id = self.world_bodies[self.file_name].block_to_scope_id(expr);
+                let scope_id = self.world_bodies[self.loc.file()].block_to_scope_id(expr);
                 if let Some(scope_id) = scope_id {
                     self.exits.insert(scope_id, exit_block);
                 }
@@ -1385,7 +1354,7 @@ impl FunctionCompiler<'_> {
                 let mut no_eval = false;
                 for stmt in stmts {
                     self.compile_stmt(&stmt);
-                    match self.world_bodies[self.file_name][stmt] {
+                    match self.world_bodies[self.loc.file()][stmt] {
                         // if the current scope id is `None`
                         // (no one breaks to the end of this block)
                         // AND a sub expression has the type `NoEval`
@@ -1393,7 +1362,7 @@ impl FunctionCompiler<'_> {
                         // then the sub expression must be breaking to a higher block
                         hir::Stmt::Expr(expr)
                             if scope_id.is_none()
-                                && *self.tys[self.file_name][expr] == Ty::AlwaysJumps =>
+                                && *self.tys[self.loc][expr] == Ty::AlwaysJumps =>
                         {
                             no_eval = true;
                             break;
@@ -1414,7 +1383,7 @@ impl FunctionCompiler<'_> {
                             // unlike before, where we had to make sure the scope id is `None`,
                             // here, if the tail doesn't reach its own end (and it doesn't evaluate
                             // to anything) then *we* aren't going to evaluate to anything.
-                            if *self.tys[self.file_name][tail_expr] == Ty::AlwaysJumps {
+                            if *self.tys[self.loc][tail_expr] == Ty::AlwaysJumps {
                                 no_eval = true;
                             }
                             value
@@ -1526,7 +1495,7 @@ impl FunctionCompiler<'_> {
                 let merge_block = self.builder.create_block();
                 self.func_writer[merge_block] = "if_exit".into();
 
-                let return_ty = self.tys[self.file_name][expr];
+                let return_ty = self.tys[self.loc][expr];
                 let return_ty_real = return_ty.get_final_ty().into_real_type();
 
                 if let Some(return_ty) = return_ty_real {
@@ -1544,7 +1513,7 @@ impl FunctionCompiler<'_> {
 
                 let body_value = self.compile_and_cast_with_args(body, no_load, return_ty);
 
-                if *self.tys[self.file_name][body] == Ty::AlwaysJumps {
+                if *self.tys[self.loc][body] == Ty::AlwaysJumps {
                     self.compile_unreachable(Some("end of noreturn then block reached"));
                 } else {
                     match body_value {
@@ -1568,7 +1537,7 @@ impl FunctionCompiler<'_> {
                     let else_value =
                         self.compile_and_cast_with_args(else_branch, no_load, return_ty);
 
-                    if *self.tys[self.file_name][else_branch] == Ty::AlwaysJumps {
+                    if *self.tys[self.loc][else_branch] == Ty::AlwaysJumps {
                         self.compile_unreachable(Some("end of noreturn else block reached"));
                     } else {
                         match else_value {
@@ -1607,12 +1576,12 @@ impl FunctionCompiler<'_> {
                 let exit_block = self.builder.create_block();
                 self.func_writer[exit_block] = "while_exit".into();
 
-                let ty = self.tys[self.file_name][expr].get_final_ty();
+                let ty = self.tys[self.loc][expr].get_final_ty();
 
                 if let Some(ty) = ty.into_real_type() {
                     self.builder.append_block_param(exit_block, ty);
                 }
-                if let Some(scope_id) = self.world_bodies[self.file_name].block_to_scope_id(expr) {
+                if let Some(scope_id) = self.world_bodies[self.loc.file()].block_to_scope_id(expr) {
                     self.continues.insert(scope_id, header_block);
                     self.exits.insert(scope_id, exit_block);
                 }
@@ -1657,14 +1626,14 @@ impl FunctionCompiler<'_> {
                 default,
                 ..
             } => {
-                let sum_ty = self.tys[self.file_name][scrutinee];
+                let sum_ty = self.tys[self.loc][scrutinee];
 
                 let arm_blocks: Vec<_> = arms
                     .iter()
                     .map(|arm| {
                         let arm_ty = match arm.variant.expect("should be Some") {
                             hir::ArmVariant::FullyQualified(ty) => {
-                                self.tys[self.file_name].get_meta_ty(ty).unwrap()
+                                self.tys[self.loc].meta_ty(ty).unwrap()
                             }
                             hir::ArmVariant::Shorthand(name) => {
                                 let Ty::Enum { ref variants, .. } = *sum_ty else {
@@ -1693,7 +1662,7 @@ impl FunctionCompiler<'_> {
                 let exit_block = self.builder.create_block();
                 self.func_writer[exit_block] = "switch_exit".into();
 
-                let return_ty = self.tys[self.file_name][expr];
+                let return_ty = self.tys[self.loc][expr];
                 let return_ty_real = return_ty.get_final_ty().into_real_type();
 
                 if let Some(ty) = return_ty_real {
@@ -1822,7 +1791,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::Local(local_def) => {
                 let ptr = *self.locals.get(&local_def)?;
 
-                let ty = &self.tys[self.file_name][local_def];
+                let ty = &self.tys[self.loc][local_def];
 
                 if no_load || ty.is_aggregate() {
                     Some(ptr)
@@ -1841,35 +1810,60 @@ impl FunctionCompiler<'_> {
                 .params
                 .get(&(idx as u64))
                 .map(|param| self.builder.use_var(*param)),
+            hir::Expr::ComptimeParam {
+                real_idx,
+                comptime_idx,
+                ..
+            } => {
+                // let val = self
+                //     .loc
+                //     .comptime_args()
+                //     .unwrap()
+                //     .into_value_range()
+                //     .nth(comptime_idx);
+
+                // TODO: use the constant data instead of parameters
+
+                self.params
+                    .get(&(real_idx as u64))
+                    .map(|param| self.builder.use_var(*param))
+            }
+            hir::Expr::InlineParam { .. } => unreachable!(),
             hir::Expr::LocalGlobal(name) => {
-                if self.tys[self.file_name][expr].is_zero_sized() {
+                if self.tys[self.loc][expr].is_zero_sized() {
                     return None;
                 }
 
-                let fqn = hir::Fqn {
-                    file: self.file_name,
+                let fqn = Fqn {
+                    file: self.loc.file(),
                     name: name.name,
                 };
 
-                self.compile_global(fqn, no_load)
+                assert!(!self.world_bodies.has_polymorphic_body(fqn.wrap()));
+                let tfqn = fqn.make_concrete(None);
+
+                self.compile_global(tfqn, no_load)
             }
             hir::Expr::Member { previous, name, .. } => {
-                if self.tys[self.file_name][expr].is_zero_sized() {
+                if self.tys[self.loc][expr].is_zero_sized() {
                     return None;
                 }
 
-                let previous_ty = self.tys[self.file_name][previous];
+                let previous_ty = self.tys[self.loc][previous];
                 match previous_ty.as_ref() {
                     Ty::File(file) => {
-                        let fqn = hir::Fqn {
+                        let fqn = Fqn {
                             file: *file,
                             name: name.name,
                         };
 
-                        self.compile_global(fqn, no_load)
+                        assert!(!self.world_bodies.has_polymorphic_body(fqn.wrap()));
+                        let tfqn = fqn.make_concrete(None);
+
+                        self.compile_global(tfqn, no_load)
                     }
                     _ => {
-                        let field_ty = &self.tys[self.file_name][expr];
+                        let field_ty = &self.tys[self.loc][expr];
                         let field_comp_ty = field_ty.get_final_ty().into_real_type()?;
 
                         let mut required_derefs = 0;
@@ -1995,7 +1989,20 @@ impl FunctionCompiler<'_> {
                 }
             }
             hir::Expr::Lambda(lambda) => {
-                let local_func = self.unnamed_func_to_local(expr, lambda);
+                let self_ty = self.tys[self.loc][expr];
+
+                // this will only ever be actually compiled if the call expression
+                // wants it to be compiled (aka, if it's a function pointer)
+                let loc = NaiveLambdaLoc {
+                    file: self.loc.file(),
+                    expr,
+                    lambda,
+                };
+
+                assert!(self.tys.try_naive(loc.wrap(), self.world_bodies).is_ok());
+                let loc = loc.make_concrete(None);
+
+                let local_func = self.unnamed_func_to_local(self_ty, loc);
 
                 Some(self.builder.ins().func_addr(self.ptr_ty, local_func))
             }
@@ -2003,7 +2010,7 @@ impl FunctionCompiler<'_> {
                 members: field_values,
                 ..
             } => {
-                let ty = self.tys[self.file_name][expr];
+                let ty = self.tys[self.loc][expr];
 
                 let stack_slot = self.builder.create_sized_stack_slot(StackSlotData {
                     kind: StackSlotKind::ExplicitSlot,
@@ -2022,7 +2029,7 @@ impl FunctionCompiler<'_> {
             hir::Expr::StructDecl { .. } => None,
             hir::Expr::EnumDecl { .. } => None,
             // hir::Expr::Nil => {
-            //     let opt_ty = self.tys[self.file_name][expr];
+            //     let opt_ty = self.tys[self.loc][expr];
             //
             //     // if `sub_ty` is `None`, its a zero sized type and we can just return
             //
@@ -2040,13 +2047,13 @@ impl FunctionCompiler<'_> {
                 ..
             } => {
                 let union = self.compile_expr(inner)?;
-                let union_ty = self.tys[self.file_name][inner];
+                let union_ty = self.tys[self.loc][inner];
                 assert!(matches!(
                     *union_ty,
                     Ty::Optional { .. } | Ty::ErrorUnion { .. }
                 ));
 
-                let payload_ty = self.tys[self.file_name][expr];
+                let payload_ty = self.tys[self.loc][expr];
 
                 let is_ok = if union_ty.is_error_union() {
                     super::tagged_union_has_discriminant(&mut self.builder, union_ty, union, 1)
@@ -2069,7 +2076,7 @@ impl FunctionCompiler<'_> {
                 self.builder.switch_to_block(err_block);
 
                 let referenced_block_ty =
-                    self.tys[self.file_name][self.world_bodies[self.file_name][label]];
+                    self.tys[self.loc][self.world_bodies[self.loc.file()][label]];
 
                 // if this try is propagating to a block who only ever resolves to `nil`, `void`, etc.
                 // then we don't actually have to construct anything.
@@ -2117,10 +2124,10 @@ impl FunctionCompiler<'_> {
                     let sum_val = self
                         .compile_expr(args[0])
                         .expect("sum types are never zero-sized");
-                    let sum_ty = self.tys[self.file_name][args[0]];
+                    let sum_ty = self.tys[self.loc][args[0]];
                     assert!(sum_ty.is_sum_ty(), "{sum_ty:?} is not a sum type");
 
-                    let variant_ty = self.tys[self.file_name][expr];
+                    let variant_ty = self.tys[self.loc][expr];
                     assert!(
                         sum_ty.has_sum_variant(&variant_ty),
                         "{variant_ty:?} is not a variant of {sum_ty:?}"
@@ -2128,7 +2135,7 @@ impl FunctionCompiler<'_> {
 
                     if let Some(desired_discrim) = sum_ty.get_tagged_union_discrim(&variant_ty) {
                         let enum_layout = sum_ty.enum_layout().unwrap_or_else(|| {
-                            panic!("{} #{} : the tagged union discriminant of {:?} is {} but there is no enum layout", self.file_name.debug(self.interner), args[0].into_raw(), sum_ty, desired_discrim)
+                            panic!("{} #{} : the tagged union discriminant of {:?} is {} but there is no enum layout", self.loc.debug(self.interner), args[0].into_raw(), sum_ty, desired_discrim)
                         });
 
                         let discrim = self.builder.ins().load(
@@ -2148,8 +2155,8 @@ impl FunctionCompiler<'_> {
                             is_correct_discrim,
                             Some(&format!(
                                 "called #unwrap({}, {}) but the variant was different",
-                                sum_ty.named_display(self.mod_dir, self.interner, false),
-                                variant_ty.named_display(self.mod_dir, self.interner, false)
+                                sum_ty.display(self.mod_dir, self.interner, false),
+                                variant_ty.display(self.mod_dir, self.interner, false)
                             )),
                         );
 
@@ -2170,8 +2177,8 @@ impl FunctionCompiler<'_> {
                             is_correct_discrim,
                             Some(&format!(
                                 "called #unwrap({}, {}) but the variant was different",
-                                sum_ty.named_display(self.mod_dir, self.interner, false),
-                                variant_ty.named_display(self.mod_dir, self.interner, false)
+                                sum_ty.display(self.mod_dir, self.interner, false),
+                                variant_ty.display(self.mod_dir, self.interner, false)
                             )),
                         );
 
@@ -2182,10 +2189,10 @@ impl FunctionCompiler<'_> {
                     let sum_val = self
                         .compile_expr(args[0])
                         .expect("sum types are never zero-sized");
-                    let sum_ty = self.tys[self.file_name][args[0]];
+                    let sum_ty = self.tys[self.loc][args[0]];
                     assert!(sum_ty.is_sum_ty(), "{sum_ty:?} is not a sum type");
 
-                    let variant_ty = self.tys[self.file_name].get_meta_ty(args[1]).unwrap();
+                    let variant_ty = self.tys[self.loc].meta_ty(args[1]).unwrap();
                     assert!(
                         sum_ty.has_sum_variant(&variant_ty),
                         "{variant_ty:?} is not a variant of {sum_ty:?}"
@@ -2231,19 +2238,19 @@ impl FunctionCompiler<'_> {
                 _ => unreachable!(),
             },
             hir::Expr::Comptime(comptime) => {
-                let ctc = FQComptime {
-                    file: self.file_name,
+                let ctc = ComptimeLoc {
+                    loc: self.loc,
                     expr,
                     comptime,
                 };
 
-                let ty = self.tys[self.file_name][expr];
+                let ty = self.tys[self.loc][expr];
                 let final_ty = ty.get_final_ty();
 
                 // if the comptime block was evaluated in a previous compilation step, then get that value.
                 // otherwise, we are *in* the comptime eval step of compilation, and so create the instructions
                 // neccessary to calculate the value of the comptime.
-                if let Some(result) = self.comptime_results.get(&ctc) {
+                if let Some(result) = self.comptime_results.get(ctc) {
                     match result {
                         ComptimeResult::Type(ty) => {
                             Some(self.builder.ins().iconst(
@@ -2358,7 +2365,7 @@ impl FunctionCompiler<'_> {
                     self.builder.set_cold_block(compute_block);
 
                     self.store_expr_in_memory(
-                        self.world_bodies[self.file_name][comptime].body,
+                        self.world_bodies[self.loc.file()][comptime].body,
                         ty,
                         MemoryLoc::from_addr(value_ptr, 0),
                     );
@@ -2413,8 +2420,8 @@ impl FunctionCompiler<'_> {
             _ => {}
         }
 
-        let lhs_ty = self.tys[self.file_name][lhs_expr];
-        let rhs_ty = self.tys[self.file_name][rhs_expr];
+        let lhs_ty = self.tys[self.loc][lhs_expr];
+        let rhs_ty = self.tys[self.loc][rhs_expr];
         let max_ty: Intern<Ty> = lhs_ty
             .max(&rhs_ty)
             .expect("hir_ty would've caught this")
@@ -2440,7 +2447,7 @@ impl FunctionCompiler<'_> {
         let lhs = self.compile_and_cast(lhs_expr, max_ty).unwrap_or_else(|| {
             panic!(
                 "{} #{} : LHS IS NONE ({lhs_ty:?}) {op:?} #{} ({rhs_ty:?})",
-                self.file_name.debug(self.interner),
+                self.loc.debug(self.interner),
                 lhs_expr.into_raw(),
                 rhs_expr.into_raw()
             );
@@ -2448,7 +2455,7 @@ impl FunctionCompiler<'_> {
         let rhs = self.compile_and_cast(rhs_expr, max_ty).unwrap_or_else(|| {
             panic!(
                 "{} #{} : RHS IS NONE ({lhs_ty:?}) {op:?} #{} ({rhs_ty:?})",
-                self.file_name.debug(self.interner),
+                self.loc.debug(self.interner),
                 lhs_expr.into_raw(),
                 rhs_expr.into_raw()
             );
@@ -2652,7 +2659,11 @@ impl FunctionCompiler<'_> {
             Ty::RawPtr { .. } => unreachable!("rawptr cannot be compared"),
             Ty::RawSlice => unreachable!("rawslice cannot be compared"),
             Ty::File(_) => unreachable!("files don't have a common max"),
-            Ty::Function { .. } => unreachable!("functions don't have a common max"),
+            Ty::NaivePolymorphicFunction { .. } => {
+                unreachable!("these shouldn't get to codegen")
+            }
+            Ty::ConcreteFunction { .. } => unreachable!("functions don't have a common max"),
+            Ty::FunctionPointer { .. } => unreachable!("functions don't have a common max"),
             Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => {
                 let exit = self.builder.create_block();
                 let exit_res = self.builder.append_block_param(exit, types::I8);
@@ -3302,37 +3313,46 @@ impl FunctionCompiler<'_> {
         }
     }
 
-    fn unnamed_func_to_local(&mut self, expr: Idx<hir::Expr>, lambda: Idx<hir::Lambda>) -> FuncRef {
-        if let Some(func_ref) = self.local_lambdas.get(&lambda) {
+    fn unnamed_func_to_local(&mut self, func_ty: Intern<Ty>, loc: ConcreteLambdaLoc) -> FuncRef {
+        if let Some(func_ref) = self.local_functions.get(&loc.wrap()) {
             return *func_ref;
         }
 
-        let (param_tys, return_ty) = self.tys[self.file_name][expr].as_function().unwrap();
+        let func_id = match self.functions.get(&loc.wrap()) {
+            Some(id) => *id,
+            None => {
+                let (param_tys, return_ty) = func_ty.as_function().unwrap();
 
-        let sig = Into::<Abi>::into(self.module.target_config())
-            .fn_to_target((&param_tys, return_ty))
-            .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
+                let sig = Into::<Abi>::into(self.module.target_config())
+                    .fn_to_target((&param_tys, return_ty))
+                    .to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
 
-        let ftc = FunctionToCompile {
-            file_name: self.file_name,
-            function_name: None,
-            lambda,
-            param_tys,
-            return_ty,
+                let ftc = FunctionToCompile {
+                    loc: loc.wrap(),
+                    is_function: false,
+                    lambda: loc.lambda(),
+                    param_tys,
+                    return_ty,
+                };
+
+                let mangled = ftc.to_mangled_name(self.mod_dir, self.interner);
+
+                self.functions_to_compile.push_back(ftc);
+
+                let func_id = self
+                    .module
+                    .declare_function(&mangled, Linkage::Export, &sig)
+                    .unwrap();
+
+                self.functions.insert(loc.wrap(), func_id);
+
+                func_id
+            }
         };
-
-        let mangled = ftc.to_mangled_name(self.mod_dir, self.interner);
-
-        self.functions_to_compile.push_back(ftc);
-
-        let func_id = self
-            .module
-            .declare_function(&mangled, Linkage::Export, &sig)
-            .unwrap();
 
         let local_func = self.module.declare_func_in_func(func_id, self.builder.func);
 
-        self.local_lambdas.insert(lambda, local_func);
+        self.local_functions.insert(loc.wrap(), local_func);
 
         local_func
     }
@@ -3367,7 +3387,7 @@ impl FunctionCompiler<'_> {
 
         let mut msg = format!(
             "\n\nin {} : entered unreachable code",
-            self.file_name.to_string(self.mod_dir, self.interner),
+            self.loc.to_string(self.mod_dir, self.interner),
         );
         if let Some(message) = message {
             msg.push_str(": ");
@@ -3397,7 +3417,7 @@ impl FunctionCompiler<'_> {
     pub fn compile_and_cast(&mut self, expr: Idx<hir::Expr>, cast_to: Intern<Ty>) -> Option<Value> {
         let value = self.compile_expr(expr);
 
-        self.cast(value, self.tys[self.file_name][expr], cast_to)
+        self.cast(value, self.tys[self.loc][expr], cast_to)
     }
 
     pub fn compile_and_cast_with_args(
@@ -3408,7 +3428,7 @@ impl FunctionCompiler<'_> {
     ) -> Option<Value> {
         let value = self.compile_expr_with_args(expr, no_load);
 
-        self.cast(value, self.tys[self.file_name][expr], cast_to)
+        self.cast(value, self.tys[self.loc][expr], cast_to)
     }
 
     pub fn compile_and_cast_into_memory(
@@ -3417,7 +3437,7 @@ impl FunctionCompiler<'_> {
         cast_to: Intern<Ty>,
         memory: MemoryLoc,
     ) -> Option<Value> {
-        if self.tys[self.file_name][expr].is_functionally_equivalent_to(&cast_to, true) {
+        if self.tys[self.loc][expr].is_functionally_equivalent_to(&cast_to, true) {
             self.store_expr_in_memory(expr, cast_to, memory);
 
             return Some(memory.into_value(&mut self.builder, self.ptr_ty));
@@ -3432,12 +3452,12 @@ impl FunctionCompiler<'_> {
         //     self.file_name.debug(self.interner),
         //     expr.into_raw(),
         //     value,
-        //     self.tys[self.file_name][expr],
+        //     self.tys[self.loc][expr],
         //     memory,
         //     cast_to
         // );
 
-        self.cast_into_memory(value, self.tys[self.file_name][expr], cast_to, memory)
+        self.cast_into_memory(value, self.tys[self.loc][expr], cast_to, memory)
     }
 
     fn cast_into_memory(

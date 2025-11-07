@@ -33,22 +33,24 @@ fn unknown_compiler_directive() {
         "#,
         expect![[r#"
             main::Web_Event : type
-            main::foo : () -> void
-            5 : type
-            7 : type
-            9 : i64
-            10 : i64
-            11 : main::Web_Event.Click
-            12 : main::Web_Event
-            13 : type
-            14 : type
-            15 : {uint}
-            16 : type
-            17 : <unknown>
-            18 : void
-            19 : () -> void
-            l0 : main::Web_Event
-            l1 : <unknown>
+              5 : type
+            main::foo : main::foo() -> void
+              19 : main::foo() -> void
+            main::lambda#foo : main::foo() -> void
+              7 : type
+              9 : i64
+              10 : i64
+              11 : main::Web_Event.Click
+              12 : main::Web_Event
+              13 : type
+              14 : type
+              15 : {uint}
+              16 : type
+              17 : <unknown>
+              18 : void
+              19 : main::foo() -> void
+              l0 : main::Web_Event
+              l1 : <unknown>
         "#]],
         |i| {
             [(

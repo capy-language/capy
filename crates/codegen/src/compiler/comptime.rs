@@ -1,13 +1,15 @@
 //! This module is for JIT'ing all the code needed to calculate the value of comptime blocks
 use cranelift::{
     codegen::ir::Endianness,
-    prelude::{settings, types, Configurable, FunctionBuilderContext},
+    prelude::{Configurable, FunctionBuilderContext, settings, types},
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, Module};
-use hir::FQComptime;
-use hir_ty::ComptimeResult;
+use debug::debug;
+use hir::common::{ComptimeLoc, ComptimeResult, ComptimeResultMap, Ty};
+use hir_ty::LocationResolver;
 use interner::Interner;
+use itertools::Itertools;
 use num_traits::ToBytes;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
@@ -18,11 +20,11 @@ use std::{
 use uid_gen::UIDGenerator;
 
 use crate::{
-    compiler::{abi::Abi, MetaTyData, MetaTyInfoArrays},
+    Verbosity,
+    compiler::{MetaTyData, MetaTyInfoArrays, abi::Abi},
     convert::{FinalTy, GetFinalTy, ToTyId},
     layout::GetLayoutInfo,
     mangle::Mangle,
-    Verbosity,
 };
 
 use super::Compiler;
@@ -109,14 +111,15 @@ impl IntBytes for f64 {
 
 pub fn eval_comptime_blocks<'a>(
     verbosity: Verbosity,
-    mut to_eval: Vec<FQComptime>,
-    results: &'a mut FxHashMap<FQComptime, ComptimeResult>,
+    to_eval: &'a mut dyn Iterator<Item = ComptimeLoc>,
+    results: &'a mut ComptimeResultMap,
     mod_dir: &'a std::path::Path,
     interner: &'a Interner,
     world_bodies: &'a hir::WorldBodies,
-    tys: &'a hir_ty::ProjectInference,
+    tys: &'a hir_ty::WorldTys,
     target_pointer_bit_width: u8,
 ) {
+    let mut to_eval = to_eval.filter(|ctc| !results.contains(*ctc)).collect_vec();
     if to_eval.is_empty() {
         return;
     }
@@ -173,23 +176,24 @@ pub fn eval_comptime_blocks<'a>(
     let mut already_done: FxHashSet<_> = to_eval
         .iter()
         .cloned()
-        .chain(results.keys().cloned())
+        .chain(results.all_blocks().cloned())
         .collect();
 
     let mut comptime_funcs = Vec::new();
 
     while let Some(ctc) = to_eval.pop() {
-        let hir::Comptime { body } = compiler.world_bodies[ctc.file][ctc.comptime];
-        let return_ty = tys[ctc.file][body];
+        let hir::Comptime { body } = compiler.world_bodies[ctc.loc.file()][ctc.comptime];
+
+        let return_ty = tys[ctc.loc][body];
 
         let func_id = compiler.compile_real_function_with_abi(
             &format!(
                 "{}.comptime#{}",
-                ctc.file.to_string(compiler.mod_dir, compiler.interner),
+                ctc.loc.to_string(compiler.mod_dir, compiler.interner),
                 ctc.comptime.into_raw()
             ),
             &ctc.to_mangled_name(compiler.mod_dir, compiler.interner),
-            ctc.file,
+            ctc.loc,
             ctc.expr,
             vec![],
             return_ty,
@@ -217,10 +221,11 @@ pub fn eval_comptime_blocks<'a>(
 
     let meta_tys: FxHashMap<_, _> = compiler
         .meta_tys
-        .tys_to_compile
+        .type_ids
         .iter()
-        .map(|ty| (ty.to_previous_type_id(&compiler.meta_tys), ty))
+        .map(|(ty, id)| (id, ty))
         .collect();
+    debug!("{meta_tys:#?}");
 
     // Finalize the functions which were defined, which resolves any
     // outstanding relocations (patching in addresses, now that they're
@@ -251,13 +256,17 @@ pub fn eval_comptime_blocks<'a>(
     while let Some((ctc, func_id, return_ty)) = comptime_funcs.pop() {
         let code_ptr = module.get_finalized_function(func_id);
 
-        if *return_ty == hir_ty::Ty::Type {
+        if *return_ty == Ty::Type {
             let comptime = unsafe { mem::transmute::<*const u8, fn() -> u32>(code_ptr) };
-            let ty = comptime();
+            let ty_id = comptime();
 
-            let ty = meta_tys.get(&ty).unwrap();
+            debug!("0x{ty_id:x}");
+            debug!("{ty_id}");
 
-            results.insert(ctc, ComptimeResult::Type(**ty));
+            let ty = meta_tys[&ty_id];
+
+            debug!("INSERTING {ctc:?} <- {ty:?}");
+            results.insert(ctc, ComptimeResult::Type(*ty));
             continue;
         }
 

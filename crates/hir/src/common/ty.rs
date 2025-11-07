@@ -1,10 +1,17 @@
 use std::{cell::RefCell, collections::hash_map, fmt::Display};
 
-use hir::{PrimitiveTy, UnaryOp};
 use interner::Interner;
 use internment::Intern;
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
+use text_size::TextRange;
+
+use crate::{BinaryOp, PrimitiveTy, UnaryOp};
+
+use super::{
+    ConcreteGlobalLoc, ConcreteLambdaLoc, ConcreteLoc, FileName, NaiveGlobalLoc, NaiveLambdaLoc,
+    NaiveLoc, Name,
+};
 
 thread_local! {
     // enum uid's to enum types
@@ -19,17 +26,19 @@ thread_local! {
     pub static ENUM_MAP: RefCell<FxHashMap<u32, Intern<Ty>>> = RefCell::new(FxHashMap::default());
 
     pub static TYPE_NAMES: RefCell<FxHashMap<Intern<Ty>, TyName>> = RefCell::new(FxHashMap::default());
+
+    pub static GLOBAL_LAMBDAS: RefCell<FxHashMap<NaiveLambdaLoc, NaiveGlobalLoc>> = RefCell::new(FxHashMap::default());
 }
 
 #[track_caller]
-pub(crate) fn get_enum_from_uid(enum_uid: u32) -> Intern<Ty> {
+pub fn get_enum_from_uid(enum_uid: u32) -> Intern<Ty> {
     ENUM_MAP
         .with_borrow(|map| map.get(&enum_uid).copied())
         .unwrap()
 }
 
 #[track_caller]
-pub(crate) fn set_enum_uid(enum_uid: u32, ty: Intern<Ty>) {
+pub fn set_enum_uid(enum_uid: u32, ty: Intern<Ty>) {
     let Ty::Enum { uid, .. } = ty.as_ref() else {
         panic!("passed in non-enum");
     };
@@ -41,16 +50,15 @@ pub(crate) fn set_enum_uid(enum_uid: u32, ty: Intern<Ty>) {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TyName {
-    Global(hir::Fqn),
-    Local(hir::Name),
+    Global(ConcreteGlobalLoc),
+    Local(Name),
 }
 
-#[cfg(test)]
-pub(crate) fn get_all_named_types() -> Vec<Intern<Ty>> {
+pub fn get_all_named_types() -> Vec<Intern<Ty>> {
     TYPE_NAMES.with(|map| map.borrow().keys().copied().collect_vec())
 }
 
-pub(crate) fn get_type_name(ty: Intern<Ty>) -> Option<TyName> {
+pub fn get_type_name(ty: Intern<Ty>) -> Option<TyName> {
     if !ty.can_have_a_name() {
         return None;
     }
@@ -59,7 +67,7 @@ pub(crate) fn get_type_name(ty: Intern<Ty>) -> Option<TyName> {
 }
 
 #[track_caller]
-pub(crate) fn set_type_name(ty: Intern<Ty>, name: TyName) {
+pub fn set_type_name(ty: Intern<Ty>, name: TyName) {
     assert!(ty.can_have_a_name(), "{ty:?} is not allowed to have a name");
 
     TYPE_NAMES.with(|map| match map.borrow_mut().entry(ty) {
@@ -75,7 +83,35 @@ pub(crate) fn set_type_name(ty: Intern<Ty>, name: TyName) {
     });
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub fn get_naive_lambda_global(lambda: NaiveLambdaLoc) -> Option<NaiveGlobalLoc> {
+    GLOBAL_LAMBDAS.with(|map| map.borrow().get(&lambda).copied())
+}
+
+pub fn get_concrete_lambda_global(lambda: ConcreteLambdaLoc) -> Option<ConcreteGlobalLoc> {
+    GLOBAL_LAMBDAS.with(|map| {
+        map.borrow()
+            .get(&lambda.to_naive())
+            .map(|g| g.make_concrete(lambda.comptime_args()))
+    })
+}
+
+#[track_caller]
+pub fn set_lambda_global(lambda: NaiveLambdaLoc, global: NaiveGlobalLoc) {
+    GLOBAL_LAMBDAS.with(|map| match map.borrow_mut().entry(lambda) {
+        hash_map::Entry::Occupied(occupied_entry) => {
+            assert_eq!(
+                occupied_entry.get(),
+                &global,
+                "cannot insert multiple times"
+            );
+        }
+        hash_map::Entry::Vacant(vacant_entry) => {
+            vacant_entry.insert(global);
+        }
+    });
+}
+
+#[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Hash)]
 pub enum Ty {
     NotYetResolved,
     Unknown,
@@ -127,8 +163,23 @@ pub enum Ty {
         mutable: bool,
     },
     RawSlice,
-    File(hir::FileName),
-    Function {
+    File(FileName),
+
+    /// generic functions when referred to by name.
+    /// e.g. `Vec`
+    /// not enough information is known to resolve the signature of the function
+    NaivePolymorphicFunction {
+        fn_loc: NaiveLoc,
+    },
+    /// These are fully resolved in terms of their generic-ness.
+    /// on top of that, they're unique to the funciton defintion, like rust.
+    /// function pointers can be used to mix functions together
+    ConcreteFunction {
+        param_tys: Vec<ParamTy>,
+        return_ty: Intern<Ty>,
+        fn_loc: ConcreteLambdaLoc,
+    },
+    FunctionPointer {
         param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
     },
@@ -150,7 +201,7 @@ pub enum Ty {
     /// (like the enum's fqn and the discriminant)
     EnumVariant {
         enum_uid: u32,
-        variant_name: hir::Name,
+        variant_name: Name,
         uid: u32,
         sub_ty: Intern<Ty>,
         discriminant: u64,
@@ -176,18 +227,20 @@ pub enum Ty {
     AlwaysJumps,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Eq, Hash)]
 pub struct MemberTy {
     /// members without names are filtered out in hir_ty
     /// because they don't matter for type checking.
     /// we can't do anything with them
-    pub name: hir::Name,
+    pub name: Name,
     pub ty: Intern<Ty>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Eq, Hash)]
 pub struct ParamTy {
     pub ty: Intern<Ty>,
+    /// if this is a compile-time parameter, this will be the index of which compile-time parameter it is
+    pub comptime: Option<usize>,
     pub varargs: bool,
     /// This is used so that "Missing Arg" errors aren't reported for arguments that are
     /// impossible to detect
@@ -195,13 +248,13 @@ pub struct ParamTy {
 }
 
 #[derive(Debug)]
-pub(crate) struct BinaryOutputTy {
-    pub(crate) max_ty: Ty,
-    pub(crate) final_output_ty: Ty,
+pub struct BinaryOutputTy {
+    pub max_ty: Ty,
+    pub final_output_ty: Ty,
 }
 
 impl Ty {
-    pub(crate) fn from_primitive(primitive: PrimitiveTy) -> Self {
+    pub fn from_primitive(primitive: PrimitiveTy) -> Self {
         match primitive {
             PrimitiveTy::IInt { bit_width, .. } => Self::IInt(bit_width),
             PrimitiveTy::UInt { bit_width, .. } => Self::UInt(bit_width),
@@ -238,7 +291,9 @@ impl Ty {
             Ty::RawPtr { .. } => false,
             Ty::RawSlice => false,
             Ty::File(_) => false,
-            Ty::Function { .. } => false,
+            Ty::NaivePolymorphicFunction { .. } => false,
+            Ty::ConcreteFunction { .. } => false,
+            Ty::FunctionPointer { .. } => false,
             Ty::AnonStruct { members } | Ty::ConcreteStruct { members, .. } => members
                 .iter()
                 .all(|MemberTy { ty, .. }| ty.has_default_value()),
@@ -300,7 +355,12 @@ impl Ty {
     /// If self is a function, this returns the parameters and return type
     pub fn as_function(&self) -> Option<(Vec<ParamTy>, Intern<Ty>)> {
         match self.absolute_ty() {
-            Ty::Function {
+            Ty::ConcreteFunction {
+                param_tys: params,
+                return_ty,
+                ..
+            }
+            | Ty::FunctionPointer {
                 param_tys: params,
                 return_ty,
             } => Some((params.clone(), *return_ty)),
@@ -382,7 +442,10 @@ impl Ty {
     }
 
     pub fn is_function(&self) -> bool {
-        matches!(self.absolute_ty(), Ty::Function { .. })
+        matches!(
+            self.absolute_ty(),
+            Ty::ConcreteFunction { .. } | Ty::FunctionPointer { .. }
+        )
     }
 
     pub fn is_struct(&self) -> bool {
@@ -576,9 +639,10 @@ impl Ty {
                 }
                 Ty::Distinct { sub_ty, .. } => to_check.push(sub_ty),
                 Ty::EnumVariant { sub_ty, .. } => to_check.push(sub_ty),
-                Ty::Function {
+                Ty::ConcreteFunction {
                     param_tys,
                     return_ty,
+                    ..
                 } => {
                     to_check.extend(param_tys.iter().map(|ParamTy { ty, .. }| &**ty));
                     to_check.push(return_ty);
@@ -744,11 +808,33 @@ impl Ty {
                     && first_payload_ty
                         .is_functionally_equivalent_to(second_payload_ty, self_can_lose_distinction)
             }
+            (
+                Ty::ConcreteFunction {
+                    param_tys: first_param_tys,
+                    return_ty: first_ret_ty,
+                    ..
+                },
+                Ty::FunctionPointer {
+                    param_tys: second_param_tys,
+                    return_ty: second_ret_ty,
+                },
+            )
+            | (
+                Ty::FunctionPointer {
+                    param_tys: first_param_tys,
+                    return_ty: first_ret_ty,
+                },
+                Ty::ConcreteFunction {
+                    param_tys: second_param_tys,
+                    return_ty: second_ret_ty,
+                    ..
+                },
+            ) => first_param_tys == second_param_tys && first_ret_ty == second_ret_ty,
             (first, second) => first == second,
         }
     }
 
-    pub(crate) fn get_max_int_size(&self) -> Option<u64> {
+    pub fn get_max_int_size(&self) -> Option<u64> {
         match self {
             Ty::IInt(bit_width) => match bit_width {
                 8 => Some(i8::MAX as u64),
@@ -1174,6 +1260,21 @@ impl Ty {
                     payload_ty,
                 },
             ) => found.can_fit_into(error_ty) || found.can_fit_into(payload_ty),
+            (Ty::NaivePolymorphicFunction { .. }, Ty::ConcreteFunction { param_tys, .. }) => {
+                param_tys.iter().any(|ty| ty.comptime.is_some())
+            }
+            (
+                Ty::ConcreteFunction {
+                    param_tys: found_param_tys,
+                    return_ty: found_ret_ty,
+                    ..
+                },
+                Ty::FunctionPointer {
+                    param_tys: expected_param_tys,
+                    return_ty: expected_ret_ty,
+                    ..
+                },
+            ) => found_param_tys == expected_param_tys && found_ret_ty == expected_ret_ty,
             (found, expected) => found.is_functionally_equivalent_to(expected, false),
         }
     }
@@ -1188,7 +1289,7 @@ impl Ty {
     ///
     /// It's also used for disallowing things like `u64!u64`, because a return type of `{uint}`
     /// won't know whether to autocast to the ok variant or the err variant
-    pub(crate) fn can_differentiate_from(&self, other: &Ty) -> bool {
+    pub fn can_differentiate_from(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
             (
@@ -1525,7 +1626,7 @@ impl Ty {
     }
 
     /// allows `distinct` types to have the same semantics as other types as long as the inner type matches
-    pub(crate) fn has_semantics_of(&self, expected: &Ty) -> bool {
+    pub fn has_semantics_of(&self, expected: &Ty) -> bool {
         match (self, expected) {
             (
                 Ty::Distinct { sub_ty: ty, .. } | Ty::EnumVariant { sub_ty: ty, .. },
@@ -1573,7 +1674,7 @@ impl Ty {
     /// WEAK TYPE REPLACEABLE BY ANOTHER OTHER TYPE
     ///
     /// USE `is_weak_replaceable_by` INSTEAD IF YOU NEED THAT
-    pub(crate) fn might_be_weak(&self) -> bool {
+    pub fn might_be_weak(&self) -> bool {
         match self {
             Ty::IInt(0) | Ty::UInt(0) | Ty::Float(0) => true,
             Ty::ConcreteArray { sub_ty, .. } => sub_ty.might_be_weak(),
@@ -1585,7 +1686,7 @@ impl Ty {
         }
     }
 
-    pub(crate) fn is_weak_replaceable_by(&self, expected: &Ty) -> bool {
+    pub fn is_weak_replaceable_by(&self, expected: &Ty) -> bool {
         match (self, expected) {
             // weak signed to strong signed, or weak unsigned to strong unsigned
             (Ty::IInt(0), Ty::IInt(bit_width)) | (Ty::UInt(0), Ty::UInt(bit_width)) => {
@@ -1666,6 +1767,9 @@ impl Ty {
                     sub_ty: expected_sub_ty,
                 },
             ) => found_ty.is_weak_replaceable_by(expected_sub_ty),
+            (Ty::NaivePolymorphicFunction { .. }, Ty::ConcreteFunction { param_tys, .. }) => {
+                param_tys.iter().any(|ty| ty.comptime.is_some())
+            }
             _ => false,
         }
     }
@@ -1780,13 +1884,15 @@ impl Ty {
                 },
             ) => l_uid != r_uid && l_variant_name != r_variant_name,
             (
-                Ty::Function {
+                Ty::FunctionPointer {
                     param_tys: l_param_tys,
                     return_ty: l_return_ty,
+                    ..
                 },
-                Ty::Function {
+                Ty::FunctionPointer {
                     param_tys: r_param_tys,
                     return_ty: r_return_ty,
+                    ..
                 },
             ) => {
                 l_return_ty.is_similar_to(r_return_ty)
@@ -1795,6 +1901,16 @@ impl Ty {
                         .iter()
                         .zip_eq(r_param_tys.iter())
                         .all(|(l, r)| l.ty.is_similar_to(&r.ty))
+            }
+            (
+                Ty::ConcreteFunction { .. } | Ty::FunctionPointer { .. },
+                Ty::ConcreteFunction { .. } | Ty::FunctionPointer { .. },
+            ) => {
+                assert!(!matches!(
+                    (self, other),
+                    (Ty::FunctionPointer { .. }, Ty::FunctionPointer { .. })
+                ));
+                true
             }
             (
                 Ty::Optional {
@@ -1820,11 +1936,11 @@ impl Ty {
         }
     }
 
-    pub fn simple_display<'a>(&'a self, interner: &'a Interner, show_ids: bool) -> TyDisplay<'a> {
+    pub fn debug<'a>(&'a self, interner: &'a Interner, show_ids: bool) -> TyDisplay<'a> {
         TyDisplay {
             ty: self,
             interner,
-            show_ids,
+            advanced_info: show_ids,
             kind: TyDisplayKind::Simple,
         }
     }
@@ -1851,86 +1967,84 @@ impl InternTyExt for Intern<Ty> {
     }
 }
 
-pub(crate) trait BinaryOutput {
+pub trait BinaryOutput {
     fn get_possible_output_ty(&self, first: &Ty, second: &Ty) -> Option<BinaryOutputTy>;
 }
 
-impl BinaryOutput for hir::BinaryOp {
+impl BinaryOutput for BinaryOp {
     /// should check with `can_perform` before actually using the type emitted from this function
     fn get_possible_output_ty(&self, first: &Ty, second: &Ty) -> Option<BinaryOutputTy> {
         first.max(second).map(|max_ty| BinaryOutputTy {
             max_ty: max_ty.clone(),
             final_output_ty: match self {
-                hir::BinaryOp::Add
-                | hir::BinaryOp::Sub
-                | hir::BinaryOp::Mul
-                | hir::BinaryOp::Div
-                | hir::BinaryOp::Mod
-                | hir::BinaryOp::BAnd
-                | hir::BinaryOp::BOr
-                | hir::BinaryOp::Xor
-                | hir::BinaryOp::LShift
-                | hir::BinaryOp::RShift => max_ty,
-                hir::BinaryOp::Lt
-                | hir::BinaryOp::Gt
-                | hir::BinaryOp::Le
-                | hir::BinaryOp::Ge
-                | hir::BinaryOp::Eq
-                | hir::BinaryOp::Ne
-                | hir::BinaryOp::LAnd
-                | hir::BinaryOp::LOr => Ty::Bool,
+                BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Mod
+                | BinaryOp::BAnd
+                | BinaryOp::BOr
+                | BinaryOp::Xor
+                | BinaryOp::LShift
+                | BinaryOp::RShift => max_ty,
+                BinaryOp::Lt
+                | BinaryOp::Gt
+                | BinaryOp::Le
+                | BinaryOp::Ge
+                | BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::LAnd
+                | BinaryOp::LOr => Ty::Bool,
             },
         })
     }
 }
 
-pub(crate) trait UnaryOutput {
+pub trait UnaryOutput {
     fn get_possible_output_ty(&self, input: Intern<Ty>) -> Intern<Ty>;
 }
 
 impl UnaryOutput for UnaryOp {
     fn get_possible_output_ty(&self, input: Intern<Ty>) -> Intern<Ty> {
         match self {
-            hir::UnaryOp::Neg => match *input {
+            UnaryOp::Neg => match *input {
                 Ty::UInt(bit_width) => Ty::IInt(bit_width).into(),
                 _ => input,
             },
-            hir::UnaryOp::Pos | hir::UnaryOp::BNot | hir::UnaryOp::LNot => input,
+            UnaryOp::Pos | UnaryOp::BNot | UnaryOp::LNot => input,
         }
     }
 }
 
-pub(crate) trait TypedOp {
+pub trait TypedOp {
     fn can_perform(&self, ty: &Ty) -> bool;
 
     fn default_ty(&self) -> Ty;
 }
 
-impl TypedOp for hir::BinaryOp {
+impl TypedOp for BinaryOp {
     fn can_perform(&self, found: &Ty) -> bool {
         match self {
-            hir::BinaryOp::Add
-            | hir::BinaryOp::Sub
-            | hir::BinaryOp::Mul
-            | hir::BinaryOp::Div
-            | hir::BinaryOp::Xor => matches!(
-                found.absolute_ty(),
-                Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_)
-            ),
-            hir::BinaryOp::BAnd | hir::BinaryOp::BOr => matches!(
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Xor => {
+                matches!(
+                    found.absolute_ty(),
+                    Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_)
+                )
+            }
+            BinaryOp::BAnd | BinaryOp::BOr => matches!(
                 found.absolute_ty(),
                 Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool
             ),
-            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => {
+            BinaryOp::Mod | BinaryOp::LShift | BinaryOp::RShift => {
                 matches!(found.absolute_ty(), Ty::IInt(_) | Ty::UInt(_))
             }
-            hir::BinaryOp::Lt | hir::BinaryOp::Gt | hir::BinaryOp::Le | hir::BinaryOp::Ge => {
+            BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
                 matches!(
                     found.absolute_ty(),
                     Ty::IInt(_) | Ty::UInt(_) | Ty::Float(_) | Ty::Bool
                 )
             }
-            hir::BinaryOp::Eq | hir::BinaryOp::Ne => {
+            BinaryOp::Eq | BinaryOp::Ne => {
                 // TODO: allow comparing aggregates
                 // todo: make sure this is consistent with codegen
                 !matches!(
@@ -1938,38 +2052,36 @@ impl TypedOp for hir::BinaryOp {
                     Ty::Any | Ty::RawPtr { .. } | Ty::RawSlice | Ty::Unknown
                 )
             }
-            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => *found.absolute_ty() == Ty::Bool,
+            BinaryOp::LAnd | BinaryOp::LOr => *found.absolute_ty() == Ty::Bool,
         }
     }
 
     fn default_ty(&self) -> Ty {
         match self {
-            hir::BinaryOp::Add
-            | hir::BinaryOp::Sub
-            | hir::BinaryOp::Mul
-            | hir::BinaryOp::Div
-            | hir::BinaryOp::BAnd
-            | hir::BinaryOp::BOr
-            | hir::BinaryOp::Xor => Ty::IInt(0),
-            hir::BinaryOp::Mod | hir::BinaryOp::LShift | hir::BinaryOp::RShift => Ty::IInt(0),
-            hir::BinaryOp::Lt
-            | hir::BinaryOp::Gt
-            | hir::BinaryOp::Le
-            | hir::BinaryOp::Ge
-            | hir::BinaryOp::Eq
-            | hir::BinaryOp::Ne => Ty::Bool,
-            hir::BinaryOp::LAnd | hir::BinaryOp::LOr => Ty::Bool,
+            BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::Div
+            | BinaryOp::BAnd
+            | BinaryOp::BOr
+            | BinaryOp::Xor => Ty::IInt(0),
+            BinaryOp::Mod | BinaryOp::LShift | BinaryOp::RShift => Ty::IInt(0),
+            BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::Le
+            | BinaryOp::Ge
+            | BinaryOp::Eq
+            | BinaryOp::Ne => Ty::Bool,
+            BinaryOp::LAnd | BinaryOp::LOr => Ty::Bool,
         }
     }
 }
 
-impl TypedOp for hir::UnaryOp {
+impl TypedOp for UnaryOp {
     fn can_perform(&self, found: &Ty) -> bool {
         let expected: &[Ty] = match self {
-            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => {
-                &[Ty::IInt(0), Ty::Float(0)]
-            }
-            hir::UnaryOp::LNot => &[Ty::Bool],
+            UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BNot => &[Ty::IInt(0), Ty::Float(0)],
+            UnaryOp::LNot => &[Ty::Bool],
         };
 
         expected
@@ -1979,8 +2091,8 @@ impl TypedOp for hir::UnaryOp {
 
     fn default_ty(&self) -> Ty {
         match self {
-            hir::UnaryOp::Neg | hir::UnaryOp::Pos | hir::UnaryOp::BNot => Ty::IInt(0),
-            hir::UnaryOp::LNot => Ty::Bool,
+            UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BNot => Ty::IInt(0),
+            UnaryOp::LNot => Ty::Bool,
         }
     }
 }
@@ -1996,7 +2108,10 @@ enum TyDisplayKind<'a> {
 pub struct TyDisplay<'a> {
     interner: &'a Interner,
     ty: &'a Ty,
-    show_ids: bool,
+    /// Whether or not to show IDs such as struct UIDs.
+    /// Also controls whether or not to show the param and ret types of
+    /// concrete functions
+    advanced_info: bool,
     kind: TyDisplayKind<'a>,
 }
 
@@ -2033,9 +2148,9 @@ impl TyDisplay<'_> {
 
     fn display_sub<'a>(&'a self, ty: &'a Intern<Ty>) -> TyDisplay<'a> {
         match self.kind {
-            TyDisplayKind::Simple => ty.simple_display(self.interner, self.show_ids),
+            TyDisplayKind::Simple => ty.debug(self.interner, self.advanced_info),
             TyDisplayKind::ShowNames { mod_dir, .. } => {
-                ty.named_display(mod_dir, self.interner, self.show_ids)
+                ty.display(mod_dir, self.interner, self.advanced_info)
             }
         }
     }
@@ -2067,7 +2182,7 @@ impl Display for TyDisplay<'_> {
             Ty::Bool => write!(f, "bool"),
             Ty::String => write!(f, "str"),
             Ty::Char => write!(f, "char"),
-            Ty::AnonArray { size, sub_ty } if self.show_ids => {
+            Ty::AnonArray { size, sub_ty } if self.advanced_info => {
                 write!(f, "~[{size}]{}", self.display_sub(sub_ty))
             }
             Ty::AnonArray { size, sub_ty } | Ty::ConcreteArray { size, sub_ty, .. } => {
@@ -2085,25 +2200,83 @@ impl Display for TyDisplay<'_> {
             }
             Ty::Distinct { uid, sub_ty: ty } => {
                 write!(f, "distinct")?;
-                if self.show_ids {
+                if self.advanced_info {
                     write!(f, "'{uid}")?;
                 }
                 write!(f, " {}", self.display_sub(ty))
             }
-            Ty::Function {
-                param_tys: params,
+            Ty::NaivePolymorphicFunction { fn_loc, .. } => {
+                match self.kind {
+                    // todo! write the lambda info as well if its there
+                    TyDisplayKind::ShowNames { mod_dir, .. } => {
+                        write!(f, "{}<?>", fn_loc.to_string(mod_dir, self.interner))
+                    }
+                    TyDisplayKind::Simple => write!(f, "{}<?>", fn_loc.debug(self.interner)),
+                }
+            }
+            Ty::ConcreteFunction {
+                param_tys,
                 return_ty,
+                fn_loc,
+            } => {
+                let loc = get_concrete_lambda_global(*fn_loc)
+                    .map(|l| l.wrap())
+                    .unwrap_or(fn_loc.wrap());
+                match self.kind {
+                    // todo! write the lambda info as well if its there
+                    TyDisplayKind::ShowNames { mod_dir, .. } => {
+                        write!(f, "{}", loc.to_string(mod_dir, self.interner))?;
+                    }
+                    TyDisplayKind::Simple => {
+                        match loc {
+                            ConcreteLoc::Global(global) => {
+                                write!(f, "{}", self.interner.lookup(global.name().0))?;
+                            }
+                            ConcreteLoc::Lambda(_) => {
+                                write!(f, "lambda")?;
+                            }
+                        }
+                        if let Some(comptime_args) = loc.comptime_args() {
+                            write!(f, "<{}>", comptime_args.raw_start())?;
+                        }
+                    }
+                }
+
+                if self.advanced_info {
+                    write!(f, "(")?;
+
+                    for (idx, param) in param_tys.iter().enumerate() {
+                        if param.varargs {
+                            write!(f, "...")?;
+                        }
+
+                        write!(f, "{}", self.display_sub(&param.ty))?;
+
+                        if idx != param_tys.len() - 1 {
+                            write!(f, ", ")?;
+                        }
+                    }
+                    write!(f, ") -> ")?;
+                    write!(f, "{}", self.display_sub(return_ty))?;
+                }
+
+                Ok(())
+            }
+            Ty::FunctionPointer {
+                param_tys,
+                return_ty,
+                ..
             } => {
                 write!(f, "(")?;
 
-                for (idx, param) in params.iter().enumerate() {
+                for (idx, param) in param_tys.iter().enumerate() {
                     if param.varargs {
                         write!(f, "...")?;
                     }
 
                     write!(f, "{}", self.display_sub(&param.ty))?;
 
-                    if idx != params.len() - 1 {
+                    if idx != param_tys.len() - 1 {
                         write!(f, ", ")?;
                     }
                 }
@@ -2112,7 +2285,7 @@ impl Display for TyDisplay<'_> {
             }
             Ty::ConcreteStruct { uid, members } => {
                 write!(f, "struct")?;
-                if self.show_ids {
+                if self.advanced_info {
                     write!(f, "'{uid}")?;
                 }
                 write!(f, " {{")?;
@@ -2148,7 +2321,7 @@ impl Display for TyDisplay<'_> {
             }
             Ty::Enum { uid, variants } => {
                 write!(f, "enum")?;
-                if self.show_ids {
+                if self.advanced_info {
                     write!(f, "'{uid}")?;
                 }
                 write!(f, " {{")?;
@@ -2171,7 +2344,7 @@ impl Display for TyDisplay<'_> {
                         write!(f, "{}", self.display_sub(sub_ty))?;
                     }
 
-                    if self.show_ids {
+                    if self.advanced_info {
                         write!(f, " | {discriminant}")?;
                     }
 
@@ -2193,7 +2366,7 @@ impl Display for TyDisplay<'_> {
 
                 write!(f, ".{}", self.interner.lookup(variant_name.0))?;
 
-                if self.show_ids && !named {
+                if self.advanced_info && !named {
                     write!(f, "'{uid}")?;
                 }
 
@@ -2230,25 +2403,25 @@ impl Display for TyDisplay<'_> {
 }
 
 pub trait InternTyDisplay {
-    fn named_display<'a>(
+    fn display<'a>(
         &'a self,
         mod_dir: &'a std::path::Path,
         interner: &'a interner::Interner,
-        show_ids: bool,
+        advanced_info: bool,
     ) -> TyDisplay<'a>;
 }
 
 impl InternTyDisplay for Intern<Ty> {
-    fn named_display<'a>(
+    fn display<'a>(
         &'a self,
         mod_dir: &'a std::path::Path,
         interner: &'a interner::Interner,
-        show_ids: bool,
+        advanced_info: bool,
     ) -> TyDisplay<'a> {
         TyDisplay {
             interner,
             ty: self,
-            show_ids,
+            advanced_info,
             kind: TyDisplayKind::ShowNames {
                 mod_dir,
                 interned: *self,

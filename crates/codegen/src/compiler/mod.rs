@@ -6,12 +6,15 @@ mod ty_info;
 use cranelift::codegen::ir::{BlockArg, StackSlot};
 use cranelift::codegen::{self, CodegenError};
 use cranelift::prelude::{
-    types, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, StackSlotData,
-    StackSlotKind, Value,
+    FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, StackSlotData,
+    StackSlotKind, Value, types,
 };
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, ModuleError};
-use hir::FQComptime;
-use hir_ty::{ComptimeResult, InternTyExt, ParamTy, Ty};
+use hir::common::{
+    ComptimeLoc, ComptimeResultMap, ConcreteGlobalLoc, ConcreteLambdaLoc, ConcreteLoc, Fqn,
+    InternTyExt, MemberTy, NaiveGlobalLoc, NaiveLambdaLoc, Name, ParamTy, Ty,
+};
+use hir_ty::LocationResolver;
 use interner::Interner;
 use internment::Intern;
 use itertools::Itertools;
@@ -26,8 +29,8 @@ use crate::debug::NiceFuncWriter;
 use crate::layout::{self, GetLayoutInfo};
 use crate::mangle::{self, Mangle};
 use crate::{
-    convert::{self, *},
     FinalSignature, Verbosity,
+    convert::{self, *},
 };
 
 use self::abi::Abi;
@@ -183,7 +186,7 @@ impl ComptimeData {
         module: &mut dyn Module,
         mod_dir: &std::path::Path,
         interner: &Interner,
-        comptime: FQComptime,
+        comptime: ComptimeLoc,
     ) -> Self {
         let mut declare = |name: &str| {
             module
@@ -204,8 +207,10 @@ impl ComptimeData {
 }
 
 pub(crate) struct FunctionToCompile {
-    pub(crate) file_name: hir::FileName,
-    pub(crate) function_name: Option<hir::Name>,
+    pub(crate) loc: ConcreteLoc,
+    /// This would be false for lambdas defined within the body of a function,
+    /// and true for the top-level function.
+    pub(crate) is_function: bool,
     pub(crate) lambda: Idx<hir::Lambda>,
     pub(crate) param_tys: Vec<ParamTy>,
     pub(crate) return_ty: Intern<Ty>,
@@ -219,7 +224,7 @@ pub(crate) struct Compiler<'a> {
 
     pub(crate) interner: &'a Interner,
     pub(crate) world_bodies: &'a hir::WorldBodies,
-    pub(crate) tys: &'a hir_ty::ProjectInference,
+    pub(crate) tys: &'a hir_ty::WorldTys,
 
     pub(crate) builder_context: FunctionBuilderContext,
     pub(crate) ctx: codegen::Context,
@@ -231,17 +236,17 @@ pub(crate) struct Compiler<'a> {
     pub(crate) functions_to_compile: VecDeque<FunctionToCompile>,
 
     // globals
-    pub(crate) functions: FxHashMap<hir::Fqn, FuncId>,
-    pub(crate) user_extern_functions: FxHashMap<hir::Name, FuncId>,
+    pub(crate) functions: FxHashMap<ConcreteLoc, FuncId>,
+    pub(crate) user_extern_functions: FxHashMap<Name, FuncId>,
     pub(crate) internal_extern_functions: FxHashMap<&'static str, FuncId>,
     pub(crate) compiler_defined_functions: FxHashMap<BuiltinFunction, FuncId>,
-    pub(crate) data: FxHashMap<hir::Fqn, DataId>,
+    pub(crate) data: FxHashMap<ConcreteGlobalLoc, DataId>,
     pub(crate) meta_tys: MetaTyData,
     pub(crate) cmd_args_slice: Option<DataId>,
     pub(crate) str_id_gen: UIDGenerator,
     pub(crate) i128_id_gen: UIDGenerator,
-    pub(crate) comptime_results: &'a FxHashMap<FQComptime, ComptimeResult>,
-    pub(crate) comptime_data: FxHashMap<FQComptime, ComptimeData>,
+    pub(crate) comptime_results: &'a ComptimeResultMap,
+    pub(crate) comptime_data: FxHashMap<ComptimeLoc, ComptimeData>,
 
     pub(crate) default_abi: Abi,
 }
@@ -292,7 +297,7 @@ impl Compiler<'_> {
         }
     }
 
-    fn get_func_id(&mut self, fqn: hir::Fqn) -> FuncId {
+    fn get_func_id(&mut self, tfqn: ConcreteGlobalLoc) -> FuncId {
         get_func_id(
             self.module,
             self.ptr_ty,
@@ -305,12 +310,12 @@ impl Compiler<'_> {
             self.tys,
             self.world_bodies,
             self.interner,
-            fqn,
+            tfqn,
         )
     }
 
     fn compile_ftc(&mut self, ftc: FunctionToCompile) {
-        let hir::Lambda { body, .. } = &self.world_bodies[ftc.file_name][ftc.lambda];
+        let hir::Lambda { body, .. } = &self.world_bodies[ftc.loc.file()][ftc.lambda];
 
         if let hir::LambdaBody::Builtin { name, .. } = body {
             let builtin_kind = hir_ty::BuiltinKind::from_str(self.interner.lookup(*name)).unwrap();
@@ -342,25 +347,10 @@ impl Compiler<'_> {
             unreachable!("hir::LambdaBody::Empty would've reported an error");
         };
 
-        let unmangled_name = if let Some(name) = ftc.function_name {
-            let fqn = hir::Fqn {
-                file: ftc.file_name,
-                name,
-            };
-
-            fqn.to_string(self.mod_dir, self.interner)
-        } else {
-            format!(
-                "{}.lambda#{}",
-                ftc.file_name.to_string(self.mod_dir, self.interner),
-                ftc.lambda.into_raw()
-            )
-        };
-
         self.compile_real_function(
-            &unmangled_name,
+            &ftc.loc.to_string(self.mod_dir, self.interner),
             &ftc.to_mangled_name(self.mod_dir, self.interner),
-            ftc.file_name,
+            ftc.loc,
             *body,
             ftc.param_tys,
             ftc.return_ty,
@@ -423,7 +413,7 @@ impl Compiler<'_> {
         &mut self,
         unmangled_name: &str,
         mangled_name: &str,
-        module_name: hir::FileName,
+        loc: ConcreteLoc,
         body: Idx<hir::Expr>,
         param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
@@ -431,7 +421,7 @@ impl Compiler<'_> {
         self.compile_real_function_with_abi(
             unmangled_name,
             mangled_name,
-            module_name,
+            loc,
             body,
             param_tys,
             return_ty,
@@ -439,16 +429,23 @@ impl Compiler<'_> {
         )
     }
 
+    // this will handle "resolving" the given location
+    // into a final function location
     fn compile_real_function_with_abi(
         &mut self,
         unmangled_name: &str,
         mangled_name: &str,
-        module_name: hir::FileName,
+        loc: ConcreteLoc,
         body: Idx<hir::Expr>,
         param_tys: Vec<ParamTy>,
         return_ty: Intern<Ty>,
         abi: Abi,
     ) -> FuncId {
+        let loc = loc
+            .resolve_to_lambda(self.world_bodies, self.tys, self.interner)
+            .map(|lambda| lambda.wrap())
+            .unwrap_or(loc);
+
         let fn_abi = abi.fn_to_target((&param_tys, return_ty));
         let comp_sig = fn_abi.to_cl(self.ptr_ty, self.module.target_config().default_call_conv);
         let func_id = self
@@ -464,7 +461,7 @@ impl Compiler<'_> {
         let function_compiler = FunctionCompiler {
             final_binary: self.final_binary,
             builder,
-            file_name: module_name,
+            loc,
             mod_dir: self.mod_dir,
             interner: self.interner,
             world_bodies: self.world_bodies,
@@ -476,7 +473,6 @@ impl Compiler<'_> {
             meta_tys: &mut self.meta_tys,
             cmd_args_slice: &mut self.cmd_args_slice,
             local_functions: FxHashMap::default(),
-            local_lambdas: FxHashMap::default(),
             functions: &mut self.functions,
             user_extern_functions: &mut self.user_extern_functions,
             internal_extern_functions: &mut self.internal_extern_functions,
@@ -495,7 +491,7 @@ impl Compiler<'_> {
             func_writer: Default::default(),
         };
 
-        let is_mod = module_name.is_mod(self.mod_dir, self.interner);
+        let is_mod = loc.file().is_mod(self.mod_dir, self.interner);
 
         if self.verbosity.should_show(is_mod) {
             println!("({})", unmangled_name);
@@ -554,31 +550,31 @@ fn get_func_id(
     module: &mut dyn Module,
     pointer_ty: types::Type,
     mod_dir: &std::path::Path,
-    functions: &mut FxHashMap<hir::Fqn, FuncId>,
-    user_extern_functions: &mut FxHashMap<hir::Name, FuncId>,
+    functions: &mut FxHashMap<ConcreteLoc, FuncId>,
+    user_extern_functions: &mut FxHashMap<Name, FuncId>,
     internal_extern_functions: &mut FxHashMap<&'static str, FuncId>,
     compiler_defined_functions: &mut FxHashMap<BuiltinFunction, FuncId>,
     functions_to_compile: &mut VecDeque<FunctionToCompile>,
-    tys: &hir_ty::ProjectInference,
+    tys: &hir_ty::WorldTys,
     world_bodies: &hir::WorldBodies,
     interner: &Interner,
-    fqn: hir::Fqn,
+    loc: ConcreteGlobalLoc,
 ) -> FuncId {
-    if let Some(func_id) = functions.get(&fqn) {
+    if let Some(func_id) = functions.get(&loc.wrap()) {
         return *func_id;
     }
 
-    let (param_tys, return_ty) = tys[fqn]
-        .0
+    let (param_tys, return_ty) = tys
+        .sig(loc.wrap())
         .as_function()
         .expect("tried to compile non-function as function");
 
-    if world_bodies.is_extern(fqn) {
-        if let Some(func_id) = user_extern_functions.get(&fqn.name) {
+    if world_bodies.global_is_extern(loc.to_naive()) {
+        if let Some(func_id) = user_extern_functions.get(&loc.name()) {
             return *func_id;
         }
-        if let Some(func_id) = internal_extern_functions.get(interner.lookup(fqn.name.0)) {
-            user_extern_functions.insert(fqn.name, *func_id);
+        if let Some(func_id) = internal_extern_functions.get(interner.lookup(loc.name().0)) {
+            user_extern_functions.insert(loc.name(), *func_id);
             return *func_id;
         }
 
@@ -587,23 +583,26 @@ fn get_func_id(
             .to_cl(pointer_ty, module.target_config().default_call_conv);
 
         let func_id = module
-            .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
+            .declare_function(interner.lookup(loc.name().0), Linkage::Import, &comp_sig)
             .expect("There are multiple extern functions with the same name");
 
-        user_extern_functions.insert(fqn.name, func_id);
+        user_extern_functions.insert(loc.name(), func_id);
 
         return func_id;
     }
 
-    let global_body = world_bodies.body(fqn);
+    let global_body = world_bodies.global_body(loc.to_naive());
 
-    let lambda = match world_bodies[fqn.file][global_body] {
+    let lambda = match world_bodies[loc.file()][global_body] {
         hir::Expr::Lambda(lambda) => lambda,
         hir::Expr::LocalGlobal(global) => {
-            let fqn = hir::Fqn {
-                file: fqn.file,
+            let ufqn = Fqn {
+                file: loc.file(),
                 name: global.name,
             };
+
+            assert!(!world_bodies.has_polymorphic_body(ufqn.wrap()));
+            let tfqn = ufqn.make_concrete(None);
 
             // todo: remove recursion
             return get_func_id(
@@ -618,18 +617,21 @@ fn get_func_id(
                 tys,
                 world_bodies,
                 interner,
-                fqn,
+                tfqn,
             );
         }
         hir::Expr::Member {
             previous,
             name: field,
         } => {
-            if let Ty::File(file) = tys[fqn.file][previous].as_ref() {
-                let fqn = hir::Fqn {
+            if let Ty::File(file) = tys[loc.wrap()][previous].as_ref() {
+                let ufqn = Fqn {
                     file: *file,
                     name: field.name,
                 };
+
+                assert!(!world_bodies.has_polymorphic_body(ufqn.wrap()));
+                let tfqn = ufqn.make_concrete(None);
 
                 // todo: remove recursion
                 return get_func_id(
@@ -644,7 +646,7 @@ fn get_func_id(
                     tys,
                     world_bodies,
                     interner,
-                    fqn,
+                    tfqn,
                 );
             } else {
                 unreachable!("there shouldn't be any other possibilities here");
@@ -654,21 +656,21 @@ fn get_func_id(
     };
 
     let ftc = FunctionToCompile {
-        file_name: fqn.file,
-        function_name: Some(fqn.name),
+        loc: loc.wrap(),
+        is_function: true,
         lambda,
         param_tys: param_tys.clone(),
         return_ty,
     };
 
-    let lambda_body = &world_bodies[fqn.file][lambda];
+    let lambda_body = &world_bodies[loc.file()][lambda];
 
     if let hir::LambdaBody::Builtin { name, .. } = lambda_body.body {
         let builtin_kind = hir_ty::BuiltinKind::from_str(interner.lookup(name)).unwrap();
         let builtin_func: BuiltinFunction = builtin_kind.into();
 
         if let Some(func_id) = compiler_defined_functions.get(&builtin_func) {
-            functions.insert(fqn, *func_id);
+            functions.insert(loc.wrap(), *func_id);
 
             return *func_id;
         }
@@ -679,7 +681,7 @@ fn get_func_id(
         functions_to_compile.push_back(ftc);
 
         compiler_defined_functions.insert(builtin_func, func_id);
-        functions.insert(fqn, func_id);
+        functions.insert(loc.wrap(), func_id);
 
         return func_id;
     }
@@ -690,10 +692,10 @@ fn get_func_id(
             .to_cl(pointer_ty, module.target_config().default_call_conv);
 
         let func_id = module
-            .declare_function(interner.lookup(fqn.name.0), Linkage::Import, &comp_sig)
+            .declare_function(interner.lookup(loc.name().0), Linkage::Import, &comp_sig)
             .expect("There are multiple extern functions with the same name");
 
-        functions.insert(fqn, func_id);
+        functions.insert(loc.wrap(), func_id);
 
         return func_id;
     }
@@ -706,13 +708,13 @@ fn get_func_id(
 
     let func_id = module
         .declare_function(
-            &fqn.to_mangled_name(mod_dir, interner),
+            &loc.to_mangled_name(mod_dir, interner),
             Linkage::Export,
             &comp_sig,
         )
         .unwrap();
 
-    functions.insert(fqn, func_id);
+    functions.insert(loc.wrap(), func_id);
 
     func_id
 }
@@ -1384,7 +1386,7 @@ fn cast_struct_to_struct(
 
         for (
             from_idx,
-            hir_ty::MemberTy {
+            MemberTy {
                 name: from_name,
                 ty: from_ty,
             },

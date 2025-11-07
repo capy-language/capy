@@ -21,4 +21,4 @@ expect-test = "1.1"
 
 [features]
 default = []
-expose_hir_ty = []
+expose_hir = []

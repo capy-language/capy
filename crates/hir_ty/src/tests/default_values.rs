@@ -11,10 +11,12 @@ fn default_value_i32() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            1 : void
-            2 : () -> void
-            l0 : i32
+            main::defaults : main::defaults() -> void
+              2 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              1 : void
+              2 : main::defaults() -> void
+              l0 : i32
         "#]],
         |_| [],
     )
@@ -29,11 +31,13 @@ fn default_value_char_array() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            0 : usize
-            3 : void
-            4 : () -> void
-            l0 : [10]char
+            main::defaults : main::defaults() -> void
+              4 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              0 : usize
+              3 : void
+              4 : main::defaults() -> void
+              l0 : [10]char
         "#]],
         |_| [],
     )
@@ -55,12 +59,14 @@ fn default_value_distinct_distinct_struct_with_valid_types() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            0 : usize
-            1 : usize
-            14 : void
-            15 : () -> void
-            l0 : distinct'3 distinct'2 struct'1 {a: [2][4]u8, b: i16, c: distinct'0 f32, d: bool, e: char, f: void}
+            main::defaults : main::defaults() -> void
+              15 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              0 : usize
+              1 : usize
+              14 : void
+              15 : main::defaults() -> void
+              l0 : distinct'3 distinct'2 struct'1 {a: [2][4]u8, b: i16, c: distinct'0 f32, d: bool, e: char, f: void}
         "#]],
         |_| [],
     )
@@ -75,10 +81,12 @@ fn default_value_i32_ptr() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            2 : void
-            3 : () -> void
-            l0 : ^i32
+            main::defaults : main::defaults() -> void
+              3 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              2 : void
+              3 : main::defaults() -> void
+              l0 : ^i32
         "#]],
         |_| {
             [(
@@ -105,10 +113,12 @@ fn default_value_opt_i32_ptr() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            3 : void
-            4 : () -> void
-            l0 : ?^i32
+            main::defaults : main::defaults() -> void
+              4 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              3 : void
+              4 : main::defaults() -> void
+              l0 : ?^i32
         "#]],
         |_| [],
     )
@@ -123,10 +133,12 @@ fn default_value_distinct_bool_slice() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            3 : void
-            4 : () -> void
-            l0 : distinct'0 []bool
+            main::defaults : main::defaults() -> void
+              4 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              3 : void
+              4 : main::defaults() -> void
+              l0 : distinct'0 []bool
         "#]],
         |_| {
             [(
@@ -159,10 +171,12 @@ fn default_value_distinct_struct_with_str() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            4 : void
-            5 : () -> void
-            l0 : distinct'1 struct'0 {foo: str, bar: u8}
+            main::defaults : main::defaults() -> void
+              5 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              4 : void
+              5 : main::defaults() -> void
+              l0 : distinct'1 struct'0 {foo: str, bar: u8}
         "#]],
         |i| {
             [(
@@ -173,11 +187,11 @@ fn default_value_distinct_struct_with_str() {
                             uid: 0,
                             members: vec![
                                 MemberTy {
-                                    name: hir::Name(i.intern("foo")),
+                                    name: Name(i.intern("foo")),
                                     ty: Ty::String.into(),
                                 },
                                 MemberTy {
-                                    name: hir::Name(i.intern("bar")),
+                                    name: Name(i.intern("bar")),
                                     ty: Ty::UInt(8).into(),
                                 },
                             ],
@@ -205,10 +219,12 @@ fn default_value_distinct_struct_with_opt_str() {
             }
         "#,
         expect![[r#"
-            main::defaults : () -> void
-            5 : void
-            6 : () -> void
-            l0 : distinct'1 struct'0 {foo: ?str, bar: u8}
+            main::defaults : main::defaults() -> void
+              6 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              5 : void
+              6 : main::defaults() -> void
+              l0 : distinct'1 struct'0 {foo: ?str, bar: u8}
         "#]],
         |_| [],
     )
@@ -231,18 +247,20 @@ fn default_value_with_uninferred_globals() {
             }
         "#,
         expect![[r#"
-            main::Bar : type
-            main::Baz : type
             main::Foo : type
-            main::defaults : () -> void
-            1 : type
-            2 : type
-            3 : type
-            5 : type
-            8 : type
-            9 : void
-            10 : () -> void
-            l0 : ^i32
+              1 : type
+            main::Bar : type
+              2 : type
+              3 : type
+            main::Baz : type
+              5 : type
+            main::defaults : main::defaults() -> void
+              10 : main::defaults() -> void
+            main::lambda#defaults : main::defaults() -> void
+              8 : type
+              9 : void
+              10 : main::defaults() -> void
+              l0 : ^i32
         "#]],
         |_| {
             // under the bug, this appears twice

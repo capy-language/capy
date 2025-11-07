@@ -1,0 +1,40 @@
+core :: #mod("core");
+ptr :: core.ptr;
+meta :: core.meta;
+
+StackList :: (comptime T: type, comptime capacity: usize) -> type {
+    struct {
+        array: [capacity] T,
+        len: usize,
+    }
+}
+
+push :: (comptime SList: type, comptime T: type, self: ^mut SList, item: T) {
+    info := #unwrap(meta.get_type_info(SList), meta.Type_Info.Struct);
+    arr_ty := info.members[0].ty;
+    info := #unwrap(meta.get_type_info(arr_ty), meta.Type_Info.Array);
+    capacity := info.len;
+
+    core.assert(self.len < capacity);
+
+    self.array[self.len] = item;
+    self.len += 1;
+}
+
+get :: (comptime SList: type, comptime Item: type, self: ^SList, index: usize) -> ^Item {
+    ^self.array[index]
+}
+
+pop :: (comptime SList: type, comptime Item: type, self: ^mut SList) -> Item {
+    if self.len == 0 {
+        core.panic("cannot pop from an empty list");
+    }
+
+    self.len = self.len - 1;
+
+    self.array[self.len]
+}
+
+to_slice :: (comptime SList: type, comptime T: type, self: ^SList) -> []T {
+    []T.(ptr.slice_from_raw_parts(^self.array, self.len))
+}

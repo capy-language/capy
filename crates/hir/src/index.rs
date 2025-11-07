@@ -4,7 +4,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SyntaxTree;
 use text_size::{TextRange, TextSize};
 
-use crate::Name;
+use crate::common::*;
 
 #[derive(Clone, Debug)]
 pub struct Index {
@@ -150,7 +150,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use expect_test::{expect, Expect};
+    use expect_test::{Expect, expect};
 
     fn check<const N: usize>(
         input: &str,

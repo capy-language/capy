@@ -1,7 +1,7 @@
 use cranelift::codegen::ir::{self, Type};
-use hir_ty::{ParamTy, Ty};
+use hir::common::{ParamTy, Ty};
 use internment::Intern;
-use tinyvec::{array_vec, ArrayVec};
+use tinyvec::{ArrayVec, array_vec};
 
 use crate::{convert::GetFinalTy, layout::GetLayoutInfo};
 
@@ -61,7 +61,7 @@ fn classify_arg(ty: Intern<Ty>) -> Option<[Class; 8]> {
             | Ty::Bool
             | Ty::Pointer { .. }
             | Ty::RawPtr { .. }
-            | Ty::Function { .. }
+            | Ty::ConcreteFunction { .. }
             | Ty::File(_) => {
                 classes[offset / 8] = classes[offset / 8].merge_eigthbyte(Int);
                 if ty.size() > 8 {
