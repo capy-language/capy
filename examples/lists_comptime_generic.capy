@@ -7,24 +7,24 @@ main :: () {
     //
     // This list is stored entirely on the stack,
     // `10` is the capacity
-    MyListType :: comptime stack_list.StackList(u128, 10);
+    MyListType :: comptime stack_list.StackList(u64, 10);
 
     my_list : MyListType; // use default (empty) value
 
-    stack_list.push(MyListType, u128, ^mut my_list, 4);
-    stack_list.push(MyListType, u128, ^mut my_list, 8);
-    stack_list.push(MyListType, u128, ^mut my_list, 15);
-    stack_list.push(MyListType, u128, ^mut my_list, 16);
-    stack_list.push(MyListType, u128, ^mut my_list, 23);
+    stack_list.push(MyListType, u64, ^mut my_list, 4);
+    stack_list.push(MyListType, u64, ^mut my_list, 8);
+    stack_list.push(MyListType, u64, ^mut my_list, 15);
+    stack_list.push(MyListType, u64, ^mut my_list, 16);
+    stack_list.push(MyListType, u64, ^mut my_list, 23);
 
     // `StackList` uses `core.cast_into`, which will cast
     // `any`s into the correct type at runtime
     last : u8 = 42;
-    stack_list.push(MyListType, u128, ^mut my_list, last);
+    stack_list.push(MyListType, u64, ^mut my_list, last);
 
-    core.println(stack_list.get(MyListType, u128, ^my_list, 5));
+    core.println(stack_list.get(MyListType, u64, ^my_list, 5));
 
-    stack_list.pop(MyListType, u128, ^mut my_list);
+    stack_list.pop(MyListType, u64, ^mut my_list);
 
-    core.println(u128, ".", stack_list.to_slice(MyListType, u128, ^my_list));
+    core.println(u64, ".", stack_list.to_slice(MyListType, u64, ^my_list));
 }

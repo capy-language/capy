@@ -624,7 +624,7 @@ There are no special `const` functions to be found here.
 Mine for crypto, play a video game, or anything else your heart desires within a `comptime` block.
 Or at least, that's the end goal. A few wrinkles haven't been fully ironed out yet, like returning pointers and functions from `comptime` blocks.
 
-Compile-time execution is very useful, and can even be used to do things like arbitrarily calculating a particular type
+Compile-time execution is very useful, and can even be used for arbitrarily computing types
 
 ```cpp
 My_Type :: comptime {
@@ -638,7 +638,7 @@ My_Type :: comptime {
 x : My_Type = 42;
 ```
 
-When you combine this with reflection, you end up with an extremely powerful system of generics
+When combined with reflection, this is the basis of Capy's extremely powerful system of generics.
 
 ```cpp
 InlineVec :: (comptime SubType, comptime capacity: usize) -> type {
@@ -651,9 +651,9 @@ InlineVec :: (comptime SubType, comptime capacity: usize) -> type {
 my_list : comptime InlineVec(i32, 10);
 ```
 
-You can truly do whatever calculations you want in creating your types. Go as far as generating table and row types from a schema for an ORM, or as simple as generating stack based data structures (as shown above).
+You have free rein to generate any possible type. Go as far as generating table and row types from a schema for an ORM, or as simple as generating stack based data structures (as shown above with `InlineVec`).
 
-As can be seen above, functions can also take in compile-time parameters, which can be used as const values.
+As can be seen in the above example, functions are able to take in arbitrary compile-time parameters, which can be used as *const* values.
 
 ```cpp
 add :: (comptime Int: type, left: Int, right: Int) -> Int {
@@ -738,7 +738,7 @@ Reflection is extremely useful, and allows for things like a `debug` or `seriali
 
 If `comptime` powers Capy's [compile-time generic system](./examples/lists_comptime_generic.capy), reflection powers Capy's [runtime generic system](./examples/lists_runtime_generic.capy).
 
-These systems allow you to make the choice yourself between fast polymorphic functions that take up lots of program space, and slightly slower runtime generic functions that save a significant amount of space. The difference between these two can be seen in the two links above.
+These two systems allow you to make the choice yourself between fast polymorphic functions that take up lots of program space, and slightly slower runtime generic functions that save a significant amount of space. The difference between these two can be seen in the two links above.
 
 In the future reflection will be made to embrace functions. When user-defined annotations are added, this will result in automation far more powerful than Rust macros.
 

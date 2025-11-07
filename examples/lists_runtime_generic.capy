@@ -5,7 +5,7 @@ main :: () {
     // `DynList` is generic at runtime,
     // and uses runtime reflection to
     // correctly store and manage it's contents
-    my_list := dyn_list.make(u128);
+    my_list := dyn_list.make(u64);
 
     dyn_list.push(^mut my_list, 4);
     dyn_list.push(^mut my_list, 8);
@@ -20,9 +20,9 @@ main :: () {
 
     // note: comptime generics are used here so that `.get` can return
     // a typed pointer, but `DynList` itself is not a generic type
-    core.println(dyn_list.get(u128, ^my_list, 5));
+    core.println(dyn_list.get(u64, ^my_list, 5));
 
-    dyn_list.pop(u128, ^mut my_list);
+    dyn_list.pop(u64, ^mut my_list);
 
-    core.println(u128, ".", dyn_list.to_slice(u128, ^my_list));
+    core.println(u64, ".", dyn_list.to_slice(u64, ^my_list));
 }

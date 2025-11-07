@@ -1242,7 +1242,7 @@ fn runtime_generic_lists() {
         "main",
         expect![[r#"
             ^42
-            u128.[ 4, 8, 15, 16, 23 ]
+            u64.[ 4, 8, 15, 16, 23 ]
 
         "#]],
         0,
@@ -1257,7 +1257,7 @@ fn comptime_generic_lists() {
         "main",
         expect![[r#"
             ^42
-            u128.[ 4, 8, 15, 16, 23 ]
+            u64.[ 4, 8, 15, 16, 23 ]
 
         "#]],
         0,
