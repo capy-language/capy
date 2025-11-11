@@ -1,0 +1,104 @@
+foo : i32 : extern;
+
+main :: (comptime name: []u8) extern;
+
+bar :: {
+    `entry: loop {
+        defer cleanup();
+        break `entry;
+    }
+    foo;
+};
+===
+Root@0..152
+  Binding@0..19
+    Ident@0..3 "foo"
+    Whitespace@3..4 " "
+    Colon@4..5 ":"
+    Whitespace@5..6 " "
+    Ty@6..9
+      VarRef@6..9
+        Ident@6..9 "i32"
+    Whitespace@9..10 " "
+    Colon@10..11 ":"
+    Whitespace@11..12 " "
+    Extern@12..18 "extern"
+    Semicolon@18..19 ";"
+  Whitespace@19..21 "\n\n"
+  Binding@21..58
+    Ident@21..25 "main"
+    Whitespace@25..26 " "
+    Colon@26..27 ":"
+    Colon@27..28 ":"
+    Whitespace@28..29 " "
+    Lambda@29..57
+      ParamList@29..50
+        LParen@29..30 "("
+        Param@30..49
+          Comptime@30..38 "comptime"
+          Whitespace@38..39 " "
+          Ident@39..43 "name"
+          Colon@43..44 ":"
+          Whitespace@44..45 " "
+          Ty@45..49
+            ArrayDecl@45..49
+              ArraySize@45..47
+                LBrack@45..46 "["
+                RBrack@46..47 "]"
+              Ty@47..49
+                VarRef@47..49
+                  Ident@47..49 "u8"
+        RParen@49..50 ")"
+      Whitespace@50..51 " "
+      Extern@51..57 "extern"
+    Semicolon@57..58 ";"
+  Whitespace@58..60 "\n\n"
+  Binding@60..152
+    Ident@60..63 "bar"
+    Whitespace@63..64 " "
+    Colon@64..65 ":"
+    Colon@65..66 ":"
+    Whitespace@66..67 " "
+    Block@67..151
+      LBrace@67..68 "{"
+      Whitespace@68..73 "\n    "
+      ExprStmt@73..140
+        WhileExpr@73..140
+          LabelDecl@73..80
+            Backtick@73..74 "`"
+            Ident@74..79 "entry"
+            Colon@79..80 ":"
+          Whitespace@80..81 " "
+          Loop@81..85 "loop"
+          Whitespace@85..86 " "
+          Block@86..140
+            LBrace@86..87 "{"
+            Whitespace@87..96 "\n        "
+            DeferStmt@96..112
+              Defer@96..101 "defer"
+              Whitespace@101..102 " "
+              Call@102..111
+                VarRef@102..109
+                  Ident@102..109 "cleanup"
+                ArgList@109..111
+                  LParen@109..110 "("
+                  RParen@110..111 ")"
+              Semicolon@111..112 ";"
+            Whitespace@112..121 "\n        "
+            BreakStmt@121..134
+              Break@121..126 "break"
+              Whitespace@126..127 " "
+              LabelRef@127..133
+                Backtick@127..128 "`"
+                Ident@128..133 "entry"
+              Semicolon@133..134 ";"
+            Whitespace@134..139 "\n    "
+            RBrace@139..140 "}"
+      Whitespace@140..145 "\n    "
+      ExprStmt@145..149
+        VarRef@145..148
+          Ident@145..148 "foo"
+        Semicolon@148..149 ";"
+      Whitespace@149..150 "\n"
+      RBrace@150..151 "}"
+    Semicolon@151..152 ";"

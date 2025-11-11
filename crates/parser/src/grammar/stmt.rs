@@ -186,6 +186,11 @@ pub(crate) fn parse_decl(p: &mut Parser, top_level: bool) -> CompletedMarker {
         NodeKind::VarDef
     };
 
+    // This catches global declarations that have "extern" as a value.
+    // e.g.
+    // ```
+    // hello :: extern;
+    // ```
     if top_level && p.at(TokenKind::Extern) {
         p.bump();
         p.expect_with_no_skip(TokenKind::Semicolon);
@@ -196,7 +201,7 @@ pub(crate) fn parse_decl(p: &mut Parser, top_level: bool) -> CompletedMarker {
 
     let top_level_extern_lambda = top_level
         && value.is_some_and(|value| value.kind() == NodeKind::Lambda)
-        && p.previous_token_kind() != TokenKind::Extern;
+        && p.previous_token_kind() == TokenKind::RBrace;
 
     if !top_level_extern_lambda {
         p.expect_with_no_skip(TokenKind::Semicolon);

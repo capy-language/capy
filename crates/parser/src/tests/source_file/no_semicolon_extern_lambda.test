@@ -1,0 +1,29 @@
+hello :: (s: str) -> void extern
+===
+Root@0..32
+  Binding@0..32
+    Ident@0..5 "hello"
+    Whitespace@5..6 " "
+    Colon@6..7 ":"
+    Colon@7..8 ":"
+    Whitespace@8..9 " "
+    Lambda@9..32
+      ParamList@9..17
+        LParen@9..10 "("
+        Param@10..16
+          Ident@10..11 "s"
+          Colon@11..12 ":"
+          Whitespace@12..13 " "
+          Ty@13..16
+            VarRef@13..16
+              Ident@13..16 "str"
+        RParen@16..17 ")"
+      Whitespace@17..18 " "
+      Arrow@18..20 "->"
+      Whitespace@20..21 " "
+      Ty@21..25
+        VarRef@21..25
+          Ident@21..25 "void"
+      Whitespace@25..26 " "
+      Extern@26..32 "extern"
+error at 32: missing Semicolon

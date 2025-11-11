@@ -21,3 +21,4 @@ Root@0..19
             Ident@16..19 "bar"
 error at 19: missing Semicolon
 error at 19: missing RBrace
+error at 19: missing Semicolon

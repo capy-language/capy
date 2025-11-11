@@ -1,0 +1,192 @@
++~!-^foo().bar[qux(alpha, beta)][idx].try.member!(ErrType).(^mut []u8) << gamma >> delta & epsilon % zeta / eta * theta + iota - kappa | lambda ~ mu == nu != xi <= omicron >= pi < rho > sigma && tau || upsilon^
+===
+Root@0..210
+  ExprStmt@0..210
+    BinaryExpr@0..210
+      BinaryExpr@0..198
+        BinaryExpr@0..191
+          BinaryExpr@0..183
+            BinaryExpr@0..177
+              BinaryExpr@0..171
+                BinaryExpr@0..160
+                  BinaryExpr@0..154
+                    BinaryExpr@0..148
+                      BinaryExpr@0..143
+                        BinaryExpr@0..134
+                          BinaryExpr@0..126
+                            BinaryExpr@0..119
+                              BinaryExpr@0..111
+                                BinaryExpr@0..105
+                                  BinaryExpr@0..98
+                                    BinaryExpr@0..88
+                                      BinaryExpr@0..79
+                                        UnaryExpr@0..70
+                                          Plus@0..1 "+"
+                                          UnaryExpr@1..70
+                                            Tilde@1..2 "~"
+                                            UnaryExpr@2..70
+                                              Bang@2..3 "!"
+                                              UnaryExpr@3..70
+                                                Hyphen@3..4 "-"
+                                                CastExpr@4..70
+                                                  Ty@4..58
+                                                    RefExpr@4..58
+                                                      Caret@4..5 "^"
+                                                      ErrorUnionDecl@5..58
+                                                        ErrorTy@5..48
+                                                          Ty@5..48
+                                                            Path@5..48
+                                                              PropagateExpr@5..41
+                                                                IndexExpr@5..37
+                                                                  Source@5..32
+                                                                    IndexExpr@5..32
+                                                                      Source@5..14
+                                                                        Path@5..14
+                                                                          Call@5..10
+                                                                            VarRef@5..8
+                                                                              Ident@5..8 "foo"
+                                                                            ArgList@8..10
+                                                                              LParen@8..9 "("
+                                                                              RParen@9..10 ")"
+                                                                          Dot@10..11 "."
+                                                                          Ident@11..14 "bar"
+                                                                      LBrack@14..15 "["
+                                                                      Index@15..31
+                                                                        Call@15..31
+                                                                          VarRef@15..18
+                                                                            Ident@15..18 "qux"
+                                                                          ArgList@18..31
+                                                                            LParen@18..19 "("
+                                                                            Arg@19..24
+                                                                              VarRef@19..24
+                                                                                Ident@19..24 "alpha"
+                                                                            Comma@24..25 ","
+                                                                            Whitespace@25..26 " "
+                                                                            Arg@26..30
+                                                                              VarRef@26..30
+                                                                                Ident@26..30 "beta"
+                                                                            RParen@30..31 ")"
+                                                                      RBrack@31..32 "]"
+                                                                  LBrack@32..33 "["
+                                                                  Index@33..36
+                                                                    VarRef@33..36
+                                                                      Ident@33..36 "idx"
+                                                                  RBrack@36..37 "]"
+                                                                Dot@37..38 "."
+                                                                Try@38..41 "try"
+                                                              Dot@41..42 "."
+                                                              Ident@42..48 "member"
+                                                        Bang@48..49 "!"
+                                                        PayloadTy@49..58
+                                                          Ty@49..58
+                                                            ParenExpr@49..58
+                                                              LParen@49..50 "("
+                                                              VarRef@50..57
+                                                                Ident@50..57 "ErrType"
+                                                              RParen@57..58 ")"
+                                                  Dot@58..59 "."
+                                                  LParen@59..60 "("
+                                                  RefExpr@60..69
+                                                    Caret@60..61 "^"
+                                                    Mut@61..64 "mut"
+                                                    Whitespace@64..65 " "
+                                                    ArrayDecl@65..69
+                                                      ArraySize@65..67
+                                                        LBrack@65..66 "["
+                                                        RBrack@66..67 "]"
+                                                      Ty@67..69
+                                                        VarRef@67..69
+                                                          Ident@67..69 "u8"
+                                                  RParen@69..70 ")"
+                                        Whitespace@70..71 " "
+                                        DoubleLeft@71..73 "<<"
+                                        Whitespace@73..74 " "
+                                        VarRef@74..79
+                                          Ident@74..79 "gamma"
+                                      Whitespace@79..80 " "
+                                      DoubleRight@80..82 ">>"
+                                      Whitespace@82..83 " "
+                                      VarRef@83..88
+                                        Ident@83..88 "delta"
+                                    Whitespace@88..89 " "
+                                    And@89..90 "&"
+                                    Whitespace@90..91 " "
+                                    VarRef@91..98
+                                      Ident@91..98 "epsilon"
+                                  Whitespace@98..99 " "
+                                  Percent@99..100 "%"
+                                  Whitespace@100..101 " "
+                                  VarRef@101..105
+                                    Ident@101..105 "zeta"
+                                Whitespace@105..106 " "
+                                Slash@106..107 "/"
+                                Whitespace@107..108 " "
+                                VarRef@108..111
+                                  Ident@108..111 "eta"
+                              Whitespace@111..112 " "
+                              Asterisk@112..113 "*"
+                              Whitespace@113..114 " "
+                              VarRef@114..119
+                                Ident@114..119 "theta"
+                            Whitespace@119..120 " "
+                            Plus@120..121 "+"
+                            Whitespace@121..122 " "
+                            VarRef@122..126
+                              Ident@122..126 "iota"
+                          Whitespace@126..127 " "
+                          Hyphen@127..128 "-"
+                          Whitespace@128..129 " "
+                          VarRef@129..134
+                            Ident@129..134 "kappa"
+                        Whitespace@134..135 " "
+                        Pipe@135..136 "|"
+                        Whitespace@136..137 " "
+                        VarRef@137..143
+                          Ident@137..143 "lambda"
+                      Whitespace@143..144 " "
+                      Tilde@144..145 "~"
+                      Whitespace@145..146 " "
+                      VarRef@146..148
+                        Ident@146..148 "mu"
+                    Whitespace@148..149 " "
+                    DoubleEquals@149..151 "=="
+                    Whitespace@151..152 " "
+                    VarRef@152..154
+                      Ident@152..154 "nu"
+                  Whitespace@154..155 " "
+                  BangEquals@155..157 "!="
+                  Whitespace@157..158 " "
+                  VarRef@158..160
+                    Ident@158..160 "xi"
+                Whitespace@160..161 " "
+                LeftEquals@161..163 "<="
+                Whitespace@163..164 " "
+                VarRef@164..171
+                  Ident@164..171 "omicron"
+              Whitespace@171..172 " "
+              RightEquals@172..174 ">="
+              Whitespace@174..175 " "
+              VarRef@175..177
+                Ident@175..177 "pi"
+            Whitespace@177..178 " "
+            Left@178..179 "<"
+            Whitespace@179..180 " "
+            VarRef@180..183
+              Ident@180..183 "rho"
+          Whitespace@183..184 " "
+          Right@184..185 ">"
+          Whitespace@185..186 " "
+          VarRef@186..191
+            Ident@186..191 "sigma"
+        Whitespace@191..192 " "
+        DoubleAnd@192..194 "&&"
+        Whitespace@194..195 " "
+        VarRef@195..198
+          Ident@195..198 "tau"
+      Whitespace@198..199 " "
+      DoublePipe@199..201 "||"
+      Whitespace@201..202 " "
+      DerefExpr@202..210
+        VarRef@202..209
+          Ident@202..209 "upsilon"
+        Caret@209..210 "^"

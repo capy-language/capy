@@ -1,0 +1,27 @@
+hello :: (s: str) -> void
+===
+Root@0..25
+  Binding@0..25
+    Ident@0..5 "hello"
+    Whitespace@5..6 " "
+    Colon@6..7 ":"
+    Colon@7..8 ":"
+    Whitespace@8..9 " "
+    Lambda@9..25
+      ParamList@9..17
+        LParen@9..10 "("
+        Param@10..16
+          Ident@10..11 "s"
+          Colon@11..12 ":"
+          Whitespace@12..13 " "
+          Ty@13..16
+            VarRef@13..16
+              Ident@13..16 "str"
+        RParen@16..17 ")"
+      Whitespace@17..18 " "
+      Arrow@18..20 "->"
+      Whitespace@20..21 " "
+      Ty@21..25
+        VarRef@21..25
+          Ident@21..25 "void"
+error at 25: missing Semicolon
